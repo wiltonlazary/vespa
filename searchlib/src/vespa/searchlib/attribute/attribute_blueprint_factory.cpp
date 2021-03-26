@@ -37,6 +37,7 @@
 #include <vespa/vespalib/util/regexp.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <sstream>
+#include <charconv>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.attribute.attribute_blueprint_factory");
@@ -81,10 +82,26 @@ using search::tensor::DenseTensorAttribute;
 using vespalib::geo::ZCurve;
 using vespalib::make_string;
 using vespalib::string;
+using vespalib::stringref;
 
 namespace search {
 namespace {
 
+class NodeAsKey final : public IDocumentWeightAttribute::LookupKey {
+public:
+    NodeAsKey(const Node & node, vespalib::string & scratchPad)
+        : _node(node),
+          _scratchPad(scratchPad)
+    { }
+
+    stringref asString() const override {
+        return queryeval::termAsString(_node, _scratchPad);
+    }
+
+private:
+    const Node       & _node;
+    vespalib::string & _scratchPad;
+};
 //-----------------------------------------------------------------------------
 
 /**
@@ -342,8 +359,8 @@ public:
         _terms.reserve(size_hint);
     }
 
-    void addTerm(const vespalib::string &term, int32_t weight) {
-        IDocumentWeightAttribute::LookupResult result = _attr.lookup(term, _dictionary_snapshot);
+    void addTerm(const IDocumentWeightAttribute::LookupKey & key, int32_t weight) {
+        IDocumentWeightAttribute::LookupResult result = _attr.lookup(key, _dictionary_snapshot);
         HitEstimate childEst(result.posting_size, (result.posting_size == 0));
         if (!childEst.empty) {
             if (_estimate.empty) {
@@ -428,8 +445,8 @@ public:
         _terms.reserve(size_hint);
     }
 
-    void addTerm(const vespalib::string &term, int32_t weight) {
-        IDocumentWeightAttribute::LookupResult result = _attr.lookup(term, _dictionary_snapshot);
+    void addTerm(const IDocumentWeightAttribute::LookupKey & key, int32_t weight) {
+        IDocumentWeightAttribute::LookupResult result = _attr.lookup(key, _dictionary_snapshot);
         HitEstimate childEst(result.posting_size, (result.posting_size == 0));
         if (!childEst.empty) {
             if (_estimate.empty) {
@@ -487,13 +504,14 @@ private:
 public:
     DirectAttributeBlueprint(const FieldSpec &field, const vespalib::string & name,
                              const IAttributeVector &iattr,
-                             const IDocumentWeightAttribute &attr, const vespalib::string &term)
+                             const IDocumentWeightAttribute &attr,
+                             const IDocumentWeightAttribute::LookupKey & key)
         : SimpleLeafBlueprint(field),
           _attrName(name),
           _iattr(iattr),
           _attr(attr),
           _dictionary_snapshot(_attr.get_dictionary_snapshot()),
-          _dict_entry(_attr.lookup(term, _dictionary_snapshot))
+          _dict_entry(_attr.lookup(key, _dictionary_snapshot))
     {
         setEstimate(HitEstimate(_dict_entry.posting_size, (_dict_entry.posting_size == 0)));
     }
@@ -547,6 +565,7 @@ private:
     const FieldSpec &_field;
     const IAttributeVector &_attr;
     const IDocumentWeightAttribute *_dwa;
+    vespalib::string _scratchPad;
 
 public:
     CreateBlueprintVisitor(Searchable &searchable, const IRequestContext &requestContext,
@@ -554,15 +573,17 @@ public:
         : CreateBlueprintVisitorHelper(searchable, field, requestContext),
           _field(field),
           _attr(attr),
-          _dwa(attr.asDocumentWeightAttribute())
+          _dwa(attr.asDocumentWeightAttribute()),
+          _scratchPad()
     {
     }
+    ~CreateBlueprintVisitor() override;
 
     template <class TermNode>
     void visitTerm(TermNode &n, bool simple = false) {
         if (simple && (_dwa != nullptr) && !_field.isFilter() && n.isRanked()) {
-            vespalib::string term = queryeval::termAsString(n);
-            setResult(std::make_unique<DirectAttributeBlueprint>(_field, _attr.getName(), _attr, *_dwa, term));
+            NodeAsKey key(n, _scratchPad);
+            setResult(std::make_unique<DirectAttributeBlueprint>(_field, _attr.getName(), _attr, *_dwa, key));
         } else {
             const string stack = StackDumpCreator::create(n);
             setResult(std::make_unique<AttributeFieldBlueprint>(_field, _attr, stack));
@@ -723,14 +744,17 @@ public:
     }
 };
 
+CreateBlueprintVisitor::~CreateBlueprintVisitor() = default;
+
 template <typename WS>
 void
 CreateBlueprintVisitor::createDirectWeightedSet(WS *bp, search::query::Intermediate &n) {
     Blueprint::UP result(bp);
+    vespalib::string scratchPad;
     for (const Node * node : n.getChildren()) {
-        vespalib::string term = queryeval::termAsString(*node);
+        NodeAsKey key(*node, scratchPad);
         uint32_t weight = queryeval::getWeightFromNode(*node).percent();
-        bp->addTerm(term, weight);
+        bp->addTerm(key, weight);
     }
     setResult(std::move(result));
 }
