@@ -713,7 +713,7 @@ public class FleetController implements NodeStateOrHostInfoChangeHandler, NodeAd
         if ((currentTime >= firstAllowedStateBroadcast || cluster.allStatesReported())
             && currentTime >= nextStateSendTime)
         {
-            if (inMasterMoratorium) {
+            if (inMasterMoratorium && currentVersionIsAckedWrittenToZooKeeper()) {
                 log.fine(currentTime < firstAllowedStateBroadcast ?
                          "Master moratorium complete: all nodes have reported in" :
                          "Master moratorium complete: timed out waiting for all nodes to report in");
@@ -734,6 +734,11 @@ public class FleetController implements NodeStateOrHostInfoChangeHandler, NodeAd
         // Always allow activations if we've already broadcasted a state
         sentAny |= systemStateBroadcaster.broadcastStateActivationsIfRequired(databaseContext, communicator);
         return sentAny;
+    }
+
+    private boolean currentVersionIsAckedWrittenToZooKeeper() {
+        return ((stateVersionTracker.getCurrentVersion() != 0) &&
+                (stateVersionTracker.getCurrentVersion() == database.getLastKnownStateBundleVersionWrittenBySelf()));
     }
 
     private void propagateNewStatesToListeners() {
