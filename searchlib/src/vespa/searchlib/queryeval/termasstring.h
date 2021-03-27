@@ -8,6 +8,7 @@ namespace search::query { class Node; }
 
 namespace search::queryeval {
 
+bool termAsInteger(const search::query::Node &term_node, int64_t & value);
 vespalib::string termAsString(const search::query::Node &term_node);
 vespalib::stringref termAsString(const search::query::Node &term_node, vespalib::string & scratchPad);
 

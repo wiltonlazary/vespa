@@ -4,6 +4,7 @@
 #include <vespa/vespalib/util/compress.h>
 #include <vespa/vespalib/objects/nbo.h>
 #include <cassert>
+#include <charconv>
 
 using search::query::PredicateQueryTerm;
 
@@ -21,15 +22,16 @@ SimpleQueryStackDumpIterator::SimpleQueryStackDumpIterator(vespalib::stringref b
     _currUniqueId(0),
     _currFlags(0),
     _currArity(0),
+    _curr_index_name(),
+    _curr_term(),
+    _curr_integer_term(),
+    _scratchBuf(),
     _extraIntArg1(0),
     _extraIntArg2(0),
     _extraIntArg3(0),
     _extraDoubleArg4(0),
     _extraDoubleArg5(0),
-    _predicate_query_term(),
-    _curr_index_name(),
-    _curr_term(),
-    _generatedTerm()
+    _predicate_query_term()
 {
 }
 
@@ -188,14 +190,18 @@ SimpleQueryStackDumpIterator::next()
         }
         break;
     case ParseItem::ITEM_PURE_WEIGHTED_LONG:
-        if (p + sizeof(int64_t) > _bufEnd) return false;
-        _generatedTerm.clear();
-        _generatedTerm << vespalib::nbo::n2h(*reinterpret_cast<const int64_t *>(p));
-        _curr_term = vespalib::stringref(_generatedTerm.c_str(), _generatedTerm.size());
-        p += sizeof(int64_t);
-        if (p > _bufEnd) return false;
-
-        _currArity = 0;
+        {
+            if (p + sizeof(int64_t) > _bufEnd) return false;
+            _curr_integer_term = vespalib::nbo::n2h(*reinterpret_cast<const int64_t *>(p));
+            _scratchBuf[0] = '0';
+            _scratchBuf[1] = 'x';
+            auto res = std::to_chars(_scratchBuf+2, _scratchBuf+sizeof(_scratchBuf), _curr_integer_term);
+            _curr_term = vespalib::stringref(_scratchBuf, res.ptr - _scratchBuf);
+            if (res.ec != std::errc()) return false;
+            p += sizeof(int64_t);
+            if (p > _bufEnd) return false;
+            _currArity = 0;
+        }
         break;
     case ParseItem::ITEM_WORD_ALTERNATIVES:
         try {
@@ -239,8 +245,7 @@ SimpleQueryStackDumpIterator::next()
                 vespalib::string key = readString(p);
                 uint64_t value = readUint64(p);
                 uint64_t sub_queries = readUint64(p);
-                _predicate_query_term->addRangeFeature(
-                        key, value, sub_queries);
+                _predicate_query_term->addRangeFeature(key, value, sub_queries);
             }
             if (p > _bufEnd) return false;
         } catch (...) {

@@ -8,8 +8,9 @@
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <typeinfo>
-#include <vespa/log/log.h>
+#include <charconv>
 
+#include <vespa/log/log.h>
 LOG_SETUP(".termasstring");
 
 using search::query::And;
@@ -107,6 +108,55 @@ struct TermAsStringVisitor : public QueryVisitor {
     void visit(NearestNeighborTerm &) override { illegalVisit(); }
 };
 
+bool
+termAsInteger(const string &term, int64_t & value) {
+    const char *end = term.data() + term.size();
+    auto res = std::from_chars(term.data(), end, value);
+    return res.ptr == end;
+}
+
+struct TermAsIntegerVisitor : public QueryVisitor {
+    int64_t & term;
+    bool      isSet;
+
+    TermAsIntegerVisitor(int64_t & value) : term(value), isSet(false) {}
+
+    template <class TermNode>
+    void visitTerm(TermNode &n) {
+        isSet = termAsInteger(n.getTerm(), term);
+    }
+
+    void illegalVisit() {
+        term = 0;
+        isSet = false;
+    }
+
+    void visit(And &) override {illegalVisit(); }
+    void visit(AndNot &) override {illegalVisit(); }
+    void visit(Equiv &) override {illegalVisit(); }
+    void visit(Near &) override {illegalVisit(); }
+    void visit(ONear &) override {illegalVisit(); }
+    void visit(Or &) override {illegalVisit(); }
+    void visit(Phrase &) override {illegalVisit(); }
+    void visit(SameElement &) override {illegalVisit(); }
+    void visit(Rank &) override {illegalVisit(); }
+    void visit(WeakAnd &) override {illegalVisit(); }
+    void visit(WeightedSetTerm &) override {illegalVisit(); }
+    void visit(DotProduct &) override {illegalVisit(); }
+    void visit(WandTerm &) override {illegalVisit(); }
+
+    void visit(NumberTerm &n) override {visitTerm(n); }
+    void visit(LocationTerm &) override {illegalVisit(); }
+    void visit(PrefixTerm &n) override {visitTerm(n); }
+    void visit(RangeTerm &) override {illegalVisit(); }
+    void visit(StringTerm &n) override {visitTerm(n); }
+    void visit(SubstringTerm &n) override {visitTerm(n); }
+    void visit(SuffixTerm &n) override {visitTerm(n); }
+    void visit(RegExpTerm &n) override {visitTerm(n); }
+    void visit(PredicateQuery &) override {illegalVisit(); }
+    void visit(NearestNeighborTerm &) override { illegalVisit(); }
+};
+
 void throwFailure(const search::query::Node &term_node) __attribute((noinline));
 
 void
@@ -132,6 +182,13 @@ termAsString(const search::query::Node &term_node, string & scratchPad) {
         throwFailure(term_node);
     }
     return visitor.term;
+}
+
+bool
+termAsInteger(const search::query::Node &term_node, int64_t & value) {
+    TermAsIntegerVisitor visitor(value);
+    const_cast<Node &>(term_node).accept(visitor);
+    return visitor.isSet;
 }
 
 }

@@ -98,6 +98,10 @@ public:
         return queryeval::termAsString(_node, _scratchPad);
     }
 
+    bool asInteger(int64_t &value) const override {
+        return queryeval::termAsInteger(_node, value);
+    }
+
 private:
     const Node       & _node;
     vespalib::string & _scratchPad;
