@@ -159,6 +159,11 @@ createNumberTerm(vespalib::stringref term, vespalib::stringref view, int32_t id,
     return new typename NodeTypes::NumberTerm(term, view, id, weight);
 }
 template <class NodeTypes>
+typename NodeTypes::PureIntegerTerm *
+createPureIntegerTerm(int64_t term, Weight weight) {
+    return new typename NodeTypes::PureIntegerTerm(term, weight);
+}
+template <class NodeTypes>
 typename NodeTypes::PrefixTerm *
 createPrefixTerm(vespalib::stringref term, vespalib::stringref view, int32_t id, Weight weight) {
     return new typename NodeTypes::PrefixTerm(term, view, id, weight);
@@ -285,6 +290,10 @@ public:
         return addIntermediate(createRank<NodeTypes>(), child_count);
     }
 
+    typename NodeTypes::PureIntegerTerm &addPureIntegerTerm(int64_t term, Weight weight) {
+        adjustWeight(weight);
+        return addTerm(createPureIntegerTerm<NodeTypes>(term, weight));
+    }
     typename NodeTypes::NumberTerm &addNumberTerm(stringref term, stringref view, int32_t id, Weight weight) {
         adjustWeight(weight);
         return addTerm(createNumberTerm<NodeTypes>(term, view, id, weight));

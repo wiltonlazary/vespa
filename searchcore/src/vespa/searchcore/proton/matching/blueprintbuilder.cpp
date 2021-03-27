@@ -144,13 +144,13 @@ protected:
     void visit(ProtonONear &n)       override { buildIntermediate(new ONearBlueprint(n.getDistance()), n); }
     void visit(ProtonSameElement &n) override { buildSameElement(n); }
 
-
     void visit(ProtonWeightedSetTerm &n) override { buildTerm(n); }
     void visit(ProtonDotProduct &n)      override { buildTerm(n); }
     void visit(ProtonWandTerm &n)        override { buildTerm(n); }
 
     void visit(ProtonPhrase &n)          override { buildTerm(n); }
     void visit(ProtonNumberTerm &n)      override { buildTerm(n); }
+    void visit(ProtonPureIntegerTerm &)  override { }
     void visit(ProtonLocationTerm &n)    override { buildTerm(n); }
     void visit(ProtonPrefixTerm &n)      override { buildTerm(n); }
     void visit(ProtonRangeTerm &n)       override { buildTerm(n); }

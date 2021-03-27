@@ -64,6 +64,7 @@ public:
     void visit(query::DotProduct &n) override { visitDotProduct(n); }
     void visit(query::WandTerm &n) override { visitWandTerm(n); }
 
+    void visit(query::PureIntegerTerm &n) override = 0;
     void visit(query::NumberTerm &n) override = 0;
     void visit(query::LocationTerm &n) override = 0;
     void visit(query::PrefixTerm &n) override = 0;

@@ -19,6 +19,7 @@ class MatchDataReserveVisitor : public search::query::TemplateTermVisitor<MatchD
 public:
     template <class TermNode>
     void visitTerm(TermNode &n) { n.allocateTerms(_mdl); }
+    void visitTerm(ProtonNodeTypes::PureIntegerTerm &) { }
 
     void visit(ProtonNodeTypes::Equiv &n) override {
         MatchDataReserveVisitor subAllocator(n.children_mdl);

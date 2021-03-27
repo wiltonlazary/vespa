@@ -50,7 +50,7 @@ private:
         uint32_t arity = queryStack.getArity();
         ParseItem::ItemType type = queryStack.getType();
         Node::UP node;
-        Term *t = 0;
+        Term *t = nullptr;
         if (type == ParseItem::ITEM_AND) {
             builder.addAnd(arity);
         } else if (type == ParseItem::ITEM_RANK) {
@@ -124,6 +124,8 @@ private:
             builder.add_nearest_neighbor_term(query_tensor_name, field_name, id, weight,
                                               target_num_hits, allow_approximate, explore_additional_hits,
                                               distance_threshold);
+        } else if (type == ParseItem::ITEM_PURE_WEIGHTED_LONG) {
+            builder.addPureIntegerTerm(queryStack.getIntegerTerm(), queryStack.GetWeight());
         } else {
             vespalib::stringref term = queryStack.getTerm();
             vespalib::stringref view = queryStack.getIndexName();
@@ -134,8 +136,6 @@ private:
                 t = &builder.addStringTerm(term, view, id, weight);
             } else if (type == ParseItem::ITEM_PURE_WEIGHTED_STRING) {
                 t = &builder.addStringTerm(term, pureTermView, id, weight);
-            } else if (type == ParseItem::ITEM_PURE_WEIGHTED_LONG) {
-                t = &builder.addNumberTerm(term, pureTermView, id, weight);
             } else if (type == ParseItem::ITEM_PREFIXTERM) {
                 t = &builder.addPrefixTerm(term, view, id, weight);
             } else if (type == ParseItem::ITEM_SUBSTRINGTERM) {

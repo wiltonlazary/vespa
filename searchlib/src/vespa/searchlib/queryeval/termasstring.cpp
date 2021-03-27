@@ -22,6 +22,7 @@ using search::query::Near;
 using search::query::NearestNeighborTerm;
 using search::query::Node;
 using search::query::NumberTerm;
+using search::query::PureIntegerTerm;
 using search::query::ONear;
 using search::query::Or;
 using search::query::Phrase;
@@ -56,6 +57,14 @@ stringref
 termAsString(const search::query::Location &term, string & scratchPad) {
     vespalib::asciistream os;
     scratchPad = (os << term).str();
+    return scratchPad;
+}
+
+stringref
+termAsString(int64_t value, string & scratchPad) {
+    char buf[24];
+    auto res = std::to_chars(buf, buf + sizeof(buf), value, 10);
+    scratchPad = stringref(buf, res.ptr - buf);
     return scratchPad;
 }
 
@@ -96,6 +105,7 @@ struct TermAsStringVisitor : public QueryVisitor {
     void visit(DotProduct &) override {illegalVisit(); }
     void visit(WandTerm &) override {illegalVisit(); }
 
+    void visit(PureIntegerTerm &n) override { visitTerm(n); }
     void visit(NumberTerm &n) override {visitTerm(n); }
     void visit(LocationTerm &n) override {visitTerm(n); }
     void visit(PrefixTerm &n) override {visitTerm(n); }
@@ -145,6 +155,10 @@ struct TermAsIntegerVisitor : public QueryVisitor {
     void visit(DotProduct &) override {illegalVisit(); }
     void visit(WandTerm &) override {illegalVisit(); }
 
+    void visit(PureIntegerTerm &n) override {
+        term = n.getTerm();
+        isSet = true;
+    }
     void visit(NumberTerm &n) override {visitTerm(n); }
     void visit(LocationTerm &) override {illegalVisit(); }
     void visit(PrefixTerm &n) override {visitTerm(n); }

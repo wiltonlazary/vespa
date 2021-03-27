@@ -42,6 +42,7 @@ struct MyPhrase : Phrase { MyPhrase() : Phrase("view", 0, Weight(42)) {} };
 struct MySameElement : SameElement { MySameElement() : SameElement("view") {} };
 struct MyRank : Rank {};
 struct MyNumberTerm : InitTerm<NumberTerm>  {};
+struct MyPureIntegerTerm : PureIntegerTerm  { MyPureIntegerTerm() : PureIntegerTerm(42, Weight(0)){} };
 struct MyLocationTerm : InitTerm<LocationTerm> {};
 struct MyPrefixTerm : InitTerm<PrefixTerm>  {};
 struct MyRangeTerm : InitTerm<RangeTerm> {};
@@ -61,6 +62,7 @@ struct MyQueryNodeTypes {
     typedef MyAndNot AndNot;
     typedef MyEquiv Equiv;
     typedef MyNumberTerm NumberTerm;
+    typedef MyPureIntegerTerm PureIntegerTerm;
     typedef MyLocationTerm LocationTerm;
     typedef MyNear Near;
     typedef MyONear ONear;
@@ -97,6 +99,7 @@ public:
     void visit(MyAndNot &) override { setVisited<MyAndNot>(); }
     void visit(MyEquiv &) override { setVisited<MyEquiv>(); }
     void visit(MyNumberTerm &) override { setVisited<MyNumberTerm>(); }
+    void visit(MyPureIntegerTerm &) override { setVisited<MyPureIntegerTerm>(); }
     void visit(MyLocationTerm &) override { setVisited<MyLocationTerm>(); }
     void visit(MyNear &) override { setVisited<MyNear>(); }
     void visit(MyONear &) override { setVisited<MyONear>(); }
@@ -146,6 +149,7 @@ Test::Main()
     TEST_CALL(requireThatNodeIsVisited<MyRangeTerm>);
     TEST_CALL(requireThatNodeIsVisited<MyRank>);
     TEST_CALL(requireThatNodeIsVisited<MyNumberTerm>);
+    TEST_CALL(requireThatNodeIsVisited<MyPureIntegerTerm>);
     TEST_CALL(requireThatNodeIsVisited<MyPrefixTerm>);
     TEST_CALL(requireThatNodeIsVisited<MyStringTerm>);
     TEST_CALL(requireThatNodeIsVisited<MySubstrTerm>);

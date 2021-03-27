@@ -269,6 +269,7 @@ public:
         EXPECT_EQUAL((double)estimatedHitCount / doc_count, n.field(0).getDocFreq());
     }
 
+    void visit(ProtonPureIntegerTerm &) override { }
     void visit(ProtonNumberTerm &n) override { checkNode(n, 1, false); }
     void visit(ProtonLocationTerm &n) override { checkNode(n, 0, true); }
     void visit(ProtonPrefixTerm &n) override { checkNode(n, 1, false); }
@@ -403,6 +404,7 @@ class SetUpTermDataTestCheckerVisitor
 
 public:
     void visit(ProtonNumberTerm &) override {}
+    void visit(ProtonPureIntegerTerm &) override {}
     void visit(ProtonLocationTerm &) override {}
     void visit(ProtonPrefixTerm &) override {}
     void visit(ProtonRangeTerm &) override {}

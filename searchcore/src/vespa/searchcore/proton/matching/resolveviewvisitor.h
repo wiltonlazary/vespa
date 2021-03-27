@@ -22,6 +22,8 @@ public:
     template <class TermNode>
     void visitTerm(TermNode &n) { n.resolve(_resolver, _indexEnv); }
 
+    void visitTerm(ProtonPureIntegerTerm &) { }
+
     void visit(ProtonLocationTerm &n) override;
 
     void visit(ProtonNodeTypes::Equiv &n) override {

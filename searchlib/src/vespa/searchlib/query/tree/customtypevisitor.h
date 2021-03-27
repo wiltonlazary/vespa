@@ -30,6 +30,7 @@ public:
     virtual void visit(typename NodeTypes::And &) = 0;
     virtual void visit(typename NodeTypes::AndNot &) = 0;
     virtual void visit(typename NodeTypes::Equiv &) = 0;
+    virtual void visit(typename NodeTypes::PureIntegerTerm &) = 0;
     virtual void visit(typename NodeTypes::NumberTerm &) = 0;
     virtual void visit(typename NodeTypes::LocationTerm &) = 0;
     virtual void visit(typename NodeTypes::Near &) = 0;
@@ -58,6 +59,7 @@ private:
     typedef typename NodeTypes::AndNot TAndNot;
     typedef typename NodeTypes::Equiv TEquiv;
     typedef typename NodeTypes::NumberTerm TNumberTerm;
+    typedef typename NodeTypes::PureIntegerTerm TPureIntegerTerm;
     typedef typename NodeTypes::LocationTerm TLocTrm;
     typedef typename NodeTypes::Near TNear;
     typedef typename NodeTypes::ONear TONear;
@@ -82,6 +84,7 @@ private:
     void visit(AndNot &n) override { visit(static_cast<TAndNot&>(n)); }
     void visit(Equiv &n) override { visit(static_cast<TEquiv&>(n)); }
     void visit(NumberTerm &n) override { visit(static_cast<TNumberTerm&>(n)); }
+    void visit(PureIntegerTerm &n) override { visit(static_cast<TPureIntegerTerm&>(n)); }
     void visit(LocationTerm &n) override { visit(static_cast<TLocTrm&>(n)); }
     void visit(Near &n) override { visit(static_cast<TNear&>(n)); }
     void visit(ONear &n) override { visit(static_cast<TONear&>(n)); }

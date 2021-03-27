@@ -227,6 +227,11 @@ class QueryNodeConverter : public QueryVisitor {
     void visit(NumberTerm &node) override {
         createTerm(node, ParseItem::ITEM_NUMTERM);
     }
+    void visit(PureIntegerTerm &node) override {
+        appendByte(ParseItem::ITEM_PURE_WEIGHTED_LONG | ParseItem::IF_WEIGHT);
+        appendCompressedNumber(node.getWeight().percent());
+        appendLong(node.getTerm());
+    }
 
     void visit(LocationTerm &node) override {
         createTerm(node, ParseItem::ITEM_GEO_LOCATION_TERM);

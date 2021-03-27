@@ -194,6 +194,7 @@ private:
     void visit(WandTerm &n)        override { visitTerm(n); }
     void visit(Phrase &n)          override { visitTerm(n); }
     void visit(NumberTerm &n)      override { visitTerm(n); }
+    void visit(PureIntegerTerm &n) override { visitTerm(n); }
     void visit(LocationTerm &n)    override { visitTerm(n); }
     void visit(PrefixTerm &n)      override { visitTerm(n); }
     void visit(RangeTerm &n)       override { visitTerm(n); }

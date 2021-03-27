@@ -10,6 +10,20 @@
 
 namespace search::query {
 
+class PureIntegerTerm: public Node {
+public:
+    PureIntegerTerm(int64_t term, Weight weight) : _term(term), _weight(weight) {}
+    Weight getWeight() const { return _weight; }
+    int64_t getTerm() const { return _term; }
+    void accept(QueryVisitor &visitor) override {
+        visitor.visit(*this);
+    }
+    bool isRanked() const { return false; }
+private:
+    int64_t _term;
+    Weight _weight;
+};
+
 typedef TermBase<vespalib::string> StringBase;
 
 class NumberTerm : public QueryNodeMixin<NumberTerm, StringBase >

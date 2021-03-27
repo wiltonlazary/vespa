@@ -114,6 +114,9 @@ private:
                           node.getTerm(), node.getView(),
                           node.getId(), node.getWeight()));
     }
+    void visit(PureIntegerTerm &node) override {
+        _builder.addPureIntegerTerm(node.getTerm(), node.getWeight());
+    }
 
     void visit(LocationTerm &node) override {
         replicate(node,_builder.addLocationTerm(

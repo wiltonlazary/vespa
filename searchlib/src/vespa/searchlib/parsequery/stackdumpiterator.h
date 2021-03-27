@@ -45,7 +45,6 @@ private:
     /** The term in the current item */
     vespalib::stringref _curr_term;
     int64_t             _curr_integer_term;
-    char                _scratchBuf[24];
 
     /* extra arguments */
     uint32_t _extraIntArg1;

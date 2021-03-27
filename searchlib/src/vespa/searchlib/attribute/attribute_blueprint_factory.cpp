@@ -51,6 +51,7 @@ using search::query::Location;
 using search::query::LocationTerm;
 using search::query::Node;
 using search::query::NumberTerm;
+using search::query::PureIntegerTerm;
 using search::query::PredicateQuery;
 using search::query::PrefixTerm;
 using search::query::RangeTerm;
@@ -610,6 +611,7 @@ public:
     }
 
     void visit(NumberTerm & n) override { visitTerm(n, true); }
+    void visit(PureIntegerTerm & n) override { visitTerm(n, true); }
     void visit(LocationTerm &n) override { visitLocation(n); }
     void visit(PrefixTerm & n) override { visitTerm(n); }
 

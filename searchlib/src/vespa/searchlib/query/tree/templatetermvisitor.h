@@ -26,6 +26,7 @@ class TemplateTermVisitor : public CustomTypeTermVisitor<NodeTypes> {
     void visit(typename NodeTypes::LocationTerm &n) override { myVisit(n); }
     void visit(typename NodeTypes::PrefixTerm &n) override { myVisit(n); }
     void visit(typename NodeTypes::RangeTerm &n) override { myVisit(n); }
+    void visit(typename NodeTypes::PureIntegerTerm &n) override { myVisit(n); }
     void visit(typename NodeTypes::StringTerm &n) override { myVisit(n); }
     void visit(typename NodeTypes::SubstringTerm &n) override { myVisit(n); }
     void visit(typename NodeTypes::SuffixTerm &n) override { myVisit(n); }

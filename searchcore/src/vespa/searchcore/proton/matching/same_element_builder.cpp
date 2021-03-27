@@ -58,6 +58,7 @@ public:
     void visit(ProtonPhrase &) override {}
     void visit(ProtonEquiv &) override {}
 
+    void visit(ProtonPureIntegerTerm &) override { }
     void visit(ProtonNumberTerm &n) override { visitTerm(n); }
     void visit(ProtonLocationTerm &n) override { visitTerm(n); }
     void visit(ProtonPrefixTerm &n) override { visitTerm(n); }

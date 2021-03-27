@@ -29,17 +29,19 @@ public:
         }
     }
 
-    virtual void visit(ProtonNodeTypes::AndNot &n) override {
+    void visitTerm(ProtonPureIntegerTerm &) { }
+
+    void visit(ProtonNodeTypes::AndNot &n) override {
         assert(n.getChildren().size() > 0);
         n.getChildren()[0]->accept(*this);
     }
 
-    virtual void visit(ProtonNodeTypes::Equiv &n) override {
+    void visit(ProtonNodeTypes::Equiv &n) override {
         // XXX: unranked equiv not supported
         _term_data.push_back(&n);
     }
 
-    virtual void visit(ProtonNodeTypes::SameElement &) override {}
+    void visit(ProtonNodeTypes::SameElement &) override {}
 };
 }  // namespace
 

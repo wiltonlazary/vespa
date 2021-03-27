@@ -47,6 +47,7 @@ public:
     void visit(AndNot &) override { isVisited<AndNot>() = true; }
     void visit(Equiv &) override { isVisited<Equiv>() = true; }
     void visit(NumberTerm &) override { isVisited<NumberTerm>() = true; }
+    void visit(PureIntegerTerm &) override { isVisited<PureIntegerTerm>() = true; }
     void visit(LocationTerm &) override { isVisited<LocationTerm>() = true; }
     void visit(Near &) override { isVisited<Near>() = true; }
     void visit(ONear &) override { isVisited<ONear>() = true; }
@@ -90,6 +91,7 @@ void Test::requireThatAllNodesCanBeVisited() {
     checkVisit<WandTerm>(new SimpleWandTerm("field", 0, Weight(42), 57, 67, 77.7));
     checkVisit<Rank>(new SimpleRank);
     checkVisit<NumberTerm>(new SimpleNumberTerm("0.42", "field", 0, Weight(0)));
+    checkVisit<PureIntegerTerm>(new SimplePureIntegerTerm(42, Weight(0)));
     const Location location(Point{10, 10}, 20, 0);
     checkVisit<LocationTerm>(new SimpleLocationTerm(location, "field", 0, Weight(0)));
     checkVisit<PrefixTerm>(new SimplePrefixTerm("t", "field", 0, Weight(0)));

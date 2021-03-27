@@ -2,6 +2,8 @@
 
 #include "diskindex.h"
 #include "disktermblueprint.h"
+#include "pagedict4randread.h"
+#include "fileheader.h"
 #include <vespa/searchlib/index/schemautil.h>
 #include <vespa/searchlib/queryeval/create_blueprint_visitor_helper.h>
 #include <vespa/searchlib/queryeval/leaf_blueprints.h>
@@ -10,8 +12,6 @@
 #include <vespa/vespalib/stllike/hash_set.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
 #include <vespa/vespalib/stllike/cache.hpp>
-#include "pagedict4randread.h"
-#include "fileheader.h"
 
 #include <vespa/log/log.h>
 LOG_SETUP(".diskindex.diskindex");
@@ -400,6 +400,7 @@ public:
 
     void not_supported(Node &) {}
 
+    void visit(PureIntegerTerm &n)  override { visitTerm(n); }
     void visit(LocationTerm &n)  override { visitTerm(n); }
     void visit(PrefixTerm &n)    override { visitTerm(n); }
     void visit(RangeTerm &n)     override { visitTerm(n); }

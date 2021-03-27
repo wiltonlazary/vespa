@@ -24,8 +24,7 @@ SimpleQueryStackDumpIterator::SimpleQueryStackDumpIterator(vespalib::stringref b
     _currArity(0),
     _curr_index_name(),
     _curr_term(),
-    _curr_integer_term(),
-    _scratchBuf(),
+    _curr_integer_term(0),
     _extraIntArg1(0),
     _extraIntArg2(0),
     _extraIntArg3(0),
@@ -193,11 +192,6 @@ SimpleQueryStackDumpIterator::next()
         {
             if (p + sizeof(int64_t) > _bufEnd) return false;
             _curr_integer_term = vespalib::nbo::n2h(*reinterpret_cast<const int64_t *>(p));
-            _scratchBuf[0] = '0';
-            _scratchBuf[1] = 'x';
-            auto res = std::to_chars(_scratchBuf+2, _scratchBuf+sizeof(_scratchBuf), _curr_integer_term);
-            _curr_term = vespalib::stringref(_scratchBuf, res.ptr - _scratchBuf);
-            if (res.ec != std::errc()) return false;
             p += sizeof(int64_t);
             if (p > _bufEnd) return false;
             _currArity = 0;

@@ -8,6 +8,7 @@ class And;
 class AndNot;
 class Equiv;
 class NumberTerm;
+class PureIntegerTerm;
 class LocationTerm;
 class Near;
 class ONear;
@@ -29,12 +30,13 @@ class SameElement;
 class NearestNeighborTerm;
 
 struct QueryVisitor {
-    virtual ~QueryVisitor() {}
+    virtual ~QueryVisitor() = default;
 
     virtual void visit(And &) = 0;
     virtual void visit(AndNot &) = 0;
     virtual void visit(Equiv &) = 0;
     virtual void visit(NumberTerm &) = 0;
+    virtual void visit(PureIntegerTerm &) = 0;
     virtual void visit(LocationTerm &) = 0;
     virtual void visit(Near &) = 0;
     virtual void visit(ONear &) = 0;

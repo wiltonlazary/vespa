@@ -33,6 +33,7 @@ struct TermDataFromTermVisitor
     void visit(ProtonPhrase &n) override { visitTerm(n); }
     void visit(ProtonEquiv &n) override { visitTerm(n); }
 
+    void visit(ProtonPureIntegerTerm &) override { }
     void visit(ProtonNumberTerm &n) override { visitTerm(n); }
     void visit(ProtonLocationTerm &n) override { visitTerm(n); }
     void visit(ProtonPrefixTerm &n) override { visitTerm(n); }

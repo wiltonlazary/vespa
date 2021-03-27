@@ -54,6 +54,11 @@ struct SimpleNumberTerm : NumberTerm {
         : NumberTerm(term, view, id, weight) {
     }
 };
+
+struct SimplePureIntegerTerm : PureIntegerTerm {
+    SimplePureIntegerTerm(int64_t term, Weight weight) : PureIntegerTerm(term, weight) {}
+};
+
 struct SimpleLocationTerm : LocationTerm {
     SimpleLocationTerm(const Type &term, vespalib::stringref view,
                        int32_t id, Weight weight)
@@ -120,6 +125,7 @@ struct SimpleQueryNodeTypes {
     using AndNot = SimpleAndNot;
     using Equiv = SimpleEquiv;
     using NumberTerm = SimpleNumberTerm;
+    using PureIntegerTerm = SimplePureIntegerTerm;
     using LocationTerm = SimpleLocationTerm;
     using Near = SimpleNear;
     using ONear = SimpleONear;

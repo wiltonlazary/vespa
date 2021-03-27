@@ -30,6 +30,7 @@ using query::LocationTerm;
 using query::NearestNeighborTerm;
 using query::Node;
 using query::NumberTerm;
+using query::PureIntegerTerm;
 using query::PredicateQuery;
 using query::PrefixTerm;
 using query::RangeTerm;
@@ -166,6 +167,7 @@ public:
 
     void not_supported(Node &) {}
 
+    void visit(PureIntegerTerm &n)  override { visitTerm(n); }
     void visit(LocationTerm &n)  override { visitTerm(n); }
     void visit(PrefixTerm &n)    override { visitTerm(n); }
     void visit(RangeTerm &n)     override { visitTerm(n); }

@@ -10,6 +10,7 @@ using search::query::LocationTerm;
 using search::query::NearestNeighborTerm;
 using search::query::Node;
 using search::query::NumberTerm;
+using search::query::PureIntegerTerm;
 using search::query::PredicateQuery;
 using search::query::PrefixTerm;
 using search::query::RangeTerm;
@@ -56,6 +57,7 @@ public:
     template <class TermNode>
     void visitTerm(TermNode &n);
 
+    void visit(PureIntegerTerm &n) override { visitTerm(n); }
     void visit(NumberTerm &n) override { visitTerm(n); }
     void visit(LocationTerm &n) override { visitTerm(n); }
     void visit(PrefixTerm &n) override { visitTerm(n); }

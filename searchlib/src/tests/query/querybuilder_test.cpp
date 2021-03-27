@@ -352,6 +352,9 @@ struct MyNumberTerm : NumberTerm {
         : NumberTerm(t, f, i, w) {
     }
 };
+struct MyPureIntegerTerm : PureIntegerTerm {
+    MyPureIntegerTerm(int64_t t, Weight w): PureIntegerTerm(t, w) { }
+};
 struct MyLocationTerm : LocationTerm {
     MyLocationTerm(const Type &t, const string &f, int32_t i, Weight w)
         : LocationTerm(t, f, i, w) {
@@ -406,6 +409,7 @@ struct MyQueryNodeTypes {
     typedef MyAndNot AndNot;
     typedef MyEquiv Equiv;
     typedef MyNumberTerm NumberTerm;
+    typedef MyPureIntegerTerm PureIntegerTerm;
     typedef MyLocationTerm LocationTerm;
     typedef MyNear Near;
     typedef MyONear ONear;
