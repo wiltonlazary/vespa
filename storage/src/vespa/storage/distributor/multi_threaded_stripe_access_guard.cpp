@@ -52,8 +52,13 @@ void MultiThreadedStripeAccessGuard::clear_pending_cluster_state_bundle() {
 }
 
 void MultiThreadedStripeAccessGuard::enable_cluster_state_bundle(const lib::ClusterStateBundle& new_state) {
+    const uint16_t old_node_count = first_stripe().get_storage_node_count();
     for_each_stripe([&](TickableStripe& stripe) {
-        stripe.enable_cluster_state_bundle(new_state);
+        stripe.enable_cluster_state_bundle_early(new_state);
+    });
+    first_stripe().enable_cluster_state_bundle_middle(new_state);
+    for_each_stripe([&](TickableStripe& stripe) {
+        stripe.enable_cluster_state_bundle_late(old_node_count, new_state);
     });
 }
 

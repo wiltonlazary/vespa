@@ -200,6 +200,7 @@ private:
 
     DistributorComponentRegister&         _comp_reg;
     const bool                            _use_legacy_mode;
+    bool                                  _done_initializing;
     std::shared_ptr<DistributorMetricSet> _metrics;
     std::shared_ptr<DistributorTotalMetrics> _total_metrics;
     std::shared_ptr<IdealStateMetricSet>  _ideal_state_metrics;

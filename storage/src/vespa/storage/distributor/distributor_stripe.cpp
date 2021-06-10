@@ -39,6 +39,7 @@ DistributorStripe::DistributorStripe(DistributorComponentRegister& compReg,
                                      IdealStateMetricSet& ideal_state_metrics,
                                      const NodeIdentity& node_identity,
                                      framework::TickingThreadPool& threadPool,
+                                     bool& doneInitializing,
                                      DoneInitializeHandler& doneInitHandler,
                                      ChainedMessageSender& messageSender,
                                      StripeHostInfoNotifier& stripe_host_info_notifier,
@@ -68,7 +69,7 @@ DistributorStripe::DistributorStripe(DistributorComponentRegister& compReg,
       _external_message_mutex(),
       _threadPool(threadPool),
       _doneInitializeHandler(doneInitHandler),
-      _doneInitializing(false),
+      _doneInitializing(doneInitializing),
       _bucketPriorityDb(std::make_unique<SimpleBucketPriorityDatabase>()),
       _scanner(std::make_unique<SimpleMaintenanceScanner>(*_bucketPriorityDb, _idealStateManager, *_bucketSpaceRepo)),
       _throttlingStarter(std::make_unique<ThrottlingOperationStarter>(_maintenanceOperationOwner)),
@@ -290,23 +291,38 @@ DistributorStripe::getClusterStateBundle() const
     return _clusterStateBundle;
 }
 
+uint16_t 
+DistributorStripe::get_storage_node_count() const
+{
+    return _clusterStateBundle.getBaselineClusterState()->getNodeCount(lib::NodeType::STORAGE);
+}
+
 void
-DistributorStripe::enableClusterStateBundle(const lib::ClusterStateBundle& state)
+DistributorStripe::enable_cluster_state_bundle_early(const lib::ClusterStateBundle& new_state)
+{
+    lib::ClusterStateBundle oldState = _clusterStateBundle;
+    _clusterStateBundle = new_state;
+    propagateClusterStates();
+}
+
+void
+DistributorStripe::enable_cluster_state_bundle_middle(const lib::ClusterStateBundle& new_state)
 {
     lib::Node my_node(lib::NodeType::DISTRIBUTOR, getDistributorIndex());
-    lib::ClusterStateBundle oldState = _clusterStateBundle;
-    _clusterStateBundle = state;
-    propagateClusterStates();
-
-    const auto& baseline_state = *state.getBaselineClusterState();
+    const auto& baseline_state = *new_state.getBaselineClusterState();
     if (!_doneInitializing && (baseline_state.getNodeState(my_node).getState() == lib::State::UP)) {
         _doneInitializing = true;
         _doneInitializeHandler.notifyDoneInitializing();
     }
+}
+
+void
+DistributorStripe::enable_cluster_state_bundle_late(uint16_t old_node_count, const lib::ClusterStateBundle& new_state)
+{
     enterRecoveryMode();
 
     // Clear all active messages on nodes that are down.
-    const uint16_t old_node_count = oldState.getBaselineClusterState()->getNodeCount(lib::NodeType::STORAGE);
+    const auto& baseline_state = *new_state.getBaselineClusterState();
     const uint16_t new_node_count = baseline_state.getNodeCount(lib::NodeType::STORAGE);
     for (uint16_t i = 0; i < std::max(old_node_count, new_node_count); ++i) {
         const auto& node_state = baseline_state.getNodeState(lib::Node(lib::NodeType::STORAGE, i)).getState();
@@ -330,6 +346,16 @@ DistributorStripe::enableClusterStateBundle(const lib::ClusterStateBundle& state
         _externalOperationHandler.rejectFeedBeforeTimeReached(
                 _ownershipSafeTimeCalc->safeTimePoint(now));
     }
+}
+
+void
+DistributorStripe::enableClusterStateBundle(const lib::ClusterStateBundle& state)
+{
+    assert(_use_legacy_mode);
+    const uint16_t old_node_count = get_storage_node_count();
+    enable_cluster_state_bundle_early(state);
+    enable_cluster_state_bundle_middle(state);
+    enable_cluster_state_bundle_late(old_node_count, state);
 }
 
 OperationRoutingSnapshot DistributorStripe::read_snapshot_for_bucket(const document::Bucket& bucket) const {
@@ -978,13 +1004,6 @@ void
 DistributorStripe::clear_pending_cluster_state_bundle()
 {
     getBucketSpaceRepo().clear_pending_cluster_state_bundle();
-}
-
-void
-DistributorStripe::enable_cluster_state_bundle(const lib::ClusterStateBundle& new_state)
-{
-    // TODO STRIPE replace legacy func
-    enableClusterStateBundle(new_state);
 }
 
 void

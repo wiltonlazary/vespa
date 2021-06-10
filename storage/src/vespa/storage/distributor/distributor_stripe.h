@@ -27,7 +27,6 @@
 #include <unordered_map>
 
 namespace storage {
-    struct DoneInitializeHandler;
     class HostInfo;
     class NodeIdentity;
 }
@@ -62,6 +61,7 @@ public:
                       IdealStateMetricSet& ideal_state_metrics,
                       const NodeIdentity& node_identity,
                       framework::TickingThreadPool&,
+                      bool& doneInitializing,
                       DoneInitializeHandler&,
                       ChainedMessageSender& messageSender,
                       StripeHostInfoNotifier& stripe_host_info_notifier,
@@ -99,7 +99,7 @@ public:
      * Enables a new cluster state. Called after the bucket db updater has
      * retrieved all bucket info related to the change.
      */
-    void enableClusterStateBundle(const lib::ClusterStateBundle& clusterStateBundle) override;
+    void enableClusterStateBundle(const lib::ClusterStateBundle& cluster_state_bundle) override;
 
     /**
      * Invoked when a pending cluster state for a distribution (config)
@@ -270,7 +270,10 @@ private:
     void update_total_distributor_config(std::shared_ptr<const DistributorConfiguration> config) override;
     void set_pending_cluster_state_bundle(const lib::ClusterStateBundle& pending_state) override;
     void clear_pending_cluster_state_bundle() override;
-    void enable_cluster_state_bundle(const lib::ClusterStateBundle& new_state) override;
+    uint16_t get_storage_node_count() const override;
+    void enable_cluster_state_bundle_early(const lib::ClusterStateBundle& new_state) override;
+    void enable_cluster_state_bundle_middle(const lib::ClusterStateBundle& new_state) override;
+    void enable_cluster_state_bundle_late(uint16_t old_node_count, const lib::ClusterStateBundle& new_state) override;
     void notify_distribution_change_enabled() override;
     PotentialDataLossReport remove_superfluous_buckets(document::BucketSpace bucket_space,
                                                        const lib::ClusterState& new_state,
@@ -338,7 +341,7 @@ private:
     mutable std::vector<std::shared_ptr<DistributorStatus>> _fetchedStatusRequests;
 
     DoneInitializeHandler& _doneInitializeHandler;
-    bool _doneInitializing;
+    bool& _doneInitializing;
 
     std::unique_ptr<BucketPriorityDatabase> _bucketPriorityDb;
     std::unique_ptr<SimpleMaintenanceScanner> _scanner;

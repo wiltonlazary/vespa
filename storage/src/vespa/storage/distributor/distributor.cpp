@@ -60,6 +60,7 @@ Distributor::Distributor(DistributorComponentRegister& compReg,
       framework::StatusReporter("distributor", "Distributor"),
       _comp_reg(compReg),
       _use_legacy_mode(num_distributor_stripes == 0),
+      _done_initializing(false),
       _metrics(std::make_shared<DistributorMetricSet>()),
       _total_metrics(_use_legacy_mode ? std::shared_ptr<DistributorTotalMetrics>() :
                      std::make_shared<DistributorTotalMetrics>(num_distributor_stripes)),
@@ -72,7 +73,7 @@ Distributor::Distributor(DistributorComponentRegister& compReg,
                                                   _use_legacy_mode ? *_metrics : _total_metrics->stripe(0),
                                                   _use_legacy_mode ? *_ideal_state_metrics : _ideal_state_total_metrics->stripe(0),
                                                   node_identity, threadPool,
-                                                  doneInitHandler, *this, *this, _use_legacy_mode)),
+                                                  _done_initializing, doneInitHandler, *this, *this, _use_legacy_mode)),
       _stripe_pool(stripe_pool),
       _stripes(),
       _stripe_accessor(),
@@ -120,7 +121,7 @@ Distributor::Distributor(DistributorComponentRegister& compReg,
                                                                       _total_metrics->stripe(i),
                                                                       _ideal_state_total_metrics->stripe(i),
                                                                       node_identity, threadPool,
-                                                                      doneInitHandler, *this, *this, _use_legacy_mode, i));
+                                                                      _done_initializing, doneInitHandler, *this, *this, _use_legacy_mode, i));
         }
         _stripe_scan_stats.resize(num_distributor_stripes);
         _distributorStatusDelegate.registerStatusPage();
