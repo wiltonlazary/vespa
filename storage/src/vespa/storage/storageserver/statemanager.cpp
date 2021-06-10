@@ -475,6 +475,7 @@ StateManager::onGetNodeState(const api::GetNodeStateCommand::SP& cmd)
         }
     }
     if (reply) {
+        LOG(info, "StateManager::onGetNodeState: sendUp %s", reply->toString().c_str());
         sendUp(reply);
     }
     return true;
@@ -572,6 +573,7 @@ StateManager::sendGetNodeStateReplies(framework::MilliSecTime olderThanTime, uin
     const std::string nodeInfo(getNodeInfo());
     for (auto& reply : replies) {
         reply->setNodeInfo(nodeInfo);
+        LOG(info, "StateManager::sendGetNodeStateReplies: sendUp %s", reply->toString().c_str());
         sendUp(reply);
     }
     return true;

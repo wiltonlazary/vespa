@@ -56,6 +56,9 @@ GetNodeStateReply::print(std::ostream& out, bool verbose,
     out << "GetNodeStateReply(";
     if (_state.get()) {
         out << "State: " << *_state;
+        if (!_nodeInfo.empty()) {
+            out << ", NodeInfo: " << _nodeInfo;
+        }
     }
     out << ")";
     if (verbose) {

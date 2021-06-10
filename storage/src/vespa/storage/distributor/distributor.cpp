@@ -400,9 +400,11 @@ Distributor::onDown(const std::shared_ptr<api::StorageMessage>& msg)
     // TODO STRIPE can we route both requests and responses that are BucketCommand|Reply based on their bucket alone?
     //   that covers most operations already...
     if (_use_legacy_mode) {
+        LOG(info, "Distributor::onDown() legacy %s", msg->toString().c_str());
         return _stripe->handle_or_enqueue_message(msg);
     } else {
         if (should_be_handled_by_top_level_bucket_db_updater(*msg)) {
+            LOG(info, "Distributor::onDown() toplevel %s", msg->toString().c_str());
             dispatch_to_main_distributor_thread_queue(msg);
             return true;
         }
@@ -410,6 +412,7 @@ Distributor::onDown(const std::shared_ptr<api::StorageMessage>& msg)
         uint32_t stripe_idx = stripe_of_bucket_id(bucket_id, *msg);
         MBUS_TRACE(msg->getTrace(), 9,
                    vespalib::make_string("Distributor::onDown(): Dispatch message to stripe %u", stripe_idx));
+        LOG(info, "Distributor::onDown() stripe %u %s", stripe_idx, msg->toString().c_str());
         bool handled = _stripes[stripe_idx]->handle_or_enqueue_message(msg);
         if (handled) {
             _stripe_pool.stripe_thread(stripe_idx).notify_event_has_triggered();
