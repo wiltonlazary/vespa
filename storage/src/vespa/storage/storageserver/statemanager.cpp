@@ -274,6 +274,7 @@ StateManager::notifyStateListeners()
     std::lock_guard listenerLock(_listenerLock);
     _notifyingListeners = true;
     lib::NodeState::SP newState;
+    bool notify_soon = false;
     while (true) {
         {
             std::lock_guard guard(_stateLock);
@@ -313,6 +314,7 @@ StateManager::notifyStateListeners()
             }
             if (_nextSystemState) {
                 enableNextClusterState();
+                notify_soon = true;
             }
             _stateCond.notify_all();
         }
@@ -327,6 +329,9 @@ StateManager::notifyStateListeners()
     }
     if (newState) {
         sendGetNodeStateReplies();
+    }
+    if (notify_soon) {
+        request_almost_immediate_node_state_replies();
     }
     _notifyingListeners = false;
 }
