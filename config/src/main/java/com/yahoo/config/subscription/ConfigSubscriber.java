@@ -13,7 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
-
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static java.util.logging.Level.FINE;
@@ -293,10 +293,12 @@ public class ConfigSubscriber implements AutoCloseable {
             // Keep on polling the subscriptions until we have a new generation across the board, or it times out
             for (ConfigHandle<? extends ConfigInstance> h : subscriptionHandles) {
                 ConfigSubscription<? extends ConfigInstance> subscription = h.subscription();
+                log.log(Level.FINE, "Calling nextConfig() for " + subscription);
                 if ( ! subscription.nextConfig(timeLeftMillis)) {
                     // This subscriber has no new state and we know it has exhausted all time
                     return false;
                 }
+                log.log(Level.FINE, "nextConfig() returned true for " + subscription);
                 throwIfExceptionSet(subscription);
                 ConfigSubscription.ConfigState<? extends ConfigInstance> config = subscription.getConfigState();
                 if (currentGen == null) currentGen = config.getGeneration();
