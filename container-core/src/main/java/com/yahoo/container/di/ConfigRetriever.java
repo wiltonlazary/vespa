@@ -132,10 +132,11 @@ public final class ConfigRetriever {
     private void setupComponentSubscriber(Set<ConfigKey<? extends ConfigInstance>> keys) {
         if (! componentSubscriberKeys.equals(keys)) {
             componentSubscriber.close();
+            log.log(FINE, () -> "Closed " + componentSubscriber);
             componentSubscriberKeys = keys;
             try {
-                log.log(FINE, () -> "Setting up new component subscriber for keys: " + keys);
                 componentSubscriber = subscriberFactory.getSubscriber(keys, "component_" + ++componentSubscriberIndex);
+                log.log(FINE, () -> "Set up new subscriber " + componentSubscriber + " for keys: " + keys);
             } catch (Throwable e) {
                 log.log(Level.WARNING, "Failed setting up subscriptions for component configs: " + e.getMessage());
                 log.log(Level.WARNING, "Config keys: " + keys);
