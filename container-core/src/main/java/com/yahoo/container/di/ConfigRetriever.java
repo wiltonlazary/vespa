@@ -73,7 +73,7 @@ public final class ConfigRetriever {
         allKeys.addAll(bootstrapKeys);
         setupComponentSubscriber(allKeys);
 
-        return getConfigsOptional(leastGeneration, isInitializing);
+        return getConfigsOptional3(leastGeneration, isInitializing);
     }
 
     private Optional<ConfigSnapshot> getConfigsOptional(long leastGeneration, boolean isInitializing) {
@@ -104,6 +104,74 @@ public final class ConfigRetriever {
         } else {
             // bootstrapGen==componentGen (happens only when a new component subscriber returns first config after bootstrap)
             return componentsConfigIfChanged();
+        }
+    }
+
+    // GVL TODO:return -1 from waitNextGen upon exception
+    private Optional<ConfigSnapshot> getConfigsOptional2(long leastGeneration, boolean isInitializing) {
+        long newestComponentGeneration = componentSubscriber.waitNextGeneration(isInitializing);
+        log.log(FINE, () -> "getConfigsOptional: new component generation: " + newestComponentGeneration);
+        boolean componentSubscriptionFailed = (newestComponentGeneration == -1);
+
+        // leastGeneration is only used to ensure newer generation (than the latest bootstrap or component gen)
+        // when the previous generation was invalidated due to an exception upon creating the component graph.
+        if (newestComponentGeneration < leastGeneration && ! componentSubscriptionFailed) {
+            return Optional.empty();
+        } else if (componentSubscriptionFailed || bootstrapSubscriber.generation() < newestComponentGeneration) {
+            long newestBootstrapGeneration = bootstrapSubscriber.waitNextGeneration(isInitializing);
+            if (newestBootstrapGeneration == -1) throw new IllegalStateException("Could not retrieve bootstrap configs.");
+            log.log(FINE, () -> "getConfigsOptional: new bootstrap generation: " + bootstrapSubscriber.generation());
+            Optional<ConfigSnapshot> bootstrapConfig = bootstrapConfigIfChanged();
+            if (bootstrapConfig.isPresent()) {
+                return bootstrapConfig;
+            } else {
+                if (newestBootstrapGeneration == newestComponentGeneration) {
+                    log.log(FINE, () -> this + " got new components configs with unchanged bootstrap configs.");
+                    return componentsConfigIfChanged();
+                } else {
+                    // This should not be a normal case, and hence a warning to allow investigation.
+                    log.warning("Did not get same generation for bootstrap (" + newestBootstrapGeneration +
+                                        ") and components configs (" + newestComponentGeneration + ").");
+                    return Optional.empty();
+                }
+            }
+        } else {
+            // bootstrapGen==componentGen (happens only when a new component subscriber returns first config after bootstrap)
+            return componentsConfigIfChanged();
+        }
+    }
+
+    // GVL TODO: this version fetches bootstrap first, allows exception from subscriber to propagate up
+    private Optional<ConfigSnapshot> getConfigsOptional3(long leastGeneration, boolean isInitializing) {
+        if (componentSubscriber.generation() < bootstrapSubscriber.generation()) {
+            return getComponentsSnapshot(leastGeneration, isInitializing);
+        }
+        long newestBootstrapGeneration = bootstrapSubscriber.waitNextGeneration(isInitializing);
+        log.log(FINE, () -> "getConfigsOptional: new bootstrap generation: " + newestBootstrapGeneration);
+
+        // leastGeneration is only used to ensure newer generation (than the latest bootstrap or component gen)
+        // when the previous generation was invalidated due to an exception upon creating the component graph.
+        if (newestBootstrapGeneration < leastGeneration) {
+            return Optional.empty();
+        }
+        return bootstrapConfigIfChanged();
+    }
+
+    private Optional<ConfigSnapshot> getComponentsSnapshot(long leastGeneration, boolean isInitializing) {
+        long newestBootstrapGeneration = bootstrapSubscriber.generation();
+        long newestComponentGeneration = componentSubscriber.waitNextGeneration(isInitializing);
+        log.log(FINE, () -> "getConfigsOptional: new component generation: " + componentSubscriber.generation());
+        if (newestComponentGeneration < leastGeneration) {
+            return Optional.empty();
+        }
+        if (newestComponentGeneration == newestBootstrapGeneration) {
+            log.log(FINE, () -> this + " got new components configs with unchanged bootstrap configs.");
+            return componentsConfigIfChanged();
+        } else {
+            // Should not be a normal case, and hence a warning to allow investigation.
+            log.warning("Did not get same generation for bootstrap (" + newestBootstrapGeneration +
+                                ") and components configs (" + newestComponentGeneration + ").");
+            return Optional.empty();
         }
     }
 
