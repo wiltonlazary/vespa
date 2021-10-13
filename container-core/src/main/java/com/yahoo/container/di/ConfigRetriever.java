@@ -125,14 +125,13 @@ public final class ConfigRetriever {
 
     private void resetComponentSubscriberIfBootstrap(ConfigSnapshot snapshot) {
         if (snapshot instanceof BootstrapConfigs) {
-            setupComponentSubscriber(Collections.emptySet());
+            closeComponentSubscriber();
         }
     }
 
     private void setupComponentSubscriber(Set<ConfigKey<? extends ConfigInstance>> keys) {
         if (! componentSubscriberKeys.equals(keys)) {
-            componentSubscriber.close();
-            log.log(FINE, () -> "Closed " + componentSubscriber);
+            closeComponentSubscriber();
             componentSubscriberKeys = keys;
             try {
                 componentSubscriber = subscriberFactory.getSubscriber(keys, "component_" + ++componentSubscriberIndex);
@@ -143,6 +142,11 @@ public final class ConfigRetriever {
                 throw e;
             }
         }
+    }
+
+    private void closeComponentSubscriber() {
+        componentSubscriber.close();
+        log.log(FINE, () -> "Closed " + componentSubscriber);
     }
 
     public void shutdown() {
