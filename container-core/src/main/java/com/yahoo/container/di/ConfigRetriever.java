@@ -8,7 +8,6 @@ import com.yahoo.container.di.config.Subscriber;
 import com.yahoo.container.di.config.SubscriberFactory;
 import com.yahoo.vespa.config.ConfigKey;
 
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
@@ -54,14 +53,16 @@ public final class ConfigRetriever {
             Optional<ConfigSnapshot> maybeSnapshot = getConfigsOnce(componentConfigKeys, leastGeneration, isInitializing);
             if (maybeSnapshot.isPresent()) {
                 var configSnapshot = maybeSnapshot.get();
-                resetComponentSubscriberIfBootstrap(configSnapshot);
+                if (configSnapshot instanceof BootstrapConfigs) {
+                    closeComponentSubscriber();
+                }
                 return configSnapshot;
             }
         }
     }
 
-    Optional<ConfigSnapshot> getConfigsOnce(Set<ConfigKey<? extends ConfigInstance>> componentConfigKeys,
-                                            long leastGeneration, boolean isInitializing) {
+    private Optional<ConfigSnapshot> getConfigsOnce(Set<ConfigKey<? extends ConfigInstance>> componentConfigKeys,
+                                                    long leastGeneration, boolean isInitializing) {
         if (!Sets.intersection(componentConfigKeys, bootstrapKeys).isEmpty()) {
             throw new IllegalArgumentException(
                     "Component config keys [" + componentConfigKeys + "] overlaps with bootstrap config keys [" + bootstrapKeys + "]");
@@ -120,12 +121,6 @@ public final class ConfigRetriever {
             return Optional.of(constructor.apply(Keys.covariantCopy(subscriber.config())));
         } else {
             return Optional.empty();
-        }
-    }
-
-    private void resetComponentSubscriberIfBootstrap(ConfigSnapshot snapshot) {
-        if (snapshot instanceof BootstrapConfigs) {
-            closeComponentSubscriber();
         }
     }
 
