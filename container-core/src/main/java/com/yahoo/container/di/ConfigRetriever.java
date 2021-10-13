@@ -67,13 +67,13 @@ public final class ConfigRetriever {
             throw new IllegalArgumentException(
                     "Component config keys [" + componentConfigKeys + "] overlaps with bootstrap config keys [" + bootstrapKeys + "]");
         }
-        log.log(FINE, () -> "getConfigsOnce: " + componentConfigKeys);
-
         Set<ConfigKey<? extends ConfigInstance>> allKeys = new HashSet<>(componentConfigKeys);
         allKeys.addAll(bootstrapKeys);
         setupComponentSubscriber(allKeys);
 
-        return getConfigsOptional3(leastGeneration, isInitializing);
+        var maybeSnapshot = getConfigsOptional3(leastGeneration, isInitializing);
+        log.log(FINE, () -> "getConfigsOnce returning " + maybeSnapshot);
+        return maybeSnapshot;
     }
 
     private Optional<ConfigSnapshot> getConfigsOptional(long leastGeneration, boolean isInitializing) {
