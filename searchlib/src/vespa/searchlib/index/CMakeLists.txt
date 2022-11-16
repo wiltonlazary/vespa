@@ -2,9 +2,7 @@
 vespa_add_library(searchlib_searchlib_index OBJECT
     SOURCES
     dictionaryfile.cpp
-    docbuilder.cpp
     docidandfeatures.cpp
-    doctypebuilder.cpp
     dummyfileheadercontext.cpp
     indexbuilder.cpp
     postinglisthandle.cpp

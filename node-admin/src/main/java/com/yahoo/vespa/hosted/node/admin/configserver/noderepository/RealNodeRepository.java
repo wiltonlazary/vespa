@@ -2,7 +2,6 @@
 package com.yahoo.vespa.hosted.node.admin.configserver.noderepository;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.google.common.base.Strings;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.DockerImage;
@@ -11,9 +10,9 @@ import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.host.FlavorOverrides;
 import com.yahoo.vespa.hosted.node.admin.configserver.ConfigServerApi;
 import com.yahoo.vespa.hosted.node.admin.configserver.HttpException;
+import com.yahoo.vespa.hosted.node.admin.configserver.StandardConfigServerResponse;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.bindings.GetAclResponse;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.bindings.GetNodesResponse;
-import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.bindings.NodeMessageResponse;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.bindings.NodeRepositoryNode;
 
 import java.net.URI;
@@ -48,9 +47,8 @@ public class RealNodeRepository implements NodeRepository {
                 .map(RealNodeRepository::nodeRepositoryNodeFromAddNode)
                 .collect(Collectors.toList());
 
-        NodeMessageResponse response = configServerApi.post("/nodes/v2/node", nodesToPost, NodeMessageResponse.class);
-        if (Strings.isNullOrEmpty(response.errorCode)) return;
-        throw new NodeRepositoryException("Failed to add nodes: " + response.message + " " + response.errorCode);
+        configServerApi.post("/nodes/v2/node", nodesToPost, StandardConfigServerResponse.class)
+                       .throwOnError("Failed to add nodes");
     }
 
     @Override
@@ -98,7 +96,7 @@ public class RealNodeRepository implements NodeRepository {
                 .collect(Collectors.groupingBy(
                         GetAclResponse.Node::getTrustedBy,
                         Collectors.mapping(
-                                node -> new Acl.Node(node.hostname, node.ipAddress),
+                                node -> new Acl.Node(node.hostname, node.ipAddress, Set.copyOf(node.ports)),
                                 Collectors.toSet())));
 
         // Group trusted networks by container hostname that trusts them
@@ -119,26 +117,20 @@ public class RealNodeRepository implements NodeRepository {
 
     @Override
     public void updateNodeAttributes(String hostName, NodeAttributes nodeAttributes) {
-        NodeMessageResponse response = configServerApi.patch(
-                "/nodes/v2/node/" + hostName,
-                nodeRepositoryNodeFromNodeAttributes(nodeAttributes),
-                NodeMessageResponse.class);
-
-        if (Strings.isNullOrEmpty(response.errorCode)) return;
-        throw new NodeRepositoryException("Failed to update node attributes: " + response.message + " " + response.errorCode);
+        configServerApi.patch("/nodes/v2/node/" + hostName,
+                              nodeRepositoryNodeFromNodeAttributes(nodeAttributes),
+                              StandardConfigServerResponse.class)
+                       .throwOnError("Failed to update node attributes");
     }
 
     @Override
     public void setNodeState(String hostName, NodeState nodeState) {
         String state = nodeState.name();
-        NodeMessageResponse response = configServerApi.put(
-                "/nodes/v2/state/" + state + "/" + hostName,
-                Optional.empty(), /* body */
-                NodeMessageResponse.class);
+        StandardConfigServerResponse response = configServerApi.put("/nodes/v2/state/" + state + "/" + hostName,
+                                                                    Optional.empty(), /* body */
+                                                                    StandardConfigServerResponse.class);
         logger.info(response.message);
-
-        if (Strings.isNullOrEmpty(response.errorCode)) return;
-        throw new NodeRepositoryException("Failed to set node state: " + response.message + " " + response.errorCode);
+        response.throwOnError("Failed to set node state");
     }
 
     private static NodeSpec createNodeSpec(NodeRepositoryNode node) {
@@ -153,7 +145,7 @@ public class RealNodeRepository implements NodeRepository {
         NodeReports reports = NodeReports.fromMap(Optional.ofNullable(node.reports).orElseGet(Map::of));
         List<Event> events = node.history.stream()
                 .map(event -> new Event(event.agent, event.event, Optional.ofNullable(event.at).map(Instant::ofEpochMilli).orElse(Instant.EPOCH)))
-                .collect(Collectors.toUnmodifiableList());
+                .toList();
 
         List<TrustStoreItem> trustStore = Optional.ofNullable(node.trustStore).orElse(List.of()).stream()
                 .map(item -> new TrustStoreItem(item.fingerprint, Instant.ofEpochMilli(item.expiry)))
@@ -162,7 +154,7 @@ public class RealNodeRepository implements NodeRepository {
 
         return new NodeSpec(
                 node.hostname,
-                Optional.ofNullable(node.openStackId),
+                node.id,
                 Optional.ofNullable(node.wantedDockerImage).map(DockerImage::fromString),
                 Optional.ofNullable(node.currentDockerImage).map(DockerImage::fromString),
                 nodeState,
@@ -191,7 +183,8 @@ public class RealNodeRepository implements NodeRepository {
                 Optional.ofNullable(node.parentHostname),
                 Optional.ofNullable(node.archiveUri).map(URI::create),
                 Optional.ofNullable(node.exclusiveTo).map(ApplicationId::fromSerializedForm),
-                trustStore);
+                trustStore,
+                node.wantToRebuild);
     }
 
     private static NodeResources nodeResources(NodeRepositoryNode.NodeResources nodeResources) {
@@ -201,50 +194,70 @@ public class RealNodeRepository implements NodeRepository {
                 nodeResources.diskGb,
                 nodeResources.bandwidthGbps,
                 diskSpeedFromString(nodeResources.diskSpeed),
-                storageTypeFromString(nodeResources.storageType));
+                storageTypeFromString(nodeResources.storageType),
+                architectureFromString(nodeResources.architecture));
     }
 
     private static NodeResources.DiskSpeed diskSpeedFromString(String diskSpeed) {
         if (diskSpeed == null) return NodeResources.DiskSpeed.getDefault();
-        switch (diskSpeed) {
-            case "fast": return NodeResources.DiskSpeed.fast;
-            case "slow": return NodeResources.DiskSpeed.slow;
-            case "any": return NodeResources.DiskSpeed.any;
-            default: throw new IllegalArgumentException("Unknown disk speed '" + diskSpeed + "'");
-        }
+        return switch (diskSpeed) {
+            case "fast" -> NodeResources.DiskSpeed.fast;
+            case "slow" -> NodeResources.DiskSpeed.slow;
+            case "any" -> NodeResources.DiskSpeed.any;
+            default -> throw new IllegalArgumentException("Unknown disk speed '" + diskSpeed + "'");
+        };
     }
 
     private static NodeResources.StorageType storageTypeFromString(String storageType) {
         if (storageType == null) return NodeResources.StorageType.getDefault();
-        switch (storageType) {
-            case "remote": return NodeResources.StorageType.remote;
-            case "local": return NodeResources.StorageType.local;
-            case "any": return NodeResources.StorageType.any;
-            default: throw new IllegalArgumentException("Unknown storage type '" + storageType + "'");
-        }
+        return switch (storageType) {
+            case "remote" -> NodeResources.StorageType.remote;
+            case "local" -> NodeResources.StorageType.local;
+            case "any" -> NodeResources.StorageType.any;
+            default -> throw new IllegalArgumentException("Unknown storage type '" + storageType + "'");
+        };
+    }
+
+    private static NodeResources.Architecture architectureFromString(String architecture) {
+        if (architecture == null) return NodeResources.Architecture.getDefault();
+        return switch (architecture) {
+            case "arm64" -> NodeResources.Architecture.arm64;
+            case "x86_64" -> NodeResources.Architecture.x86_64;
+            case "any" -> NodeResources.Architecture.any;
+            default -> throw new IllegalArgumentException("Unknown architecture '" + architecture + "'");
+        };
     }
 
     private static String toString(NodeResources.DiskSpeed diskSpeed) {
-        switch (diskSpeed) {
-            case fast : return "fast";
-            case slow : return "slow";
-            case any  : return "any";
-            default: throw new IllegalArgumentException("Unknown disk speed '" + diskSpeed.name() + "'");
-        }
+        return switch (diskSpeed) {
+            case fast -> "fast";
+            case slow -> "slow";
+            case any -> "any";
+            default -> throw new IllegalArgumentException("Unknown disk speed '" + diskSpeed.name() + "'");
+        };
     }
 
     private static String toString(NodeResources.StorageType storageType) {
-        switch (storageType) {
-            case remote : return "remote";
-            case local  : return "local";
-            case any    : return "any";
-            default: throw new IllegalArgumentException("Unknown storage type '" + storageType.name() + "'");
-        }
+        return switch (storageType) {
+            case remote -> "remote";
+            case local -> "local";
+            case any -> "any";
+            default -> throw new IllegalArgumentException("Unknown storage type '" + storageType.name() + "'");
+        };
+    }
+
+    private static String toString(NodeResources.Architecture architecture) {
+        return switch (architecture) {
+            case arm64 -> "arm64";
+            case x86_64 -> "x86_64";
+            case any -> "any";
+            default -> throw new IllegalArgumentException("Unknown architecture '" + architecture.name() + "'");
+        };
     }
 
     private static NodeRepositoryNode nodeRepositoryNodeFromAddNode(AddNode addNode) {
         NodeRepositoryNode node = new NodeRepositoryNode();
-        node.openStackId = addNode.id.orElse("fake-" + addNode.hostname);
+        node.id = addNode.id;
         node.hostname = addNode.hostname;
         node.parentHostname = addNode.parentHostname.orElse(null);
         addNode.nodeFlavor.ifPresent(f -> node.flavor = f);
@@ -260,6 +273,7 @@ public class RealNodeRepository implements NodeRepository {
             node.resources.bandwidthGbps = resources.bandwidthGbps();
             node.resources.diskSpeed = toString(resources.diskSpeed());
             node.resources.storageType = toString(resources.storageType());
+            node.resources.architecture = toString(resources.architecture());
         });
         node.type = addNode.nodeType.name();
         node.ipAddresses = addNode.ipAddresses;
@@ -269,7 +283,7 @@ public class RealNodeRepository implements NodeRepository {
 
     public static NodeRepositoryNode nodeRepositoryNodeFromNodeAttributes(NodeAttributes nodeAttributes) {
         NodeRepositoryNode node = new NodeRepositoryNode();
-        node.openStackId = nodeAttributes.getHostId().orElse(null);
+        node.id = nodeAttributes.getHostId().orElse(null);
         node.currentDockerImage = nodeAttributes.getDockerImage().map(DockerImage::asString).orElse(null);
         node.currentRestartGeneration = nodeAttributes.getRestartGeneration().orElse(null);
         node.currentRebootGeneration = nodeAttributes.getRebootGeneration().orElse(null);

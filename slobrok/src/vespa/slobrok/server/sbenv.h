@@ -12,8 +12,8 @@
 #include "union_service_map.h"
 #include <vespa/config-slobroks.h>
 #include <vespa/slobrok/cfg.h>
-#include <vespa/vespalib/net/simple_health_producer.h>
-#include <vespa/vespalib/net/simple_component_config_producer.h>
+#include <vespa/vespalib/net/http/simple_health_producer.h>
+#include <vespa/vespalib/net/http/simple_component_config_producer.h>
 
 class FastOS_ThreadPool;
 class FNET_Transport;
@@ -39,9 +39,9 @@ private:
     std::unique_ptr<FNET_Transport>    _transport;
     std::unique_ptr<FRT_Supervisor>    _supervisor;
 
-    ConfigShim         _configShim;
-    Configurator::UP   _configurator;
-    bool               _shuttingDown;
+    ConfigShim                     _configShim;
+    std::unique_ptr<Configurator>  _configurator;
+    bool                           _shuttingDown;
 
     SBEnv(const SBEnv &);            // Not used
     SBEnv &operator=(const SBEnv &); // Not used
@@ -50,14 +50,14 @@ private:
 
     std::vector<std::string>                   _partnerList;
     std::string                                _me;
+    LocalRpcMonitorMap                         _localRpcMonitorMap;
+    ServiceMapHistory                          _globalVisibleHistory;
     RPCHooks                                   _rpcHooks;
     std::unique_ptr<RemoteCheck>               _remotechecktask;
     vespalib::SimpleHealthProducer             _health;
     MetricsProducer                            _metrics;
     vespalib::SimpleComponentConfigProducer    _components;
-    LocalRpcMonitorMap                         _localRpcMonitorMap;
     UnionServiceMap                            _consensusMap;
-    ServiceMapHistory                          _globalVisibleHistory;
 
     ExchangeManager                            _exchanger;
 

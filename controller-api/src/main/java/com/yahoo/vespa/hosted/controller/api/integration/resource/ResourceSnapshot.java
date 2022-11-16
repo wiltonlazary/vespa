@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.resource;
 
 import com.yahoo.config.provision.ApplicationId;
@@ -24,11 +24,15 @@ public class ResourceSnapshot {
     private final Instant timestamp;
     private final ZoneId zoneId;
 
-    public ResourceSnapshot(ApplicationId applicationId, double cpuCores, double memoryGb, double diskGb, Instant timestamp, ZoneId zoneId) {
+    public ResourceSnapshot(ApplicationId applicationId, double cpuCores, double memoryGb, double diskGb, NodeResources.Architecture architecture, Instant timestamp, ZoneId zoneId) {
         this.applicationId = applicationId;
-        this.resourceAllocation = new ResourceAllocation(cpuCores, memoryGb, diskGb);
+        this.resourceAllocation = new ResourceAllocation(cpuCores, memoryGb, diskGb, architecture);
         this.timestamp = timestamp;
         this.zoneId = zoneId;
+    }
+
+    public static ResourceSnapshot from(ApplicationId applicationId, int nodes, double cpuCores, double memoryGb, double diskGb, NodeResources.Architecture architecture, Instant timestamp, ZoneId zoneId) {
+        return new ResourceSnapshot(applicationId, cpuCores * nodes, memoryGb * nodes, diskGb * nodes, architecture, timestamp, zoneId);
     }
 
     public static ResourceSnapshot from(List<Node> nodes, Instant timestamp, ZoneId zoneId) {
@@ -44,6 +48,7 @@ public class ResourceSnapshot {
                 nodes.stream().map(Node::resources).mapToDouble(NodeResources::vcpu).sum(),
                 nodes.stream().map(Node::resources).mapToDouble(NodeResources::memoryGb).sum(),
                 nodes.stream().map(Node::resources).mapToDouble(NodeResources::diskGb).sum(),
+                nodes.stream().map(node -> node.resources().architecture()).findFirst().orElse(NodeResources.Architecture.getDefault()),
                 timestamp,
                 zoneId
         );
@@ -75,6 +80,10 @@ public class ResourceSnapshot {
 
     public ZoneId getZoneId() {
         return zoneId;
+    }
+
+    public NodeResources.Architecture getArchitecture() {
+        return resourceAllocation.getArchitecture();
     }
 
     @Override

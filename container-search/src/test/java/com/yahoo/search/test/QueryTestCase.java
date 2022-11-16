@@ -2,6 +2,7 @@
 package com.yahoo.search.test;
 
 import com.yahoo.component.chain.Chain;
+import com.yahoo.data.JsonProducer;
 import com.yahoo.language.Language;
 import com.yahoo.language.Linguistics;
 import com.yahoo.language.detect.Detection;
@@ -15,6 +16,7 @@ import com.yahoo.prelude.Index;
 import com.yahoo.prelude.IndexFacts;
 import com.yahoo.prelude.IndexModel;
 import com.yahoo.prelude.SearchDefinition;
+import com.yahoo.prelude.fastsearch.FastHit;
 import com.yahoo.prelude.query.AndItem;
 import com.yahoo.prelude.query.AndSegmentItem;
 import com.yahoo.prelude.query.CompositeItem;
@@ -24,6 +26,7 @@ import com.yahoo.prelude.query.IntItem;
 import com.yahoo.prelude.query.Item;
 import com.yahoo.prelude.query.OrItem;
 import com.yahoo.prelude.query.RankItem;
+import com.yahoo.prelude.query.WeakAndItem;
 import com.yahoo.prelude.query.WordItem;
 import com.yahoo.processing.request.CompoundName;
 import com.yahoo.search.Query;
@@ -36,16 +39,16 @@ import com.yahoo.search.query.profile.DimensionValues;
 import com.yahoo.search.query.profile.QueryProfile;
 import com.yahoo.search.query.profile.QueryProfileRegistry;
 import com.yahoo.search.query.profile.compiled.CompiledQueryProfileRegistry;
+import com.yahoo.search.query.profile.types.FieldDescription;
 import com.yahoo.search.query.profile.types.QueryProfileType;
 import com.yahoo.search.result.Hit;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.yolean.Exceptions;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
-import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -53,14 +56,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author bratseth
@@ -68,7 +71,7 @@ import static org.junit.Assert.fail;
 public class QueryTestCase {
 
     @Test
-    public void testSimpleFunctionality() {
+    void testSimpleFunctionality() {
         Query q = new Query(QueryTestCase.httpEncode("/sdfsd.html?query=this is a simple query&aParameter"));
         assertEquals("this is a simple query", q.getModel().getQueryString());
         assertNotNull(q.getModel().getQueryTree());
@@ -76,7 +79,6 @@ public class QueryTestCase {
         assertEquals("", q.properties().get("aParameter"));
         assertNull(q.properties().get("notSetParameter"));
 
-        Query query = q;
         String body = "a bb. ccc??!";
         Linguistics linguistics = new SimpleLinguistics();
 
@@ -85,27 +87,27 @@ public class QueryTestCase {
             if (token.isIndexable())
                 and.addItem(new WordItem(token.getTokenString(), "body"));
         }
-        query.getModel().getQueryTree().setRoot(and);
+        q.getModel().getQueryTree().setRoot(and);
     }
 
     // TODO: YQL work in progress (jon)
-    @Ignore
+    @Disabled
     @Test
-    public void testSimpleProgram() {
+    void testSimpleProgram() {
         Query q = new Query(httpEncode("?program=select * from * where myfield contains(word)"));
         assertEquals("", q.getModel().getQueryTree().toString());
     }
 
     // TODO: YQL work in progress (jon)
-    @Ignore
+    @Disabled
     @Test
-    public void testSimpleProgramParameterAlias() {
-        Query q = new Query(httpEncode("/sdfsd.html?yql=select * from source where myfield contains(word);"));
+    void testSimpleProgramParameterAlias() {
+        Query q = new Query(httpEncode("/sdfsd.html?yql=select * from source where myfield contains(word)"));
         assertEquals("", q.getModel().getQueryTree().toString());
     }
 
     @Test
-    public void testClone() {
+    void testClone() {
         Query q = new Query(httpEncode("/sdfsd.html?query=this+is+a+simple+query&aParameter"));
         q.getPresentation().setHighlight(new Highlight());
         Query p = q.clone();
@@ -141,16 +143,12 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testCloneWithConnectivity() {
-        List<String> l = new ArrayList();
-        l.add("a");
-        l.add("b");
-        l.add("c");
-        l.add("a");
+    void testCloneWithConnectivity() {
+        List<String> l = List.of("a", "b", "c", "a");
         printIt(l.stream().filter(i -> isA(i)).collect(Collectors.toList()));
-        printIt(l.stream().filter(i -> ! isA(i)).collect(Collectors.toList()));
+        printIt(l.stream().filter(i -> !isA(i)).collect(Collectors.toList()));
 
-                Query q = new Query();
+        Query q = new Query();
         WordItem a = new WordItem("a");
         WordItem b = new WordItem("b");
         WordItem c = new WordItem("c");
@@ -188,38 +186,38 @@ public class QueryTestCase {
         Query qClone = q.clone();
         assertEquals(q, qClone);
 
-        RankItem rankClone = (RankItem)qClone.getModel().getQueryTree().getRoot();
-        AndItem and1Clone = (AndItem)rankClone.getItem(0);
-        AndItem and2Clone = (AndItem)rankClone.getItem(1);
-        OrItem orClone = (OrItem)and1Clone.getItem(2);
+        RankItem rankClone = (RankItem) qClone.getModel().getQueryTree().getRoot();
+        AndItem and1Clone = (AndItem) rankClone.getItem(0);
+        AndItem and2Clone = (AndItem) rankClone.getItem(1);
+        OrItem orClone = (OrItem) and1Clone.getItem(2);
 
-        WordItem aClone = (WordItem)and1Clone.getItem(0);
-        WordItem bClone = (WordItem)and1Clone.getItem(1);
-        WordItem cClone = (WordItem)orClone.getItem(0);
-        WordItem dClone = (WordItem)orClone.getItem(1);
-        WordItem eClone = (WordItem)and1Clone.getItem(3);
-        WordItem fClone = (WordItem)and2Clone.getItem(0);
-        WordItem gClone = (WordItem)and2Clone.getItem(1);
+        WordItem aClone = (WordItem) and1Clone.getItem(0);
+        WordItem bClone = (WordItem) and1Clone.getItem(1);
+        WordItem cClone = (WordItem) orClone.getItem(0);
+        WordItem dClone = (WordItem) orClone.getItem(1);
+        WordItem eClone = (WordItem) and1Clone.getItem(3);
+        WordItem fClone = (WordItem) and2Clone.getItem(0);
+        WordItem gClone = (WordItem) and2Clone.getItem(1);
 
-        assertTrue(rankClone != rank);
-        assertTrue(and1Clone != and1);
-        assertTrue(and2Clone != and2);
-        assertTrue(orClone != or);
+        assertNotSame(rankClone, rank);
+        assertNotSame(and1Clone, and1);
+        assertNotSame(and2Clone, and2);
+        assertNotSame(orClone, or);
 
-        assertTrue(aClone != a);
-        assertTrue(bClone != b);
-        assertTrue(cClone != c);
-        assertTrue(dClone != d);
-        assertTrue(eClone != e);
-        assertTrue(fClone != f);
-        assertTrue(gClone != g);
+        assertNotSame(aClone, a);
+        assertNotSame(bClone, b);
+        assertNotSame(cClone, c);
+        assertNotSame(dClone, d);
+        assertNotSame(eClone, e);
+        assertNotSame(fClone, f);
+        assertNotSame(gClone, g);
 
-        assertTrue(aClone.getConnectedItem() == bClone);
-        assertTrue(bClone.getConnectedItem() == cClone);
-        assertTrue(cClone.getConnectedItem() == dClone);
-        assertTrue(dClone.getConnectedItem() == eClone);
-        assertTrue(eClone.getConnectedItem() == fClone);
-        assertTrue(fClone.getConnectedItem() == gClone);
+        assertEquals(aClone.getConnectedItem(), bClone);
+        assertEquals(bClone.getConnectedItem(), cClone);
+        assertEquals(cClone.getConnectedItem(), dClone);
+        assertEquals(dClone.getConnectedItem(), eClone);
+        assertEquals(eClone.getConnectedItem(), fClone);
+        assertEquals(fClone.getConnectedItem(), gClone);
 
         double delta = 0.0000001;
         assertEquals(0.1, aClone.getConnectivity(), delta);
@@ -231,7 +229,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void test_that_cloning_preserves_timeout() {
+    void test_that_cloning_preserves_timeout() {
         Query original = new Query();
         original.setTimeout(9876L);
 
@@ -240,7 +238,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testTimeout() {
+    void testTimeout() {
         // yes, this test depends on numbers which have exact IEEE representations
         Query q = new Query(httpEncode("/search?timeout=500"));
         assertEquals(500000L, q.getTimeout());
@@ -271,20 +269,20 @@ public class QueryTestCase {
         assertEquals(42000, q.getTimeout());
         assertEquals(0, q.errors().size());
 
-        q=new Query();
+        q = new Query();
         q.setTimeout(53L);
         assertEquals(53L, q.properties().get("timeout"));
         assertEquals(53L, q.getTimeout());
 
         // This is the unfortunate consequence of this legacy:
-        q=new Query();
+        q = new Query();
         q.properties().set("timeout", 53L);
         assertEquals(53L * 1000, q.properties().get("timeout"));
         assertEquals(53L * 1000, q.getTimeout());
     }
 
     @Test
-    public void testUnparseableTimeout() {
+    void testUnparseableTimeout() {
         try {
             new Query(httpEncode("/search?timeout=nalle"));
             fail("Above statement should throw");
@@ -295,7 +293,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testCloneTimeout() {
+    void testCloneTimeout() {
         Query q = new Query(httpEncode("/search?timeout=300ms"));
         assertEquals(300, q.getTimeout());
         Query clonedQ = q.clone();
@@ -303,7 +301,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryProfileSubstitution1() {
+    void testQueryProfileSubstitution1() {
         QueryProfile profile = new QueryProfile("myProfile");
         profile.set("myField", "Profile: %{queryProfile}", null);
         Query q = new Query(QueryTestCase.httpEncode("/search?queryProfile=myProfile"), profile.compile(null));
@@ -311,7 +309,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryProfileSourceAccess() {
+    void testQueryProfileSourceAccess() {
         QueryProfile profile = new QueryProfile("myProfile");
         profile.set("myField", "Profile: %{queryProfile}", null);
         Query query = new Query(QueryTestCase.httpEncode("/search?queryProfile=myProfile"), profile.compile(null));
@@ -321,7 +319,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testBooleanParameter() {
+    void testBooleanParameter() {
         QueryProfile profile = new QueryProfile("myProfile");
         Query query = new Query("/?query=something&ranking.softtimeout.enable=false", profile.compile(null));
         assertFalse(query.properties().getBoolean("ranking.softtimeout.enable"));
@@ -329,7 +327,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryProfileSubstitution2() {
+    void testQueryProfileSubstitution2() {
         QueryProfile profile = new QueryProfile("myProfile");
         profile.set("model.language", "en-US", null);
         profile.set("myField", "Language: %{lang}", null);
@@ -338,7 +336,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryProfileSubstitution3() {
+    void testQueryProfileSubstitution3() {
         QueryProfile profile = new QueryProfile("myProfile");
         profile.set("model.locale", "en-US", null);
         profile.set("myField", "Language: %{lang}, locale: %{locale}", null);
@@ -347,15 +345,15 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testTimeoutInRequestOverridesQueryProfile() {
+    void testTimeoutInRequestOverridesQueryProfile() {
         QueryProfile profile = new QueryProfile("test");
-        profile.set("timeout", 318, (QueryProfileRegistry)null);
+        profile.set("timeout", 318, null);
         Query q = new Query(QueryTestCase.httpEncode("/search?timeout=500"), profile.compile(null));
         assertEquals(500000L, q.getTimeout());
     }
 
     @Test
-    public void testQueryProfileClearAndSet() {
+    void testQueryProfileClearAndSet() {
         QueryProfile profile = new QueryProfile("myProfile");
         profile.set("b", "b-value", null);
         Query q = new Query(QueryTestCase.httpEncode("/search?queryProfile=myProfile"), profile.compile(null));
@@ -363,7 +361,7 @@ public class QueryTestCase {
         assertContains(q.properties().listProperties("b"), "b-value");
 
         q.properties().set("b", null, null);
-        assertContains(q.properties().listProperties("b"), (Object)null);
+        assertContains(q.properties().listProperties("b"), (Object) null);
 
         q.properties().set("b", "b-value", null);
         assertEquals("b-value", q.properties().get("b"));
@@ -371,7 +369,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryProfileClearValue() {
+    void testQueryProfileClearValue() {
         QueryProfile profile = new QueryProfile("myProfile");
         profile.set("a", "a-value", null);
         profile.set("b", "b-value", null);
@@ -385,10 +383,10 @@ public class QueryTestCase {
         assertContains(q.properties().listProperties("b"), "b-value", "b.c-value", "b.d-value");
 
         q.properties().set("a", null, null);
-        assertEquals(null, q.properties().get("a"));
+        assertNull(q.properties().get("a"));
 
         q.properties().set("b", null, null);
-        assertEquals(null, q.properties().get("b"));
+        assertNull(q.properties().get("b"));
         assertEquals("b.c-value", q.properties().get("b.c"));
         assertEquals("b.d-value", q.properties().get("b.d"));
         assertContains(q.properties().listProperties("b"), null, "b.c-value", "b.d-value");
@@ -401,75 +399,108 @@ public class QueryTestCase {
         assertContains(q.properties().listProperties("b"), "b-value", "b.c-value", "b.d-value", "b.e-value", "b.f-value");
 
         q.properties().clearAll("b");
-        assertEquals(null, q.properties().get("b"));
-        assertEquals(null, q.properties().get("b.c"));
-        assertEquals(null, q.properties().get("b.d"));
-        assertEquals(null, q.properties().get("b.e"));
-        assertEquals(null, q.properties().get("b.f"));
-        assertContains(q.properties().listProperties("b"), (Object)null);
+        assertNull(q.properties().get("b"));
+        assertNull(q.properties().get("b.c"));
+        assertNull(q.properties().get("b.d"));
+        assertNull(q.properties().get("b.e"));
+        assertNull(q.properties().get("b.f"));
+        assertContains(q.properties().listProperties("b"), (Object) null);
     }
 
     @Test
-    public void testNotEqual() {
+    void testNotEqual() {
         Query q = new Query("/?query=something+test&nocache");
         Query p = new Query("/?query=something+test");
-        assertEquals(q,p);
-        assertEquals(q.hashCode(),p.hashCode());
+        assertEquals(q, p);
+        assertEquals(q.hashCode(), p.hashCode());
         Query r = new Query("?query=something+test&hits=5");
-        assertNotSame(q,r);
-        assertNotSame(q.hashCode(),r.hashCode());
+        assertNotSame(q, r);
+        assertNotSame(q.hashCode(), r.hashCode());
     }
 
     @Test
-    public void testEqual() {
-        assertEquals(new Query("?query=12").hashCode(),new Query("?query=12").hashCode());
-        assertEquals(new Query("?query=12"),new Query("?query=12"));
+    void testEqual() {
+        assertEquals(new Query("?query=12").hashCode(), new Query("?query=12").hashCode());
+        assertEquals(new Query("?query=12"), new Query("?query=12"));
     }
 
     @Test
-    public void testUtf8Decoding() {
+    void testUtf8Decoding() {
         Query q = new Query("/?query=beyonc%C3%A9");
-        assertEquals("beyonc\u00e9", q.getModel().getQueryTree().toString());
+        assertEquals("WEAKAND(100) beyonc\u00e9", q.getModel().getQueryTree().toString());
     }
 
     @Test
-    public void testQueryProfileInSubstitution() {
+    void testQueryProfileInSubstitution() {
         QueryProfile testProfile = new QueryProfile("test");
         testProfile.setOverridable("u", false, DimensionValues.empty);
-        testProfile.set("d","e", null);
-        testProfile.set("u","11", null);
+        testProfile.set("d", "e", null);
+        testProfile.set("u", "11", null);
         testProfile.set("foo.bar", "wiz", null);
-        Query q = new Query(QueryTestCase.httpEncode("?query=a:>5&a=b&traceLevel=5&sources=a,b&u=12&foo.bar2=wiz2&c.d=foo&queryProfile=test"),testProfile.compile(null));
+        Query q = new Query(QueryTestCase.httpEncode("?query=a:>5&a=b&traceLevel=5&sources=a,b&u=12&foo.bar2=wiz2&c.d=foo&queryProfile=test"),
+                testProfile.compile(null));
         String trace = q.getContext(false).getTrace().toString();
         String[] traceLines = trace.split("\n");
     }
 
     @Test
-    public void testDefaultIndex() {
-        Query q = new Query("?query=hi%20hello%20keyword:kanoo%20" +
-                            "default:munkz%20%22phrases+too%22&default-index=def");
-        assertEquals("AND def:hi def:hello keyword:kanoo default:munkz def:\"phrases too\"",
+    void testDefaultIndex() {
+        Query q = new Query("?query=hi%20hello%20keyword:kanoo%20default:munkz%20%22phrases+too%22&default-index=def");
+        assertEquals("WEAKAND(100) def:hi def:hello keyword:kanoo default:munkz def:\"phrases too\"",
                      q.getModel().getQueryTree().toString());
     }
 
     @Test
-    public void testHashCode() {
+    void testDefaultIndexAlias() {
+        SearchDefinition test = new SearchDefinition("test");
+        Index year = new Index("year");
+        year.setNumerical(true);
+        year.addAlias("yearalias");
+        test.addIndex(year);
+        test.addAlias("yearalias", "year");
+        IndexModel indexModel = new IndexModel(test);
+
+        {
+            Query q = new Query("?default-index=year&type=all");
+            q.getModel().setExecution(new Execution(Execution.Context.createContextStub(new IndexFacts(indexModel))));
+            q.getModel().setQueryString("2000");
+            assertEquals("select * from sources * where year = 2000", q.yqlRepresentation());
+        }
+
+        {
+            Query q = new Query("?default-index=yearalias&type=all");
+            q.getModel().setExecution(new Execution(Execution.Context.createContextStub(new IndexFacts(indexModel))));
+            q.getModel().setQueryString("2000");
+            assertEquals("select * from sources * where year = 2000", q.yqlRepresentation());
+        }
+    }
+
+    @Test
+    void testHashCode() {
         Query p = new Query("?query=foo&type=any");
         Query q = new Query("?query=foo&type=all");
         assertTrue(p.hashCode() != q.hashCode());
     }
 
     @Test
-    public void testSimpleQueryParsing () {
+    void testSimpleQueryParsing() {
         Query q = new Query("/search?query=foobar&offset=10&hits=20");
-        assertEquals("foobar",q.getModel().getQueryTree().toString());
-        assertEquals(10,q.getOffset());
-        assertEquals(20,q.getHits());
+        assertEquals("WEAKAND(100) foobar", q.getModel().getQueryTree().toString());
+        assertEquals(10, q.getOffset());
+        assertEquals(20, q.getHits());
+    }
+
+    /** "input.*" is an alias for "ranking.feature.*", but just "input" is not */
+    @Test
+    void testPrefixAlias() {
+        Query q = new Query("/search?query=foobar&input=foo",
+                new QueryProfile("test").compile(null));
+        assertEquals("foo", q.properties().get("input"));
     }
 
     /** Test that GET parameter names are case in-sensitive */
     @Test
-    public void testGETParametersCase() {
+    void testGETParametersCase() {
         Query q = new Query("?QUERY=testing&hits=10&oFfSeT=10");
         assertEquals("testing", q.getModel().getQueryString());
         assertEquals(10, q.getHits());
@@ -478,26 +509,26 @@ public class QueryTestCase {
 
     /** Test that we get the last value if a parameter is assigned multiple times */
     @Test
-    public void testRepeatedParameter() {
+    void testRepeatedParameter() {
         Query q = new Query("?query=test&hits=5&hits=10");
         assertEquals(10, q.getHits());
     }
 
     @Test
-    public void testNoCache() {
+    void testNoCache() {
         Query q = new Query("search?query=foobar&nocache");
         assertTrue(q.getNoCache());
     }
 
     @Test
-    public void testSessionCache() {
+    void testSessionCache() {
         Query q = new Query("search?query=foobar&groupingSessionCache");
         assertTrue(q.getGroupingSessionCache());
         q = new Query("search?query=foobar");
         assertTrue(q.getGroupingSessionCache());
     }
 
-    public class TestClass {
+    public static class TestClass {
 
         private int testInt = 0;
 
@@ -510,7 +541,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testSetting() {
+    void testSetting() {
         Query q = new Query();
         q.properties().set("test", "test");
         assertEquals(q.properties().get("test"), "test");
@@ -523,35 +554,35 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testAlias() {
+    void testAlias() {
         Query q = new Query("search?query=testing&language=en");
         assertEquals(q.getModel().getLanguage(), q.properties().get("model.language"));
     }
 
     @Test
-    public void testTracing() {
-        Query q = new Query("?query=foo&traceLevel=2");
-        assertEquals(2, q.getTraceLevel());
+    void testTracing() {
+        Query q = new Query("?query=foo&type=all&traceLevel=2");
+        assertEquals(2, q.getTrace().getLevel());
         q.trace(true, 1, "trace1");
-        q.trace(false,2, "trace2");
+        q.trace(false, 2, "trace2");
         q.trace(true, 3, "Ignored");
         q.trace(true, 2, "trace3-1", ", ", "trace3-2");
-        q.trace(false,1, "trace4-1", ", ", "trace4-2");
-        q.trace(false,3, "Ignored-1", "Ignored-2");
+        q.trace(false, 1, "trace4-1", ", ", "trace4-2");
+        q.trace(false, 3, "Ignored-1", "Ignored-2");
         Set<String> traces = new HashSet<>();
         for (String trace : q.getContext(true).getTrace().traceNode().descendants(String.class))
             traces.add(trace);
-        assertTrue(traces.contains("trace1: [select * from sources * where default contains \"foo\";]"));
+        assertTrue(traces.contains("trace1: [select * from sources * where default contains \"foo\"]"));
         assertTrue(traces.contains("trace2"));
-        assertTrue(traces.contains("trace3-1, trace3-2: [select * from sources * where default contains \"foo\";]"));
+        assertTrue(traces.contains("trace3-1, trace3-2: [select * from sources * where default contains \"foo\"]"));
         assertTrue(traces.contains("trace4-1, trace4-2"));
     }
 
     @Test
-    public void testNullTracing() {
+    void testNullTracing() {
         Query q = new Query("?query=foo&traceLevel=2");
-        assertEquals(2, q.getTraceLevel());
-        q.trace(false,2, "trace2 ", null);
+        assertEquals(2, q.getTrace().getLevel());
+        q.trace(false, 2, "trace2 ", null);
         Set<String> traces = new HashSet<>();
         for (String trace : q.getContext(true).getTrace().traceNode().descendants(String.class))
             traces.add(trace);
@@ -559,20 +590,26 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testExplain() {
+    void testExplain() {
         Query q = new Query("?query=foo&explainLevel=2");
-        assertEquals(2, q.getExplainLevel());
-        assertEquals(0, q.getTraceLevel());
+        assertEquals(2, q.getTrace().getExplainLevel());
+        assertEquals(0, q.getTrace().getLevel());
     }
 
     @Test
-    public void testQueryPropertyResolveTracing() {
+    void testProfilingDepth() {
+        Query q = new Query("?query=foo&trace.profileDepth=2");
+        assertEquals(2, q.getTrace().getProfileDepth());
+    }
+
+    @Test
+    void testQueryPropertyResolveTracing() {
         QueryProfile testProfile = new QueryProfile("test");
         testProfile.setOverridable("u", false, DimensionValues.empty);
-        testProfile.set("d","e", null);
-        testProfile.set("u","11", null);
+        testProfile.set("d", "e", null);
+        testProfile.set("u", "11", null);
         testProfile.set("foo.bar", "wiz", null);
-        Query q = new Query(QueryTestCase.httpEncode("?query=a:>5&a=b&traceLevel=5&sources=a,b&u=12&foo.bar2=wiz2&c.d=foo&queryProfile=test"),testProfile.compile(null));
+        Query q = new Query(QueryTestCase.httpEncode("?query=a:>5&a=b&traceLevel=5&sources=a,b&u=12&foo.bar2=wiz2&c.d=foo&queryProfile=test"), testProfile.compile(null));
         String trace = q.getContext(false).getTrace().toString();
         String[] traceLines = trace.split("\n");
         assertTrue(contains("query: a:>5 (from request)", traceLines));
@@ -584,7 +621,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testNonleafInRequestDoesNotOverrideProfile() {
+    void testNonleafInRequestDoesNotOverrideProfile() {
         QueryProfile testProfile = new QueryProfile("test");
         testProfile.set("a.b", "foo", null);
         testProfile.freeze();
@@ -601,7 +638,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryPropertyResolveTracing2() {
+    void testQueryPropertyResolveTracing2() {
         QueryProfile defaultProfile = new QueryProfile("default");
         defaultProfile.freeze();
         Query q = new Query(QueryTestCase.httpEncode("?query=dvd&a.b=foo&tracelevel=9"), defaultProfile.compile(null));
@@ -612,7 +649,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testNativeProperties() {
+    void testNativeProperties() {
         Set<String> nativeProperties = Query.nativeProperties.stream().map(CompoundName::toString).collect(Collectors.toSet());
         // Sample the content
         assertTrue(nativeProperties.contains("hits"));
@@ -621,16 +658,16 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryPropertyListingAndTrace() {
+    void testQueryPropertyListingAndTrace() {
         QueryProfile defaultProfile = new QueryProfile("default");
         defaultProfile.setDimensions(new String[]{"x"});
-        defaultProfile.set("a.b","a.b-x1-value", new String[] {"x1"}, null);
+        defaultProfile.set("a.b", "a.b-x1-value", new String[]{"x1"}, null);
         defaultProfile.set("a.b", "a.b-x2-value", new String[]{"x2"}, null);
         defaultProfile.freeze();
 
         {
-            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"),defaultProfile.compile(null));
-            Map<String,Object> propertyList = q.properties().listProperties();
+            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"), defaultProfile.compile(null));
+            Map<String, Object> propertyList = q.properties().listProperties();
             assertEquals("a.b-x1-value", propertyList.get("a.b"));
             String trace = q.getContext(false).getTrace().toString();
             String[] traceLines = trace.split("\n");
@@ -639,14 +676,14 @@ public class QueryTestCase {
 
         {
             Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"), defaultProfile.compile(null));
-            Map<String,Object> propertyList = q.properties().listProperties("a");
+            Map<String, Object> propertyList = q.properties().listProperties("a");
             assertEquals(1, propertyList.size());
             assertEquals("a.b-x1-value", propertyList.get("b"));
         }
 
         {
-            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x2"),defaultProfile.compile(null));
-            Map<String,Object> propertyList = q.properties().listProperties();
+            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x2"), defaultProfile.compile(null));
+            Map<String, Object> propertyList = q.properties().listProperties();
             assertEquals("a.b-x2-value", propertyList.get("a.b"));
             String trace = q.getContext(false).getTrace().toString();
             String[] traceLines = trace.split("\n");
@@ -655,45 +692,45 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testQueryPropertyListingThreeLevel() {
+    void testQueryPropertyListingThreeLevel() {
         QueryProfile defaultProfile = new QueryProfile("default");
-        defaultProfile.setDimensions(new String[] {"x"});
+        defaultProfile.setDimensions(new String[]{"x"});
         defaultProfile.set("a.b.c", "a.b.c-x1-value", new String[]{"x1"}, null);
         defaultProfile.set("a.b.c", "a.b.c-x2-value", new String[]{"x2"}, null);
         defaultProfile.freeze();
 
         {
-            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"),defaultProfile.compile(null));
-            Map<String,Object> propertyList = q.properties().listProperties();
+            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"), defaultProfile.compile(null));
+            Map<String, Object> propertyList = q.properties().listProperties();
             assertEquals("a.b.c-x1-value", propertyList.get("a.b.c"));
         }
 
         {
-            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"),defaultProfile.compile(null));
-            Map<String,Object> propertyList = q.properties().listProperties("a");
+            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"), defaultProfile.compile(null));
+            Map<String, Object> propertyList = q.properties().listProperties("a");
             assertEquals(1, propertyList.size());
             assertEquals("a.b.c-x1-value", propertyList.get("b.c"));
         }
 
         {
-            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"),defaultProfile.compile(null));
-            Map<String,Object> propertyList = q.properties().listProperties("a.b");
+            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x1"), defaultProfile.compile(null));
+            Map<String, Object> propertyList = q.properties().listProperties("a.b");
             assertEquals(1, propertyList.size());
             assertEquals("a.b.c-x1-value", propertyList.get("c"));
         }
 
         {
-            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x2"),defaultProfile.compile(null));
-            Map<String,Object> propertyList = q.properties().listProperties();
+            Query q = new Query(QueryTestCase.httpEncode("?tracelevel=9&x=x2"), defaultProfile.compile(null));
+            Map<String, Object> propertyList = q.properties().listProperties();
             assertEquals("a.b.c-x2-value", propertyList.get("a.b.c"));
         }
     }
 
     @Test
-    public void testQueryPropertyReplacement() {
+    void testQueryPropertyReplacement() {
         QueryProfile defaultProfile = new QueryProfile("default");
-        defaultProfile.set("model.queryString","myquery", null);
-        defaultProfile.set("queryUrl","http://provider:80?query=%{model.queryString}", null);
+        defaultProfile.set("model.queryString", "myquery", null);
+        defaultProfile.set("queryUrl", "http://provider:80?query=%{model.queryString}", null);
         defaultProfile.freeze();
 
         Query q1 = new Query(QueryTestCase.httpEncode(""), defaultProfile.compile(null));
@@ -704,17 +741,17 @@ public class QueryTestCase {
         assertEquals("foo", q2.getModel().getQueryString());
         assertEquals("http://provider:80?query=foo", q2.properties().get("queryUrl"));
 
-        Query q3 = new Query(QueryTestCase.httpEncode("?query=foo"),defaultProfile.compile(null));
-        assertEquals("foo",q3.getModel().getQueryString());
-        assertEquals("http://provider:80?query=foo",q3.properties().get("queryUrl"));
+        Query q3 = new Query(QueryTestCase.httpEncode("?query=foo"), defaultProfile.compile(null));
+        assertEquals("foo", q3.getModel().getQueryString());
+        assertEquals("http://provider:80?query=foo", q3.properties().get("queryUrl"));
 
-        Query q4 = new Query(QueryTestCase.httpEncode("?query=foo"),defaultProfile.compile(null));
+        Query q4 = new Query(QueryTestCase.httpEncode("?query=foo"), defaultProfile.compile(null));
         q4.getModel().setQueryString("bar");
-        assertEquals("http://provider:80?query=bar",q4.properties().get("queryUrl"));
+        assertEquals("http://provider:80?query=bar", q4.properties().get("queryUrl"));
     }
 
     @Test
-    public void testNoQueryString() {
+    void testNoQueryString() {
         Query q = new Query(httpEncode("?tracelevel=1"));
         Chain<Searcher> chain = new Chain<>(new RandomSearcher());
         new Execution(chain, Execution.Context.createContextStub()).search(q);
@@ -722,7 +759,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testSetCollapseField() {
+    void testSetCollapseField() {
         Query q = new Query(httpEncode("?collapsefield=foo&presentation.format=tiled"));
         assertEquals("foo", q.properties().get("collapsefield"));
         assertEquals("tiled", q.properties().get("presentation.format"));
@@ -730,44 +767,44 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testSetNullProperty() {
+    void testSetNullProperty() {
         QueryProfile profile = new QueryProfile("test");
-        profile.set("property","initialValue", null);
+        profile.set("property", "initialValue", null);
         Query query = new Query(httpEncode("?query=test"), profile.compile(null));
-        assertEquals("initialValue",query.properties().get("property"));
+        assertEquals("initialValue", query.properties().get("property"));
         query.properties().set("property", null);
         assertNull(query.properties().get("property"));
     }
 
     @Test
-    public void testSetNullPropertyNoQueryProfile() {
+    void testSetNullPropertyNoQueryProfile() {
         Query query = new Query();
         query.properties().set("a", null);
         assertNull(query.properties().get("a"));
     }
 
     @Test
-    public void testMissingParameter() {
+    void testMissingParameter() {
         Query q = new Query("?query=foo&hits=");
         assertEquals(0, q.errors().size());
     }
 
     @Test
-    public void testModelProperties() {
+    void testModelProperties() {
         {
             Query query = new Query();
             query.properties().set("model.searchPath", "foo");
-            assertEquals("Set dynamic get dynamic works","foo", query.properties().get("model.searchPath"));
-            assertEquals("Set dynamic get static works","foo", query.getModel().getSearchPath());
+            assertEquals("foo", query.properties().get("model.searchPath"), "Set dynamic get dynamic works");
+            assertEquals("foo", query.getModel().getSearchPath(), "Set dynamic get static works");
             Map<String, Object> properties = query.properties().listProperties();
-            assertEquals("Listing built-in properties works", "foo", properties.get("model.searchPath"));
+            assertEquals("foo", properties.get("model.searchPath"), "Listing built-in properties works");
         }
 
         {
             Query query = new Query();
             query.getModel().setSearchPath("foo");
-            assertEquals("Set static get dynamic works","foo", query.properties().get("model.searchPath"));
-            assertEquals("Set static get static works","foo", query.getModel().getSearchPath());
+            assertEquals("foo", query.properties().get("model.searchPath"), "Set static get dynamic works");
+            assertEquals("foo", query.getModel().getSearchPath(), "Set static get static works");
         }
 
         {
@@ -780,7 +817,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testThatSessionIdIsUniquePerQuery() {
+    void testThatSessionIdIsUniquePerQuery() {
         Query q = new Query();
         assertNull(q.getSessionId());
         assertNull(q.getSessionId());
@@ -795,8 +832,9 @@ public class QueryTestCase {
         assertNotEquals(q.getSessionId(), q2.getSessionId("node-0"));
         assertNotEquals(q.getSessionId().toString(), q2.getSessionId("node-0").toString());
     }
+
     @Test
-    public void testThatCloneGetANewSessionId() {
+    void testThatCloneGetANewSessionId() {
         Query q = new Query();
         q.getSessionId("node-0");
         Query clonedQ = q.clone();
@@ -805,7 +843,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testThatSessionIdIsUniquePerRankProfilePerQuery() {
+    void testThatSessionIdIsUniquePerRankProfilePerQuery() {
         Query q = new Query();
         SessionId s1 = q.getSessionId("node-0");
         q.getRanking().setProfile("my-profile");
@@ -814,7 +852,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testThatSessionIdIsNotSharedIfCreatedAfterClone() {
+    void testThatSessionIdIsNotSharedIfCreatedAfterClone() {
         Query q = new Query();
         Query q2 = q.clone();
         assertNull(q.getSessionId());
@@ -828,7 +866,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testPositiveTerms() {
+    void testPositiveTerms() {
         Query q = new Query(httpEncode("/?query=-a \"b c\" d e"));
         Item i = q.getModel().getQueryTree().getRoot();
         List<IndexedItem> l = QueryTree.getPositiveTerms(i);
@@ -836,18 +874,18 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testHeuristicLanguageDetectionTextExtraction() {
+    void testHeuristicLanguageDetectionTextExtraction() {
         assertDetectionText("b ", "a:b", "text:a", "text:default");
         assertDetectionText("b ", "b", "text:default");
-        assertDetectionText("b ", "b","text:b", "text:default");
-        assertDetectionText("a b ", "a:b","text:b", "text:default");
-        assertDetectionText("foo bar fuz ", "foo a:bar --() fuz","text:a", "text:default");
-        assertDetectionText(" 彭 博士 觀 風向  彭 博士 觀 風向  彭 博士 觀 風向 ","headline:\"彭 博士 觀 風向\" content:\"彭 博士 觀 風向\" description:\"彭 博士 觀 風向\" sddocname:contentindexing!0 embargo:<1484665288753!0 expires:>1484665288753!0",
-                            "text:headline", "text:content", "text:description", "text:default", "nontext:tags", "nontext:sddocname", "nontext:embargo", "nontext:expires");
+        assertDetectionText("b ", "b", "text:b", "text:default");
+        assertDetectionText("a b ", "a:b", "text:b", "text:default");
+        assertDetectionText("foo bar fuz ", "foo a:bar --() fuz", "text:a", "text:default");
+        assertDetectionText(" 彭 博士 觀 風向  彭 博士 觀 風向  彭 博士 觀 風向 ", "headline:\"彭 博士 觀 風向\" content:\"彭 博士 觀 風向\" description:\"彭 博士 觀 風向\" sddocname:contentindexing!0 embargo:<1484665288753!0 expires:>1484665288753!0",
+                "text:headline", "text:content", "text:description", "text:default", "nontext:tags", "nontext:sddocname", "nontext:embargo", "nontext:expires");
     }
 
     @Test
-    public void testCompositeChildVerification() {
+    void testCompositeChildVerification() {
         CompositeItem root = new AndItem();
         try {
             root.addItem(null);
@@ -887,7 +925,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void queryLanguageAlternatives() {
+    void queryLanguageAlternatives() {
         // Given:
         // Person = {
         //  Name: 'Joe',
@@ -901,7 +939,7 @@ public class QueryTestCase {
 
         { // Select all Persons whose hobbies contains 'sport'
             // YQL
-            Query yqlQuery = new Query(httpEncode("?query=select * from Persons where hobbies contains 'sports';&type=yql"));
+            Query yqlQuery = new Query(httpEncode("?query=select * from Persons where hobbies contains 'sports'&type=yql"));
             assertEquals("hobbies:sports", yqlQuery.getModel().getQueryTree().toString());
 
             // JSON
@@ -916,7 +954,7 @@ public class QueryTestCase {
 
         { // Select all Persons whose Phones areaCode equals 'NY'
             // YQL
-            Query yqlQuery = new Query(httpEncode("?query=select * from Persons where phones.areaCode contains 'NY';&type=yql"));
+            Query yqlQuery = new Query(httpEncode("?query=select * from Persons where phones.areaCode contains 'NY'&type=yql"));
             assertEquals("phones.areaCode:NY", yqlQuery.getModel().getQueryTree().toString());
 
             // JSON
@@ -931,7 +969,7 @@ public class QueryTestCase {
 
         { // Select all Persons whose Mother's Birthyear is greater than 1960
             // YQL
-            Query yqlQuery = new Query(httpEncode("?query=select * from Persons where mother.Birthyear > 1960;&type=yql"));
+            Query yqlQuery = new Query(httpEncode("?query=select * from Persons where mother.Birthyear > 1960&type=yql"));
             assertEquals("mother.Birthyear:>1960", yqlQuery.getModel().getQueryTree().toString());
 
             // JSON
@@ -946,14 +984,14 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testImplicitPhraseIsDefault() {
+    void testImplicitPhraseIsDefault() {
         Query query = new Query(httpEncode("?query=it's fine"));
-        assertEquals("AND (SAND it s) fine", query.getModel().getQueryTree().toString());
+        assertEquals("WEAKAND(100) (SAND it s) fine", query.getModel().getQueryTree().toString());
     }
 
     @Test
-    public void testImplicitPhrase() {
-        Query query = new Query(httpEncode("?query=myfield:it's myfield:a.b myfield:c"));
+    void testImplicitPhrase() {
+        Query query = new Query(httpEncode("?query=myfield:it's myfield:a.b myfield:c&type=all"));
 
         SearchDefinition test = new SearchDefinition("test");
         Index myField = new Index("myfield");
@@ -967,7 +1005,7 @@ public class QueryTestCase {
     }
 
     @Test
-    public void testImplicitAnd() {
+    void testImplicitAnd() {
         Query query = new Query(httpEncode("?query=myfield:it's myfield:a.b myfield:c"));
 
         SearchDefinition test = new SearchDefinition("test");
@@ -978,20 +1016,20 @@ public class QueryTestCase {
         IndexModel indexModel = new IndexModel(test);
         query.getModel().setExecution(new Execution(Execution.Context.createContextStub(new IndexFacts(indexModel))));
 
-        assertEquals("AND (SAND myfield:it myfield:s) myfield:a myfield:b myfield:c", query.getModel().getQueryTree().toString());
+        assertEquals("WEAKAND(100) (SAND myfield:it myfield:s) (AND myfield:a myfield:b) myfield:c", query.getModel().getQueryTree().toString());
         // 'it' and 's' should have connectivity 1
-        AndItem root = (AndItem)query.getModel().getQueryTree().getRoot();
-        AndSegmentItem sand = (AndSegmentItem)root.getItem(0);
-        WordItem it = (WordItem)sand.getItem(0);
+        WeakAndItem root = (WeakAndItem) query.getModel().getQueryTree().getRoot();
+        AndSegmentItem sand = (AndSegmentItem) root.getItem(0);
+        WordItem it = (WordItem) sand.getItem(0);
         assertEquals("it", it.getWord());
-        WordItem s = (WordItem)sand.getItem(1);
+        WordItem s = (WordItem) sand.getItem(1);
         assertEquals("s", s.getWord());
         assertEquals(s, it.getConnectedItem());
         assertEquals(1.0, it.getConnectivity(), 0.00000001);
     }
 
     @Test
-    public void testImplicitAndConnectivity() {
+    void testImplicitAndConnectivity() {
         SearchDefinition test = new SearchDefinition("test");
         Index myField = new Index("myfield");
         myField.addCommand("phrase-segmenting false");
@@ -1001,11 +1039,12 @@ public class QueryTestCase {
         {
             Query query = new Query(httpEncode("?query=myfield:b.c.d"));
             query.getModel().setExecution(new Execution(Execution.Context.createContextStub(new IndexFacts(indexModel))));
-            assertEquals("AND myfield:b myfield:c myfield:d", query.getModel().getQueryTree().toString());
-            AndItem root = (AndItem) query.getModel().getQueryTree().getRoot();
-            WordItem b = (WordItem) root.getItem(0);
-            WordItem c = (WordItem) root.getItem(1);
-            WordItem d = (WordItem) root.getItem(2);
+            assertEquals("WEAKAND(100) (AND myfield:b myfield:c myfield:d)", query.getModel().getQueryTree().toString());
+            WeakAndItem root = (WeakAndItem) query.getModel().getQueryTree().getRoot();
+            AndItem and = (AndItem) root.getItem(0);
+            WordItem b = (WordItem) and.getItem(0);
+            WordItem c = (WordItem) and.getItem(1);
+            WordItem d = (WordItem) and.getItem(2);
             assertEquals(c, b.getConnectedItem());
             assertEquals(1.0, b.getConnectivity(), 0.00000001);
             assertEquals(d, c.getConnectedItem());
@@ -1015,24 +1054,26 @@ public class QueryTestCase {
         {
             Query query = new Query(httpEncode("?query=myfield:a myfield:b.c.d myfield:e"));
             query.getModel().setExecution(new Execution(Execution.Context.createContextStub(new IndexFacts(indexModel))));
-            assertEquals("AND myfield:a myfield:b myfield:c myfield:d myfield:e", query.getModel().getQueryTree().toString());
-            AndItem root = (AndItem) query.getModel().getQueryTree().getRoot();
+            assertEquals("WEAKAND(100) myfield:a (AND myfield:b myfield:c myfield:d) myfield:e", query.getModel().getQueryTree().toString());
+            WeakAndItem root = (WeakAndItem) query.getModel().getQueryTree().getRoot();
             WordItem a = (WordItem) root.getItem(0);
-            WordItem b = (WordItem) root.getItem(1);
-            WordItem c = (WordItem) root.getItem(2);
-            WordItem d = (WordItem) root.getItem(3);
-            WordItem e = (WordItem) root.getItem(4);
+            AndItem and = (AndItem) root.getItem(1);
+            WordItem b = (WordItem) and.getItem(0);
+            WordItem c = (WordItem) and.getItem(1);
+            WordItem d = (WordItem) and.getItem(2);
+            WordItem e = (WordItem) root.getItem(2);
             assertNull(a.getConnectedItem());
             assertEquals(c, b.getConnectedItem());
             assertEquals(1.0, b.getConnectivity(), 0.00000001);
             assertEquals(d, c.getConnectedItem());
             assertEquals(1.0, c.getConnectivity(), 0.00000001);
             assertNull(d.getConnectedItem());
+            assertEquals("e", e.getIndexedString());
         }
     }
 
     @Test
-    public void testImplicitAndInPhrase() {
+    void testImplicitAndInPhrase() {
         Query query = new Query(httpEncode("?query=myfield:\"it's fine\""));
 
         SearchDefinition test = new SearchDefinition("test");
@@ -1043,11 +1084,11 @@ public class QueryTestCase {
         IndexModel indexModel = new IndexModel(test);
         query.getModel().setExecution(new Execution(Execution.Context.createContextStub(new IndexFacts(indexModel))));
 
-        assertEquals("myfield:\"'it s' fine\"", query.getModel().getQueryTree().toString());
+        assertEquals("WEAKAND(100) myfield:\"'it s' fine\"", query.getModel().getQueryTree().toString());
     }
 
     @Test
-    public void testOldStyleSelect() {
+    void testOldStyleSelect() {
         // The same as testOldStyleSelectAndNativeQueryProfileType but not inheriting native
         QueryProfileRegistry registry = new QueryProfileRegistry();
         QueryProfileType type = new QueryProfileType("mytype");
@@ -1057,15 +1098,15 @@ public class QueryTestCase {
         registry.getTypeRegistry().register(type);
         CompiledQueryProfileRegistry cRegistry = registry.compile();
         Query query = new Query(httpEncode("?query=sddocname:sentence&select=all(group(context_id) max(10) each(each(output(summary()))))"),
-                                cRegistry.findQueryProfile("default"));
+                cRegistry.findQueryProfile("default"));
         GroupingQueryParser parser = new GroupingQueryParser();
         parser.search(query, new Execution(parser, Execution.Context.createContextStub()));
         assertEquals("[all(group(context_id) max(10) each(each(output(summary())))), all(group(context_id) max(10) each(each(output(summary()))))]",
-                     query.getSelect().getGrouping().toString());
+                query.getSelect().getGrouping().toString());
     }
 
     @Test
-    public void testOldStyleSelectAndNativeQueryProfileType() {
+    void testOldStyleSelectAndNativeQueryProfileType() {
         QueryProfileRegistry registry = new QueryProfileRegistry();
         QueryProfileType type = new QueryProfileType("mytype");
         type.inherited().add(registry.getType("native"));
@@ -1075,11 +1116,54 @@ public class QueryTestCase {
         registry.getTypeRegistry().register(type);
         CompiledQueryProfileRegistry cRegistry = registry.compile();
         Query query = new Query(httpEncode("?query=sddocname:sentence&select=all(group(context_id) max(10) each(each(output(summary()))))"),
-                                cRegistry.findQueryProfile("default"));
+                cRegistry.findQueryProfile("default"));
         GroupingQueryParser parser = new GroupingQueryParser();
         parser.search(query, new Execution(parser, Execution.Context.createContextStub()));
         assertEquals("[all(group(context_id) max(10) each(each(output(summary())))), all(group(context_id) max(10) each(each(output(summary()))))]",
-                     query.getSelect().getGrouping().toString());
+                query.getSelect().getGrouping().toString());
+    }
+
+    /**
+     * Tests that the value presentation.format.tensors can be set in a query profile.
+     * This is special because presentation.format is a native query profile.
+     */
+    @Test
+    void testSettingNativeQueryProfileValueInQueryProfile() {
+        {
+            QueryProfileRegistry registry = new QueryProfileRegistry();
+            QueryProfile profile = new QueryProfile("default");
+            profile.set("presentation.format.tensors", "short", Map.of(), registry);
+            registry.register(profile);
+            CompiledQueryProfileRegistry cRegistry = registry.compile();
+            Query query = new Query("?query=foo", cRegistry.findQueryProfile("default"));
+            assertTrue(query.getPresentation().getTensorShortForm());
+        }
+
+        {   // Same as above but also set presentation.format
+            QueryProfileRegistry registry = new QueryProfileRegistry();
+            QueryProfile profile = new QueryProfile("default");
+            profile.set("presentation.format", "xml", Map.of(), registry);
+            profile.set("presentation.format.tensors", "short", Map.of(), registry);
+            registry.register(profile);
+            CompiledQueryProfileRegistry cRegistry = registry.compile();
+            Query query = new Query("?query=foo", cRegistry.findQueryProfile("default"));
+            assertEquals("xml", query.getPresentation().getFormat());
+            assertTrue(query.getPresentation().getTensorShortForm());
+        }
+
+        {   // Set presentation.format with a typed query profile type
+            QueryProfileRegistry registry = new QueryProfileRegistry();
+            QueryProfileType type = new QueryProfileType("mytype");
+            type.inherited().add(registry.getType("native"));
+            registry.getTypeRegistry().register(type);
+            type.addField(new FieldDescription("ranking.features.query(embedding)", "tensor(x[5])"),
+                    registry.getTypeRegistry());
+            QueryProfile profile = new QueryProfile("default");
+            profile.setType(type);
+            registry.register(profile);
+            CompiledQueryProfileRegistry cRegistry = registry.compile();
+            Query query = new Query("?query=foo&presentation.format=xml", cRegistry.findQueryProfile("default"));
+        }
     }
 
     private void assertDetectionText(String expectedDetectionText, String queryString, String ... indexSpecs) {
@@ -1102,13 +1186,12 @@ public class QueryTestCase {
     private void assertContains(Map<String, Object> properties, Object ... expectedValues) {
         if (expectedValues == null) {
             assertEquals(1, properties.size());
-            assertTrue("Contains value null", properties.containsValue(null));
+            assertTrue(properties.containsValue(null), "Contains value null");
         }
         else {
-            assertEquals(properties + " contains values " + Arrays.toString(expectedValues),
-                         expectedValues.length, properties.size());
+            assertEquals(expectedValues.length, properties.size(), properties + " contains values " + Arrays.toString(expectedValues));
             for (Object expectedValue : expectedValues)
-                assertTrue("Contains value " + expectedValue, properties.containsValue(expectedValue));
+                assertTrue(properties.containsValue(expectedValue), "Contains value " + expectedValue);
         }
     }
 
@@ -1157,17 +1240,12 @@ public class QueryTestCase {
      * be written as a single string.
      */
     public static String httpEncode(String s) {
-        try {
-            if (s == null) return null;
-            String encoded = URLEncoder.encode(s, "utf-8");
-            encoded = encoded.replaceAll("%3F", "?");
-            encoded = encoded.replaceAll("%3D", "=");
-            encoded = encoded.replaceAll("%26", "&");
-            return encoded;
-        }
-        catch (UnsupportedEncodingException e) {
-            throw new RuntimeException(e);
-        }
+        if (s == null) return null;
+        String encoded = URLEncoder.encode(s, StandardCharsets.UTF_8);
+        encoded = encoded.replaceAll("%3F", "?");
+        encoded = encoded.replaceAll("%3D", "=");
+        encoded = encoded.replaceAll("%26", "&");
+        return encoded;
     }
 
 }

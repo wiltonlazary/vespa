@@ -1,10 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <tests/proton/common/dummydbowner.h>
+#include <vespa/config-bucketspaces.h>
+#include <vespa/config/subscription/sourcespec.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/repo/documenttyperepo.h>
-#include <vespa/fastos/file.h>
 #include <vespa/document/test/make_bucket_space.h>
+#include <vespa/fnet/transport.h>
 #include <vespa/searchcore/proton/attribute/flushableattribute.h>
 #include <vespa/searchcore/proton/common/statusreport.h>
 #include <vespa/searchcore/proton/docsummary/summaryflushtarget.h>
@@ -22,17 +25,18 @@
 #include <vespa/searchcore/proton/server/feedhandler.h>
 #include <vespa/searchcore/proton/server/fileconfigmanager.h>
 #include <vespa/searchcore/proton/server/memoryconfigstore.h>
-#include <vespa/persistence/dummyimpl/dummy_bucket_executor.h>
+#include <vespa/searchcore/proton/test/mock_shared_threading_service.h>
 #include <vespa/searchcorespi/index/indexflushtarget.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/transactionlog/translogserver.h>
 #include <vespa/vespalib/data/slime/slime.h>
-#include <vespa/vespalib/util/size_literals.h>
-#include <vespa/config-bucketspaces.h>
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/testkit/test_kit.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <filesystem>
 #include <iostream>
 
 using namespace cloud::config::filedistribution;
@@ -42,7 +46,6 @@ using namespace std::chrono_literals;
 
 using document::DocumentType;
 using document::DocumentTypeRepo;
-using document::DocumenttypesConfig;
 using document::test::makeBucketSpace;
 using search::SerialNum;
 using search::TuneFileDocumentDB;
@@ -60,10 +63,10 @@ namespace {
 void
 cleanup_dirs(bool file_config)
 {
-    vespalib::rmdir("typea", true);
-    vespalib::rmdir("tmp", true);
+    std::filesystem::remove_all(std::filesystem::path("typea"));
+    std::filesystem::remove_all(std::filesystem::path("tmp"));
     if (file_config) {
-        vespalib::rmdir("config", true);
+        std::filesystem::remove_all(std::filesystem::path("config"));
     }
 }
 
@@ -103,7 +106,7 @@ FixtureBase::FixtureBase(bool file_config)
     : _cleanup(true),
       _file_config(file_config)
 {
-    vespalib::mkdir("typea");
+    std::filesystem::create_directory(std::filesystem::path("typea"));
 }
 
 
@@ -118,13 +121,12 @@ struct Fixture : public FixtureBase {
     DummyWireService _dummy;
     MyDBOwner _myDBOwner;
     vespalib::ThreadStackExecutor _summaryExecutor;
+    MockSharedThreadingService _shared_service;
     HwInfo _hwInfo;
-    storage::spi::dummy::DummyBucketExecutor _bucketExecutor;
     DocumentDB::SP _db;
     DummyFileHeaderContext _fileHeaderContext;
     TransLogServer _tls;
     matching::QueryLimiter _queryLimiter;
-    vespalib::Clock _clock;
 
     std::unique_ptr<ConfigStore> make_config_store();
     Fixture();
@@ -142,13 +144,12 @@ Fixture::Fixture(bool file_config)
       _dummy(),
       _myDBOwner(),
       _summaryExecutor(8, 128_Ki),
+      _shared_service(_summaryExecutor, _summaryExecutor),
       _hwInfo(),
-      _bucketExecutor(2),
       _db(),
       _fileHeaderContext(),
-      _tls("tmp", 9014, ".", _fileHeaderContext),
-      _queryLimiter(),
-      _clock()
+      _tls(_shared_service.transport(), "tmp", 9014, ".", _fileHeaderContext),
+      _queryLimiter()
 {
     auto documenttypesConfig = std::make_shared<DocumenttypesConfig>();
     DocumentType docType("typea", 0);
@@ -162,11 +163,13 @@ Fixture::Fixture(bool file_config)
                               std::make_shared<BucketspacesConfig>(),
                               tuneFileDocumentDB, HwInfo());
     mgr.forwardConfig(b);
-    mgr.nextGeneration(0ms);
-    _db = DocumentDB::create(".", mgr.getConfig(), "tcp/localhost:9014", _queryLimiter, _clock, DocTypeName("typea"),
+    mgr.nextGeneration(_shared_service.transport(), 0ms);
+    _db = DocumentDB::create(".", mgr.getConfig(), "tcp/localhost:9014", _queryLimiter, DocTypeName("typea"),
                              makeBucketSpace(),
-                             *b->getProtonConfigSP(), _myDBOwner, _summaryExecutor, _summaryExecutor, _bucketExecutor, _tls, _dummy,
-                             _fileHeaderContext, make_config_store(),
+                             *b->getProtonConfigSP(), _myDBOwner, _shared_service, _tls, _dummy,
+                             _fileHeaderContext,
+                             std::make_shared<search::attribute::Interlock>(),
+                             make_config_store(),
                              std::make_shared<vespalib::ThreadStackExecutor>(16, 128_Ki), _hwInfo);
     _db->start();
     _db->waitForOnlineState();
@@ -174,13 +177,15 @@ Fixture::Fixture(bool file_config)
 
 Fixture::~Fixture()
 {
+    _db->close();
+    _shared_service.transport().ShutDown(true);
 }
 
 std::unique_ptr<ConfigStore>
 Fixture::make_config_store()
 {
     if (_file_config) {
-        return std::make_unique<FileConfigManager>("config", "", "typea");
+        return std::make_unique<FileConfigManager>(_shared_service.transport(), "config", "", "typea");
     } else {
         return std::make_unique<MemoryConfigStore>();
     }
@@ -348,7 +353,7 @@ TEST("require that resume after interrupted save config works")
         std::cout << "Best config serial is " << best_config_snapshot.syncToken << std::endl;
         auto old_config_subdir = config_subdir(best_config_snapshot.syncToken);
         auto new_config_subdir = config_subdir(serialNum + 1);
-        vespalib::mkdir(new_config_subdir);
+        std::filesystem::create_directories(std::filesystem::path(new_config_subdir));
         auto config_files = vespalib::listDirectory(old_config_subdir);
         for (auto &config_file : config_files) {
             vespalib::copy(old_config_subdir + "/" + config_file, new_config_subdir + "/" + config_file, false, false);

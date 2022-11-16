@@ -41,43 +41,29 @@ public class SingleValueReader {
         arithmeticExpressionPattern = Pattern.compile("^\\$\\w+\\s*([" + validSigns + "])\\s*(\\d+(.\\d+)?)$");
     }
 
-    public static FieldValue readSingleValue(TokenBuffer buffer, DataType expectedType) {
+    public static FieldValue readSingleValue(TokenBuffer buffer, DataType expectedType, boolean ignoreUndefinedFields) {
         if (buffer.currentToken().isScalarValue()) {
             return readAtomic(buffer.currentText(), expectedType);
         } else {
             FieldValue fieldValue = expectedType.createFieldValue();
-            CompositeReader.populateComposite(buffer, fieldValue);
+            CompositeReader.populateComposite(buffer, fieldValue, ignoreUndefinedFields);
             return fieldValue;
         }
     }
 
     @SuppressWarnings("rawtypes")
-    public static ValueUpdate readSingleUpdate(TokenBuffer buffer, DataType expectedType, String action) {
-        ValueUpdate update;
-
-        switch (action) {
-            case UPDATE_ASSIGN:
-                update = (buffer.currentToken() == JsonToken.VALUE_NULL)
-                        ? ValueUpdate.createClear()
-                        : ValueUpdate.createAssign(readSingleValue(buffer, expectedType));
-                break;
+    public static ValueUpdate readSingleUpdate(TokenBuffer buffer, DataType expectedType, String action, boolean ignoreUndefinedFields) {
+        return switch (action) {
+            case UPDATE_ASSIGN -> (buffer.currentToken() == JsonToken.VALUE_NULL)
+                                  ? ValueUpdate.createClear()
+                                  : ValueUpdate.createAssign(readSingleValue(buffer, expectedType, ignoreUndefinedFields));
             // double is silly, but it's what is used internally anyway
-            case UPDATE_INCREMENT:
-                update = ValueUpdate.createIncrement(Double.valueOf(buffer.currentText()));
-                break;
-            case UPDATE_DECREMENT:
-                update = ValueUpdate.createDecrement(Double.valueOf(buffer.currentText()));
-                break;
-            case UPDATE_MULTIPLY:
-                update = ValueUpdate.createMultiply(Double.valueOf(buffer.currentText()));
-                break;
-            case UPDATE_DIVIDE:
-                update = ValueUpdate.createDivide(Double.valueOf(buffer.currentText()));
-                break;
-            default:
-                throw new IllegalArgumentException("Operation '" + buffer.currentName() + "' not implemented.");
-        }
-        return update;
+            case UPDATE_INCREMENT -> ValueUpdate.createIncrement(Double.valueOf(buffer.currentText()));
+            case UPDATE_DECREMENT -> ValueUpdate.createDecrement(Double.valueOf(buffer.currentText()));
+            case UPDATE_MULTIPLY -> ValueUpdate.createMultiply(Double.valueOf(buffer.currentText()));
+            case UPDATE_DIVIDE -> ValueUpdate.createDivide(Double.valueOf(buffer.currentText()));
+            default -> throw new IllegalArgumentException("Operation '" + buffer.currentName() + "' not implemented.");
+        };
     }
 
     public static Matcher matchArithmeticOperation(String expression) {
@@ -85,9 +71,7 @@ public class SingleValueReader {
     }
 
     public static FieldValue readAtomic(String field, DataType expectedType) {
-        if (expectedType.equals(DataType.RAW)) {
-            return expectedType.createFieldValue(Base64.getMimeDecoder().decode(field));
-        } else if (expectedType.equals(PositionDataType.INSTANCE)) {
+        if (expectedType.equals(PositionDataType.INSTANCE)) {
             return PositionDataType.fromString(field);
         } else if (expectedType instanceof ReferenceDataType) {
             return readReferenceFieldValue(field, expectedType);
@@ -96,7 +80,7 @@ public class SingleValueReader {
         }
     }
 
-    private static FieldValue readReferenceFieldValue(final String refText, DataType expectedType) {
+    private static FieldValue readReferenceFieldValue(String refText, DataType expectedType) {
         final FieldValue value = expectedType.createFieldValue();
         if (!refText.isEmpty()) {
             value.assign(new DocumentId(refText));

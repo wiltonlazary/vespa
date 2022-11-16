@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "attributefieldvaluenode.h"
 #include "cachedselect.h"
+#include "attributefieldvaluenode.h"
 #include "select_utils.h"
 #include "selectcontext.h"
 #include "selectpruner.h"
@@ -9,6 +9,7 @@
 #include <vespa/searchlib/attribute/attributevector.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
 #include <vespa/searchlib/attribute/iattributemanager.h>
+#include <cassert>
 
 namespace proton {
 

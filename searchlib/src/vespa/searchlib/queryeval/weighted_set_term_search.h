@@ -32,17 +32,19 @@ public:
     // TODO: pass ownership with unique_ptr
     static SearchIterator::UP create(const std::vector<SearchIterator *> &children,
                                      search::fef::TermFieldMatchData &tmd,
+                                     bool field_is_filter,
                                      const std::vector<int32_t> &weights,
                                      fef::MatchData::UP match_data);
 
     static SearchIterator::UP create(search::fef::TermFieldMatchData &tmd,
+                                     bool field_is_filter,
                                      const std::vector<int32_t> &weights,
                                      std::vector<DocumentWeightIterator> &&iterators);
 
     // used during docsum fetching to identify matching elements
     // initRange must be called before use.
     // doSeek/doUnpack must not be called.
-    virtual void find_matching_elements(uint32_t docid, const std::vector<Blueprint *>& child_blueprints, std::vector<uint32_t> &dst) = 0;
+    virtual void find_matching_elements(uint32_t docid, const std::vector<std::unique_ptr<Blueprint>> &child_blueprints, std::vector<uint32_t> &dst) = 0;
 };
 
 }  // namespace search::queryeval

@@ -2,6 +2,7 @@
 
 #include "translogserverapp.h"
 #include <vespa/config/subscription/configuri.h>
+#include <vespa/config/helper/configfetcher.hpp>
 #include <vespa/vespalib/util/time.h>
 
 #include <vespa/log/log.h>
@@ -16,11 +17,11 @@ TransLogServerApp::TransLogServerApp(const config::ConfigUri & tlsConfigUri,
     : _lock(),
       _tls(),
       _tlsConfig(),
-      _tlsConfigFetcher(tlsConfigUri.getContext()),
+      _tlsConfigFetcher(std::make_unique<config::ConfigFetcher>(tlsConfigUri.getContext())),
       _fileHeaderContext(fileHeaderContext)
 {
-    _tlsConfigFetcher.subscribe<searchlib::TranslogserverConfig>(tlsConfigUri.getConfigId(), this);
-    _tlsConfigFetcher.start();
+    _tlsConfigFetcher->subscribe<searchlib::TranslogserverConfig>(tlsConfigUri.getConfigId(), this);
+    _tlsConfigFetcher->start();
 }
 
 namespace {
@@ -42,7 +43,6 @@ getCompression(searchlib::TranslogserverConfig::Compression::Type type)
 {
     switch (type) {
         case searchlib::TranslogserverConfig::Compression::Type::NONE:
-            return Encoding::Compression::none;
         case searchlib::TranslogserverConfig::Compression::Type::NONE_MULTI:
             return Encoding::Compression::none_multi;
         case searchlib::TranslogserverConfig::Compression::Type::LZ4:
@@ -79,22 +79,29 @@ logReconfig(const searchlib::TranslogserverConfig & cfg, const DomainConfig & dc
         dcfg.getPartSizeLimit(), dcfg.getChunkSizeLimit());
 }
 
+size_t
+derive_num_threads(uint32_t configured_cores, uint32_t actual_cores) {
+    return (configured_cores > 0)
+        ? configured_cores
+        : std::max(1u, std::min(4u, actual_cores/8));
+}
+
 }
 
 void
-TransLogServerApp::start()
+TransLogServerApp::start(FNET_Transport & transport, uint32_t num_cores)
 {
     std::lock_guard<std::mutex> guard(_lock);
     auto c = _tlsConfig.get();
     DomainConfig domainConfig = getDomainConfig(*c);
     logReconfig(*c, domainConfig);
-   _tls = std::make_shared<TransLogServer>(c->servername, c->listenport, c->basedir, _fileHeaderContext,
-                                            domainConfig, c->maxthreads);
+   _tls = std::make_shared<TransLogServer>(transport, c->servername, c->listenport, c->basedir, _fileHeaderContext,
+                                            domainConfig, derive_num_threads(c->maxthreads, num_cores));
 }
 
 TransLogServerApp::~TransLogServerApp()
 {
-    _tlsConfigFetcher.close();
+    _tlsConfigFetcher->close();
 }
 
 void

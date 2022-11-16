@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.integration;
 
 import com.yahoo.config.provision.CloudName;
@@ -35,15 +35,15 @@ public class ZoneApiMock implements ZoneApi {
     }
 
     public static ZoneApiMock fromId(String id) {
-        return newBuilder().withId(id).build();
+        return from(ZoneId.from(id));
     }
 
     public static ZoneApiMock from(Environment environment, RegionName region) {
-        return newBuilder().with(ZoneId.from(environment, region)).build();
+        return from(ZoneId.from(environment, region));
     }
 
-    public static ZoneApiMock from(ZoneId zone) {
-        return newBuilder().with(zone).build();
+    public static ZoneApiMock from(ZoneId id) {
+        return newBuilder().with(id).build();
     }
 
     @Override
@@ -76,12 +76,17 @@ public class ZoneApiMock implements ZoneApi {
         return Objects.hash(id);
     }
 
+    @Override
+    public String toString() {
+        return id.toString();
+    }
+
     public static class Builder {
 
         private SystemName systemName = SystemName.defaultSystem();
         private ZoneId id = ZoneId.defaultId();
-        private ZoneId virtualId ;
-        private CloudName cloudName = CloudName.defaultName();
+        private ZoneId virtualId = null;
+        private CloudName cloudName = CloudName.DEFAULT;
         private String cloudNativeRegionName = id.region().value();
 
         public Builder with(ZoneId id) {

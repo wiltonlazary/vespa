@@ -1,12 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-#include <vespa/vespalib/testkit/testapp.h>
 
-#include <vespa/config-imported-fields.h>
-#include <vespa/document/datatype/documenttype.h>
-#include <vespa/document/datatype/referencedatatype.h>
-#include <vespa/log/log.h>
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
-#include <vespa/searchcore/proton/common/monitored_refcount.h>
 #include <vespa/searchcore/proton/reference/document_db_reference_resolver.h>
 #include <vespa/searchcore/proton/reference/gid_to_lid_change_listener.h>
 #include <vespa/searchcore/proton/reference/i_document_db_reference.h>
@@ -19,10 +13,17 @@
 #include <vespa/searchlib/attribute/reference_attribute.h>
 #include <vespa/searchlib/common/i_gid_to_lid_mapper.h>
 #include <vespa/searchlib/common/i_gid_to_lid_mapper_factory.h>
-#include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <vespa/searchlib/test/mock_attribute_manager.h>
+#include <vespa/searchcommon/attribute/config.h>
+#include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/datatype/referencedatatype.h>
+#include <vespa/vespalib/util/monitored_refcount.h>
+#include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <vespa/vespalib/test/insertion_operators.h>
+#include <vespa/vespalib/testkit/testapp.h>
+#include <vespa/config-imported-fields.h>
 
+#include <vespa/log/log.h>
 LOG_SETUP("document_db_reference_resolver_test");
 
 using namespace document;
@@ -33,6 +34,7 @@ using proton::test::MockDocumentDBReference;
 using search::attribute::test::MockAttributeManager;
 using vespa::config::search::ImportedFieldsConfig;
 using vespa::config::search::ImportedFieldsConfigBuilder;
+using vespalib::MonitoredRefCount;
 using vespalib::SequencedTaskExecutor;
 using vespalib::ISequencedTaskExecutor;
 
@@ -119,7 +121,7 @@ struct MyAttributeManager : public MockAttributeManager {
         addAttribute(name, AttributeFactory::createAttribute(name, Config(BasicType::INT32)));
     }
     void addReferenceAttribute(const vespalib::string &name) {
-        addAttribute(name, std::make_shared<ReferenceAttribute>(name, Config(BasicType::REFERENCE)));
+        addAttribute(name, std::make_shared<ReferenceAttribute>(name));
     }
     const ReferenceAttribute *getReferenceAttribute(const vespalib::string &name) const {
         AttributeGuard::UP guard = getAttribute(name);

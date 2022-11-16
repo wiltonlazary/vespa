@@ -9,10 +9,8 @@ import static com.yahoo.documentapi.Response.Outcome.ERROR;
 import static com.yahoo.documentapi.Response.Outcome.SUCCESS;
 
 /**
- * <p>An asynchronous response from the document api.
- * Subclasses of this provide additional response information for particular operations.</p>
- *
- * <p>This is a <i>value object</i>.</p>
+ * An asynchronous response from the document api.
+ * Subclasses of this provide additional response information for particular operations.
  *
  * @author bratseth
  */
@@ -35,17 +33,6 @@ public class Response {
      */
     public Response(long requestId, String textMessage) {
         this(requestId, textMessage, SUCCESS);
-    }
-
-    /**
-     * Creates a response containing a textual message
-     *
-     * @param textMessage the message to encapsulate in the Response
-     * @param success     true if the response represents a successful call
-     */
-    @Deprecated(since = "7") // TODO: Remove on Vespa 8
-    public Response(long requestId, String textMessage, boolean success) {
-        this(requestId, textMessage, success ? SUCCESS : ERROR);
     }
 
     /**

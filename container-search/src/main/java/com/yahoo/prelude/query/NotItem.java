@@ -1,33 +1,32 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.prelude.query;
 
-import com.yahoo.protect.Validator;
-
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * A composite item where the first item is positive and the following
- * items are negative items which should be excluded from the result.
+ * items are negative items where matches should exclude the document should from the result.
+ * The default positive item, if only negatives are added, is TrueItem: Meaning that all documents are matched
+ * except those matching the negative terms added.
  *
  * @author bratseth
  */
-// TODO: Handle nulls by creating nullItem or checking in encode/toString
 public class NotItem extends CompositeItem {
 
+    @Override
     public ItemType getItemType() {
         return ItemType.NOT;
     }
 
+    @Override
     public String getName() {
         return "NOT";
     }
 
-    /**
-     * Adds an item. The first item is the positive
-     * the rest is negative
-     */
+    /** Adds an item. The first item is the positive, the rest are negative */
+    @Override
     public void addItem(Item item) {
         super.addItem(item);
     }
@@ -37,33 +36,28 @@ public class NotItem extends CompositeItem {
      * (position 0) if it is not already set.
      */
     public void addNegativeItem(Item negative) {
-        if (getItemCount() == 0) {
-            insertNullFirstItem();
-        }
+        if (getItemCount() == 0)
+            insertTrueFirstItem();
         addItem(negative);
     }
 
     /** Returns the negative items of this: All child items except the first */
     public List<Item> negativeItems() { return items().subList(1, getItemCount()); }
 
-    /**
-     * Returns the positive item (the first subitem),
-     * or null if no positive items has been added
-     */
+    /** Returns the positive item (the first subitem), or TrueItem if no positive items has been added. */
     public Item getPositiveItem() {
-        if (getItemCount() == 0) {
-            return null;
-        }
+        if (getItemCount() == 0)
+            return new TrueItem();
         return getItem(0);
     }
 
     /**
      * Sets the positive item (the first item)
      *
-     * @return the old positive item, or null if there was no items
+     * @return the old positive item, or TrueItem if there was none
      */
     public Item setPositiveItem(Item item) {
-        Validator.ensureNotNull("Positive item of " + this, item);
+        Objects.requireNonNull(item, () -> "Positive item of " + this);
         if (getItemCount() == 0) {
             addItem(item);
             return null;
@@ -78,7 +72,7 @@ public class NotItem extends CompositeItem {
      * the positive item becomes an AndItem with the items added
      */
     public void addPositiveItem(Item item) {
-        if (getPositiveItem() == null) {
+        if (getPositiveItem() instanceof TrueItem) {
             setPositiveItem(item);
         } else if (getPositiveItem() instanceof AndItem) {
             ((AndItem) getPositiveItem()).addItem(item);
@@ -96,7 +90,7 @@ public class NotItem extends CompositeItem {
         boolean removed = super.removeItem(item);
 
         if (removed && removedIndex == 0) {
-            insertNullFirstItem();
+            insertTrueFirstItem();
         }
         return removed;
     }
@@ -105,35 +99,35 @@ public class NotItem extends CompositeItem {
         Item removed = super.removeItem(index);
 
         if (index == 0) { // Don't make the first negative the positive
-            insertNullFirstItem();
+            insertTrueFirstItem();
         }
         return removed;
+    }
+
+    private void insertTrueFirstItem() {
+        addItem(0, new TrueItem());
     }
 
     /** Not items uses a empty heading instead of "NOT " */
     protected void appendHeadingString(StringBuilder buffer) {}
 
     /**
-     * Overridden to tolerate nulls and to append "+"
+     * Overridden to skip the positive TrueItem and (otherwise) append "+"
      * to the first item and "-" to the rest
      */
+    @Override
     protected void appendBodyString(StringBuilder buffer) {
-        boolean isFirstItem = true;
+        if (items().isEmpty()) return;
+        if (items().size() == 1) {
+            buffer.append(items().get(0));
+            return;
+        }
+        for (int i = 0; i < items().size(); i++) {
+            if (i == 0 && items().get(i) instanceof TrueItem) continue; // skip positive true
 
-        for (Iterator<Item> i = getItemIterator(); i.hasNext();) {
-            Item item = i.next();
-
-            if (isFirstItem) {
-                buffer.append("+");
-            } else {
-                buffer.append(" -");
-            }
-            if (item == null) {
-                buffer.append("(null)");
-            } else {
-                buffer.append(item.toString());
-            }
-            isFirstItem = false;
+            buffer.append(i == 0 ? "+" : "-").append(items().get(i));
+            if ( i < items().size() - 1)
+                buffer.append(" ");
         }
     }
 

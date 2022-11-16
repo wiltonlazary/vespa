@@ -2,24 +2,22 @@
 package com.yahoo.prelude.searcher.test;
 
 import com.yahoo.component.chain.Chain;
-import com.yahoo.language.simple.SimpleLinguistics;
-import com.yahoo.search.Searcher;
-import com.yahoo.search.rendering.RendererRegistry;
-import com.yahoo.search.searchchain.Execution;
-import com.yahoo.vespa.config.search.AttributesConfig;
-import com.yahoo.search.config.ClusterConfig;
 import com.yahoo.config.subscription.ConfigGetter;
 import com.yahoo.container.QrSearchersConfig;
 import com.yahoo.prelude.searcher.ValidateSortingSearcher;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
+import com.yahoo.search.Searcher;
+import com.yahoo.search.config.ClusterConfig;
+import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.test.QueryTestCase;
-import org.junit.Test;
+import com.yahoo.vespa.config.search.AttributesConfig;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Check sorting validation behaves OK.
@@ -30,6 +28,7 @@ public class ValidateSortingSearcherTestCase {
 
     private final ValidateSortingSearcher searcher;
 
+    @SuppressWarnings("deprecation")
     public ValidateSortingSearcherTestCase() {
         QrSearchersConfig.Builder qrsCfg = new QrSearchersConfig.Builder();
         qrsCfg.searchcluster(new QrSearchersConfig.Searchcluster.Builder().name("giraffes"));
@@ -43,7 +42,7 @@ public class ValidateSortingSearcherTestCase {
     }
 
     @Test
-    public void testBasicValidation() {
+    void testBasicValidation() {
         assertNotNull(quoteAndTransform("+a -b +c"));
         assertNotNull(quoteAndTransform("+a"));
         assertNotNull(quoteAndTransform(null));
@@ -54,12 +53,12 @@ public class ValidateSortingSearcherTestCase {
     }
 
     @Test
-    public void testInvalidSpec() {
+    void testInvalidSpec() {
         assertNull(quoteAndTransform("+a -e +c"));
     }
 
     @Test
-    public void testConfigOverride() {
+    void testConfigOverride() {
         assertEquals("[ASCENDING:uca(title,en_US,TERTIARY)]", quoteAndTransform("title"));
         assertEquals("[ASCENDING:uca(title,en_US,TERTIARY)]", quoteAndTransform("uca(title)"));
         assertEquals("[ASCENDING:uca(title,en_US,TERTIARY)]", quoteAndTransform("+uca(title)"));
@@ -67,7 +66,7 @@ public class ValidateSortingSearcherTestCase {
     }
 
     @Test
-    public void requireThatQueryLocaleIsDefault() {
+    void requireThatQueryLocaleIsDefault() {
         assertEquals("[ASCENDING:lowercase(a)]", quoteAndTransform("a"));
         assertEquals("[ASCENDING:uca(a,en_US,PRIMARY)]", transform("a", "en-US"));
         assertEquals("[ASCENDING:uca(a,en_NO,PRIMARY)]", transform("a", "en-NO"));

@@ -33,8 +33,18 @@ node_reliability int default=1 restart
 ## A merge operation will be chained through all nodes involved in the
 ## merge, only actually starting the operation when every node has
 ## allowed it to pass through.
+## NOTE: these config values are _not_ used if merge_throttling_policy.type
+## is configured to DYNAMIC (see below).
 max_merges_per_node int default=16
-max_merge_queue_size int default=1024
+max_merge_queue_size int default=100
+
+## Chooses the throttling policy used to control the active merge window size
+## of the MergeThrottler component.
+merge_throttling_policy.type enum { STATIC, DYNAMIC } default=STATIC
+## Only used if merge_throttling_policy.type == DYNAMIC:
+merge_throttling_policy.min_window_size int default=16
+merge_throttling_policy.max_window_size int default=128
+merge_throttling_policy.window_size_increment double default=2.0
 
 ## If the persistence provider indicates that it has exhausted one or more
 ## of its internal resources during a mutating operation, new merges will
@@ -51,21 +61,21 @@ resource_exhaustion_merge_back_pressure_duration_secs double default=30.0
 ## the current queue size. This avoids wasting the time spent being accepted
 ## into merge windows, which would happen if the merge were to be bounced with
 ## a busy-reply that would subsequently be unwound through the entire merge chain.
-disable_queue_limits_for_chained_merges bool default=false
+disable_queue_limits_for_chained_merges bool default=true
 
 ## Whether the deadlock detector should be enabled or not. If disabled, it will
 ## still run, but it will never actually abort the process it is running in.
-enable_dead_lock_detector bool default=false restart
+enable_dead_lock_detector bool default=false
 
 ## Whether to enable deadlock detector warnings in log or not. If enabled,
 ## warnings will be written even if dead lock detecting is not enabled.
-enable_dead_lock_detector_warnings bool default=true restart
+enable_dead_lock_detector_warnings bool default=true
 
 ## Each thread registers how often it will at minimum register ticks (given that
 ## the system is not overloaded. If you are running Vespa on overloaded nodes,
 ## you can use this slack timeout to add to the thread timeouts in order to
 ## allow for more slack before dead lock detector kicks in. The value is in seconds.
-dead_lock_detector_timeout_slack double default=240 restart
+dead_lock_detector_timeout_slack double default=240
 
 ## If set to 0, storage will attempt to auto-detect the number of VDS mount
 ## points to use. If set to a number, force this number. This number only makes

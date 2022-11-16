@@ -1,30 +1,32 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
-#include "enum_store_loaders.h"
 #include "enum_store_types.h"
-#include <vespa/searchcommon/attribute/iattributevector.h>
-#include <vespa/vespalib/datastore/entryref.h>
-#include <vespa/vespalib/datastore/unique_store_enumerator.h>
-#include <vespa/vespalib/stllike/hash_map.h>
-#include <vespa/vespalib/util/array.h>
-#include <vespa/vespalib/util/memoryusage.h>
-#include <cassert>
-#include <set>
+#include <vespa/vespalib/datastore/atomic_entry_ref.h>
+#include <memory>
 
-namespace vespalib::datastore {
-
-class DataStoreBase;
-
-template <typename> class UniqueStoreRemapper;
-
+namespace vespalib {
+    class AddressSpace;
+    class MemoryUsage;
 }
 
+namespace vespalib::datastore {
+    class CompactionSpec;
+    class CompactionStrategy;
+    class DataStoreBase;
+    class EntryComparator;
+    template <typename> class UniqueStoreRemapper;
+    template <typename> class UniqueStoreEnumerator;
+}
+
+namespace search::enumstore {
+    class EnumeratedLoader;
+    class EnumeratedPostingsLoader;
+}
 namespace search {
 
 class BufferWriter;
-class CompactionStrategy;
 class IEnumStoreDictionary;
 
 /**
@@ -32,13 +34,16 @@ class IEnumStoreDictionary;
  */
 class IEnumStore {
 public:
+    using AtomicIndex = enumstore::AtomicIndex;
     using Index = enumstore::Index;
     using InternalIndex = enumstore::InternalIndex;
     using IndexVector = enumstore::IndexVector;
+    using CompactionSpec = vespalib::datastore::CompactionSpec;
+    using CompactionStrategy = vespalib::datastore::CompactionStrategy;
     using EnumHandle = enumstore::EnumHandle;
     using EnumVector = enumstore::EnumVector;
     using EnumIndexRemapper = vespalib::datastore::UniqueStoreRemapper<InternalIndex>;
-    using Enumerator = vespalib::datastore::UniqueStoreEnumerator<IEnumStore::InternalIndex>;
+    using Enumerator = vespalib::datastore::UniqueStoreEnumerator<InternalIndex>;
 
     using IndexList = std::vector<Index>;
 
@@ -54,22 +59,18 @@ public:
     virtual const IEnumStoreDictionary& get_dictionary() const = 0;
     virtual uint32_t get_num_uniques() const = 0;
     virtual vespalib::MemoryUsage get_values_memory_usage() const = 0;
+    virtual vespalib::AddressSpace get_values_address_space_usage() const = 0;
     virtual vespalib::MemoryUsage get_dictionary_memory_usage() const = 0;
-    virtual vespalib::MemoryUsage update_stat() = 0;
+    virtual vespalib::MemoryUsage update_stat(const CompactionStrategy& compaction_strategy) = 0;
     virtual std::unique_ptr<EnumIndexRemapper> consider_compact_values(const CompactionStrategy& compaction_strategy) = 0;
-    virtual std::unique_ptr<EnumIndexRemapper> compact_worst_values(bool compact_memory, bool compact_address_space) = 0;
+    virtual std::unique_ptr<EnumIndexRemapper> compact_worst_values(CompactionSpec compaction_spec, const CompactionStrategy& compaction_strategy) = 0;
     virtual bool consider_compact_dictionary(const CompactionStrategy& compaction_strategy) = 0;
     virtual uint64_t get_compaction_count() const = 0;
     // Should only be used by unit tests.
     virtual void inc_compaction_count() = 0;
 
-    enumstore::EnumeratedLoader make_enumerated_loader() {
-        return enumstore::EnumeratedLoader(*this);
-    }
-
-    enumstore::EnumeratedPostingsLoader make_enumerated_postings_loader() {
-        return enumstore::EnumeratedPostingsLoader(*this);
-    }
+    enumstore::EnumeratedLoader make_enumerated_loader();
+    enumstore::EnumeratedPostingsLoader make_enumerated_postings_loader();
 
     virtual std::unique_ptr<Enumerator> make_enumerator() const = 0;
     virtual std::unique_ptr<vespalib::datastore::EntryComparator> allocate_comparator() const = 0;

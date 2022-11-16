@@ -4,17 +4,19 @@
 #include <vespa/searchlib/attribute/attribute.h>
 #include <vespa/searchlib/attribute/attributeguard.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/data/fileheader.h>
 #include <fstream>
 
 #include <vespa/fastlib/io/bufferedfile.h>
-#include <vespa/fastos/app.h>
+#include <vespa/vespalib/util/signalhandler.h>
+#include <unistd.h>
 
 namespace search {
 
 typedef AttributeVector::SP AttributePtr;
 
-class LoadAttribute : public FastOS_Application
+class LoadAttribute
 {
 private:
     void load(const AttributePtr & ptr);
@@ -23,7 +25,7 @@ private:
     void usage();
 
 public:
-    int Main() override;
+    int main(int argc, char **argv);
 };
 
 void
@@ -38,7 +40,7 @@ void
 LoadAttribute::applyUpdate(const AttributePtr & ptr)
 {
     std::cout << "applyUpdate" << std::endl;
-    if (ptr->getClass().inherits(IntegerAttribute::classId)) {
+    if (ptr->isIntegerType()) {
         IntegerAttribute * a = static_cast<IntegerAttribute *>(ptr.get());
         if (ptr->hasMultiValue()) {
             a->append(0, 123456789, 1);
@@ -46,7 +48,7 @@ LoadAttribute::applyUpdate(const AttributePtr & ptr)
             a->update(0, 123456789);
         }
         a->commit();
-    } else if (ptr->getClass().inherits(FloatingPointAttribute::classId)) {
+    } else if (ptr->isFloatingPointType()) {
         FloatingPointAttribute * a = static_cast<FloatingPointAttribute *>(ptr.get());
         if (ptr->hasMultiValue()) {
             a->append(0, 123456789.5f, 1);
@@ -54,7 +56,7 @@ LoadAttribute::applyUpdate(const AttributePtr & ptr)
             a->update(0, 123456789);
         }
         a->commit();
-    } else if (ptr->getClass().inherits(StringAttribute::classId)) {
+    } else if (ptr->isStringType()) {
         StringAttribute * a = static_cast<StringAttribute *>(ptr.get());
         if (ptr->hasMultiValue()) {
             a->append(0, "non-existing string value", 1);
@@ -104,19 +106,16 @@ LoadAttribute::usage()
 }
 
 int
-LoadAttribute::Main()
+LoadAttribute::main(int argc, char **argv)
 {
     bool doPrintContent = false;
     bool doApplyUpdate = false;
     bool doSave = false;
     bool doFastSearch = false;
-    bool doHuge = false;
 
-    int idx = 1;
     int opt;
-    const char * arg;
     bool optError = false;
-    while ((opt = GetOpt("pasf:h", arg, idx)) != -1) {
+    while ((opt = getopt(argc, argv, "pasf:")) != -1) {
         switch (opt) {
         case 'p':
             doPrintContent = true;
@@ -124,15 +123,12 @@ LoadAttribute::Main()
         case 'a':
             doApplyUpdate = true;
             break;
-        case 'h':
-            doHuge = true;
-            break;
         case 'f':
-            if (strcmp(arg, "search") == 0) {
+            if (strcmp(optarg, "search") == 0) {
                 doFastSearch = true;
             } else {
                 std::cerr << "Expected 'search' or 'aggregate', got '" <<
-                    arg << "'" << std::endl;
+                    optarg << "'" << std::endl;
                 optError = true;
             }
             break;
@@ -145,12 +141,12 @@ LoadAttribute::Main()
         }
     }
 
-    if (_argc != (idx + 1) || optError) {
+    if (argc != (optind + 1) || optError) {
         usage();
         return -1;
     }
 
-    vespalib::string fileName(_argv[idx]);
+    vespalib::string fileName(argv[optind]);
     vespalib::FileHeader fh;
     {
         vespalib::string datFileName(fileName + ".dat");
@@ -162,7 +158,6 @@ LoadAttribute::Main()
     attribute::CollectionType ct(fh.getTag("collectiontype").asString());
     attribute::Config c(bt, ct);
     c.setFastSearch(doFastSearch);
-    c.setHuge(doHuge);
     AttributePtr ptr = AttributeFactory::createAttribute(fileName, c);
     vespalib::Timer timer;
     load(ptr);
@@ -200,8 +195,8 @@ LoadAttribute::Main()
 
 }
 
-int main(int argc, char ** argv)
-{
+int main(int argc, char ** argv) {
+    vespalib::SignalHandler::PIPE.ignore();
     search::LoadAttribute myApp;
-    return myApp.Entry(argc, argv);
+    return myApp.main(argc, argv);
 }

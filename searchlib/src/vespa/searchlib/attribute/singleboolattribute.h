@@ -8,6 +8,8 @@
 
 namespace search {
 
+class GrowStrategy;
+
 /**
  * Attributevector for boolean field values occupying a bit per document
  * and backed by a growable rcu bit vector.
@@ -15,7 +17,7 @@ namespace search {
 class SingleBoolAttribute final : public IntegerAttributeTemplate<int8_t>
 {
 public:
-    SingleBoolAttribute(const vespalib::string & baseFileName, const search::GrowStrategy & grow);
+    SingleBoolAttribute(const vespalib::string & baseFileName, const GrowStrategy & grow, bool paged);
     ~SingleBoolAttribute() override;
 
     void onCommit() override;
@@ -24,17 +26,17 @@ public:
     void onUpdateStat() override;
     bool onLoad(vespalib::Executor *executor) override;
     void onSave(IAttributeSaveTarget &saveTarget) override;
-    void clearDocs(DocId lidLow, DocId lidLimit) override;
+    void clearDocs(DocId lidLow, DocId lidLimit, bool in_shrink_lid_space) override;
     void onShrinkLidSpace() override;
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
     uint64_t getEstimatedSaveByteSize() const override;
 
-    SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(std::unique_ptr<QueryTermSimple> term, const attribute::SearchContextParams & params) const override;
 
     uint32_t getValueCount(DocId doc) const override {
-        return (doc >= _bv.size()) ? 0 : 1;
+        return (doc >= _bv.reader().size()) ? 0 : 1;
     }
     largeint_t getInt(DocId doc) const override {
         return static_cast<largeint_t>(getFast(doc));
@@ -44,12 +46,6 @@ public:
     }
     uint32_t getEnum(DocId) const override {
         return std::numeric_limits<uint32_t>::max(); // does not have enum
-    }
-    uint32_t getAll(DocId doc, int8_t * v, uint32_t sz) const override {
-        if (sz > 0) {
-            v[0] = getFast(doc);
-        }
-        return 1;
     }
     uint32_t get(DocId doc, largeint_t * v, uint32_t sz) const override {
         if (sz > 0) {
@@ -69,7 +65,6 @@ public:
         }
         return 1;
     }
-    uint32_t getAll(DocId, Weighted *, uint32_t) const override { return 0; }
     uint32_t get(DocId doc, WeightedInt * v, uint32_t sz) const override {
         if (sz > 0) {
             v[0] = WeightedInt(static_cast<largeint_t>(getFast(doc)));
@@ -88,12 +83,12 @@ public:
     int8_t get(DocId doc) const override {
         return getFast(doc);
     }
-    const BitVector & getBitVector() const { return _bv; }
+    const BitVector & getBitVector() const { return _bv.reader(); }
     void setBit(DocId doc, bool value) {
         if (value) {
-            _bv.setBitAndMaintainCount(doc);
+            _bv.writer().setBitAndMaintainCount(doc);
         } else {
-            _bv.clearBitAndMaintainCount(doc);
+            _bv.writer().clearBitAndMaintainCount(doc);
         }
     }
 protected:
@@ -106,8 +101,9 @@ private:
         return 0;
     }
     int8_t getFast(DocId doc) const {
-        return _bv.testBit(doc) ? 1 : 0;
+        return _bv.reader().testBit(doc) ? 1 : 0;
     }
+    vespalib::alloc::Alloc _init_alloc;
     GrowableBitVector _bv;
 };
 

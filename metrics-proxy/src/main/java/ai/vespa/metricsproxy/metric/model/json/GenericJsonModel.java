@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.metric.model.json;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -9,8 +9,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_ABSENT;
 

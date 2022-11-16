@@ -3,6 +3,7 @@ vespa_add_executable(searchcore_document_subdbs_test_app TEST
     SOURCES
     document_subdbs_test.cpp
     DEPENDS
+    searchcore_test
     searchcore_server
     searchcore_initializer
     searchcore_reprocessing
@@ -19,6 +20,5 @@ vespa_add_executable(searchcore_document_subdbs_test_app TEST
     searchcore_grouping
     searchcore_proton_metrics
     searchcore_fconfig
-    searchlib_searchlib_uca
 )
 vespa_add_test(NAME searchcore_document_subdbs_test_app COMMAND searchcore_document_subdbs_test_app)

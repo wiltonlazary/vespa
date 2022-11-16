@@ -5,12 +5,12 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>metrics</artifactId>
   <packaging>jar</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <name>metrics</name>
   <dependencies>
     <dependency>
@@ -25,13 +25,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Xlint:all</arg>
-            <arg>-Xlint:-unchecked</arg>
-            <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
       </plugin>
       <plugin>
         <artifactId>maven-assembly-plugin</artifactId>

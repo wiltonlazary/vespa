@@ -1,14 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.athenz.instanceproviderservice;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.jdisc.http.ssl.impl.TlsContextBasedProvider;
 import com.yahoo.security.KeyStoreBuilder;
 import com.yahoo.security.KeyStoreType;
 import com.yahoo.security.KeyUtils;
 import com.yahoo.security.SslContextBuilder;
 import com.yahoo.security.tls.DefaultTlsContext;
-import com.yahoo.security.tls.MutableX509KeyManager;
+import com.yahoo.security.MutableX509KeyManager;
 import com.yahoo.security.tls.PeerAuthentication;
 import com.yahoo.security.tls.TlsContext;
 import com.yahoo.vespa.athenz.api.AthenzService;

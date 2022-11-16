@@ -64,12 +64,19 @@ QueryNode::Build(const QueryNode * parent, const QueryNodeResultFactory & factor
         }
     }
     break;
+    case ParseItem::ITEM_TRUE:
+        qn = std::make_unique<TrueNode>();
+        break;
+    case ParseItem::ITEM_FALSE:
+        qn = std::make_unique<FalseNode>();
+        break;
     case ParseItem::ITEM_GEO_LOCATION_TERM:
-        // TODO implement this:
-        // vespalib::string field = queryRep.getIndexName();
-        // vespalib::stringref location_term = queryRep.getTerm();
-        // qn = std::make_unique<LocationQueryNode> ...something ....
-        // break;
+        // just keep the string representation here; parsed in vsm::GeoPosFieldSearcher
+        qn = std::make_unique<QueryTerm>(factory.create(),
+                                         queryRep.getTerm(),
+                                         queryRep.getIndexName(),
+                                         QueryTerm::Type::GEO_LOCATION);
+        break;
     case ParseItem::ITEM_NUMTERM:
     case ParseItem::ITEM_TERM:
     case ParseItem::ITEM_PREFIXTERM:
@@ -79,6 +86,7 @@ QueryNode::Build(const QueryNode * parent, const QueryNodeResultFactory & factor
     case ParseItem::ITEM_SUFFIXTERM:
     case ParseItem::ITEM_PURE_WEIGHTED_STRING:
     case ParseItem::ITEM_PURE_WEIGHTED_LONG:
+    case ParseItem::ITEM_FUZZY:
     {
         vespalib::string index = queryRep.getIndexName();
         if (index.empty()) {
@@ -109,6 +117,9 @@ QueryNode::Build(const QueryNode * parent, const QueryNodeResultFactory & factor
         case ParseItem::ITEM_SUFFIXTERM:
             sTerm = TermType::SUFFIXTERM;
             break;
+        case ParseItem::ITEM_FUZZY:
+            sTerm = TermType::FUZZYTERM;
+            break;
         default:
             break;
         }
@@ -129,6 +140,10 @@ QueryNode::Build(const QueryNode * parent, const QueryNodeResultFactory & factor
             auto qt = std::make_unique<QueryTerm>(factory.create(), ssTerm, ssIndex, sTerm);
             qt->setWeight(queryRep.GetWeight());
             qt->setUniqueId(queryRep.getUniqueId());
+            if (qt->isFuzzy()) {
+                qt->setFuzzyMaxEditDistance(queryRep.getFuzzyMaxEditDistance());
+                qt->setFuzzyPrefixLength(queryRep.getFuzzyPrefixLength());
+            }
             if (qt->encoding().isBase10Integer() ||
                 ! qt->encoding().isFloat() ||
                 ! factory.getRewriteFloatTerms() ||

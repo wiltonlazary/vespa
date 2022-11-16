@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.processing.rendering;
 
-import com.google.common.util.concurrent.ListenableFuture;
 import com.yahoo.component.provider.ListenableFreezableClass;
 import com.yahoo.container.jdisc.ContentChannelOutputStream;
 import com.yahoo.processing.Processor;
@@ -14,8 +13,7 @@ import com.yahoo.processing.response.Data;
 import com.yahoo.processing.response.DataList;
 import com.yahoo.processing.response.IncomingData;
 import com.yahoo.text.Utf8;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -23,40 +21,39 @@ import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
 
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * @author <a href="mailto:einarmr@yahoo-inc.com">Einar M R Rosenvinge</a>
+ * @author Einar M R Rosenvinge
  */
 public class AsynchronousSectionedRendererTest {
 
     private static final Charset CHARSET = Utf8.getCharset();
 
     @Test
-    public void testRenderersOfTheSamePrototypeUseTheSameExecutor() {
+    void testRenderersOfTheSamePrototypeUseTheSameExecutor() {
         TestRenderer rendererPrototype = new TestRenderer();
-        TestRenderer rendererCopy1 = (TestRenderer)rendererPrototype.clone();
+        TestRenderer rendererCopy1 = (TestRenderer) rendererPrototype.clone();
         rendererCopy1.init();
-        assertTrue(rendererPrototype.getRenderingExecutor() == rendererCopy1.getRenderingExecutor());
+        assertSame(rendererPrototype.getRenderingExecutor(), rendererCopy1.getRenderingExecutor());
     }
 
     @Test
-    public void testRenderersOfDifferentPrototypesUseDifferentExecutors() {
+    void testRenderersOfDifferentPrototypesUseDifferentExecutors() {
         TestRenderer rendererPrototype1 = new TestRenderer();
-        TestRenderer rendererCopy1 = (TestRenderer)rendererPrototype1.clone();
+        TestRenderer rendererCopy1 = (TestRenderer) rendererPrototype1.clone();
         rendererCopy1.init();
 
         TestRenderer rendererPrototype2 = new TestRenderer();
-        TestRenderer rendererCopy2 = (TestRenderer)rendererPrototype2.clone();
+        TestRenderer rendererCopy2 = (TestRenderer) rendererPrototype2.clone();
         rendererCopy2.init();
-        assertTrue(rendererPrototype1.getRenderingExecutor() != rendererCopy2.getRenderingExecutor());
+        assertNotSame(rendererPrototype1.getRenderingExecutor(), rendererCopy2.getRenderingExecutor());
     }
 
     @Test
-    public void testAsyncSectionedRenderer() throws IOException, InterruptedException {
+    void testAsyncSectionedRenderer() throws IOException, InterruptedException {
         StringDataList dataList = createDataListWithStrangeStrings();
 
         TestRenderer renderer = new TestRenderer();
@@ -64,134 +61,132 @@ public class AsynchronousSectionedRendererTest {
 
         String str = render(renderer, dataList);
 
-        assertThat(str,
-                   equalTo(" beginResponse beginList[f\\o\"o, [b/a\br, f\f\no\ro\tbar\u0005]] dataf\\o\"o beginList[b/a\br, " +
-                           "f\f\no\ro\tbar\u0005] datab/a\br dataf\f\no\ro\tbar\u0005 endList[b/a\br, f\f\no\ro\tbar\u0005] endList[f\\o\"o, [b/a\br, f\f\no\ro\tbar\u0005]] endResponse"));
+        assertEquals(" beginResponse beginList[f\\o\"o, [b/a\br, f\f\no\ro\tbar\u0005]] dataf\\o\"o beginList[b/a\br, " +
+                "f\f\no\ro\tbar\u0005] datab/a\br dataf\f\no\ro\tbar\u0005 endList[b/a\br, f\f\no\ro\tbar\u0005] endList[f\\o\"o, [b/a\br, f\f\no\ro\tbar\u0005]] endResponse",
+                str);
     }
 
     @Test
-    public void testEmptyProcessingRendering() throws IOException, InterruptedException {
+    void testEmptyProcessingRendering() throws IOException, InterruptedException {
         Request request = new Request();
         DataList dataList = ArrayDataList.create(request);
 
-        assertThat(render(dataList),
-                          equalTo("{\"datalist\":[" +
-                                          "]}"));
+        assertEquals("{\"datalist\":[]}", render(dataList));
     }
 
     @Test
-    public void testProcessingRendering() throws IOException, InterruptedException {
+    void testProcessingRendering() throws IOException, InterruptedException {
         StringDataList dataList = createDataListWithStrangeStrings();
 
-        assertThat(render(dataList),
-                equalTo("{\"datalist\":[" +
-                        "{\"data\":\"f\\\\o\\\"o\"}," +
-                        "{\"datalist\":[" +
-                          "{\"data\":\"b/a\\br\"}," +
-                          "{\"data\":\"f\\f\\no\\ro\\tbar\\u0005\"}" +
-                        "]}" +
-                        "]}"));
+        assertEquals("{\"datalist\":[" +
+                "{\"data\":\"f\\\\o\\\"o\"}," +
+                "{\"datalist\":[" +
+                "{\"data\":\"b/a\\br\"}," +
+                "{\"data\":\"f\\f\\no\\ro\\tbar\\u0005\"}" +
+                "]}" +
+                "]}",
+                render(dataList));
     }
 
     @Test
-    public void testProcessingRenderingWithErrors() throws IOException, InterruptedException {
+    void testProcessingRenderingWithErrors() throws IOException, InterruptedException {
         StringDataList dataList = createDataList();
 
         // Add errors
-        dataList.request().errors().add(new ErrorMessage("m1","d1"));
-        dataList.request().errors().add(new ErrorMessage("m2","d2"));
+        dataList.request().errors().add(new ErrorMessage("m1", "d1"));
+        dataList.request().errors().add(new ErrorMessage("m2", "d2"));
 
-        assertThat(render(dataList),
-                equalTo("{\"errors\":[" +
-                          "\"m1: d1\"," +
-                          "\"m2: d2\"" +
-                        "]," +
-                        "\"datalist\":[" +
-                          "{\"data\":\"l1\"}," +
-                          "{\"datalist\":[" +
-                            "{\"data\":\"l11\"}," +
-                            "{\"data\":\"l12\"}" +
-                          "]}" +
-                        "]}"));
+        assertEquals("{\"errors\":[" +
+                "\"m1: d1\"," +
+                "\"m2: d2\"" +
+                "]," +
+                "\"datalist\":[" +
+                "{\"data\":\"l1\"}," +
+                "{\"datalist\":[" +
+                "{\"data\":\"l11\"}," +
+                "{\"data\":\"l12\"}" +
+                "]}" +
+                "]}",
+                render(dataList));
     }
 
     @Test
-    public void testProcessingRenderingWithStackTraces() throws IOException, InterruptedException {
-        Exception exception=null;
+    void testProcessingRenderingWithStackTraces() throws IOException, InterruptedException {
+        Exception exception;
         // Create thrown exception
         try {
             throw new RuntimeException("Thrown");
         }
         catch (RuntimeException e) {
-            exception=e;
+            exception = e;
         }
 
         StringDataList dataList = createDataList();
 
         // Add errors
-        dataList.request().errors().add(new ErrorMessage("m1","d1",exception));
-        dataList.request().errors().add(new ErrorMessage("m2","d2"));
+        dataList.request().errors().add(new ErrorMessage("m1", "d1", exception));
+        dataList.request().errors().add(new ErrorMessage("m2", "d2"));
 
         assertEquals(
                 "{\"errors\":[" +
-                  "{" +
-                  "\"error\":\"m1: d1: Thrown\"," +
-                  "\"stacktrace\":\"java.lang.RuntimeException: Thrown\\n\\tat com.yahoo.processing.rendering.AsynchronousSectionedRendererTest.",
-                render(dataList).substring(0,157));
+                        "{" +
+                        "\"error\":\"m1: d1: Thrown\"," +
+                        "\"stacktrace\":\"java.lang.RuntimeException: Thrown\\n\\tat com.yahoo.processing.rendering.AsynchronousSectionedRendererTest.",
+                render(dataList).substring(0, 157));
     }
 
     @Test
-    public void testProcessingRenderingWithClonedErrorRequest() throws IOException, InterruptedException {
+    void testProcessingRenderingWithClonedErrorRequest() throws IOException, InterruptedException {
         StringDataList dataList = createDataList();
 
         // Add errors
-        dataList.request().errors().add(new ErrorMessage("m1","d1"));
-        dataList.request().errors().add(new ErrorMessage("m2","d2"));
+        dataList.request().errors().add(new ErrorMessage("m1", "d1"));
+        dataList.request().errors().add(new ErrorMessage("m2", "d2"));
         dataList.add(new StringDataList(dataList.request().clone())); // Cloning a request which contains errors
         // ... should not cause repetition of those errors
 
-        assertThat(render(dataList),
-                equalTo("{\"errors\":[" +
-                          "\"m1: d1\"," +
-                          "\"m2: d2\"" +
-                        "]," +
-                        "\"datalist\":[" +
-                          "{\"data\":\"l1\"}," +
-                          "{\"datalist\":[" +
-                            "{\"data\":\"l11\"}," +
-                            "{\"data\":\"l12\"}" +
-                          "]}," +
-                          "{\"datalist\":[]}" +
-                        "]}"));
+        assertEquals("{\"errors\":[" +
+                "\"m1: d1\"," +
+                "\"m2: d2\"" +
+                "]," +
+                "\"datalist\":[" +
+                "{\"data\":\"l1\"}," +
+                "{\"datalist\":[" +
+                "{\"data\":\"l11\"}," +
+                "{\"data\":\"l12\"}" +
+                "]}," +
+                "{\"datalist\":[]}" +
+                "]}",
+                render(dataList));
     }
 
     @Test
-    public void testProcessingRenderingWithClonedErrorRequestContainingNewErrors() throws IOException, InterruptedException {
+    void testProcessingRenderingWithClonedErrorRequestContainingNewErrors() throws IOException, InterruptedException {
         StringDataList dataList = createDataList();
 
         // Add errors
-        dataList.request().errors().add(new ErrorMessage("m1","d1"));
-        dataList.request().errors().add(new ErrorMessage("m2","d2"));
+        dataList.request().errors().add(new ErrorMessage("m1", "d1"));
+        dataList.request().errors().add(new ErrorMessage("m2", "d2"));
         dataList.add(new StringDataList(dataList.request().clone())); // Cloning a request containing errors
         // and adding new errors to it
-        dataList.asList().get(2).request().errors().add(new ErrorMessage("m3","d3"));
+        dataList.asList().get(2).request().errors().add(new ErrorMessage("m3", "d3"));
 
-        assertThat(render(dataList),
-                equalTo("{\"errors\":[" +
-                          "\"m1: d1\"," +
-                          "\"m2: d2\"" +
-                        "]," +
-                        "\"datalist\":[" +
-                          "{\"data\":\"l1\"}," +
-                          "{\"datalist\":[" +
-                            "{\"data\":\"l11\"}," +
-                            "{\"data\":\"l12\"}" +
-                          "]}," +
-                          "{\"errors\":[" +
-                            "\"m3: d3\"" +
-                           "]," +
-                           "\"datalist\":[]}" +
-                        "]}"));
+        assertEquals("{\"errors\":[" +
+                "\"m1: d1\"," +
+                "\"m2: d2\"" +
+                "]," +
+                "\"datalist\":[" +
+                "{\"data\":\"l1\"}," +
+                "{\"datalist\":[" +
+                "{\"data\":\"l11\"}," +
+                "{\"data\":\"l12\"}" +
+                "]}," +
+                "{\"errors\":[" +
+                "\"m3: d3\"" +
+                "]," +
+                "\"datalist\":[]}" +
+                "]}",
+                render(dataList));
     }
 
     public StringDataList createDataList() {
@@ -222,14 +217,14 @@ public class AsynchronousSectionedRendererTest {
         return render(renderer, data);
     }
 
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked"})
     public String render(Renderer renderer, DataList data) throws InterruptedException, IOException {
         TestContentChannel contentChannel = new TestContentChannel();
 
         Execution execution = Execution.createRoot(new NoopProcessor(), 0, null);
 
         final ContentChannelOutputStream stream = new ContentChannelOutputStream(contentChannel);
-        ListenableFuture result = renderer.render(stream, new Response(data), execution, null);
+        CompletableFuture<Boolean> result = renderer.renderResponse(stream, new Response(data), execution, null);
 
         int waitCounter = 1000;
         while (!result.isDone()) {
@@ -329,7 +324,7 @@ public class AsynchronousSectionedRendererTest {
         }
     }
 
-    private abstract class StringData extends ListenableFreezableClass implements Data {
+    private static abstract class StringData extends ListenableFreezableClass implements Data {
         private final Request request;
 
         private StringData(Request request) {
@@ -403,38 +398,8 @@ public class AsynchronousSectionedRendererTest {
         }
 
         @Override
-        public ListenableFuture<DataList<StringData>> complete() {
-            return new ListenableFuture<DataList<StringData>>() {
-                @Override
-                public void addListener(Runnable runnable, Executor executor) {
-                }
-
-                @Override
-                public boolean cancel(boolean b) {
-                    return false;
-                }
-
-                @Override
-                public boolean isCancelled() {
-                    return false;
-                }
-
-                @Override
-                public boolean isDone() {
-                    return true;
-                }
-
-                @Override
-                public DataList<StringData> get() throws InterruptedException, ExecutionException {
-                    return StringDataList.this;
-                }
-
-                @Override
-                public DataList<StringData> get(long l, TimeUnit timeUnit)
-                        throws InterruptedException, ExecutionException, TimeoutException {
-                    return StringDataList.this;
-                }
-            };
+        public CompletableFuture<DataList<StringData>> completeFuture() {
+            return CompletableFuture.completedFuture(this);
         }
 
         @Override

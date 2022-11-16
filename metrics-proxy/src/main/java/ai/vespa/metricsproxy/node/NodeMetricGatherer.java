@@ -1,16 +1,17 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.node;
 
 import ai.vespa.metricsproxy.core.MetricsManager;
 import ai.vespa.metricsproxy.metric.dimensions.ApplicationDimensions;
 import ai.vespa.metricsproxy.metric.dimensions.NodeDimensions;
+import ai.vespa.metricsproxy.metric.model.ConsumerId;
 import ai.vespa.metricsproxy.metric.model.MetricId;
 import ai.vespa.metricsproxy.metric.model.MetricsPacket;
 import ai.vespa.metricsproxy.metric.model.ServiceId;
 import ai.vespa.metricsproxy.service.SystemPollerProvider;
 import ai.vespa.metricsproxy.service.VespaServices;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.container.jdisc.state.CoredumpGatherer;
 import com.yahoo.container.jdisc.state.FileWrapper;
 import com.yahoo.container.jdisc.state.HostLifeGatherer;
@@ -18,6 +19,7 @@ import com.yahoo.container.jdisc.state.HostLifeGatherer;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static ai.vespa.metricsproxy.node.ServiceHealthGatherer.gatherServiceHealthMetrics;
@@ -30,8 +32,6 @@ import static ai.vespa.metricsproxy.node.ServiceHealthGatherer.gatherServiceHeal
  *
  * @author olaa
  */
-
-
 public class NodeMetricGatherer {
 
     private final VespaServices vespaServices;
@@ -80,6 +80,7 @@ public class NodeMetricGatherer {
                 builder.putMetric(MetricId.toMetricId(key), metrics.get(key).asLong());
             }
         }
+        builder.addConsumers(Set.of(ConsumerId.toConsumerId("Vespa")));
         builders.add(builder);
     }
 

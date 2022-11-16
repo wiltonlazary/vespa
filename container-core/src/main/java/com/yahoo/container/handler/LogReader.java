@@ -29,6 +29,7 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.PriorityQueue;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -43,12 +44,12 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * @author jonmv
  */
 class LogReader {
-    static final Pattern logArchivePathPattern = Pattern.compile("(\\d{4})/(\\d{2})/(\\d{2})/(\\d{2})-\\d+(.gz)?");
-    static final Pattern vespaLogPathPattern = Pattern.compile("vespa\\.log(?:-(\\d{4})-(\\d{2})-(\\d{2})\\.(\\d{2})-(\\d{2})-(\\d{2})(?:.gz)?)?");
+
+    static final Pattern logArchivePathPattern = Pattern.compile("(\\d{4})/(\\d{2})/(\\d{2})/(\\d{2})-\\d+(\\.gz|\\.zst)?");
+    static final Pattern vespaLogPathPattern = Pattern.compile("vespa\\.log(?:-(\\d{4})-(\\d{2})-(\\d{2})\\.(\\d{2})-(\\d{2})-(\\d{2})(?:\\.gz|\\.zst)?)?");
 
     private final Path logDirectory;
     private final Pattern logFilePattern;
-
 
     LogReader(String logDirectory, String logFilePattern) {
         this(Paths.get(Defaults.getDefaults().underVespaHome(logDirectory)), Pattern.compile(logFilePattern));
@@ -59,9 +60,10 @@ class LogReader {
         this.logFilePattern = logFilePattern;
     }
 
-    void writeLogs(OutputStream out, Instant from, Instant to, Optional<String> hostname) {
+    void writeLogs(OutputStream out, Instant from, Instant to, long maxLines, Optional<String> hostname) {
         double fromSeconds = from.getEpochSecond() + from.getNano() / 1e9;
         double toSeconds = to.getEpochSecond() + to.getNano() / 1e9;
+        long linesWritten = 0;
         BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(out));
         for (List<Path> logs : getMatchingFiles(from, to)) {
             List<LogLineIterator> logLineIterators = new ArrayList<>();
@@ -72,9 +74,18 @@ class LogReader {
 
                 Iterator<LineWithTimestamp> lines = Iterators.mergeSorted(logLineIterators,
                                                                           Comparator.comparingDouble(LineWithTimestamp::timestamp));
+                PriorityQueue<LineWithTimestamp> heap = new PriorityQueue<>(Comparator.comparingDouble(LineWithTimestamp::timestamp));
                 while (lines.hasNext()) {
-                    String line = lines.next().line();
-                    writer.write(line);
+                    heap.offer(lines.next());
+                    if (heap.size() > 1000) {
+                        if (linesWritten++ >= maxLines) return;
+                        writer.write(heap.poll().line);
+                        writer.newLine();
+                    }
+                }
+                while ( ! heap.isEmpty()) {
+                    if (linesWritten++ >= maxLines) return;
+                    writer.write(heap.poll().line);
                     writer.newLine();
                 }
             }
@@ -97,22 +108,44 @@ class LogReader {
         private final double to;
         private final Optional<String> hostname;
         private LineWithTimestamp next;
+        private Process zcat = null;
+
+        private InputStream openFile(Path log) {
+            boolean gzipped = log.toString().endsWith(".gz");
+            boolean is_zstd = log.toString().endsWith(".zst");
+            try {
+                if (gzipped) {
+                    var in_gz = Files.newInputStream(log);
+                    return new GZIPInputStream(in_gz);
+                } else if (is_zstd) {
+                    var pb = new ProcessBuilder("zstdcat", log.toString());
+                    pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+                    zcat = pb.start();
+                    zcat.getOutputStream().close();
+                    return zcat.getInputStream();
+                } else {
+                    try {
+                        return Files.newInputStream(log);
+                    } catch (NoSuchFileException e) { // File may have been compressed since we found it.
+                        Path p = Paths.get(log + ".gz");
+                        if (Files.exists(p)) {
+                            return openFile(p);
+                        }
+                        p = Paths.get(log + ".zst");
+                        if (Files.exists(p)) {
+                            return openFile(p);
+                        }
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+            // failure fallback:
+            return InputStream.nullInputStream();
+        }
 
         private LogLineIterator(Path log, double from, double to, Optional<String> hostname) throws IOException {
-            boolean zipped = log.toString().endsWith(".gz");
-            InputStream in = InputStream.nullInputStream();
-            try {
-                in = Files.newInputStream(log);
-            }
-            catch (NoSuchFileException e) {
-                if ( ! zipped)
-                    try {
-                        in = Files.newInputStream(Paths.get(log.toString() + ".gz"));
-                        zipped = true;
-                    }
-                    catch (NoSuchFileException ignored) { }
-            }
-            this.reader = new BufferedReader(new InputStreamReader(zipped ? new GZIPInputStream(in) : in, UTF_8));
+            InputStream in = openFile(log);
+            this.reader = new BufferedReader(new InputStreamReader(in, UTF_8));
             this.from = from;
             this.to = to;
             this.hostname = hostname;
@@ -134,6 +167,9 @@ class LogReader {
         @Override
         public void close() throws IOException {
             reader.close();
+            if (zcat != null) {
+                zcat.destroy();
+            }
         }
 
         private LineWithTimestamp readNext() {
@@ -143,7 +179,7 @@ class LogReader {
                     if (parts.length != 7)
                         continue;
 
-                    if (hostname.map(host -> !host.equals(parts[1])).orElse(false))
+                    if (hostname.map(host -> ! host.equals(parts[1])).orElse(false))
                         continue;
 
                     double timestamp = Double.parseDouble(parts[0]);
@@ -252,6 +288,7 @@ class LogReader {
                                 .toInstant()
                                 .plus(Duration.ofSeconds(1));
         }
+        // TODO: accept .zst files when the io.airlift library supports streamed input.
         throw new IllegalArgumentException("Unrecognized file pattern for file at '" + path + "'");
     }
 

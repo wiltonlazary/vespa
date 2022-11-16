@@ -3,19 +3,19 @@ package com.yahoo.vespa.model.builder.xml.dom;
 
 import com.yahoo.collections.Tuple2;
 import com.yahoo.config.ConfigurationRuntimeException;
+import com.yahoo.config.FileReference;
+import com.yahoo.config.ModelReference;
+import com.yahoo.config.UrlReference;
+import com.yahoo.text.XML;
 import com.yahoo.vespa.config.ConfigDefinition;
 import com.yahoo.vespa.config.ConfigDefinitionKey;
 import com.yahoo.vespa.config.ConfigPayloadBuilder;
-import com.yahoo.yolean.Exceptions;
-import com.yahoo.text.XML;
-
 import com.yahoo.vespa.config.util.ConfigUtils;
+import com.yahoo.yolean.Exceptions;
 import org.w3c.dom.Element;
-
 import java.util.List;
-import java.util.regex.Matcher;
+import java.util.Optional;
 import java.util.regex.Pattern;
-
 
 /**
  * Builder that transforms xml config to a slime tree representation of the config. The root element of the xml config
@@ -39,8 +39,8 @@ public class DomConfigPayloadBuilder {
     /**
      * Builds a {@link ConfigPayloadBuilder} representing the input 'config' xml element.
      *
-     * @param configE        The 'config' xml element
-     * @return a new payload builder built from xml.
+     * @param configE the 'config' xml element
+     * @return a new payload builder built from xml
      */
     public ConfigPayloadBuilder build(Element configE) {
         parseConfigName(configE);
@@ -54,19 +54,19 @@ public class DomConfigPayloadBuilder {
 
     public static ConfigDefinitionKey parseConfigName(Element configE) {
         if (!configE.getNodeName().equals("config")) {
-            throw new ConfigurationRuntimeException("The root element must be 'config', but was '" + configE.getNodeName() + "'.");
+            throw new IllegalArgumentException("The root element must be 'config', but was '" + configE.getNodeName() + "'");
         }
 
         if (!configE.hasAttribute("name")) {
-            throw new ConfigurationRuntimeException
-                    ("The 'config' element must have a 'name' attribute that matches the name of the config definition.");
+            throw new IllegalArgumentException
+                    ("The 'config' element must have a 'name' attribute that matches the name of the config definition");
         }
 
         String elementString = configE.getAttribute("name");
         if (!elementString.contains(".")) {
-            throw new ConfigurationRuntimeException("The config name '" + elementString +
-                                                            "' contains illegal characters. Only names with the pattern " +
-                                                            namespacePattern.pattern() + "." + namePattern.pattern() + " are legal.");
+            throw new IllegalArgumentException("The config name '" + elementString +
+                                               "' contains illegal characters. Only names with the pattern " +
+                                               namespacePattern.pattern() + "." + namePattern.pattern() + " are legal.");
         }
 
         Tuple2<String, String> t = ConfigUtils.getNameAndNamespaceFromString(elementString);
@@ -74,29 +74,27 @@ public class DomConfigPayloadBuilder {
         String xmlNamespace = t.second;
 
         if (!validName(xmlName)) {
-            throw new ConfigurationRuntimeException("The config name '" + xmlName +
-                    "' contains illegal characters. Only names with the pattern " + namePattern.toString() + " are legal.");
+            throw new IllegalArgumentException("The config name '" + xmlName +
+                                               "' contains illegal characters. Only names with the pattern " +
+                                               namePattern.toString() + " are legal.");
         }
 
         if (!validNamespace(xmlNamespace)) {
-            throw new ConfigurationRuntimeException("The config namespace '" + xmlNamespace +
-                    "' contains illegal characters. Only namespaces with the pattern " + namespacePattern.toString() + " are legal.");
+            throw new IllegalArgumentException("The config namespace '" + xmlNamespace +
+                                               "' contains illegal characters. Only namespaces with the pattern " +
+                                               namespacePattern.toString() + " are legal.");
         }
         return new ConfigDefinitionKey(xmlName, xmlNamespace);
     }
 
     private static boolean validName(String name) {
         if (name == null) return false;
-
-        Matcher m = namePattern.matcher(name);
-        return m.matches();
+        return namePattern.matcher(name).matches();
     }
 
     private static boolean validNamespace(String namespace) {
         if (namespace == null) return false;
-
-        Matcher m = namespacePattern.matcher(namespace);
-        return m.matches();
+        return namespacePattern.matcher(namespace).matches();
     }
 
     private String extractName(Element element) {
@@ -120,48 +118,47 @@ public class DomConfigPayloadBuilder {
         return buf.toString();
     }
 
-    /**
-     * Parse leaf value in an xml tree
-     */
+    /** Parse leaf value in an xml tree. */
     private void parseLeaf(Element element, ConfigPayloadBuilder payloadBuilder, String parentName) {
         String name = extractName(element);
         String value = XML.getValue(element);
         if (value == null) {
-            throw new ConfigurationRuntimeException("Element '" + name + "' must have either children or a value");
+            throw new IllegalArgumentException("Element '" + name + "' must have either children or a value");
         }
 
-        if (element.hasAttribute("operation")) {
-            // leaf array, currently the only supported operation is 'append'
-            verifyLegalOperation(element);
-            ConfigPayloadBuilder.Array a = payloadBuilder.getArray(name);
-            a.append(value);
-        } else if ("item".equals(name)) {
+        if ("item".equals(name)) {
             if (parentName == null)
-                throw new ConfigurationRuntimeException("<item> is a reserved keyword for array and map elements");
+                throw new IllegalArgumentException("<item> is a reserved keyword for array and map elements");
             if (element.hasAttribute("key")) {
                 payloadBuilder.getMap(parentName).put(element.getAttribute("key"), value);
             } else {
                 payloadBuilder.getArray(parentName).append(value);
             }
-        } else {
-            // leaf scalar, e.g. <intVal>3</intVal>
+        }
+        else if (element.hasAttribute("model-id") || element.hasAttribute("url") || element.hasAttribute("path")) {
+            // special syntax for "model" fields
+            var model = ModelReference.unresolved(modelElement("model-id", element),
+                                                  modelElement("url", element).map(UrlReference::new),
+                                                  modelElement("path", element).map(FileReference::new));
+            payloadBuilder.setField(name, model.toString());
+        }
+        else { // leaf value: <myValueName>value</myValue>
             payloadBuilder.setField(name, value);
         }
+    }
+
+    private Optional<String> modelElement(String attributeName, Element element) {
+        Optional<String> value = XML.attribute(attributeName, element);
+        if (value.isPresent() && value.get().contains(" "))
+            throw new IllegalArgumentException("The value of " + attributeName + " on " + element.getTagName() +
+                                               "cannot contain space");
+        return value;
     }
 
     private void parseComplex(Element element, List<Element> children, ConfigPayloadBuilder payloadBuilder, String parentName) {
         String name = extractName(element);
          // Inner value
-        if (element.hasAttribute("operation")) {
-            // inner array, currently the only supported operation is 'append'
-            verifyLegalOperation(element);
-            ConfigPayloadBuilder childPayloadBuilder = payloadBuilder.getArray(name).append();
-            //Cursor array = node.setArray(name);
-            for (Element child : children) {
-                //Cursor struct = array.addObject();
-                parseElement(child, childPayloadBuilder, name);
-            }
-        } else if ("item".equals(name)) {
+        if ("item".equals(name)) {
             // Reserved item means array/map element as struct
             if (element.hasAttribute("key")) {
                 ConfigPayloadBuilder childPayloadBuilder = payloadBuilder.getMap(parentName).get(element.getAttribute("key"));
@@ -193,7 +190,7 @@ public class DomConfigPayloadBuilder {
                     parseElement(child, payloadBuilder, name);
                 }
             } else {
-                throw new ConfigurationRuntimeException("<item> is a reserved keyword for array and map elements");
+                throw new IllegalArgumentException("<item> is a reserved keyword for array and map elements");
             }
         }
     }
@@ -212,16 +209,9 @@ public class DomConfigPayloadBuilder {
                 parseComplex(currElem, children, payloadBuilder, parentName);
             }
         } catch (Exception exception) {
-            throw new ConfigurationRuntimeException("Error parsing element at " + XML.getNodePath(currElem, " > ") + ": " +
-                    Exceptions.toMessageString(exception));
+            throw new IllegalArgumentException("Error parsing element at " + XML.getNodePath(currElem, " > ") +
+                                               ": " + Exceptions.toMessageString(exception));
         }
-    }
-
-    private void verifyLegalOperation(Element currElem) {
-        String operation = currElem.getAttribute("operation");
-        if (! operation.equalsIgnoreCase("append"))
-            throw new ConfigurationRuntimeException("The only supported array operation is 'append', got '"
-                    + operation + "' at XML node '" + XML.getNodePath(currElem, " > ") + "'.");
     }
 
 }

@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "btree_bucket_database.h"
 #include "generic_btree_bucket_database.hpp"
@@ -100,7 +100,7 @@ struct BTreeBucketDatabase::ReplicaValueTraits {
 template class bucketdb::GenericBTreeBucketDatabase<BTreeBucketDatabase::ReplicaValueTraits>;
 
 BTreeBucketDatabase::BTreeBucketDatabase()
-    : _impl(std::make_unique<ImplType>(make_default_array_store_config<ReplicaValueTraits::DataStoreType>()))
+    : _impl(std::make_unique<ImplType>(make_default_array_store_config<ReplicaValueTraits::DataStoreType>(), std::shared_ptr<vespalib::alloc::MemoryAllocator>()))
 {
 }
 

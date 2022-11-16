@@ -2,7 +2,7 @@
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/searchlib/docstore/logdocumentstore.h>
 #include <vespa/searchlib/docstore/value.h>
-#include <vespa/searchlib/docstore/cachestats.h>
+#include <vespa/vespalib/stllike/cache_stats.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/fieldvalue/document.h>
 
@@ -13,6 +13,7 @@ document::DocumentTypeRepo repo;
 
 struct NullDataStore : IDataStore {
     NullDataStore() : IDataStore("") {}
+    ~NullDataStore() override;
     ssize_t read(uint32_t, vespalib::DataBuffer &) const override { return 0; }
     void read(const LidVector &, IBufferVisitor &) const override { }
     void write(uint64_t, uint32_t, const void *, size_t) override {}
@@ -25,6 +26,7 @@ struct NullDataStore : IDataStore {
     size_t memoryMeta() const override { return 0; }
     size_t getDiskFootprint() const override { return 0; }
     size_t getDiskBloat() const override { return 0; }
+    size_t getMaxSpreadAsBloat() const override { return 0; }
     uint64_t lastSyncToken() const override { return 0; }
     uint64_t tentativeLastSyncToken() const override { return 0; }
     vespalib::system_time getLastFlushTime() const override { return vespalib::system_time(); }
@@ -44,6 +46,8 @@ struct NullDataStore : IDataStore {
     size_t getEstimatedShrinkLidSpaceGain() const override { return 0; }
     void shrinkLidSpace() override {}
 };
+
+NullDataStore::~NullDataStore() = default;
 
 TEST_FFF("require that uncache docstore lookups are counted",
          DocumentStore::Config(CompressionConfig::NONE, 0, 0),

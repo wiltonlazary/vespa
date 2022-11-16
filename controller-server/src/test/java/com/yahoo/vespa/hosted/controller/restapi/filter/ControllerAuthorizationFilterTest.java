@@ -4,13 +4,14 @@ package com.yahoo.vespa.hosted.controller.restapi.filter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yahoo.application.container.handler.Request;
 import com.yahoo.config.provision.SystemName;
+import com.yahoo.config.provision.TenantName;
 import com.yahoo.jdisc.http.HttpRequest.Method;
 import com.yahoo.jdisc.http.filter.DiscFilterRequest;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
 import com.yahoo.vespa.hosted.controller.api.role.Role;
 import com.yahoo.vespa.hosted.controller.api.role.SecurityContext;
 import com.yahoo.vespa.hosted.controller.restapi.ApplicationRequestToDiscFilterRequestWrapper;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -19,9 +20,9 @@ import java.util.Set;
 
 import static com.yahoo.container.jdisc.RequestHandlerTestDriver.MockResponseHandler;
 import static com.yahoo.jdisc.http.HttpResponse.Status.FORBIDDEN;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author bjorncs
@@ -32,7 +33,7 @@ public class ControllerAuthorizationFilterTest {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     @Test
-    public void operator() {
+    void operator() {
         ControllerTester tester = new ControllerTester();
         SecurityContext securityContext = new SecurityContext(() -> "operator", Set.of(Role.hostedOperator()));
         ControllerAuthorizationFilter filter = createFilter(tester);
@@ -43,7 +44,7 @@ public class ControllerAuthorizationFilterTest {
     }
 
     @Test
-    public void supporter() {
+    void supporter() {
         ControllerTester tester = new ControllerTester();
         SecurityContext securityContext = new SecurityContext(() -> "operator", Set.of(Role.hostedSupporter()));
         ControllerAuthorizationFilter filter = createFilter(tester);
@@ -53,7 +54,7 @@ public class ControllerAuthorizationFilterTest {
     }
 
     @Test
-    public void unprivileged() {
+    void unprivileged() {
         ControllerTester tester = new ControllerTester();
         SecurityContext securityContext = new SecurityContext(() -> "user", Set.of(Role.everyone()));
         ControllerAuthorizationFilter filter = createFilter(tester);
@@ -64,9 +65,8 @@ public class ControllerAuthorizationFilterTest {
     }
 
     @Test
-    public void unprivilegedInPublic() {
-        ControllerTester tester = new ControllerTester();
-        tester.zoneRegistry().setSystemName(SystemName.Public);
+    void unprivilegedInPublic() {
+        ControllerTester tester = new ControllerTester(SystemName.Public);
         SecurityContext securityContext = new SecurityContext(() -> "user", Set.of(Role.everyone()));
 
         ControllerAuthorizationFilter filter = createFilter(tester);
@@ -75,15 +75,27 @@ public class ControllerAuthorizationFilterTest {
         assertIsAllowed(invokeFilter(filter, createRequest(Method.GET, "/zone/v1/path", securityContext)));
     }
 
+    @Test
+    void hostedDeveloper() {
+        ControllerTester tester = new ControllerTester();
+        TenantName tenantName = TenantName.defaultName();
+        SecurityContext securityContext = new SecurityContext(() -> "user", Set.of(Role.hostedDeveloper(tenantName)));
+
+        ControllerAuthorizationFilter filter = createFilter(tester);
+        assertIsAllowed(invokeFilter(filter, createRequest(Method.POST, "/application/v4/tenant/" + tenantName.value() + "/application/app/instance/default/environment/dev/region/region/deploy", securityContext)));
+        assertIsForbidden(invokeFilter(filter, createRequest(Method.POST, "/application/v4/tenant/" + tenantName.value() + "/application/app/instance/default/environment/prod/region/region/deploy", securityContext)));
+        assertIsForbidden(invokeFilter(filter, createRequest(Method.POST, "/application/v4/tenant/" + tenantName.value() + "/application/app/submit", securityContext)));
+    }
+
     private static void assertIsAllowed(Optional<AuthorizationResponse> response) {
-        assertFalse("Expected no response from filter, but got \"" +
-                    response.map(r -> r.message + "\" (" + r.statusCode + ")").orElse(""),
-                    response.isPresent());
+        assertFalse(response.isPresent(),
+                    "Expected no response from filter, but got \"" +
+                    response.map(r -> r.message + "\" (" + r.statusCode + ")").orElse(""));
     }
 
     private static void assertIsForbidden(Optional<AuthorizationResponse> response) {
-        assertTrue("Expected a response from filter", response.isPresent());
-        assertEquals("Invalid status code", FORBIDDEN, response.get().statusCode);
+        assertTrue(response.isPresent(), "Expected a response from filter");
+        assertEquals(FORBIDDEN, response.get().statusCode, "Invalid status code");
     }
 
     private static ControllerAuthorizationFilter createFilter(ControllerTester tester) {

@@ -16,13 +16,7 @@ DotProductBlueprint::DotProductBlueprint(const FieldSpec &field)
 {
 }
 
-DotProductBlueprint::~DotProductBlueprint()
-{
-    while (!_terms.empty()) {
-        delete _terms.back();
-        _terms.pop_back();
-    }
-}
+DotProductBlueprint::~DotProductBlueprint() = default;
 
 FieldSpec
 DotProductBlueprint::getNextChildField(const FieldSpec &outer)
@@ -43,8 +37,7 @@ DotProductBlueprint::addTerm(Blueprint::UP term, int32_t weight)
         setEstimate(_estimate);
     }
     _weights.push_back(weight);
-    _terms.push_back(term.get());
-    term.release();
+    _terms.push_back(std::move(term));
 }
 
 SearchIterator::UP
@@ -52,6 +45,7 @@ DotProductBlueprint::createLeafSearch(const search::fef::TermFieldMatchDataArray
                                       bool) const
 {
     assert(tfmda.size() == 1);
+    assert(getState().numFields() == 1);
     fef::MatchData::UP md = _layout.createMatchData();
     std::vector<fef::TermFieldMatchData*> childMatch;
     std::vector<SearchIterator*> children(_terms.size());
@@ -62,7 +56,8 @@ DotProductBlueprint::createLeafSearch(const search::fef::TermFieldMatchDataArray
         // TODO: pass ownership with unique_ptr
         children[i] = _terms[i]->createSearch(*md, true).release();
     }
-    return DotProductSearch::create(children, *tfmda[0], childMatch, _weights, std::move(md));
+    bool field_is_filter = getState().fields()[0].isFilter();
+    return DotProductSearch::create(children, *tfmda[0], field_is_filter, childMatch, _weights, std::move(md));
 }
 
 SearchIterator::UP

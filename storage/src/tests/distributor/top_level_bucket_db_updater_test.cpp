@@ -4,6 +4,7 @@
 #include <vespa/storage/distributor/top_level_bucket_db_updater.h>
 #include <vespa/storage/distributor/bucket_space_distribution_context.h>
 #include <vespa/storage/distributor/distributormetricsset.h>
+#include <vespa/storage/distributor/node_supported_features_repo.h>
 #include <vespa/storage/distributor/pending_bucket_space_db_transition.h>
 #include <vespa/storage/distributor/outdated_nodes_map.h>
 #include <vespa/storage/storageutil/distributorstatecache.h>
@@ -119,6 +120,21 @@ public:
                                        invalid_bucket_count));
     }
 
+    void fake_bucket_reply(const lib::ClusterState &state,
+                           const api::StorageCommand &cmd,
+                           uint32_t bucket_count,
+                           const std::function<void(api::RequestBucketInfoReply&)>& reply_decorator)
+    {
+        ASSERT_EQ(cmd.getType(), MessageType::REQUESTBUCKETINFO);
+        const api::StorageMessageAddress& address(*cmd.getAddress());
+        auto reply = make_fake_bucket_reply(state,
+                                            dynamic_cast<const RequestBucketInfoCommand &>(cmd),
+                                            address.getIndex(),
+                                            bucket_count, 0);
+        reply_decorator(*reply);
+        bucket_db_updater().onRequestBucketInfoReply(reply);
+    }
+
     void send_fake_reply_for_single_bucket_request(
             const api::RequestBucketInfoCommand& rbi)
     {
@@ -232,7 +248,7 @@ public:
         }
     }
 
-    api::StorageMessageAddress storage_address(uint16_t node) {
+    static api::StorageMessageAddress storage_address(uint16_t node) {
         static vespalib::string _storage("storage");
         return api::StorageMessageAddress(&_storage, lib::NodeType::STORAGE, node);
     }
@@ -1299,7 +1315,7 @@ TEST_F(TopLevelBucketDBUpdaterTest, merge_reply_node_down_after_request_sent) {
     add_nodes_to_stripe_bucket_db(bucket_id, "0=1234,1=1234,2=1234");
 
     for (uint32_t i = 0; i < 3; ++i) {
-        nodes.push_back(api::MergeBucketCommand::Node(i));
+        nodes.emplace_back(i);
     }
 
     api::MergeBucketCommand cmd(makeDocumentBucket(bucket_id), nodes, 0);
@@ -2282,53 +2298,6 @@ TEST_F(TopLevelBucketDBUpdaterTest, batch_update_from_distributor_change_does_no
                       "0:5/1/2/3|1:5/7/8/9", true));
 }
 
-// TODO remove on Vespa 8 - this is a workaround for https://github.com/vespa-engine/vespa/issues/8475
-TEST_F(TopLevelBucketDBUpdaterTest, global_distribution_hash_falls_back_to_legacy_format_upon_request_rejection) {
-    set_distribution(dist_config_6_nodes_across_2_groups());
-
-    const vespalib::string current_hash = "(0d*|*(0;0;1;2)(1;3;4;5))";
-    const vespalib::string legacy_hash = "(0d3|3|*(0;0;1;2)(1;3;4;5))";
-
-    set_cluster_state("distributor:6 storage:6");
-    ASSERT_EQ(message_count(6), _sender.commands().size());
-
-    api::RequestBucketInfoCommand* global_req = nullptr;
-    for (auto& cmd : _sender.commands()) {
-        auto& req_cmd = dynamic_cast<api::RequestBucketInfoCommand&>(*cmd);
-        if (req_cmd.getBucketSpace() == document::FixedBucketSpaces::global_space()) {
-            global_req = &req_cmd;
-            break;
-        }
-    }
-    ASSERT_TRUE(global_req != nullptr);
-    ASSERT_EQ(current_hash, global_req->getDistributionHash());
-
-    auto reply = std::make_shared<api::RequestBucketInfoReply>(*global_req);
-    reply->setResult(api::ReturnCode::REJECTED);
-    bucket_db_updater().onRequestBucketInfoReply(reply);
-
-    fake_clock().addSecondsToTime(10);
-    bucket_db_updater().resend_delayed_messages();
-
-    // Should now be a resent request with legacy distribution hash
-    ASSERT_EQ(message_count(6) + 1, _sender.commands().size());
-    auto& legacy_req = dynamic_cast<api::RequestBucketInfoCommand&>(*_sender.commands().back());
-    ASSERT_EQ(legacy_hash, legacy_req.getDistributionHash());
-
-    // Now if we reject it _again_ we should cycle back to the current hash
-    // in case it wasn't a hash-based rejection after all. And the circle of life continues.
-    reply = std::make_shared<api::RequestBucketInfoReply>(legacy_req);
-    reply->setResult(api::ReturnCode::REJECTED);
-    bucket_db_updater().onRequestBucketInfoReply(reply);
-
-    fake_clock().addSecondsToTime(10);
-    bucket_db_updater().resend_delayed_messages();
-
-    ASSERT_EQ(message_count(6) + 2, _sender.commands().size());
-    auto& new_current_req = dynamic_cast<api::RequestBucketInfoCommand&>(*_sender.commands().back());
-    ASSERT_EQ(current_hash, new_current_req.getDistributionHash());
-}
-
 namespace {
 
 template <typename Func>
@@ -2531,6 +2500,67 @@ TEST_F(TopLevelBucketDBUpdaterTest, pending_cluster_state_getter_is_non_null_onl
         EXPECT_TRUE(state == nullptr);
     }
 }
+
+TEST_F(TopLevelBucketDBUpdaterTest, node_feature_sets_are_aggregated_from_nodes_and_propagated_to_stripes) {
+    lib::ClusterState state("distributor:1 storage:3");
+    set_cluster_state(state);
+    uint32_t expected_msgs = message_count(3), dummy_buckets_to_return = 1;
+
+    // Known feature sets are initially empty.
+    auto stripes = distributor_stripes();
+    for (auto* s : stripes) {
+        for (uint16_t i : {0, 1, 2}) {
+            EXPECT_FALSE(s->node_supported_features_repo().node_supported_features(i).unordered_merge_chaining);
+            EXPECT_FALSE(s->node_supported_features_repo().node_supported_features(i).two_phase_remove_location);
+            EXPECT_FALSE(s->node_supported_features_repo().node_supported_features(i).no_implicit_indexing_of_active_buckets);
+        }
+    }
+
+    ASSERT_EQ(expected_msgs, _sender.commands().size());
+    for (uint32_t i = 0; i < _sender.commands().size(); i++) {
+        ASSERT_NO_FATAL_FAILURE(fake_bucket_reply(state, *_sender.command(i),
+                                                  dummy_buckets_to_return, [i](auto& reply) noexcept {
+            // Pretend nodes 1 and 2 are on a shiny version with support for new features.
+            // Node 0 does not support the fanciness.
+            if (i > 0) {
+                reply.supported_node_features().unordered_merge_chaining = true;
+                reply.supported_node_features().two_phase_remove_location = true;
+                reply.supported_node_features().no_implicit_indexing_of_active_buckets = true;
+            }
+        }));
+    }
+
+    // Node features should be propagated to all stripes
+    for (auto* s : stripes) {
+        EXPECT_FALSE(s->node_supported_features_repo().node_supported_features(0).unordered_merge_chaining);
+        EXPECT_FALSE(s->node_supported_features_repo().node_supported_features(0).two_phase_remove_location);
+        EXPECT_FALSE(s->node_supported_features_repo().node_supported_features(0).no_implicit_indexing_of_active_buckets);
+
+        EXPECT_TRUE(s->node_supported_features_repo().node_supported_features(1).unordered_merge_chaining);
+        EXPECT_TRUE(s->node_supported_features_repo().node_supported_features(1).two_phase_remove_location);
+        EXPECT_TRUE(s->node_supported_features_repo().node_supported_features(1).no_implicit_indexing_of_active_buckets);
+
+        EXPECT_TRUE(s->node_supported_features_repo().node_supported_features(2).unordered_merge_chaining);
+        EXPECT_TRUE(s->node_supported_features_repo().node_supported_features(2).two_phase_remove_location);
+        EXPECT_TRUE(s->node_supported_features_repo().node_supported_features(2).no_implicit_indexing_of_active_buckets);
+    }
+}
+
+TEST_F(TopLevelBucketDBUpdaterTest, outdated_bucket_info_reply_is_ignored) {
+    set_cluster_state("version:1 distributor:1 storage:1");
+    ASSERT_EQ(message_count(1), _sender.commands().size());
+    auto req = std::dynamic_pointer_cast<api::RequestBucketInfoCommand>(_sender.commands().front());
+    _sender.clear();
+    // Force a new pending cluster state which overwrites the pending one.
+    lib::ClusterState new_state("version:2 distributor:1 storage:2");
+    set_cluster_state(new_state);
+
+    const api::StorageMessageAddress& address(*req->getAddress());
+    bool handled = bucket_db_updater().onRequestBucketInfoReply(
+            make_fake_bucket_reply(new_state, *req, address.getIndex(), 0, 0));
+    EXPECT_TRUE(handled); // Should be returned as handled even though it's technically ignored.
+}
+
 
 struct BucketDBUpdaterSnapshotTest : TopLevelBucketDBUpdaterTest {
     lib::ClusterState empty_state;

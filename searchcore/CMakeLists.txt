@@ -7,15 +7,11 @@ vespa_define_module(
     vespalib
     metrics
     config_cloudconfig
-    fastlib_fast
-    juniper
     configdefinitions
     document
     searchlib
     messagebus
-    documentapi
     persistence
-    searchcorespi
     searchsummary
     fileacquirer
 
@@ -41,12 +37,14 @@ vespa_define_module(
     src/vespa/searchcore/proton/server
     src/vespa/searchcore/proton/summaryengine
     src/vespa/searchcore/proton/test
+    src/vespa/searchcorespi
+    src/vespa/searchcorespi/flush
+    src/vespa/searchcorespi/index
 
     APPS
     src/apps/proton
     src/apps/tests
     src/apps/verify_ranksetup
-    src/apps/vespa-dump-feed
     src/apps/vespa-feed-bm
     src/apps/vespa-gen-testdocs
     src/apps/vespa-proton-cmd
@@ -61,8 +59,8 @@ vespa_define_module(
     src/tests/proton/attribute/attribute_initializer
     src/tests/proton/attribute/attribute_manager
     src/tests/proton/attribute/attribute_populator
+    src/tests/proton/attribute/attribute_transient_memory_calculator
     src/tests/proton/attribute/attribute_usage_filter
-    src/tests/proton/attribute/attribute_usage_sampler_functor
     src/tests/proton/attribute/attribute_usage_stats
     src/tests/proton/attribute/attributes_state_explorer
     src/tests/proton/attribute/document_field_extractor
@@ -78,6 +76,7 @@ vespa_define_module(
     src/tests/proton/common/hw_info_sampler
     src/tests/proton/common/operation_rate_tracker
     src/tests/proton/common/state_reporter_utils
+    src/tests/proton/common/timer
     src/tests/proton/docsummary
     src/tests/proton/document_iterator
     src/tests/proton/documentdb
@@ -90,6 +89,7 @@ vespa_define_module(
     src/tests/proton/documentdb/documentbucketmover
     src/tests/proton/documentdb/documentdbconfig
     src/tests/proton/documentdb/documentdbconfigscout
+    src/tests/proton/documentdb/executor_threading_service
     src/tests/proton/documentdb/feedhandler
     src/tests/proton/documentdb/feedview
     src/tests/proton/documentdb/fileconfigmanager
@@ -101,6 +101,8 @@ vespa_define_module(
     src/tests/proton/documentdb/threading_service_config
     src/tests/proton/documentmetastore
     src/tests/proton/documentmetastore/lidreusedelayer
+    src/tests/proton/documentmetastore/lid_allocator
+    src/tests/proton/documentmetastore/lid_state_vector
     src/tests/proton/feed_and_search
     src/tests/proton/feedoperation
     src/tests/proton/feedtoken
@@ -151,9 +153,12 @@ vespa_define_module(
     src/tests/proton/server/health_adapter
     src/tests/proton/server/memory_flush_config_updater
     src/tests/proton/server/memoryflush
+    src/tests/proton/server/shared_threading_service
     src/tests/proton/statusreport
     src/tests/proton/summaryengine
     src/tests/proton/verify_ranksetup
+    src/tests/index/disk_indexes
+    src/tests/index/index_disk_layout
 
     TEST_DEPENDS
     messagebus_messagebus-test

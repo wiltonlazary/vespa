@@ -22,7 +22,7 @@ class FixedTypeRepo;
 class FieldSet;
 class StructDataType;
 
-class StructFieldValue : public StructuredFieldValue
+class StructFieldValue final : public StructuredFieldValue
 {
 private:
     SerializableArray       _fields;
@@ -34,7 +34,6 @@ private:
 
 public:
     using UP = std::unique_ptr<StructFieldValue>;
-    using CompressionConfig = vespalib::compression::CompressionConfig;
 
     StructFieldValue(const DataType &type);
     StructFieldValue(const StructFieldValue & rhs);
@@ -48,19 +47,14 @@ public:
     void setDocumentType(const DocumentType & docType) { _doc_type = & docType; }
     const SerializableArray & getFields() const { return _fields; }
 
-    void lazyDeserialize(const FixedTypeRepo &repo,
-                         uint16_t version,
-                         SerializableArray::EntryMap && fields,
-                         ByteBuffer buffer,
-                         CompressionConfig::Type comp_type,
-                         int32_t uncompressed_length);
+    void lazyDeserialize(const FixedTypeRepo &repo, uint16_t version, SerializableArray::EntryMap && fields, ByteBuffer buffer);
 
     // returns false if the field could not be serialized.
     bool serializeField(int raw_field_id, uint16_t version, FieldValueWriter &writer) const;
     uint16_t getVersion() const { return _version; }
 
     // raw_ids may contain ids for elements not in the struct's datatype.
-    void getRawFieldIds(std::vector<int> &raw_ids) const;
+    std::vector<int> getRawFieldIds() const;
     void getRawFieldIds(std::vector<int> &raw_ids, const FieldSet& fieldSet) const;
 
     void accept(FieldValueVisitor &visitor) override { visitor.visit(*this); }
@@ -69,8 +63,6 @@ public:
     bool hasField(vespalib::stringref name) const override;
     const Field& getField(vespalib::stringref name) const override;
     void clear() override;
-
-    const CompressionConfig &getCompressionConfig() const;
 
     // FieldValue implementation.
     FieldValue& assign(const FieldValue&) override;
@@ -84,7 +76,12 @@ public:
 
     bool empty() const override;
 
-    bool hasChanged() const override { return _hasChanged; }
+    /**
+     * Returns true if this object have been altered since last
+     * serialization/deserialization. If hasChanged() is false, then cached
+     * information from last serialization effort is still valid.
+     */
+    bool hasChanged() const { return _hasChanged; }
 
     uint32_t calculateChecksum() const;
 
@@ -93,9 +90,6 @@ public:
      * has no content. This clears content and sets changed to false.
      */
     void reset();
-
-    DECLARE_IDENTIFIABLE_ABSTRACT(StructFieldValue);
-
 private:
     void setFieldValue(const Field&, FieldValue::UP value) override;
     FieldValue::UP getFieldValue(const Field&) const override;
@@ -106,7 +100,6 @@ private:
     VESPA_DLL_LOCAL const StructDataType & getStructType() const;
 
     struct FieldIterator;
-    friend struct FieldIterator;
 
     StructuredIterator::UP getIterator(const Field* toFind) const override;
 

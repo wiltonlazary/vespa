@@ -3,6 +3,7 @@
 #include "attributesconfigscout.h"
 #include "attribute_type_matcher.h"
 #include <vespa/searchlib/attribute/configconverter.h>
+#include <vespa/searchcommon/attribute/config.h>
 
 using search::attribute::ConfigConverter;
 
@@ -24,10 +25,8 @@ void
 AttributesConfigScout::adjust(AttributesConfig::Attribute &attr,
                               const AttributesConfig::Attribute &liveAttr)
 {
-    attr.enablebitvectors = liveAttr.enablebitvectors;
     attr.enableonlybitvector = liveAttr.enableonlybitvector;
     attr.fastsearch = liveAttr.fastsearch;
-    attr.huge = liveAttr.huge;
     attr.paged = liveAttr.paged;
     // Note: Predicate attributes only handle changes for the dense-posting-list-threshold config.
     attr.densepostinglistthreshold = liveAttr.densepostinglistthreshold;
@@ -43,8 +42,7 @@ AttributesConfigScout::adjust(AttributesConfig::Attribute &attr)
     const auto it = _map.find(attr.name);
     if (it != _map.end()) {
         const auto &liveAttr = _live.attribute[it->second];
-        search::attribute::Config liveCfg =
-            ConfigConverter::convert(liveAttr);
+        search::attribute::Config liveCfg = ConfigConverter::convert(liveAttr);
         AttributeTypeMatcher matching_types;
         if (matching_types(cfg, liveCfg)) {
             adjust(attr, liveAttr);

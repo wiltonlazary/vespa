@@ -2,8 +2,8 @@
 #pragma once
 
 #include "log.h"
-#include "control-file.h"
 #include "lock.h"
+#include <string>
 
 namespace ns_log {
 
@@ -19,7 +19,7 @@ private:
     Lock _fileBacking;
     int _fileSize;
     enum Mode _mode;
-    char *_fileName;
+    std::string _fileName;
     void ensureHeader();
     bool hasPrefix() { return (_prefix != NULL &&
                                _prefix[0] != '\0' &&

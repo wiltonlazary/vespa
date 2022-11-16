@@ -6,22 +6,16 @@ import com.yahoo.document.Document;
 import com.yahoo.document.DocumentId;
 import com.yahoo.document.DocumentPut;
 import com.yahoo.document.DocumentUpdate;
-import com.yahoo.document.FixedBucketSpaces;
 import com.yahoo.document.TestAndSetCondition;
 import com.yahoo.document.serialization.DocumentDeserializer;
 import com.yahoo.document.serialization.DocumentSerializer;
-import com.yahoo.document.serialization.DocumentSerializerFactory;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
-import java.util.logging.Level;
 import com.yahoo.messagebus.Routable;
 import com.yahoo.vdslib.DocumentSummary;
 import com.yahoo.vdslib.SearchResult;
 import com.yahoo.vdslib.VisitorStatistics;
 import com.yahoo.vespa.objects.Deserializer;
-import com.yahoo.vespa.objects.Serializer;
 
 import java.util.Map;
-import java.util.logging.Logger;
 
 import static com.yahoo.documentapi.messagebus.protocol.AbstractRoutableFactory.decodeString;
 import static com.yahoo.documentapi.messagebus.protocol.AbstractRoutableFactory.encodeString;
@@ -66,6 +60,7 @@ public abstract class RoutableFactories60 {
          */
         protected abstract DocumentMessage doDecode(DocumentDeserializer deserializer);
 
+        @SuppressWarnings("removal") // TODO: Remove on Vespa 9
         public boolean encode(Routable obj, DocumentSerializer out) {
             if (!(obj instanceof DocumentMessage)) {
                 throw new AssertionError(
@@ -73,18 +68,18 @@ public abstract class RoutableFactories60 {
                         "routable type " + obj.getType() + "(" + obj.getClass().getName() + ").");
             }
             DocumentMessage msg = (DocumentMessage)obj;
-            out.putByte(null, (byte)(msg.getPriority().getValue()));
-            out.putInt(null, msg.getLoadType().getId());
+            out.putByte(null, (byte)(msg.getPriority().getValue())); // TODO: encode default value on Vespa 9
+            out.putInt(null, 0); // Ignored load type. 0 is legacy "default" load type ID.
             return doEncode(msg, out);
         }
 
-        public Routable decode(DocumentDeserializer in, LoadTypeSet loadTypes) {
-            byte pri = in.getByte(null);
-            int loadType = in.getInt(null);
+        @SuppressWarnings("removal") // TODO: Remove on Vespa 9
+        public Routable decode(DocumentDeserializer in) {
+            byte pri = in.getByte(null); // TODO: ignore on Vespa 9
+            in.getInt(null); // Ignored load type
             DocumentMessage msg = doDecode(in);
             if (msg != null) {
                 msg.setPriority(DocumentProtocol.getPriority(pri));
-                msg.setLoadType(loadTypes.getIdMap().get(loadType));
             }
             return msg;
         }
@@ -134,7 +129,7 @@ public abstract class RoutableFactories60 {
             return doEncode(reply, out);
         }
 
-        public Routable decode(DocumentDeserializer in, LoadTypeSet loadTypes) {
+        public Routable decode(DocumentDeserializer in) {
             byte pri = in.getByte(null);
             DocumentReply reply = doDecode(in);
             if (reply != null) {
@@ -207,10 +202,10 @@ public abstract class RoutableFactories60 {
             buf.putInt(null, msg.getBuckets().size());
             for (BucketId id : msg.getBuckets()) {
                 long rawid = id.getRawId();
-                long reversed = ((rawid >>> 56) & 0x00000000000000FFl) | ((rawid >>> 40) & 0x000000000000FF00l) |
-                        ((rawid >>> 24) & 0x0000000000FF0000l) | ((rawid >>> 8) & 0x00000000FF000000l) |
-                        ((rawid << 8) & 0x000000FF00000000l) | ((rawid << 24) & 0x0000FF0000000000l) |
-                        ((rawid << 40) & 0x00FF000000000000l) | ((rawid << 56) & 0xFF00000000000000l);
+                long reversed = ((rawid >>> 56) & 0x00000000000000FFL) | ((rawid >>> 40) & 0x000000000000FF00L) |
+                                ((rawid >>> 24) & 0x0000000000FF0000L) | ((rawid >>> 8) & 0x00000000FF000000L) |
+                                ((rawid << 8) & 0x000000FF00000000L) | ((rawid << 24) & 0x0000FF0000000000L) |
+                                ((rawid << 40) & 0x00FF000000000000L) | ((rawid << 56) & 0xFF00000000000000L);
                 buf.putLong(null, reversed);
             }
 
@@ -247,8 +242,8 @@ public abstract class RoutableFactories60 {
             vs.setBytesVisited(buf.getLong(null));
             vs.setDocumentsReturned(buf.getLong(null));
             vs.setBytesReturned(buf.getLong(null));
-            vs.setSecondPassDocumentsReturned(buf.getLong(null));
-            vs.setSecondPassBytesReturned(buf.getLong(null));
+            buf.getLong(null); // unused
+            buf.getLong(null); // unused
             reply.setVisitorStatistics(vs);
             return reply;
         }
@@ -262,8 +257,8 @@ public abstract class RoutableFactories60 {
             buf.putLong(null, reply.getVisitorStatistics().getBytesVisited());
             buf.putLong(null, reply.getVisitorStatistics().getDocumentsReturned());
             buf.putLong(null, reply.getVisitorStatistics().getBytesReturned());
-            buf.putLong(null, reply.getVisitorStatistics().getSecondPassDocumentsReturned());
-            buf.putLong(null, reply.getVisitorStatistics().getSecondPassBytesReturned());
+            buf.putLong(null, 0); // was SecondPassDocumentsReturned
+            buf.putLong(null, 0); // was SecondPassBytesReturned
             return true;
         }
     }

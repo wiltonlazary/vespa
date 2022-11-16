@@ -5,7 +5,7 @@ package com.yahoo.log.event;
  *
  * @author  Bjorn Borud
  */
-public class Count extends Event {
+class Count extends Event {
     public Count () {
     }
 

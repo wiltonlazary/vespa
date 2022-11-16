@@ -5,15 +5,14 @@ import com.yahoo.config.ConfigInstance;
 import com.yahoo.config.ConfigurationRuntimeException;
 import com.yahoo.config.subscription.impl.ConfigSubscription;
 import com.yahoo.config.subscription.impl.JRTConfigRequester;
+import com.yahoo.config.subscription.impl.JrtConfigRequesters;
 import com.yahoo.vespa.config.ConfigKey;
 import com.yahoo.vespa.config.TimingValues;
 import com.yahoo.yolean.Exceptions;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
-
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static java.util.logging.Level.FINE;
@@ -25,7 +24,7 @@ import static java.util.stream.Collectors.toList;
  * Used for subscribing to one or more configs. Can optionally be given a {@link ConfigSource} for the configs
  * that will be used when {@link #subscribe(Class, String)} is called.
  *
- * {@link #subscribe(Class, String)} on the configs needed, call {@link #nextConfig(long)} and get the config from the
+ * {@link #subscribe(Class, String)} on the configs needed, call {@link #nextConfig(boolean)} and get the config from the
  * {@link ConfigHandle} which {@link #subscribe(Class, String)} returned.
  *
  * @author Vegard Havdal
@@ -39,6 +38,7 @@ public class ConfigSubscriber implements AutoCloseable {
     private final ConfigSource source;
     private final Object monitor = new Object();
     private final Throwable stackTraceAtConstruction; // TODO Remove once finalizer is gone
+    private final JrtConfigRequesters requesters = new JrtConfigRequesters();
 
     /** The last complete config generation received by this */
     private long generation = -1;
@@ -49,11 +49,6 @@ public class ConfigSubscriber implements AutoCloseable {
      * once there is a generation which require restart.
      */
     private boolean applyOnRestart = false;
-
-    /**
-     * Reuse requesters for equal source sets, limit number if many subscriptions.
-     */
-    protected Map<ConfigSourceSet, JRTConfigRequester> requesters = new HashMap<>();
 
     /**
      * The states of the subscriber. Affects the validity of calling certain methods.
@@ -84,7 +79,7 @@ public class ConfigSubscriber implements AutoCloseable {
     /**
      * Subscribes on the given type of {@link ConfigInstance} with the given config id.
      *
-     * The method blocks until the first config is ready to be fetched with {@link #nextConfig()}.
+     * The method blocks until the first config is ready to be fetched with {@link #nextConfig(boolean)}.
      *
      * @param configClass The class, typically generated from a def-file using config-class-plugin
      * @param configId Identifies the service in vespa-services.xml, or null if you are using a local {@link ConfigSource} which does not use config id.
@@ -99,7 +94,7 @@ public class ConfigSubscriber implements AutoCloseable {
     /**
      * Subscribes on the given type of {@link ConfigInstance} with the given config id and subscribe timeout.
      *
-     * The method blocks until the first config is ready to be fetched with {@link #nextConfig()}.
+     * The method blocks until the first config is ready to be fetched with {@link #nextConfig(boolean)}.
      *
      * @param configClass The class, typically generated from a def-file using config-class-plugin
      * @param configId    Identifies the service in vespa-services.xml, or possibly raw:, file:, dir: or jar: type config which addresses config locally.
@@ -113,8 +108,8 @@ public class ConfigSubscriber implements AutoCloseable {
     // for testing
     <T extends ConfigInstance> ConfigHandle<T> subscribe(Class<T> configClass, String configId, ConfigSource source, TimingValues timingValues) {
         checkStateBeforeSubscribe();
-        final ConfigKey<T> configKey = new ConfigKey<>(configClass, configId);
-        ConfigSubscription<T> sub = ConfigSubscription.get(configKey, this, source, timingValues);
+        ConfigKey<T> configKey = new ConfigKey<>(configClass, configId);
+        ConfigSubscription<T> sub = ConfigSubscription.get(configKey, requesters, source, timingValues);
         ConfigHandle<T> handle = new ConfigHandle<>(sub);
         subscribeAndHandleErrors(sub, configKey, handle, timingValues);
         return handle;
@@ -159,14 +154,10 @@ public class ConfigSubscriber implements AutoCloseable {
      *                       false if this is for reconfiguration
      * @return true if a config/reconfig of your system should happen
      * @throws ConfigInterruptedException if thread performing this call interrupted.
+     * @throws SubscriberClosedException if subscriber is closed
      */
     public boolean nextConfig(boolean isInitializing) {
         return nextConfig(TimingValues.defaultNextConfigTimeout, isInitializing);
-    }
-
-    @Deprecated // TODO: Remove on Vespa 8
-    public boolean nextConfig() {
-        return nextConfig(false);
     }
 
     /**
@@ -190,14 +181,10 @@ public class ConfigSubscriber implements AutoCloseable {
      *                       false if this is for reconfiguration
      * @return true if a config/reconfig of your system should happen
      * @throws ConfigInterruptedException if thread performing this call interrupted.
+     * @throws SubscriberClosedException if subscriber is closed
      */
     public boolean nextConfig(long timeoutMillis, boolean isInitializing) {
         return acquireSnapshot(timeoutMillis, true, isInitializing);
-    }
-
-    @Deprecated // TODO: Remove on Vespa 8
-    public boolean nextConfig(long timeoutMillis) {
-        return nextConfig(timeoutMillis, false);
     }
 
     /**
@@ -221,14 +208,10 @@ public class ConfigSubscriber implements AutoCloseable {
      *                       false if this is for reconfiguration
      * @return true if generations for all configs have been updated.
      * @throws ConfigInterruptedException if thread performing this call interrupted.
+     * @throws SubscriberClosedException if subscriber is closed
      */
     public boolean nextGeneration(boolean isInitializing) {
         return nextGeneration(TimingValues.defaultNextConfigTimeout, isInitializing);
-    }
-
-    @Deprecated // TODO: Remove on Vespa 8
-    public boolean nextGeneration() {
-        return nextGeneration(false);
     }
 
     /**
@@ -252,14 +235,10 @@ public class ConfigSubscriber implements AutoCloseable {
      *                       false if this is for reconfiguration
      * @return true if generations for all configs have been updated.
      * @throws ConfigInterruptedException if thread performing this call interrupted.
+     * @throws SubscriberClosedException if subscriber is closed
      */
     public boolean nextGeneration(long timeoutMillis, boolean isInitializing) {
         return acquireSnapshot(timeoutMillis, false, isInitializing);
-    }
-
-    @Deprecated // TODO: Remove on Vespa 8
-    public boolean nextGeneration(long timeoutMillis) {
-        return nextGeneration(timeoutMillis, false);
     }
 
     /**
@@ -274,11 +253,12 @@ public class ConfigSubscriber implements AutoCloseable {
     private boolean acquireSnapshot(long timeoutInMillis, boolean requireChange, boolean isInitializing) {
         boolean applyOnRestartOnly;
         synchronized (monitor) {
-            if (state == State.CLOSED) return false;
+            if (state == State.CLOSED) throw new SubscriberClosedException();
             state = State.FROZEN;
             applyOnRestartOnly = applyOnRestart;
         }
-        long started = System.currentTimeMillis();
+        boolean expiredOnEntry = (timeoutInMillis <= 0);
+        long started = now(expiredOnEntry);
         long timeLeftMillis = timeoutInMillis;
         boolean anyConfigChanged = false;
 
@@ -293,10 +273,13 @@ public class ConfigSubscriber implements AutoCloseable {
             // Keep on polling the subscriptions until we have a new generation across the board, or it times out
             for (ConfigHandle<? extends ConfigInstance> h : subscriptionHandles) {
                 ConfigSubscription<? extends ConfigInstance> subscription = h.subscription();
+                log.log(Level.FINEST, () -> "Calling nextConfig for " + subscription.getKey());
                 if ( ! subscription.nextConfig(timeLeftMillis)) {
-                    // This subscriber has no new state and we know it has exhausted all time
+                    // This subscriber has no new state, and we know it has exhausted the timeout
+                    log.log(Level.FINEST, () -> "No new config for " + subscription.getKey());
                     return false;
                 }
+                log.log(Level.FINEST, () -> "Got new generation or config for " + subscription.getKey());
                 throwIfExceptionSet(subscription);
                 ConfigSubscription.ConfigState<? extends ConfigInstance> config = subscription.getConfigState();
                 if (currentGen == null) currentGen = config.getGeneration();
@@ -304,7 +287,7 @@ public class ConfigSubscriber implements AutoCloseable {
                 allGenerationsChanged &= config.isGenerationChanged();
                 anyConfigChanged      |= config.isConfigChanged();
                 applyOnRestartOnly    |= config.applyOnRestart();
-                timeLeftMillis = timeoutInMillis + started - System.currentTimeMillis();
+                timeLeftMillis = timeoutInMillis + started - now(expiredOnEntry);
             }
             reconfigDue = (isInitializing || !applyOnRestartOnly) && (anyConfigChanged || !requireChange)
                           && allGenerationsChanged && allGenerationsTheSame;
@@ -322,12 +305,17 @@ public class ConfigSubscriber implements AutoCloseable {
         if (reconfigDue) {
             // This indicates the clients will possibly reconfigure their services, so "reset" changed-logic in subscriptions.
             // Also if appropriate update the changed flag on the handler, which clients use.
+            log.log(Level.FINE, () -> "Reconfig will happen for generation " + generation);
             markSubsChangedSeen(currentGen);
             synchronized (monitor) {
                 generation = currentGen;
             }
         }
         return reconfigDue;
+    }
+
+    private long now(boolean alreadyExpired) {
+        return alreadyExpired ? 0 : System.currentTimeMillis();
     }
 
     private void sleep(long timeLeftMillis) {
@@ -370,17 +358,8 @@ public class ConfigSubscriber implements AutoCloseable {
         for (ConfigHandle<? extends ConfigInstance> h : subscriptionHandles) {
             h.subscription().close();
         }
-        closeRequesters();
+        requesters.close();
         log.log(FINE, () -> "Config subscriber has been closed.");
-    }
-
-    /**
-     * Closes all open requesters
-     */
-    protected void closeRequesters() {
-        for (JRTConfigRequester requester : requesters.values()) {
-            requester.close();
-        }
     }
 
     @Override
@@ -428,23 +407,6 @@ public class ConfigSubscriber implements AutoCloseable {
         }
     }
 
-    /**
-     * The source used by this subscriber.
-     *
-     * @return the {@link ConfigSource} used by this subscriber
-     */
-    public ConfigSource getSource() {
-        return source;
-    }
-
-    /**
-     * Implementation detail, do not use.
-     * @return requesters
-     */
-    public Map<ConfigSourceSet, JRTConfigRequester> requesters() {
-        return requesters;
-    }
-
     public boolean isClosed() {
         synchronized (monitor) {
             return state == State.CLOSED;
@@ -452,8 +414,8 @@ public class ConfigSubscriber implements AutoCloseable {
     }
 
     /**
-     * Use this convenience method if you only want to subscribe on <em>one</em> config, and want generic error handling.
-     * Implement {@link SingleSubscriber} and pass to this method.
+     * Convenience method that can be used if you only want to subscribe to <em>one</em> config, and want generic error handling.
+     * Implement {@link SingleSubscriber} and pass it to this method.
      * You will get initial config, and a config thread will be started. The method will throw in your thread if initial
      * configuration fails, and the config thread will print a generic error message (but continue) if it fails thereafter. The config
      * thread will stop if you {@link #close()} this {@link ConfigSubscriber}.
@@ -471,7 +433,7 @@ public class ConfigSubscriber implements AutoCloseable {
 
         ConfigHandle<T> handle = subscribe(configClass, configId);
 
-        if ( ! nextConfig())
+        if ( ! nextConfig(false))
             throw new ConfigurationRuntimeException("Initial config of " + configClass.getName() + " failed");
 
         singleSubscriber.configure(handle.getConfig());
@@ -480,7 +442,7 @@ public class ConfigSubscriber implements AutoCloseable {
                     boolean hasNewConfig = false;
 
                     try {
-                        hasNewConfig = nextConfig();
+                        hasNewConfig = nextConfig(false);
                     }
                     catch (Exception e) {
                         log.log(SEVERE, "Exception on receiving config. Ignoring this change.", e);

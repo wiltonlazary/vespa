@@ -1,21 +1,26 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "configsubscriptionset.h"
+#include "configsubscription.h"
 #include <vespa/config/common/exceptions.h>
 #include <vespa/config/common/misc.h>
+#include <vespa/config/common/iconfigmanager.h>
+#include <vespa/config/common/iconfigcontext.h>
 #include <thread>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".config.subscription.configsubscriptionset");
 
-using namespace std::chrono_literals;
-using namespace std::chrono;
+using vespalib::duration;
+using vespalib::steady_clock;
+using vespalib::steady_time;
 
 namespace config {
 
-ConfigSubscriptionSet::ConfigSubscriptionSet(const IConfigContext::SP & context)
-    : _context(context),
-      _mgr(context->getManagerInstance()),
+ConfigSubscriptionSet::ConfigSubscriptionSet(std::shared_ptr<IConfigContext> context)
+    : _maxNapTime(vespalib::adjustTimeoutByDetectedHz(20ms)),
+      _context(std::move(context)),
+      _mgr(_context->getManagerInstance()),
       _currentGeneration(-1),
       _subscriptionList(),
       _state(OPEN)
@@ -27,7 +32,7 @@ ConfigSubscriptionSet::~ConfigSubscriptionSet()
 }
 
 bool
-ConfigSubscriptionSet::acquireSnapshot(milliseconds timeoutInMillis, bool ignoreChange)
+ConfigSubscriptionSet::acquireSnapshot(duration timeout, bool ignoreChange)
 {
     if (_state == CLOSED) {
         return false;
@@ -35,13 +40,13 @@ ConfigSubscriptionSet::acquireSnapshot(milliseconds timeoutInMillis, bool ignore
         _state = FROZEN;
     }
 
-    steady_clock::time_point startTime = steady_clock::now();
-    milliseconds timeLeft = timeoutInMillis;
-    int64_t lastGeneration = _currentGeneration;
+    steady_time now = steady_clock::now();
+    const steady_time deadline = now + timeout;
+    int64_t lastGeneration = getGeneration();
     bool inSync = false;
 
-    LOG(spam, "Going into nextConfig loop, time left is %" PRId64, timeLeft.count());
-    while (!isClosed() && (timeLeft.count() >= 0) && !inSync) {
+    LOG(spam, "Going into nextConfig loop, time left is %f", vespalib::to_s(deadline - now));
+    while (!isClosed() && (now <= deadline)) {
         size_t numChanged = 0;
         size_t numGenerationChanged = 0;
         bool generationsInSync = true;
@@ -50,7 +55,7 @@ ConfigSubscriptionSet::acquireSnapshot(milliseconds timeoutInMillis, bool ignore
         // Run nextUpdate on all subscribers to get them in sync.
         for (const auto & subscription : _subscriptionList) {
 
-            if (!subscription->nextUpdate(_currentGeneration, timeLeft) && !subscription->hasGenerationChanged()) {
+            if (!subscription->nextUpdate(getGeneration(), deadline) && !subscription->hasGenerationChanged()) {
                 subscription->reset();
                 continue;
             }
@@ -63,7 +68,7 @@ ConfigSubscriptionSet::acquireSnapshot(milliseconds timeoutInMillis, bool ignore
                 LOG(spam, "Config subscription did not change, id(%s), defname(%s)", key.getConfigId().c_str(), key.getDefName().c_str());
             }
             LOG(spam, "Previous generation is %" PRId64 ", updates is %" PRId64, lastGeneration, subscription->getGeneration());
-            if (isGenerationNewer(subscription->getGeneration(), _currentGeneration)) {
+            if (isGenerationNewer(subscription->getGeneration(), getGeneration())) {
                 numGenerationChanged++;
             }
             if (generation < 0) {
@@ -72,23 +77,21 @@ ConfigSubscriptionSet::acquireSnapshot(milliseconds timeoutInMillis, bool ignore
             if (subscription->getGeneration() != generation) {
                 generationsInSync = false;
             }
-            // Adjust timeout
-            timeLeft = timeoutInMillis - duration_cast<milliseconds>(steady_clock::now() - startTime);
         }
         inSync = generationsInSync && (_subscriptionList.size() == numGenerationChanged) && (ignoreChange || numChanged > 0);
         lastGeneration = generation;
-        timeLeft = timeoutInMillis - duration_cast<milliseconds>(steady_clock::now() - startTime);
-        if (!inSync && (timeLeft.count() > 0)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(std::min(INT64_C(10), timeLeft.count())));
+        now = steady_clock::now();
+        if (!inSync && (now < deadline)) {
+            std::this_thread::sleep_for(std::min(_maxNapTime, deadline - now));
         } else {
             break;
         }
     }
 
-    bool updated = inSync && isGenerationNewer(lastGeneration, _currentGeneration);
+    bool updated = inSync && isGenerationNewer(lastGeneration, getGeneration());
     if (updated) {
-        LOG(spam, "Config was updated from %" PRId64 " to %" PRId64, _currentGeneration, lastGeneration);
-        _currentGeneration = lastGeneration;
+        LOG(spam, "Config was updated from %" PRId64 " to %" PRId64, getGeneration(), lastGeneration);
+        _currentGeneration.store(lastGeneration, std::memory_order_relaxed);
         _state = CONFIGURED;
         for (const auto & subscription : _subscriptionList) {
             const ConfigKey & key(subscription->getKey());
@@ -108,34 +111,22 @@ ConfigSubscriptionSet::close()
 {
     _state = CLOSED;
     for (const auto & subscription : _subscriptionList) {
-        _mgr.unsubscribe(subscription);
+        _mgr.unsubscribe(*subscription);
         subscription->close();
     }
 }
 
-bool
-ConfigSubscriptionSet::isClosed() const
-{
-    return (_state.load(std::memory_order_relaxed) == CLOSED);
-}
-
-ConfigSubscription::SP
-ConfigSubscriptionSet::subscribe(const ConfigKey & key, milliseconds timeoutInMillis)
+std::shared_ptr<ConfigSubscription>
+ConfigSubscriptionSet::subscribe(const ConfigKey & key, duration timeout)
 {
     if (_state != OPEN) {
         throw ConfigRuntimeException("Adding subscription after calling nextConfig() is not allowed");
     }
     LOG(debug, "Subscribing with config Id(%s), defName(%s)", key.getConfigId().c_str(), key.getDefName().c_str());
 
-    ConfigSubscription::SP s = _mgr.subscribe(key, timeoutInMillis);
+    std::shared_ptr<ConfigSubscription> s = _mgr.subscribe(key, timeout);
     _subscriptionList.push_back(s);
     return s;
-}
-
-int64_t
-ConfigSubscriptionSet::getGeneration() const
-{
-    return _currentGeneration;
 }
 
 } // namespace config

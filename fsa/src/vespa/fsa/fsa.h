@@ -15,6 +15,7 @@
 #include <inttypes.h>
 
 #include "file.h" // for FileAccessMethod
+#include "unaligned.h"
 
 namespace fsa {
 
@@ -614,10 +615,10 @@ public:
         return (uint32_t)((const uint8_t*)da)[0];
       case 2:
       case 3:
-        return (uint32_t)((const uint16_t*)(const void *)da)[0];
+        return (uint32_t)Unaligned<uint16_t>::at(da).read();
       case 4:
       default:
-        return ((const uint32_t*)(const void *) da)[0];
+        return Unaligned<uint32_t>::at(da).read();
       }
     }
 
@@ -775,35 +776,8 @@ public:
      */
     virtual ~HashedState() {}
 
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
     using State::start;
     using State::delta;
-#else
-    virtual bool start(symbol_t in) { start(); return delta(in); }
-    virtual bool start(const symbol_t *in) { start(); return delta(in); }
-    virtual bool start(const char *in) { start(); return delta(in); }
-    virtual bool start(const std::string &in) { start(); return delta(in); }
-    virtual bool delta(const symbol_t *in)
-    {
-      const symbol_t *p=in;
-      while(*p && _state>0){
-        delta(*p);
-        p++;
-      }
-      return _state!=0;
-    }
-    virtual bool delta(const char *in) { return delta((const symbol_t *)in); }
-    virtual bool delta(const std::string &in)
-    {
-      unsigned int idx=0;
-
-      while(idx<in.length() && _state>0){
-        delta(in[idx]);
-        idx++;
-      }
-      return _state!=0;
-    }
-#endif
 
     /**
      * @brief Set the state to the starting state of the automaton.
@@ -922,35 +896,8 @@ public:
      */
     virtual ~CounterState() {}
 
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
     using State::start;
     using State::delta;
-#else
-    virtual bool start(symbol_t in) { start(); return delta(in); }
-    virtual bool start(const symbol_t *in) { start(); return delta(in); }
-    virtual bool start(const char *in) { start(); return delta(in); }
-    virtual bool start(const std::string &in) { start(); return delta(in); }
-    virtual bool delta(const symbol_t *in)
-    {
-      const symbol_t *p=in;
-      while(*p && _state>0){
-        delta(*p);
-        p++;
-      }
-      return _state!=0;
-    }
-    virtual bool delta(const char *in) { return delta((const symbol_t *)in); }
-    virtual bool delta(const std::string &in)
-    {
-      unsigned int idx=0;
-
-      while(idx<in.length() && _state>0){
-        delta(in[idx]);
-        idx++;
-      }
-      return _state!=0;
-    }
-#endif
 
     /**
      * @brief Set the state to the starting state of the automaton.
@@ -1239,35 +1186,8 @@ public:
      */
     virtual ~MemoryState() {}
 
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
     using State::start;
     using State::delta;
-#else
-    virtual bool start(symbol_t in) { start(); return delta(in); }
-    virtual bool start(const symbol_t *in) { start(); return delta(in); }
-    virtual bool start(const char *in) { start(); return delta(in); }
-    virtual bool start(const std::string &in) { start(); return delta(in); }
-    virtual bool delta(const symbol_t *in)
-    {
-      const symbol_t *p=in;
-      while(*p && _state>0){
-        delta(*p);
-        p++;
-      }
-      return _state!=0;
-    }
-    virtual bool delta(const char *in) { return delta((const symbol_t *)in); }
-    virtual bool delta(const std::string &in)
-    {
-      unsigned int idx=0;
-
-      while(idx<in.length() && _state>0){
-        delta(in[idx]);
-        idx++;
-      }
-      return _state!=0;
-    }
-#endif
 
     /**
      * @brief Set the state to the starting state of the automaton.
@@ -1279,11 +1199,7 @@ public:
      */
     bool start() override
     {
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
       _memory.clear();
-#else
-      _memory = "";
-#endif
       return State::start();
     }
 
@@ -1424,35 +1340,8 @@ public:
      */
     virtual ~HashedMemoryState() {}
 
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
     using State::start;
     using State::delta;
-#else
-    virtual bool start(symbol_t in) { start(); return delta(in); }
-    virtual bool start(const symbol_t *in) { start(); return delta(in); }
-    virtual bool start(const char *in) { start(); return delta(in); }
-    virtual bool start(const std::string &in) { start(); return delta(in); }
-    virtual bool delta(const symbol_t *in)
-    {
-      const symbol_t *p=in;
-      while(*p && _state>0){
-        delta(*p);
-        p++;
-      }
-      return _state!=0;
-    }
-    virtual bool delta(const char *in) { return delta((const symbol_t *)in); }
-    virtual bool delta(const std::string &in)
-    {
-      unsigned int idx=0;
-
-      while(idx<in.length() && _state>0){
-        delta(in[idx]);
-        idx++;
-      }
-      return _state!=0;
-    }
-#endif
 
     /**
      * @brief Set the state to the starting state of the automaton.
@@ -1465,11 +1354,7 @@ public:
     bool start() override
     {
       _hash = 0;
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
       _memory.clear();
-#else
-      _memory = "";
-#endif
       return State::start();
     }
 
@@ -1605,35 +1490,8 @@ public:
      */
     virtual ~HashedCounterState() {}
 
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
     using State::start;
     using State::delta;
-#else
-    virtual bool start(symbol_t in) { start(); return delta(in); }
-    virtual bool start(const symbol_t *in) { start(); return delta(in); }
-    virtual bool start(const char *in) { start(); return delta(in); }
-    virtual bool start(const std::string &in) { start(); return delta(in); }
-    virtual bool delta(const symbol_t *in)
-    {
-      const symbol_t *p=in;
-      while(*p && _state>0){
-        delta(*p);
-        p++;
-      }
-      return _state!=0;
-    }
-    virtual bool delta(const char *in) { return delta((const symbol_t *)in); }
-    virtual bool delta(const std::string &in)
-    {
-      unsigned int idx=0;
-
-      while(idx<in.length() && _state>0){
-        delta(in[idx]);
-        idx++;
-      }
-      return _state!=0;
-    }
-#endif
 
     /**
      * @brief Set the state to the starting state of the automaton.
@@ -1748,30 +1606,7 @@ public:
     uint32_t  _counter;   /**< Counter value.  */
 
 
-#if ((__GNUG__ == 3 && __GNUC_MINOR__ >= 1) || __GNUG__ > 3)
     using State::delta;
-#else
-    virtual bool delta(const symbol_t *in)
-    {
-      const symbol_t *p=in;
-      while(*p && _state>0){
-        delta(*p);
-        p++;
-      }
-      return _state!=0;
-    }
-    virtual bool delta(const char *in) { return delta((const symbol_t *)in); }
-    virtual bool delta(const std::string &in)
-    {
-      unsigned int idx=0;
-
-      while(idx<in.length() && _state>0){
-        delta(in[idx]);
-        idx++;
-      }
-      return _state!=0;
-    }
-#endif
 
     /**
      * @brief Delta transition for hashed word counter states.
@@ -1932,17 +1767,6 @@ public:
 
   // }}}
 
-#if (__GNUG__ < 3 || (__GNUG__ == 3 && __GNUC_MINOR__ < 1))
-  friend class State;
-  friend class HashedState;
-  friend class MemoryState;
-  friend class HashedMemoryState;
-  friend class CounterState;
-  friend class HashedCounterState;
-  friend class WordCounterState;
-  friend class HashedWordCounterState;
-#endif
-
 public:
   /**
    * @brief Magic number for identifying fsa files.
@@ -2019,14 +1843,14 @@ public:
   struct Descriptor {
     uint32_t   _version;
     uint32_t   _serial;
-    state_t   *_state;
+    Unaligned<state_t> *_state;
     symbol_t  *_symbol;
     uint32_t   _size;
     data_t    *_data;
     uint32_t   _data_size;
     uint32_t   _data_type;
     uint32_t   _fixed_data_size;
-    hash_t    *_perf_hash;
+    Unaligned<hash_t> *_perf_hash;
     uint32_t   _start;
   };
 
@@ -2040,7 +1864,7 @@ private:
   uint32_t       _version;               /**< Version of fsalib used to build this fsa. */
   uint32_t       _serial;                /**< Serial number of this fsa.                */
 
-  state_t       *_state;                 /**< State table for transitions.       */
+  Unaligned<state_t> *_state;                 /**< State table for transitions.       */
   symbol_t      *_symbol;                /**< Symbol table for transitions.      */
   uint32_t       _size;                  /**< Size (number of cells).            */
 
@@ -2050,7 +1874,7 @@ private:
   uint32_t       _fixed_data_size;       /**< Size of data items if fixed.       */
 
   bool           _has_perfect_hash;      /**< Indicator of perfect hash present. */
-  hash_t        *_perf_hash;             /**< Perfect hash table, if present.    */
+  Unaligned<hash_t> *_perf_hash;             /**< Perfect hash table, if present.    */
 
   state_t        _start;                 /**< Index of start state.              */
 
@@ -2205,7 +2029,7 @@ public:
       if(_data_type==DATA_FIXED)
         return _fixed_data_size;
       else
-        return (int)(*((uint32_t*)(void *)(_data+_state[fs+FINAL_SYMBOL])));
+        return (int)Unaligned<uint32_t>::at(_data+_state[fs+FINAL_SYMBOL]).read();
     }
     return -1;
   }

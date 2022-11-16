@@ -6,7 +6,6 @@ import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.config.content.StorFilestorConfig;
 import com.yahoo.vespa.config.content.core.StorBucketmoverConfig;
-import com.yahoo.vespa.config.content.core.StorCommunicationmanagerConfig;
 import com.yahoo.vespa.config.content.core.StorServerConfig;
 import com.yahoo.vespa.defaults.Defaults;
 import com.yahoo.vespa.model.application.validation.RestartConfigs;
@@ -16,6 +15,7 @@ import com.yahoo.vespa.model.content.engines.PersistenceEngine;
 import com.yahoo.vespa.model.content.engines.ProtonProvider;
 import com.yahoo.vespa.model.content.storagecluster.StorageCluster;
 import org.w3c.dom.Element;
+import java.util.Optional;
 
 /**
  * Class to provide config related to a specific storage node.
@@ -30,11 +30,13 @@ public class StorageNode extends ContentNode implements StorServerConfig.Produce
     private final StorageCluster cluster;
 
     public static class Builder extends VespaDomBuilder.DomConfigProducerBuilder<StorageNode> {
+
         @Override
-        protected StorageNode doBuild(DeployState deployState, AbstractConfigProducer ancestor, Element producerSpec) {
+        protected StorageNode doBuild(DeployState deployState, AbstractConfigProducer<?> ancestor, Element producerSpec) {
             ModelElement e = new ModelElement(producerSpec);
             return new StorageNode(deployState.getProperties(), (StorageCluster)ancestor, e.doubleAttribute("capacity"), e.integerAttribute("distribution-key"), false);
         }
+
     }
 
     StorageNode(ModelContext.Properties properties, StorageCluster cluster, Double capacity, int distributionKey, boolean retired) {
@@ -47,10 +49,10 @@ public class StorageNode extends ContentNode implements StorServerConfig.Produce
     }
 
     @Override
-    public String getStartupCommand() {
+    public Optional<String> getStartupCommand() {
         return isProviderProton()
-                ? null
-                : "exec sbin/vespa-storaged -c $VESPA_CONFIG_ID";
+                ? Optional.empty()
+                : Optional.of("exec sbin/vespa-storaged -c $VESPA_CONFIG_ID");
     }
 
     public double getCapacity() {
@@ -65,7 +67,7 @@ public class StorageNode extends ContentNode implements StorServerConfig.Produce
     public boolean isRetired() { return retired; }
 
     private boolean isProviderProton() {
-        for (AbstractConfigProducer producer : getChildren().values()) {
+        for (AbstractConfigProducer<?> producer : getChildren().values()) {
             if (producer instanceof ProtonProvider) {
                 return true;
             }
@@ -79,7 +81,7 @@ public class StorageNode extends ContentNode implements StorServerConfig.Produce
 
         builder.node_capacity(getCapacity());
 
-        for (AbstractConfigProducer producer : getChildren().values()) {
+        for (AbstractConfigProducer<?> producer : getChildren().values()) {
             ((PersistenceEngine)producer).getConfig(builder);
         }
     }
@@ -90,12 +92,6 @@ public class StorageNode extends ContentNode implements StorServerConfig.Produce
             builder.num_threads(Math.max(4, (int)getHostResource().realResources().vcpu()));
         }
         cluster.getConfig(builder);
-    }
-
-    @Override
-    public void getConfig(StorCommunicationmanagerConfig.Builder builder) {
-        super.getConfig(builder);
-        builder.mbus.dispatch_on_encode(false);
     }
 
 }

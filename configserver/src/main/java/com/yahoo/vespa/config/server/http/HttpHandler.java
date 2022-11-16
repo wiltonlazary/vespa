@@ -3,13 +3,14 @@ package com.yahoo.vespa.config.server.http;
 
 import com.yahoo.config.provision.ApplicationLockException;
 import com.yahoo.config.provision.CertificateNotReadyException;
-import com.yahoo.config.provision.OutOfCapacityException;
+import com.yahoo.config.provision.NodeAllocationException;
 import com.yahoo.config.provision.ParentHostUnavailableException;
 import com.yahoo.config.provision.exception.ActivationConflictException;
 import com.yahoo.config.provision.exception.LoadBalancerServiceException;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.vespa.config.server.application.ConfigNotConvergedException;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.yolean.Exceptions;
 
 import java.io.PrintWriter;
@@ -24,7 +25,7 @@ import java.util.logging.Level;
  *
  * @author hmusum
  */
-public class HttpHandler extends LoggingRequestHandler {
+public class HttpHandler extends ThreadedHttpRequestHandler {
 
     public HttpHandler(HttpHandler.Context ctx) {
         super(ctx);
@@ -34,28 +35,24 @@ public class HttpHandler extends LoggingRequestHandler {
     public HttpResponse handle(HttpRequest request) {
         log.log(Level.FINE, () -> request.getMethod() + " " + request.getUri().toString());
         try {
-            switch (request.getMethod()) {
-                case POST:
-                    return handlePOST(request);
-                case GET:
-                    return handleGET(request);
-                case PUT:
-                    return handlePUT(request);
-                case DELETE:
-                    return handleDELETE(request);
-                default:
-                    return createErrorResponse(request.getMethod());
-            }
+            return switch (request.getMethod()) {
+                case POST -> handlePOST(request);
+                case GET -> handleGET(request);
+                case PUT -> handlePUT(request);
+                case DELETE -> handleDELETE(request);
+                default -> createErrorResponse(request.getMethod());
+            };
         } catch (NotFoundException | com.yahoo.vespa.config.server.NotFoundException e) {
             return HttpErrorResponse.notFoundError(getMessage(e, request));
         } catch (ActivationConflictException e) {
             return HttpErrorResponse.conflictWhenActivating(getMessage(e, request));
         } catch (InvalidApplicationException e) {
             return HttpErrorResponse.invalidApplicationPackage(getMessage(e, request));
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException | UnsupportedOperationException e) {
             return HttpErrorResponse.badRequest(getMessage(e, request));
-        } catch (OutOfCapacityException e) {
-            return HttpErrorResponse.outOfCapacity(getMessage(e, request));
+        } catch (NodeAllocationException e) {
+            return e.retryable() ? HttpErrorResponse.nodeAllocationFailure(getMessage(e, request))
+                                 : HttpErrorResponse.invalidApplicationPackage(getMessage(e, request));
         } catch (InternalServerException e) {
             return HttpErrorResponse.internalServerError(getMessage(e, request));
         } catch (UnknownVespaVersionException e) {
@@ -68,8 +65,12 @@ public class HttpHandler extends LoggingRequestHandler {
             return HttpErrorResponse.parentHostNotReady(getMessage(e, request));
         } catch (CertificateNotReadyException e) {
             return HttpErrorResponse.certificateNotReady(getMessage(e, request));
+        } catch (ConfigNotConvergedException e) {
+            return HttpErrorResponse.configNotConverged(getMessage(e, request));
         } catch (LoadBalancerServiceException e) {
             return HttpErrorResponse.loadBalancerNotReady(getMessage(e, request));
+        } catch (ReindexingStatusException e) {
+            return HttpErrorResponse.reindexingStatusUnavailable(getMessage(e, request));
         } catch (Exception e) {
             log.log(Level.WARNING, "Unexpected exception handling a config server request", e);
             return HttpErrorResponse.internalServerError(getMessage(e, request));

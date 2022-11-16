@@ -1,25 +1,21 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search;
 
+import ai.vespa.cloud.ZoneInfo;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.yahoo.collections.Tuple2;
-import com.yahoo.component.Version;
 import com.yahoo.container.jdisc.HttpRequest;
-import com.yahoo.fs4.MapEncoder;
 import com.yahoo.language.process.Embedder;
-import com.yahoo.prelude.fastsearch.DocumentDatabase;
-import com.yahoo.prelude.query.Highlight;
 import com.yahoo.prelude.query.textualrepresentation.TextualQueryRepresentation;
 import com.yahoo.processing.request.CompoundName;
+import com.yahoo.search.schema.SchemaInfo;
 import com.yahoo.search.dispatch.Dispatcher;
-import com.yahoo.search.dispatch.rpc.ProtobufSerialization;
 import com.yahoo.search.federation.FederationSearcher;
 import com.yahoo.search.query.Model;
+import com.yahoo.search.query.Trace;
 import com.yahoo.search.query.ParameterParser;
 import com.yahoo.search.query.Presentation;
 import com.yahoo.search.query.Properties;
-import com.yahoo.search.query.QueryTree;
 import com.yahoo.search.query.Ranking;
 import com.yahoo.search.query.Select;
 import com.yahoo.search.query.SessionId;
@@ -42,7 +38,9 @@ import com.yahoo.search.query.properties.DefaultProperties;
 import com.yahoo.search.query.properties.PropertyMap;
 import com.yahoo.search.query.properties.QueryProperties;
 import com.yahoo.search.query.properties.QueryPropertyAliases;
+import com.yahoo.search.query.properties.RankProfileInputProperties;
 import com.yahoo.search.query.properties.RequestContextProperties;
+import com.yahoo.search.query.ranking.RankFeatures;
 import com.yahoo.search.yql.NullItemException;
 import com.yahoo.search.yql.VespaSerializer;
 import com.yahoo.search.yql.YqlParser;
@@ -52,13 +50,11 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * A search query containing all the information required to produce a Result.
@@ -73,7 +69,7 @@ import java.util.logging.Logger;
  * </ul>
  *
  * <p>
- * The properties has three sources
+ * The properties have three sources
  * <ol>
  * <li>They may be set in some Searcher component already executed for this Query - the properties acts as
  * a blackboard for communicating arbitrary objects between Searcher components.
@@ -105,7 +101,9 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         WEB(4,"web"),
         PROGRAMMATIC(5, "prog"),
         YQL(6, "yql"),
-        SELECT(7, "select");
+        SELECT(7, "select"),
+        WEAKAND(8, "weakAnd"),
+        TOKENIZE(9, "tokenize");
 
         private final int intValue;
         private final String stringValue;
@@ -120,7 +118,7 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
             for (Type type : Type.values())
                 if (type.stringValue.equals(typeString))
                     return type;
-            return ALL;
+            throw new IllegalArgumentException("No query type '" + typeString + "'");
         }
 
         public int asInt() { return intValue; }
@@ -128,6 +126,9 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         public String toString() { return stringValue; }
 
     }
+
+    /** The time this query was created */
+    private long startTime;
 
     //--------------  Query properties treated as fields in Query ---------------
 
@@ -137,23 +138,16 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     /** The number of hits to return */
     private int hits = 10;
 
-    /** The query context level, 0 means no tracing */
-    private int traceLevel = 0;
-
-    /** The query explain level, 0 means no explaining */
-    private int explainLevel = 0;
-
     // The timeout to be used when dumping rank features
     private static final long dumpTimeout = (6 * 60 * 1000); // 6 minutes
     private static final long defaultTimeout = 500;
     /** The timeout of the query, in milliseconds */
     private long timeout = defaultTimeout;
 
-
     /** Whether this query is forbidden to access cached information */
     private boolean noCache = false;
 
-    /** Whether or not grouping should use a session cache */
+    /** Whether grouping should use a session cache */
     private boolean groupingSessionCache = true;
 
     //--------------  Generic property containers --------------------------------
@@ -172,7 +166,7 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     /** The ranking requested in this query */
     private Ranking ranking = new Ranking(this);
 
-    /** The query query and/or query program declaration */
+    /** The query and/or query program declaration */
     private Model model = new Model(this);
 
     /** How results of this query should be presented */
@@ -181,12 +175,8 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     /** The selection of where-clause and grouping */
     private Select select = new Select(this);
 
-    //---------------- Tracing ----------------------------------------------------
-
-    private static final Logger log = Logger.getLogger(Query.class.getName());
-
-    /** The time this query was created */
-    private long startTime;
+    /** How this query should be traced */
+    public Trace trace = new Trace(this);
 
     //---------------- Static property handling ------------------------------------
 
@@ -195,34 +185,41 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
 
     public static final CompoundName QUERY_PROFILE = new CompoundName("queryProfile");
     public static final CompoundName SEARCH_CHAIN = new CompoundName("searchChain");
-    public static final CompoundName TRACE_LEVEL = new CompoundName("traceLevel");
-    public static final CompoundName EXPLAIN_LEVEL = new CompoundName("explainLevel");
+
     public static final CompoundName NO_CACHE = new CompoundName("noCache");
     public static final CompoundName GROUPING_SESSION_CACHE = new CompoundName("groupingSessionCache");
     public static final CompoundName TIMEOUT = new CompoundName("timeout");
 
+    /** @deprecated use Trace.LEVEL */
+    @Deprecated // TODO: Remove on Vespa 9
+    public static final CompoundName TRACE_LEVEL = new CompoundName("traceLevel");
+
+    /** @deprecated use Trace.EXPLAIN_LEVEL */
+    @Deprecated // TODO: Remove on Vespa 9
+    public static final CompoundName EXPLAIN_LEVEL = new CompoundName("explainLevel");
 
     private static final QueryProfileType argumentType;
     static {
         argumentType = new QueryProfileType("native");
         argumentType.setBuiltin(true);
 
+        // Note: Order here matters as fields are set in this order, and rank feature conversion depends
+        //       on other fields already being set (see RankProfileInputProperties)
         argumentType.addField(new FieldDescription(OFFSET.toString(), "integer", "offset start"));
         argumentType.addField(new FieldDescription(HITS.toString(), "integer", "hits count"));
         argumentType.addField(new FieldDescription(QUERY_PROFILE.toString(), "string"));
         argumentType.addField(new FieldDescription(SEARCH_CHAIN.toString(), "string"));
-        argumentType.addField(new FieldDescription(TRACE_LEVEL.toString(), "integer", "tracelevel"));
-        argumentType.addField(new FieldDescription(EXPLAIN_LEVEL.toString(), "integer", "explainlevel"));
         argumentType.addField(new FieldDescription(NO_CACHE.toString(), "boolean", "nocache"));
         argumentType.addField(new FieldDescription(GROUPING_SESSION_CACHE.toString(), "boolean", "groupingSessionCache"));
         argumentType.addField(new FieldDescription(TIMEOUT.toString(), "string", "timeout"));
         argumentType.addField(new FieldDescription(FederationSearcher.SOURCENAME.toString(),"string"));
         argumentType.addField(new FieldDescription(FederationSearcher.PROVIDERNAME.toString(),"string"));
-        argumentType.addField(new FieldDescription(Presentation.PRESENTATION, new QueryProfileFieldType(Presentation.getArgumentType())));
-        argumentType.addField(new FieldDescription(Ranking.RANKING, new QueryProfileFieldType(Ranking.getArgumentType())));
         argumentType.addField(new FieldDescription(Model.MODEL, new QueryProfileFieldType(Model.getArgumentType())));
         argumentType.addField(new FieldDescription(Select.SELECT, new QueryProfileFieldType(Select.getArgumentType())));
         argumentType.addField(new FieldDescription(Dispatcher.DISPATCH, new QueryProfileFieldType(Dispatcher.getArgumentType())));
+        argumentType.addField(new FieldDescription(Ranking.RANKING, new QueryProfileFieldType(Ranking.getArgumentType())));
+        argumentType.addField(new FieldDescription(Presentation.PRESENTATION, new QueryProfileFieldType(Presentation.getArgumentType())));
+        argumentType.addField(new FieldDescription(Trace.TRACE, new QueryProfileFieldType(Trace.getArgumentType())));
         argumentType.freeze();
     }
     public static QueryProfileType getArgumentType() { return argumentType; }
@@ -230,19 +227,19 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     /** The aliases of query properties */
     private static final Map<String, CompoundName> propertyAliases;
     static {
-        Map<String,CompoundName> propertyAliasesBuilder = new HashMap<>();
-        addAliases(Query.getArgumentType(), propertyAliasesBuilder);
-        addAliases(Ranking.getArgumentType(), propertyAliasesBuilder);
-        addAliases(Model.getArgumentType(), propertyAliasesBuilder);
-        addAliases(Presentation.getArgumentType(), propertyAliasesBuilder);
-        addAliases(Select.getArgumentType(), propertyAliasesBuilder);
+        Map<String, CompoundName> propertyAliasesBuilder = new HashMap<>();
+        addAliases(Query.getArgumentType(), CompoundName.empty, propertyAliasesBuilder);
         propertyAliases = ImmutableMap.copyOf(propertyAliasesBuilder);
     }
-    private static void addAliases(QueryProfileType arguments, Map<String, CompoundName> aliases) {
-        CompoundName prefix = getPrefix(arguments);
+    private static void addAliases(QueryProfileType arguments, CompoundName prefix, Map<String, CompoundName> aliases) {
         for (FieldDescription field : arguments.fields().values()) {
             for (String alias : field.getAliases())
                 aliases.put(alias, prefix.append(field.getName()));
+            if (field.getType() instanceof QueryProfileFieldType) {
+                var type = ((QueryProfileFieldType) field.getType()).getQueryProfileType();
+                if (type != null)
+                    addAliases(type, prefix.append(type.getComponentIdAsCompoundName()), aliases);
+            }
         }
     }
 
@@ -254,10 +251,11 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     public static void addNativeQueryProfileTypesTo(QueryProfileTypeRegistry registry) {
         // Add modifiable copies to allow query profile types in this to add to these
         registry.register(Query.getArgumentType().unfrozen());
-        registry.register(Ranking.getArgumentType().unfrozen());
         registry.register(Model.getArgumentType().unfrozen());
         registry.register(Select.getArgumentType().unfrozen());
+        registry.register(Ranking.getArgumentType().unfrozen());
         registry.register(Presentation.getArgumentType().unfrozen());
+        registry.register(Trace.getArgumentType().unfrozen());
         registry.register(DefaultProperties.argumentType.unfrozen());
     }
 
@@ -266,7 +264,7 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
             ImmutableList.copyOf(namesUnder(CompoundName.empty, Query.getArgumentType()));
 
     private static List<CompoundName> namesUnder(CompoundName prefix, QueryProfileType type) {
-        if ( type == null) return Collections.emptyList(); // Names not known statically
+        if (type == null) return Collections.emptyList(); // Names not known statically
         List<CompoundName> names = new ArrayList<>();
         for (Map.Entry<String, FieldDescription> field : type.fields().entrySet()) {
             if (field.getValue().getType() instanceof QueryProfileFieldType) {
@@ -334,39 +332,54 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     public Query(HttpRequest request, Map<String, String> requestMap, CompiledQueryProfile queryProfile) {
         super(new QueryPropertyAliases(propertyAliases));
         this.httpRequest = request;
-        init(requestMap, queryProfile, Embedder.throwsOnUse);
+        init(requestMap, queryProfile, Embedder.throwsOnUse.asMap(), ZoneInfo.defaultInfo(), SchemaInfo.empty());
     }
 
     // TODO: Deprecate most constructors above here
 
     private Query(Builder builder) {
-        this(builder.getRequest(), builder.getRequestMap(), builder.getQueryProfile(), builder.getEmbedder());
+        this(builder.getRequest(),
+             builder.getRequestMap(),
+             builder.getQueryProfile(),
+             builder.getEmbedders(),
+             builder.getZoneInfo(),
+             builder.getSchemaInfo());
     }
 
-    private Query(HttpRequest request, Map<String, String> requestMap, CompiledQueryProfile queryProfile, Embedder embedder) {
+    private Query(HttpRequest request,
+                  Map<String, String> requestMap,
+                  CompiledQueryProfile queryProfile,
+                  Map<String, Embedder> embedders,
+                  ZoneInfo zoneInfo,
+                  SchemaInfo schemaInfo) {
         super(new QueryPropertyAliases(propertyAliases));
         this.httpRequest = request;
-        init(requestMap, queryProfile, embedder);
+        init(requestMap, queryProfile, embedders, zoneInfo, schemaInfo);
     }
 
-    private void init(Map<String, String> requestMap, CompiledQueryProfile queryProfile, Embedder embedder) {
+    private void init(Map<String, String> requestMap,
+                      CompiledQueryProfile queryProfile,
+                      Map<String, Embedder> embedders,
+                      ZoneInfo zoneInfo,
+                      SchemaInfo schemaInfo) {
         startTime = httpRequest.getJDiscRequest().creationTime(TimeUnit.MILLISECONDS);
         if (queryProfile != null) {
-            // Move all request parameters to the query profile just to validate that the parameter settings are legal
-            Properties queryProfileProperties = new QueryProfileProperties(queryProfile, embedder);
+            // Move all request parameters to the query profile
+            Properties queryProfileProperties = new QueryProfileProperties(queryProfile, embedders, zoneInfo);
             properties().chain(queryProfileProperties);
-            // TODO: Just checking legality rather than actually setting would be faster
-            setPropertiesFromRequestMap(requestMap, properties(), true); // Adds errors to the query for illegal set attempts
+            setPropertiesFromRequestMap(requestMap, properties(), true);
 
             // Create the full chain
-            properties().chain(new QueryProperties(this, queryProfile.getRegistry(), embedder)).
-                         chain(new ModelObjectMap()).
-                         chain(new RequestContextProperties(requestMap)).
-                         chain(queryProfileProperties).
-                         chain(new DefaultProperties());
+            properties().chain(new RankProfileInputProperties(schemaInfo, this, embedders))
+                        .chain(new QueryProperties(this, queryProfile.getRegistry(), embedders))
+                        .chain(new ModelObjectMap())
+                        .chain(new RequestContextProperties(requestMap))
+                        .chain(queryProfileProperties)
+                        .chain(new DefaultProperties());
 
-            // Pass the values from the query profile which maps through a field in the Query object model
-            // through the property chain to cause those values to be set in the Query object model
+            // Pass values from the query profile which maps to a field in the Query object model
+            // through the property chain to cause those values to be set in the Query object model with
+            // the right types according to query profiles
             setFieldsFrom(queryProfileProperties, requestMap);
 
             // We need special handling for "select" because it can be both the prefix of the nested JSON select
@@ -378,14 +391,15 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         }
         else { // bypass these complications if there is no query profile to get values from and validate against
             properties().
-                    chain(new QueryProperties(this, CompiledQueryProfileRegistry.empty, embedder)).
+                    chain(new RankProfileInputProperties(schemaInfo, this, embedders)).
+                    chain(new QueryProperties(this, CompiledQueryProfileRegistry.empty, embedders)).
                     chain(new PropertyMap()).
                     chain(new DefaultProperties());
             setPropertiesFromRequestMap(requestMap, properties(), false);
         }
 
         properties().setParentQuery(this);
-        traceProperties();
+        trace.traceProperties();
     }
 
     public Query(Query query) {
@@ -424,7 +438,7 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         for (FieldDescription field : arguments.fields().values()) {
 
             if (field.getType() == FieldType.genericQueryProfileType) { // Generic map
-                CompoundName fullName = prefix.append(field.getName());
+                CompoundName fullName = prefix.append(field.getCompoundName());
                 for (Map.Entry<String, Object> entry : originalProperties.listProperties(fullName, context).entrySet()) {
                     properties().set(fullName.append(entry.getKey()), entry.getValue(), context);
                 }
@@ -433,7 +447,7 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
                 setFrom(prefix, originalProperties, ((QueryProfileFieldType)field.getType()).getQueryProfileType(), context);
             }
             else {
-                CompoundName fullName = prefix.append(field.getName());
+                CompoundName fullName = prefix.append(field.getCompoundName());
                 Object value = originalProperties.get(fullName, context);
                 if (value != null) {
                     properties().set(fullName, value, context);
@@ -446,6 +460,11 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     private void setPropertiesFromRequestMap(Map<String, String> requestMap, Properties properties, boolean ignoreSelect) {
         for (var entry : requestMap.entrySet()) {
             if (ignoreSelect && entry.getKey().equals(Select.SELECT)) continue;
+            if (RankFeatures.isFeatureName(entry.getKey())) continue; // Set these last
+            properties.set(entry.getKey(), entry.getValue(), requestMap);
+        }
+        for (var entry : requestMap.entrySet()) {
+            if ( ! RankFeatures.isFeatureName(entry.getKey())) continue;
             properties.set(entry.getKey(), entry.getValue(), requestMap);
         }
     }
@@ -453,59 +472,6 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     /** Returns the properties of this query. The properties are modifiable */
     @Override
     public Properties properties() { return (Properties)super.properties(); }
-
-    /**
-     * Traces how properties was resolved and from where. Done after the fact to avoid special handling
-     * of tracelevel, which is the property deciding whether this needs to be done
-     */
-    private void traceProperties() {
-        if (traceLevel == 0) return;
-        CompiledQueryProfile profile = null;
-        QueryProfileProperties profileProperties = properties().getInstance(QueryProfileProperties.class);
-        if (profileProperties != null)
-            profile = profileProperties.getQueryProfile();
-
-        if (profile == null)
-            trace("No query profile is used", false, 1);
-        else
-            trace("Using " + profile.toString(), false, 1);
-
-        if (traceLevel < 4) return;
-        StringBuilder b = new StringBuilder("Resolved properties:\n");
-        Set<String> mentioned = new HashSet<>();
-        for (Map.Entry<String,String> requestProperty : requestProperties().entrySet() ) {
-            Object resolvedValue = properties().get(requestProperty.getKey(), requestProperties());
-            if (resolvedValue == null && requestProperty.getKey().equals("queryProfile"))
-                resolvedValue = requestProperty.getValue();
-
-            b.append(requestProperty.getKey());
-            b.append(": ");
-            b.append(resolvedValue); // (may be null)
-            b.append(" (");
-
-            if (profile != null && ! profile.isOverridable(new CompoundName(requestProperty.getKey()), requestProperties()))
-                b.append("from query profile - unoverridable, ignoring request value");
-            else
-                b.append("from request");
-            b.append(")\n");
-            mentioned.add(requestProperty.getKey());
-        }
-        if (profile != null) {
-            appendQueryProfileProperties(profile, mentioned, b);
-        }
-        trace(b.toString(),false,4);
-    }
-
-    private Map<String, String> requestProperties() {
-        return httpRequest.propertyMap();
-    }
-
-    private void appendQueryProfileProperties(CompiledQueryProfile profile, Set<String> mentioned, StringBuilder b) {
-        for (var property : profile.listValuesWithSources(CompoundName.empty, requestProperties(), properties()).entrySet()) {
-            if ( ! mentioned.contains(property.getKey()))
-                b.append(property.getKey()).append(": ").append(property.getValue()).append("\n");
-        }
-    }
 
     /**
      * Validates this query
@@ -576,35 +542,30 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
      */
     public void resetTimeout() { this.startTime = System.currentTimeMillis(); }
 
-    /**
-     * Sets the context level of this query, 0 means no tracing
-     * Higher numbers means increasingly more tracing
-     */
-    public void setTraceLevel(int traceLevel) { this.traceLevel = traceLevel; }
-    /**
-     * Sets the explain level of this query, 0 means no tracing
-     * Higher numbers means increasingly more explaining
-     */
-    public void setExplainLevel(int explainLevel) { this.explainLevel = explainLevel; }
+    /** @deprecated use getTrace().setLevel(level) */
+    @Deprecated // TODO: Remove on Vespa 9
+    public void setTraceLevel(int traceLevel) { trace.setLevel(traceLevel); }
+
+    /** @deprecated use getTrace().setExplainLevel(level) */
+    @Deprecated // TODO: Remove on Vespa 9
+    public void setExplainLevel(int explainLevel) { trace.setExplainLevel(explainLevel); }
+
+    /** @deprecated use getTrace().setLevel(level) */
+    @Deprecated // TODO: Remove on Vespa 9
+    public int getTraceLevel() { return trace.getLevel(); }
+
+    /** @deprecated use getTrace().getExplainLevel(level) */
+    @Deprecated // TODO: Remove on Vespa 9
+    public int getExplainLevel() { return getTrace().getExplainLevel(); }
 
     /**
      * Returns the context level of this query, 0 means no tracing
      * Higher numbers means increasingly more tracing
+     *
+     * @deprecated use getTrace().isTraceable(level)
      */
-    public int getTraceLevel() { return traceLevel; }
-
-    /**
-     * Returns the explain level of this query, 0 means no tracing
-     * Higher numbers means increasingly more explaining
-     */
-    public int getExplainLevel() { return explainLevel; }
-
-    /**
-     * Returns the context level of this query, 0 means no tracing
-     * Higher numbers means increasingly more tracing
-     */
-    public final boolean isTraceable(int level) { return traceLevel >= level; }
-
+    @Deprecated // TODO: Remove on Vespa 9
+    public final boolean isTraceable(int level) { return trace.isTraceable(level); }
 
     /** Returns whether this query should never be served from a cache. Default is false */
     public boolean getNoCache() { return noCache; }
@@ -671,86 +632,41 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
 
     /** Returns a string describing this query in more detail */
     public String toDetailString() {
-        String queryTree;
-        // getQueryTree isn't exception safe
-        try {
-            queryTree = model.getQueryTree().toString();
-        } catch (Exception | StackOverflowError e) {
-            queryTree = "Could not parse user input: " + model.getQueryString();
-        }
-        return "query=[" + queryTree + "]" + " offset=" + getOffset() + " hits=" + getHits() + "]";
+        return "query=[" + new TextualQueryRepresentation(getModel().getQueryTree().getRoot()) + "]" +
+               " offset=" + getOffset() + " hits=" + getHits() +
+               " sources=" + getModel().getSources() +
+               " restrict= " + getModel().getRestrict() +
+               " rank profile=" + getRanking().getProfile();
     }
 
     /**
-     * Encodes this query onto the given buffer
+     * Encodes this query tree into the given buffer
      *
-     * @param buffer The buffer to encode the query to
-     * @return the number of encoded items
+     * @param buffer the buffer to encode the query to
+     * @return the number of encoded query tree items
      */
     public int encode(ByteBuffer buffer) {
         return model.getQueryTree().encode(buffer);
     }
 
-    /**
-     * Adds a context message to this query and to the info log,
-     * if the context level of the query is sufficiently high.
-     * The context information will be carried over to the result at creation.
-     * The message parameter will be included <i>with</i> XML escaping.
-     *
-     * @param message      the message to add
-     * @param traceLevel   the context level of the message, this method will do nothing
-     *                     if the traceLevel of the query is lower than this value
-     */
+    /** Calls getTrace().trace(message, traceLevel). */
     public void trace(String message, int traceLevel) {
-        trace(message, false, traceLevel);
+        trace.trace(message, traceLevel);
     }
 
+    /** Calls getTrace().trace(message, traceLevel). */
     public void trace(Object message, int traceLevel) {
-        if ( ! isTraceable(traceLevel)) return;
-        getContext(true).trace(message, 0);
+        trace.trace(message, traceLevel);
     }
 
-    /**
-     * Adds a trace message to this query
-     * if the trace level of the query is sufficiently high.
-     *
-     * @param message      the message to add
-     * @param includeQuery true to append the query root stringValue
-     *        at the end of the message
-     * @param traceLevel   the context level of the message, this method will do nothing
-     *                     if the traceLevel of the query is lower than this value
-     */
+    /** Calls getTrace().trace(message, includeQuery, traceLevel). */
     public void trace(String message, boolean includeQuery, int traceLevel) {
-        if ( ! isTraceable(traceLevel)) return;
-
-        if (includeQuery)
-            message += ": [" + queryTreeText() + "]";
-
-        log.log(Level.FINE,message);
-
-        // Pass 0 as traceLevel as the trace level check is already done above,
-        // and it is not propagated to trace until execution has started
-        // (it is done in the execution.search method)
-        getContext(true).trace(message, 0);
+        trace.trace(message, includeQuery, traceLevel);
     }
 
-    /**
-     * Adds a trace message to this query
-     * if the trace level of the query is sufficiently high.
-     *
-     * @param includeQuery true to append the query root stringValue at the end of the message
-     * @param traceLevel   the context level of the message, this method will do nothing
-     *                     if the traceLevel of the query is lower than this value
-     * @param messages     the messages whose toStrings will be concatenated into the trace message.
-     *                     Concatenation will only happen if the trace level is sufficiently high.
-     */
+    /** Calls getTrace().trace(message, traceLevel, messages). */
     public void trace(boolean includeQuery, int traceLevel, Object... messages) {
-        if ( ! isTraceable(traceLevel)) return;
-
-        StringBuilder concatenated = new StringBuilder();
-        for (Object message : messages)
-            concatenated.append(message);
-        trace(concatenated.toString(), includeQuery, traceLevel);
+        trace.trace(includeQuery, traceLevel, messages);
     }
 
     /**
@@ -761,45 +677,26 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
      * by an IllegalStateException. In other words, intended use is create the
      * new query, and attach the context to the invoking query as soon as the new
      * query is properly initialized.
-     *
      * <p>
      * This method will always set the argument query's context level to the context
      * level of this query.
      *
-     * @param query
-     *                The query which should be traced as a part of this query.
-     * @throws IllegalStateException
-     *                 If the query given as argument already has context
-     *                 information.
+     * @param query the query which should be traced as a part of this query
+     * @throws IllegalStateException if the query given as argument already has context information
      */
     public void attachContext(Query query) throws IllegalStateException {
-        query.setTraceLevel(getTraceLevel());
-        query.setExplainLevel(getExplainLevel());
-        if (context == null) {
-            // Nothing to attach to. This is about the same as
-            // getTraceLevel() == 0,
-            // but is a direct test of what will make the function superfluous.
-            return;
-        }
+        query.getTrace().setLevel(getTrace().getLevel());
+        query.getTrace().setExplainLevel(getTrace().getExplainLevel());
+        query.getTrace().setProfileDepth(getTrace().getProfileDepth());
+        if (context == null) return;
         if (query.getContext(false) != null) {
             // If we added the other query's context info as a subnode in this
             // query's context tree, we would have to check for loops in the
             // context graph. If we simply created a new node without checking,
             // we might silently overwrite useful information.
-            throw new IllegalStateException("Query to attach already has context information stored.");
+            throw new IllegalStateException("Query to attach already has context information stored");
         }
         query.context = context;
-    }
-
-    private String queryTreeText() {
-        QueryTree root = getModel().getQueryTree();
-
-        if (getTraceLevel() < 2)
-            return root.toString();
-        if (getTraceLevel() < 6)
-            return yqlRepresentation();
-        else
-            return "\n" + yqlRepresentation() + "\n" + new TextualQueryRepresentation(root.getRoot()) + "\n";
     }
 
     /**
@@ -833,12 +730,6 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         }
     }
 
-    /** @deprecated remove the ignored segmenterVersion argument from invocations */
-    @Deprecated // TODO: Remove on Vespa 8
-    public String yqlRepresentation(Tuple2<String, Version> segmenterVersion, boolean includeHitsAndOffset) {
-        return yqlRepresentation(includeHitsAndOffset);
-    }
-
     /**
      * Serialize this query as YQL+. This will create a string representation
      * which should always be legal YQL+. If a problem occurs, a
@@ -869,7 +760,6 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         yql.append(" where ");
         String insert = serializeSortingAndLimits(includeHitsAndOffset);
         yql.append(VespaSerializer.serialize(this, insert));
-        yql.append(';');
         return yql.toString();
     }
 
@@ -954,7 +844,7 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     /** Returns a hash of this query based on (some of) its content. */
     @Override
     public int hashCode() {
-        return ranking.hashCode()+3*presentation.hashCode()+5* model.hashCode()+ 11*offset+ 13*hits;
+        return Objects.hash(ranking, presentation, model, offset, hits);
     }
 
     /** Returns whether the given query is equal to this */
@@ -962,8 +852,7 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     public boolean equals(Object other) {
         if (this == other) return true;
 
-        if ( ! (other instanceof Query)) return false;
-        Query q = (Query) other;
+        if ( ! (other instanceof Query q)) return false;
 
         if (getOffset() != q.getOffset()) return false;
         if (getHits() != q.getHits()) return false;
@@ -987,7 +876,8 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
     private void copyPropertiesTo(Query clone) {
         clone.model = model.cloneFor(clone);
         clone.select = select.cloneFor(clone);
-        clone.ranking = (Ranking) ranking.clone();
+        clone.ranking = ranking.cloneFor(clone);
+        clone.trace = trace.cloneFor(clone);
         clone.presentation = (Presentation) presentation.clone();
         clone.context = getContext(true).cloneFor(clone);
 
@@ -996,8 +886,6 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         assert (clone.properties().getParentQuery() == clone);
 
         clone.setTimeout(getTimeout());
-        clone.setTraceLevel(getTraceLevel());
-        clone.setExplainLevel(getExplainLevel());
         clone.setHits(getHits());
         clone.setOffset(getOffset());
         clone.setNoCache(getNoCache());
@@ -1016,6 +904,9 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
 
     /** Returns the query representation model to be used for this query, never null */
     public Model getModel() { return model; }
+
+    /** Returns the trace settings and facade API. */
+    public Trace getTrace() { return trace; }
 
     /**
      * Return the HTTP request which caused this query. This will never be null
@@ -1036,85 +927,9 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         return new SessionId(requestId, getRanking().getProfile());
     }
 
-    public boolean hasEncodableProperties() {
-        if ( ! ranking.getProperties().isEmpty()) return true;
-        if ( ! ranking.getFeatures().isEmpty()) return true;
-        if ( ranking.getFreshness() != null) return true;
-        if ( model.getSearchPath() != null) return true;
-        if ( model.getDocumentDb() != null) return true;
-        if ( presentation.getHighlight() != null && ! presentation.getHighlight().getHighlightItems().isEmpty()) return true;
-        return false;
-    }
-
-    /**
-     * Encodes properties of this query.
-     *
-     * @param buffer the buffer to encode to
-     * @param encodeQueryData true to encode all properties, false to only include session information, not actual query data
-     * @return the encoded length
-     */
-    public int encodeAsProperties(ByteBuffer buffer, boolean encodeQueryData) {
-        // Make sure we don't encode anything here if we have turned the property feature off
-        // Due to sendQuery we sometimes end up turning this feature on and then encoding a 0 int as the number of
-        // property maps - that's ok (probably we should simplify by just always turning the feature on)
-        if (! hasEncodableProperties()) return 0;
-
-        int start = buffer.position();
-
-        int mapCountPosition = buffer.position();
-        buffer.putInt(0); // map count will go here
-
-        int mapCount = 0;
-
-        // TODO: Push down
-        mapCount += ranking.getProperties().encode(buffer, encodeQueryData);
-        if (encodeQueryData) {
-            mapCount += ranking.getFeatures().encode(buffer);
-
-            // TODO: Push down
-            if (presentation.getHighlight() != null) {
-                mapCount += MapEncoder.encodeMultiMap(Highlight.HIGHLIGHTTERMS, presentation.getHighlight().getHighlightTerms(), buffer);
-            }
-
-            // TODO: Push down
-            mapCount += MapEncoder.encodeMap("model", createModelMap(), buffer);
-        }
-        mapCount += MapEncoder.encodeSingleValue(DocumentDatabase.MATCH_PROPERTY, DocumentDatabase.SEARCH_DOC_TYPE_KEY, model.getDocumentDb(), buffer);
-
-        mapCount += MapEncoder.encodeMap("caches", createCacheSettingMap(), buffer);
-
-        buffer.putInt(mapCountPosition, mapCount);
-
-        return buffer.position() - start;
-    }
-
-    private Map<String, Boolean> createCacheSettingMap() {
-        if (getGroupingSessionCache() && ranking.getQueryCache()) {
-            Map<String, Boolean> cacheSettingMap = new HashMap<>();
-            cacheSettingMap.put("grouping", true);
-            cacheSettingMap.put("query", true);
-            return cacheSettingMap;
-        }
-        if (getGroupingSessionCache())
-            return Collections.singletonMap("grouping", true);
-        if (ranking.getQueryCache())
-            return Collections.singletonMap("query", true);
-        return Collections.emptyMap();
-    }
-
-    private Map<String, String> createModelMap() {
-        Map<String, String> m = new HashMap<>();
-        if (model.getSearchPath() != null) m.put("searchpath", model.getSearchPath());
-
-        int traceLevel = ProtobufSerialization.getTraceLevelForBackend(this);
-        if (traceLevel > 0) m.put("tracelevel", String.valueOf(traceLevel));
-
-        return m;
-    }
-
     /**
      * Prepares this for binary serialization.
-     * <p>
+     *
      * This must be invoked after all changes have been made to this query before it is passed
      * on to a receiving backend. Calling it is somewhat expensive, so it should only happen once.
      * If a prepared query is cloned, it stays prepared.
@@ -1130,7 +945,9 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         private HttpRequest request = null;
         private Map<String, String> requestMap = null;
         private CompiledQueryProfile queryProfile = null;
-        private Embedder embedder = Embedder.throwsOnUse;
+        private Map<String, Embedder> embedders = Embedder.throwsOnUse.asMap();
+        private ZoneInfo zoneInfo = ZoneInfo.defaultInfo();
+        private SchemaInfo schemaInfo = SchemaInfo.empty();
 
         public Builder setRequest(String query) {
             request = HttpRequest.createTestRequest(query, com.yahoo.jdisc.http.HttpRequest.Method.GET);
@@ -1169,11 +986,36 @@ public class Query extends com.yahoo.processing.Request implements Cloneable {
         public CompiledQueryProfile getQueryProfile() { return queryProfile; }
 
         public Builder setEmbedder(Embedder embedder) {
-            this.embedder = embedder;
+            return setEmbedders(Map.of(Embedder.defaultEmbedderId, embedder));
+        }
+
+        public Builder setEmbedders(Map<String, Embedder> embedders) {
+            this.embedders = embedders;
             return this;
         }
 
-        public Embedder getEmbedder() { return embedder; }
+        public Embedder getEmbedder() {
+            if (embedders.size() != 1) {
+                throw new IllegalArgumentException("Attempt to get single embedder but multiple exists.");
+            }
+            return embedders.entrySet().stream().findFirst().get().getValue();
+        }
+
+        public Map<String, Embedder> getEmbedders() { return embedders; }
+
+        public Builder setZoneInfo(ZoneInfo zoneInfo) {
+            this.zoneInfo = zoneInfo;
+            return this;
+        }
+
+        public ZoneInfo getZoneInfo() { return zoneInfo; }
+
+        public Builder setSchemaInfo(SchemaInfo schemaInfo) {
+            this.schemaInfo = schemaInfo;
+            return this;
+        }
+
+        public SchemaInfo getSchemaInfo() { return schemaInfo; }
 
         /** Creates a new query from this builder. No properties are required to before calling this. */
         public Query build() { return new Query(this); }

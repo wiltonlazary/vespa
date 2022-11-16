@@ -1,38 +1,49 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/config-bucketspaces.h>
-#include <vespa/document/test/make_bucket_space.h>
+#include <vespa/document/datatype/datatype.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
 #include <vespa/searchcore/proton/bucketdb/bucketdbhandler.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
+#include <vespa/searchcore/proton/feedoperation/operations.h>
 #include <vespa/searchcore/proton/initializer/task_runner.h>
+#include <vespa/searchcore/proton/matching/querylimiter.h>
 #include <vespa/searchcore/proton/metrics/attribute_metrics.h>
 #include <vespa/searchcore/proton/metrics/documentdb_tagged_metrics.h>
 #include <vespa/searchcore/proton/metrics/metricswireservice.h>
 #include <vespa/searchcore/proton/reference/i_document_db_reference_resolver.h>
 #include <vespa/searchcore/proton/reprocessing/reprocessingrunner.h>
-#include <vespa/searchcore/proton/feedoperation/operations.h>
 #include <vespa/searchcore/proton/server/bootstrapconfig.h>
 #include <vespa/searchcore/proton/server/document_subdb_explorer.h>
+#include <vespa/searchcore/proton/server/document_subdb_initializer.h>
 #include <vespa/searchcore/proton/server/emptysearchview.h>
 #include <vespa/searchcore/proton/server/fast_access_document_retriever.h>
 #include <vespa/searchcore/proton/server/i_document_subdb_owner.h>
 #include <vespa/searchcore/proton/server/igetserialnum.h>
-#include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcore/proton/server/minimal_document_retriever.h>
-#include <vespa/searchcore/proton/server/searchabledocsubdb.h>
-#include <vespa/searchcore/proton/server/document_subdb_initializer.h>
 #include <vespa/searchcore/proton/server/reconfig_params.h>
-#include <vespa/searchcore/proton/matching/querylimiter.h>
+#include <vespa/searchcore/proton/server/searchabledocsubdb.h>
+#include <vespa/searchcore/proton/server/documentdbconfigmanager.h>
 #include <vespa/searchcore/proton/test/test.h>
 #include <vespa/searchcore/proton/test/thread_utils.h>
-#include <vespa/vespalib/util/idestructorcallback.h>
-#include <vespa/searchlib/index/docbuilder.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/test/directory_handler.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchcommon/attribute/config.h>
+#include <vespa/config-bucketspaces.h>
+#include <vespa/config/subscription/sourcespec.h>
+#include <vespa/document/test/make_bucket_space.h>
 #include <vespa/vespalib/test/insertion_operators.h>
 #include <vespa/vespalib/testkit/test_kit.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
+#include <vespa/vespalib/util/idestructorcallback.h>
 #include <vespa/vespalib/util/lambdatask.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/testclock.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 
 using namespace cloud::config::filedistribution;
@@ -53,19 +64,20 @@ using proton::bucketdb::IBucketDBHandler;
 using proton::bucketdb::IBucketDBHandlerInitializer;
 using vespalib::IDestructorCallback;
 using search::test::DirectoryHandler;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
 using searchcorespi::IFlushTarget;
 using searchcorespi::index::IThreadingService;
 using storage::spi::Timestamp;
 using vespa::config::search::core::ProtonConfig;
 using vespa::config::content::core::BucketspacesConfig;
-using vespalib::mkdir;
+using vespalib::datastore::CompactionStrategy;
 using proton::index::IndexConfig;
 
 typedef StoreOnlyDocSubDB::Config StoreOnlyConfig;
 typedef StoreOnlyDocSubDB::Context StoreOnlyContext;
 typedef FastAccessDocSubDB::Config FastAccessConfig;
 typedef FastAccessDocSubDB::Context FastAccessContext;
-typedef SearchableDocSubDB::Config SearchableConfig;
 typedef SearchableDocSubDB::Context SearchableContext;
 typedef std::vector<AttributeGuard> AttributeGuardList;
 
@@ -197,15 +209,15 @@ MyFastAccessContext::MyFastAccessContext(IThreadingService &writeService,
     : _storeOnlyCtx(writeService, bucketDB, bucketDBHandlerInitializer),
       _attributeMetrics(nullptr),
       _wireService(),
-      _ctx(_storeOnlyCtx._ctx, _attributeMetrics, _wireService)
+      _ctx(_storeOnlyCtx._ctx, _attributeMetrics, _wireService, std::make_shared<search::attribute::Interlock>())
 {}
 MyFastAccessContext::~MyFastAccessContext() = default;
 
 struct MySearchableConfig
 {
-    SearchableConfig _cfg;
+    FastAccessConfig _cfg;
     MySearchableConfig()
-        : _cfg(MyFastAccessConfig<false>()._cfg, 1)
+        : _cfg(MyFastAccessConfig<false>()._cfg)
     {
     }
 };
@@ -213,9 +225,9 @@ struct MySearchableConfig
 struct MySearchableContext
 {
     MyFastAccessContext _fastUpdCtx;
-    QueryLimiter _queryLimiter;
-    vespalib::Clock _clock;
-    SearchableContext _ctx;
+    QueryLimiter        _queryLimiter;
+    vespalib::TestClock _clock;
+    SearchableContext   _ctx;
     MySearchableContext(IThreadingService &writeService,
                         std::shared_ptr<bucketdb::BucketDBOwner> bucketDB,
                         IBucketDBHandlerInitializer & bucketDBHandlerInitializer);
@@ -234,24 +246,31 @@ MySearchableContext::MySearchableContext(IThreadingService &writeService,
                                          IBucketDBHandlerInitializer & bucketDBHandlerInitializer)
     : _fastUpdCtx(writeService, bucketDB, bucketDBHandlerInitializer),
       _queryLimiter(), _clock(),
-      _ctx(_fastUpdCtx._ctx, _queryLimiter,
-           _clock, dynamic_cast<vespalib::SyncableThreadExecutor &>(writeService.shared()))
+      _ctx(_fastUpdCtx._ctx, _queryLimiter, _clock.clock(), writeService.shared())
 {}
 MySearchableContext::~MySearchableContext() = default;
 
-struct OneAttrSchema : public Schema
-{
-    OneAttrSchema() {
-        addAttributeField(Schema::AttributeField("attr1", Schema::DataType::INT32));
-    }
-};
+static inline constexpr bool one_attr_schema = false;
 
-struct TwoAttrSchema : public OneAttrSchema
+static inline constexpr bool two_attr_schema = true;
+
+DocBuilder::AddFieldsType
+get_add_fields(bool has_attr2)
 {
-    TwoAttrSchema() {
-        addAttributeField(Schema::AttributeField("attr2", Schema::DataType::INT32));
-    }
-};
+    return [has_attr2](auto& header) {
+               header.addField("attr1", DataType::T_INT);
+               if (has_attr2) {
+                   header.addField("attr2", DataType::T_INT);
+               }
+           };
+}
+
+Schema
+make_all_attr_schema(bool has_attr2)
+{
+    DocBuilder db(get_add_fields(has_attr2));
+    return SchemaBuilder(db).add_all_attributes().build();
+}
 
 struct MyConfigSnapshot
 {
@@ -260,25 +279,25 @@ struct MyConfigSnapshot
     DocBuilder _builder;
     DocumentDBConfig::SP _cfg;
     BootstrapConfig::SP  _bootstrap;
-    MyConfigSnapshot(const Schema &schema, const vespalib::string &cfgDir)
+    MyConfigSnapshot(FNET_Transport & transport, const Schema &schema, const vespalib::string &cfgDir)
         : _schema(schema),
-          _builder(_schema),
+          _builder(get_add_fields(_schema.getNumAttributeFields() > 1)),
           _cfg(),
           _bootstrap()
     {
-        auto documenttypesConfig = std::make_shared<DocumenttypesConfig>(_builder.getDocumenttypesConfig());
+        auto documenttypesConfig = std::make_shared<DocumenttypesConfig>(_builder.get_documenttypes_config());
         auto tuneFileDocumentDB = std::make_shared<TuneFileDocumentDB>();
         _bootstrap = std::make_shared<BootstrapConfig>(1,
                                  documenttypesConfig,
-                                 _builder.getDocumentTypeRepo(),
+                                 _builder.get_repo_sp(),
                                  std::make_shared<ProtonConfig>(),
                                  std::make_shared<FiledistributorrpcConfig>(),
                                  std::make_shared<BucketspacesConfig>(),
                                  tuneFileDocumentDB, HwInfo());
-        config::DirSpec spec(cfgDir);
+        ::config::DirSpec spec(cfgDir);
         DocumentDBConfigHelper mgr(spec, "searchdocument");
         mgr.forwardConfig(_bootstrap);
-        mgr.nextGeneration(1ms);
+        mgr.nextGeneration(transport, 1ms);
         _cfg = mgr.getConfig();
     }
 };
@@ -286,26 +305,26 @@ struct MyConfigSnapshot
 template <typename Traits>
 struct FixtureBase
 {
-    ThreadStackExecutor _summaryExecutor;
-    ExecutorThreadingService _writeService;
-    typename Traits::Config _cfg;
+    TransportAndExecutorService _service;
+    static constexpr bool has_attr2 = Traits::has_attr2;
+
+    typename Traits::Config  _cfg;
     std::shared_ptr<bucketdb::BucketDBOwner> _bucketDB;
-    BucketDBHandler _bucketDBHandler;
+    BucketDBHandler          _bucketDBHandler;
     typename Traits::Context _ctx;
-    typename Traits::Schema _baseSchema;
-    MyConfigSnapshot::UP _snapshot;
-    DirectoryHandler _baseDir;
-    typename Traits::SubDB _subDb;
-    IFeedView::SP _tmpFeedView;
+    Schema                   _baseSchema;
+    MyConfigSnapshot::UP     _snapshot;
+    DirectoryHandler         _baseDir;
+    typename Traits::SubDB   _subDb;
+    IFeedView::SP            _tmpFeedView;
     FixtureBase()
-        : _summaryExecutor(1, 64_Ki),
-          _writeService(_summaryExecutor),
+        : _service(1),
           _cfg(),
           _bucketDB(std::make_shared<bucketdb::BucketDBOwner>()),
           _bucketDBHandler(*_bucketDB),
-          _ctx(_writeService, _bucketDB, _bucketDBHandler),
-          _baseSchema(),
-          _snapshot(new MyConfigSnapshot(_baseSchema, Traits::ConfigDir::dir())),
+          _ctx(_service.write(), _bucketDB, _bucketDBHandler),
+          _baseSchema(make_all_attr_schema(has_attr2)),
+          _snapshot(std::make_unique<MyConfigSnapshot>(_service.transport(), _baseSchema, Traits::ConfigDir::dir())),
           _baseDir(BASE_DIR + "/" + SUB_NAME, BASE_DIR),
           _subDb(_cfg._cfg, _ctx._ctx),
           _tmpFeedView()
@@ -313,13 +332,21 @@ struct FixtureBase
         init();
     }
     ~FixtureBase() {
-        _writeService.sync();
-            _writeService.master().execute(makeLambdaTask([this]() { _subDb.close(); }));
-        _writeService.sync();
+        _service.write().master().execute(makeLambdaTask([this]() { _subDb.close(); }));
+        _service.shutdown();
+    }
+    void setBucketStateCalculator(const std::shared_ptr<IBucketStateCalculator> & calc) {
+        vespalib::Gate gate;
+        _subDb.setBucketStateCalculator(calc, std::make_shared<vespalib::GateCallback>(gate));
+        gate.await();
+    }
+    template <typename FunctionType>
+    void runInMasterAndSync(FunctionType func) {
+        proton::test::runInMasterAndSync(_service.write(), func);
     }
     template <typename FunctionType>
     void runInMaster(FunctionType func) {
-        proton::test::runInMaster(_writeService, func);
+        proton::test::runInMaster(_service.write(), func);
     }
     void init() {
         DocumentSubDbInitializer::SP task =
@@ -328,16 +355,16 @@ struct FixtureBase
         initializer::TaskRunner taskRunner(executor);
         taskRunner.runTask(task);
         auto sessionMgr = std::make_shared<SessionManager>(1);
-        runInMaster([&] () { _subDb.initViews(*_snapshot->_cfg, sessionMgr); });
+        runInMasterAndSync([&]() { _subDb.initViews(*_snapshot->_cfg, sessionMgr); });
     }
     void basicReconfig(SerialNum serialNum) {
-        runInMaster([&] () { performReconfig(serialNum, TwoAttrSchema(), ConfigDir2::dir()); });
+        runInMasterAndSync([&]() { performReconfig(serialNum, make_all_attr_schema(two_attr_schema), ConfigDir2::dir()); });
     }
     void reconfig(SerialNum serialNum, const Schema &reconfigSchema, const vespalib::string &reconfigConfigDir) {
-        runInMaster([&] () { performReconfig(serialNum, reconfigSchema, reconfigConfigDir); });
+        runInMasterAndSync([&]() { performReconfig(serialNum, reconfigSchema, reconfigConfigDir); });
     }
     void performReconfig(SerialNum serialNum, const Schema &reconfigSchema, const vespalib::string &reconfigConfigDir) {
-        MyConfigSnapshot::UP newCfg(new MyConfigSnapshot(reconfigSchema, reconfigConfigDir));
+        auto newCfg = std::make_unique<MyConfigSnapshot>(_service.transport(), reconfigSchema, reconfigConfigDir);
         DocumentDBConfig::ComparisonResult cmpResult;
         cmpResult.attributesChanged = true;
         cmpResult.documenttypesChanged = true;
@@ -353,9 +380,7 @@ struct FixtureBase
         }
         _subDb.onReprocessDone(serialNum);
     }
-    void sync() {
-        _writeService.master().sync();
-    }
+
     proton::IAttributeManager::SP getAttributeManager() {
         return _subDb.getAttributeManager();
     }
@@ -374,59 +399,59 @@ struct FixtureBase
     }
 };
 
-template <typename SchemaT, typename ConfigDirT, uint32_t ConfigSerial = CFG_SERIAL>
+template <bool has_attr2_in, typename ConfigDirT, uint32_t ConfigSerial = CFG_SERIAL>
 struct BaseTraitsT
 {
-    typedef SchemaT Schema;
+    static constexpr bool has_attr2 = has_attr2_in;
     typedef ConfigDirT ConfigDir;
     static uint32_t configSerial() { return ConfigSerial; }
 };
 
-typedef BaseTraitsT<OneAttrSchema, ConfigDir1> BaseTraits;
+typedef BaseTraitsT<one_attr_schema, ConfigDir1> BaseTraits;
 
 struct StoreOnlyTraits : public BaseTraits
 {
-    typedef MyStoreOnlyConfig Config;
-    typedef MyStoreOnlyContext Context;
-    typedef StoreOnlyDocSubDB SubDB;
-    typedef StoreOnlyFeedView FeedView;
+    using Config = MyStoreOnlyConfig;
+    using Context = MyStoreOnlyContext;
+    using SubDB = StoreOnlyDocSubDB;
+    using FeedView = StoreOnlyFeedView;
 };
 
 typedef FixtureBase<StoreOnlyTraits> StoreOnlyFixture;
 
 struct FastAccessTraits : public BaseTraits
 {
-    typedef MyFastAccessConfig<false> Config;
-    typedef MyFastAccessContext Context;
-    typedef FastAccessDocSubDB SubDB;
-    typedef FastAccessFeedView FeedView;
+    using Config = MyFastAccessConfig<false>;
+    using Context = MyFastAccessContext;
+    using SubDB = FastAccessDocSubDB;
+    using FeedView = FastAccessFeedView;
 };
 
 typedef FixtureBase<FastAccessTraits> FastAccessFixture;
 
 template <typename ConfigDirT>
-struct FastAccessOnlyTraitsBase : public BaseTraitsT<TwoAttrSchema, ConfigDirT>
+struct FastAccessOnlyTraitsBase : public BaseTraitsT<two_attr_schema, ConfigDirT>
 {
-    typedef MyFastAccessConfig<true> Config;
-    typedef MyFastAccessContext Context;
-    typedef FastAccessDocSubDB SubDB;
-    typedef FastAccessFeedView FeedView;
+    using Config = MyFastAccessConfig<true>;
+    using Context = MyFastAccessContext;
+    using SubDB = FastAccessDocSubDB;
+    using FeedView = FastAccessFeedView;
 };
 
 // Setup with 1 fast-access attribute
 typedef FastAccessOnlyTraitsBase<ConfigDir3> FastAccessOnlyTraits;
 typedef FixtureBase<FastAccessOnlyTraits> FastAccessOnlyFixture;
 
-template <typename SchemaT, typename ConfigDirT>
-struct SearchableTraitsBase : public BaseTraitsT<SchemaT, ConfigDirT>
+template <bool has_attr2_in, typename ConfigDirT>
+struct SearchableTraitsBase : public BaseTraitsT<has_attr2_in, ConfigDirT>
 {
-    typedef MySearchableConfig Config;
-    typedef MySearchableContext Context;
-    typedef SearchableDocSubDB SubDB;
-    typedef proton::SearchableFeedView FeedView;
+    using Config = MySearchableConfig;
+    using Context = MySearchableContext;
+    using SubDB = SearchableDocSubDB;
+    using FeedView = proton::SearchableFeedView;
 };
 
-typedef SearchableTraitsBase<OneAttrSchema, ConfigDir1> SearchableTraits;
+typedef SearchableTraitsBase<one_attr_schema, ConfigDir1> SearchableTraits;
 typedef FixtureBase<SearchableTraits> SearchableFixture;
 
 void
@@ -557,6 +582,57 @@ TEST_F("require that attribute manager can be reconfigured", SearchableFixture)
     requireThatAttributeManagerCanBeReconfigured(f);
 }
 
+TEST_F("require that subdb reflect retirement", FastAccessFixture)
+{
+    CompactionStrategy cfg(0.1, 0.3);
+
+    EXPECT_FALSE(f._subDb.isNodeRetired());
+    auto unretired_cfg = f._subDb.computeCompactionStrategy(cfg);
+    EXPECT_TRUE(cfg == unretired_cfg);
+
+    auto calc = std::make_shared<proton::test::BucketStateCalculator>();
+    calc->setNodeRetired(true);
+    f.setBucketStateCalculator(calc);
+    EXPECT_TRUE(f._subDb.isNodeRetired());
+    auto retired_cfg = f._subDb.computeCompactionStrategy(cfg);
+    EXPECT_TRUE(cfg != retired_cfg);
+    EXPECT_TRUE(CompactionStrategy(0.5, 0.5) == retired_cfg);
+
+    calc->setNodeRetired(false);
+    f.setBucketStateCalculator(calc);
+    EXPECT_FALSE(f._subDb.isNodeRetired());
+    unretired_cfg = f._subDb.computeCompactionStrategy(cfg);
+    EXPECT_TRUE(cfg == unretired_cfg);
+}
+
+TEST_F("require that attribute compaction config reflect retirement", FastAccessFixture) {
+    CompactionStrategy default_cfg(0.05, 0.2);
+    CompactionStrategy retired_cfg(0.5, 0.5);
+
+    auto guard = f._subDb.getAttributeManager()->getAttribute("attr1");
+    EXPECT_EQUAL(default_cfg, (*guard)->getConfig().getCompactionStrategy());
+    EXPECT_EQUAL(default_cfg, dynamic_cast<const proton::DocumentMetaStore &>(f._subDb.getDocumentMetaStoreContext().get()).getConfig().getCompactionStrategy());
+
+    auto calc = std::make_shared<proton::test::BucketStateCalculator>();
+    calc->setNodeRetired(true);
+    f.setBucketStateCalculator(calc);
+    guard = f._subDb.getAttributeManager()->getAttribute("attr1");
+    EXPECT_EQUAL(retired_cfg, (*guard)->getConfig().getCompactionStrategy());
+    EXPECT_EQUAL(retired_cfg, dynamic_cast<const proton::DocumentMetaStore &>(f._subDb.getDocumentMetaStoreContext().get()).getConfig().getCompactionStrategy());
+
+    f.basicReconfig(10);
+    guard = f._subDb.getAttributeManager()->getAttribute("attr1");
+    EXPECT_EQUAL(retired_cfg, (*guard)->getConfig().getCompactionStrategy());
+    EXPECT_EQUAL(retired_cfg, dynamic_cast<const proton::DocumentMetaStore &>(f._subDb.getDocumentMetaStoreContext().get()).getConfig().getCompactionStrategy());
+
+    calc->setNodeRetired(false);
+    f.setBucketStateCalculator(calc);
+    guard = f._subDb.getAttributeManager()->getAttribute("attr1");
+    EXPECT_EQUAL(default_cfg, (*guard)->getConfig().getCompactionStrategy());
+    EXPECT_EQUAL(default_cfg, dynamic_cast<const proton::DocumentMetaStore &>(f._subDb.getDocumentMetaStoreContext().get()).getConfig().getCompactionStrategy());
+
+}
+
 template <typename Fixture>
 void
 requireThatReconfiguredAttributesAreAccessibleViaFeedView(Fixture &f)
@@ -646,29 +722,31 @@ assertTarget(const vespalib::string &name,
 TEST_F("require that flush targets can be retrieved", FastAccessFixture)
 {
     IFlushTarget::List targets = getFlushTargets(f);
-    EXPECT_EQUAL(7u, targets.size());
+    EXPECT_EQUAL(8u, targets.size());
     EXPECT_EQUAL("subdb.attribute.flush.attr1", targets[0]->getName());
     EXPECT_EQUAL("subdb.attribute.shrink.attr1", targets[1]->getName());
     EXPECT_EQUAL("subdb.documentmetastore.flush", targets[2]->getName());
     EXPECT_EQUAL("subdb.documentmetastore.shrink", targets[3]->getName());
-    EXPECT_EQUAL("subdb.summary.compact", targets[4]->getName());
-    EXPECT_EQUAL("subdb.summary.flush", targets[5]->getName());
-    EXPECT_EQUAL("subdb.summary.shrink", targets[6]->getName());
+    EXPECT_EQUAL("subdb.summary.compact_bloat", targets[4]->getName());
+    EXPECT_EQUAL("subdb.summary.compact_spread", targets[5]->getName());
+    EXPECT_EQUAL("subdb.summary.flush", targets[6]->getName());
+    EXPECT_EQUAL("subdb.summary.shrink", targets[7]->getName());
 }
 
 TEST_F("require that flush targets can be retrieved", SearchableFixture)
 {
     IFlushTarget::List targets = getFlushTargets(f);
-    EXPECT_EQUAL(9u, targets.size());
+    EXPECT_EQUAL(10u, targets.size());
     EXPECT_TRUE(assertTarget("subdb.attribute.flush.attr1", FType::SYNC, FComponent::ATTRIBUTE, *targets[0]));
     EXPECT_TRUE(assertTarget("subdb.attribute.shrink.attr1", FType::GC, FComponent::ATTRIBUTE, *targets[1]));
     EXPECT_TRUE(assertTarget("subdb.documentmetastore.flush", FType::SYNC, FComponent::ATTRIBUTE, *targets[2]));
     EXPECT_TRUE(assertTarget("subdb.documentmetastore.shrink", FType::GC, FComponent::ATTRIBUTE, *targets[3]));
     EXPECT_TRUE(assertTarget("subdb.memoryindex.flush", FType::FLUSH, FComponent::INDEX, *targets[4]));
     EXPECT_TRUE(assertTarget("subdb.memoryindex.fusion", FType::GC, FComponent::INDEX, *targets[5]));
-    EXPECT_TRUE(assertTarget("subdb.summary.compact", FType::GC, FComponent::DOCUMENT_STORE, *targets[6]));
-    EXPECT_TRUE(assertTarget("subdb.summary.flush", FType::SYNC, FComponent::DOCUMENT_STORE, *targets[7]));
-    EXPECT_TRUE(assertTarget("subdb.summary.shrink", FType::GC, FComponent::DOCUMENT_STORE, *targets[8]));
+    EXPECT_TRUE(assertTarget("subdb.summary.compact_bloat", FType::GC, FComponent::DOCUMENT_STORE, *targets[6]));
+    EXPECT_TRUE(assertTarget("subdb.summary.compact_spread", FType::GC, FComponent::DOCUMENT_STORE, *targets[7]));
+    EXPECT_TRUE(assertTarget("subdb.summary.flush", FType::SYNC, FComponent::DOCUMENT_STORE, *targets[8]));
+    EXPECT_TRUE(assertTarget("subdb.summary.shrink", FType::GC, FComponent::DOCUMENT_STORE, *targets[9]));
 }
 
 TEST_F("require that only fast-access attributes are instantiated", FastAccessOnlyFixture)
@@ -684,7 +762,7 @@ struct DocumentHandler
 {
     FixtureType &_f;
     DocBuilder _builder;
-    DocumentHandler(FixtureType &f) : _f(f), _builder(f._baseSchema) {}
+    DocumentHandler(FixtureType &f) : _f(f), _builder(get_add_fields(f.has_attr2)) {}
     static constexpr uint32_t BUCKET_USED_BITS = 8;
     static DocumentId createDocId(uint32_t docId)
     {
@@ -692,16 +770,16 @@ struct DocumentHandler
                                                 "searchdocument::%u", docId));
     }
     Document::UP createEmptyDoc(uint32_t docId) {
-        return _builder.startDocument
-            (vespalib::make_string("id:searchdocument:searchdocument::%u",
-                                   docId)).
-            endDocument();
+        auto id = vespalib::make_string("id:searchdocument:searchdocument::%u",
+                                        docId);
+        return _builder.make_document(id);
     }
     Document::UP createDoc(uint32_t docId, int64_t attr1Value, int64_t attr2Value) {
-        return _builder.startDocument
-                (vespalib::make_string("id:searchdocument:searchdocument::%u", docId)).
-                startAttributeField("attr1").addInt(attr1Value).endField().
-                startAttributeField("attr2").addInt(attr2Value).endField().endDocument();
+        auto id = vespalib::make_string("id:searchdocument:searchdocument::%u", docId);
+        auto doc = _builder.make_document(id);
+        doc->setValue("attr1", IntFieldValue(attr1Value));
+        doc->setValue("attr2", IntFieldValue(attr2Value));
+        return doc;
     }
     PutOperation createPut(Document::UP doc, Timestamp timestamp, SerialNum serialNum) {
         proton::test::Document testDoc(Document::SP(doc.release()), 0, timestamp);
@@ -729,27 +807,34 @@ struct DocumentHandler
     }
     void putDoc(PutOperation &op) {
         IFeedView::SP feedView = _f._subDb.getFeedView();
+        vespalib::Gate gate;
         _f.runInMaster([&]() {
             feedView->preparePut(op);
             feedView->handlePut(FeedToken(), op);
-            feedView->forceCommit(op.getSerialNum());
-        } );
+            feedView->forceCommit(CommitParam(op.getSerialNum()), std::make_shared<vespalib::GateCallback>(gate));
+        });
+        gate.await();
     }
     void moveDoc(MoveOperation &op) {
         IFeedView::SP feedView = _f._subDb.getFeedView();
+        vespalib::Gate gate;
         _f.runInMaster([&]() {
-            feedView->handleMove(op, IDestructorCallback::SP());
-            feedView->forceCommit(op.getSerialNum());
-        } );
+            auto onDone = std::make_shared<vespalib::GateCallback>(gate);
+            feedView->handleMove(op, onDone);
+            feedView->forceCommit(CommitParam(op.getSerialNum()), onDone);
+        });
+        gate.await();
     }
     void removeDoc(RemoveOperation &op)
     {
         IFeedView::SP feedView = _f._subDb.getFeedView();
+        vespalib::Gate gate;
         _f.runInMaster([&]() {
             feedView->prepareRemove(op);
             feedView->handleRemove(FeedToken(), op);
-            feedView->forceCommit(op.getSerialNum());
-        } );
+            feedView->forceCommit(CommitParam(op.getSerialNum()), std::make_shared<vespalib::GateCallback>(gate));
+        });
+        gate.await();
     }
     void putDocs() {
         PutOperation putOp = createPut(std::move(createDoc(1, 22, 33)), Timestamp(10), 10);
@@ -810,7 +895,7 @@ requireThatAttributesArePopulatedDuringReprocessing(FixtureType &f)
     }
 
     // Reconfig to 2 attribute fields
-    f.reconfig(40u, TwoAttrSchema(), ConfigDirT::dir());
+    f.reconfig(40u, make_all_attr_schema(two_attr_schema), ConfigDirT::dir());
 
     {
         std::vector<AttributeGuard> attrs;
@@ -828,7 +913,7 @@ TEST_F("require that fast-access attributes are populated during reprocessing",
 }
 
 // Setup with 2 fields (1 attribute according to config in dir)
-typedef SearchableTraitsBase<TwoAttrSchema, ConfigDir1> SearchableTraitsTwoField;
+typedef SearchableTraitsBase<two_attr_schema, ConfigDir1> SearchableTraitsTwoField;
 typedef FixtureBase<SearchableTraitsTwoField> SearchableFixtureTwoField;
 
 TEST_F("require that regular attributes are populated during reprocessing",

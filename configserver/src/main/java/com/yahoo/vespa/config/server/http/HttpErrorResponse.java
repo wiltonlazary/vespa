@@ -2,13 +2,13 @@
 package com.yahoo.vespa.config.server.http;
 
 import com.yahoo.container.jdisc.HttpResponse;
-import java.util.logging.Level;
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.JsonFormat;
 import com.yahoo.slime.Slime;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static com.yahoo.jdisc.Response.Status.BAD_REQUEST;
@@ -20,7 +20,6 @@ import static com.yahoo.jdisc.Response.Status.REQUEST_TIMEOUT;
 
 /**
  * @author Ulf Lilleengen
- * @since 5.1
  */
 public class HttpErrorResponse extends HttpResponse {
 
@@ -45,12 +44,14 @@ public class HttpErrorResponse extends HttpResponse {
         INVALID_APPLICATION_PACKAGE,
         METHOD_NOT_ALLOWED,
         NOT_FOUND,
-        OUT_OF_CAPACITY,
+        NODE_ALLOCATION_FAILURE,
         REQUEST_TIMEOUT,
         UNKNOWN_VESPA_VERSION,
         PARENT_HOST_NOT_READY,
         CERTIFICATE_NOT_READY,
-        LOAD_BALANCER_NOT_READY
+        LOAD_BALANCER_NOT_READY,
+        CONFIG_NOT_CONVERGED,
+        REINDEXING_STATUS_UNAVAILABLE
     }
 
     public static HttpErrorResponse notFoundError(String msg) {
@@ -65,8 +66,8 @@ public class HttpErrorResponse extends HttpResponse {
         return new HttpErrorResponse(BAD_REQUEST, ErrorCode.INVALID_APPLICATION_PACKAGE.name(), msg);
     }
 
-    public static HttpErrorResponse outOfCapacity(String msg) {
-        return new HttpErrorResponse(BAD_REQUEST, ErrorCode.OUT_OF_CAPACITY.name(), msg);
+    public static HttpErrorResponse nodeAllocationFailure(String msg) {
+        return new HttpErrorResponse(BAD_REQUEST, ErrorCode.NODE_ALLOCATION_FAILURE.name(), msg);
     }
 
     public static HttpErrorResponse badRequest(String msg) {
@@ -101,8 +102,16 @@ public class HttpErrorResponse extends HttpResponse {
         return new HttpErrorResponse(CONFLICT, ErrorCode.CERTIFICATE_NOT_READY.name(), msg);
     }
 
+    public static HttpErrorResponse configNotConverged(String msg) {
+        return new HttpErrorResponse(CONFLICT, ErrorCode.CONFIG_NOT_CONVERGED.name(), msg);
+    }
+
     public static HttpErrorResponse loadBalancerNotReady(String msg) {
         return new HttpErrorResponse(CONFLICT, ErrorCode.LOAD_BALANCER_NOT_READY.name(), msg);
+    }
+
+    public static HttpResponse reindexingStatusUnavailable(String msg) {
+        return new HttpErrorResponse(CONFLICT, ErrorCode.REINDEXING_STATUS_UNAVAILABLE.name(), msg);
     }
 
     @Override

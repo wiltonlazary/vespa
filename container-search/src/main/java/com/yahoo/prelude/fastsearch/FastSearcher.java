@@ -15,11 +15,11 @@ import com.yahoo.search.query.Ranking;
 import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.search.result.Hit;
 import com.yahoo.search.result.HitGroup;
+import com.yahoo.search.schema.SchemaInfo;
 import com.yahoo.search.searchchain.Execution;
 
 import java.io.IOException;
 import java.util.Optional;
-import java.util.logging.Level;
 
 /**
  * The searcher which forwards queries to fdispatch nodes, using the fnet/fs4
@@ -51,10 +51,13 @@ public class FastSearcher extends VespaBackEndSearcher {
      * @param clusterParams the cluster number, and other cluster backend parameters
      * @param documentdbInfoConfig document database parameters
      */
-    public FastSearcher(String serverId, Dispatcher dispatcher,
-                        SummaryParameters docSumParams, ClusterParams clusterParams,
-                        DocumentdbInfoConfig documentdbInfoConfig) {
-        init(serverId, docSumParams, clusterParams, documentdbInfoConfig);
+    public FastSearcher(String serverId,
+                        Dispatcher dispatcher,
+                        SummaryParameters docSumParams,
+                        ClusterParams clusterParams,
+                        DocumentdbInfoConfig documentdbInfoConfig,
+                        SchemaInfo schemaInfo) {
+        init(serverId, docSumParams, clusterParams, documentdbInfoConfig, schemaInfo);
         this.dispatcher = dispatcher;
     }
 
@@ -81,7 +84,7 @@ public class FastSearcher extends VespaBackEndSearcher {
 
     @Override
     public Result doSearch2(Query query, Execution execution) {
-        if (dispatcher.searchCluster().wantedGroupSize() == 1)
+        if (dispatcher.searchCluster().allGroupsHaveSize1())
             forceSinglePassGrouping(query);
         try (SearchInvoker invoker = getSearchInvoker(query)) {
             Result result = invoker.search(query, execution);
@@ -101,7 +104,7 @@ public class FastSearcher extends VespaBackEndSearcher {
             return new Result(query,ErrorMessage.createTimeout(e.getMessage()));
         } catch (IOException e) {
             Result result = new Result(query);
-            if (query.getTraceLevel() >= 1)
+            if (query.getTrace().getLevel() >= 1)
                 query.trace(getName() + " error response: " + result, false, 1);
             result.hits().addError(ErrorMessage.createBackendCommunicationError(getName() + " failed: "+ e.getMessage()));
             return result;
@@ -165,7 +168,4 @@ public class FastSearcher extends VespaBackEndSearcher {
         return "fast searcher (" + getName() + ") ";
     }
 
-    protected boolean isLoggingFine() {
-        return getLogger().isLoggable(Level.FINE);
-    }
 }

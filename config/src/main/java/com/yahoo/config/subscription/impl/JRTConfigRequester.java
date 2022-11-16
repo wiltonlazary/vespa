@@ -6,6 +6,7 @@ import com.yahoo.config.ConfigurationRuntimeException;
 import com.yahoo.config.subscription.ConfigSourceSet;
 import com.yahoo.jrt.Request;
 import com.yahoo.jrt.RequestWaiter;
+import com.yahoo.text.internal.SnippetGenerator;
 import com.yahoo.vespa.config.Connection;
 import com.yahoo.vespa.config.ConnectionPool;
 import com.yahoo.vespa.config.ErrorCode;
@@ -24,12 +25,11 @@ import java.util.logging.Logger;
 
 import static java.util.logging.Level.FINE;
 import static java.util.logging.Level.FINEST;
-import static java.util.logging.Level.INFO;
 import static java.util.logging.Level.SEVERE;
 import static java.util.logging.Level.WARNING;
 
 /**
- * This class fetches config payload using JRT, and acts as the callback target.
+ * Requests configs using RPC, and acts as the callback target.
  * It uses the {@link JRTConfigSubscription} and {@link JRTClientConfigRequest}
  * as context, and puts the request objects on a queue on the subscription,
  * for handling by the user thread.
@@ -45,7 +45,7 @@ public class JRTConfigRequester implements RequestWaiter {
     private static final Duration delayBetweenWarnings = Duration.ofSeconds(60);
     static final float randomFraction = 0.2f;
     /* Time to be added to server timeout to create client timeout. This is the time allowed for the server to respond after serverTimeout has elapsed. */
-    private static final Double additionalTimeForClientTimeout = 10.0;
+    private static final Duration additionalTimeForClientTimeout = Duration.ofSeconds(10);
 
     private final TimingValues timingValues;
     private final ScheduledThreadPoolExecutor scheduler;
@@ -53,8 +53,9 @@ public class JRTConfigRequester implements RequestWaiter {
     private final ConnectionPool connectionPool;
     private final ConfigSourceSet configSourceSet;
 
-    private Instant noApplicationWarningLogged = Instant.MIN;
+    private Instant timeForLastLogWarning;
     private int failures = 0;
+    private volatile boolean closed = false;
 
     /**
      * Returns a new requester
@@ -68,6 +69,8 @@ public class JRTConfigRequester implements RequestWaiter {
         this.scheduler = scheduler;
         this.connectionPool = connectionPool;
         this.timingValues = timingValues;
+        // Adjust so that we wait 5 seconds with logging warning in case there are some errors just when starting up
+        timeForLastLogWarning = Instant.now().minus(delayBetweenWarnings).plus(Duration.ofSeconds(5));
     }
 
     /**
@@ -93,14 +96,16 @@ public class JRTConfigRequester implements RequestWaiter {
 
     private <T extends ConfigInstance> void doRequest(JRTConfigSubscription<T> sub, JRTClientConfigRequest req) {
         Connection connection = connectionPool.getCurrent();
-        req.getRequest().setContext(new RequestContext(sub, req, connection));
-        if (!req.validateParameters()) throw new ConfigurationRuntimeException("Error in parameters for config request: " + req);
+        Request request = req.getRequest();
+        request.setContext(new RequestContext(sub, req, connection));
+        if (!req.validateParameters())
+            throw new ConfigurationRuntimeException("Error in parameters for config request: " + req);
 
-        double jrtClientTimeout = getClientTimeout(req);
+        Duration jrtClientTimeout = getClientTimeout(req);
         log.log(FINE, () -> "Requesting config for " + sub + " on connection " + connection
                 + " with client timeout " + jrtClientTimeout +
                 (log.isLoggable(FINEST) ? (",defcontent=" + req.getDefContent().asString()) : ""));
-        connection.invokeAsync(req.getRequest(), jrtClientTimeout, this);
+        connection.invokeAsync(request, jrtClientTimeout, this);
     }
 
     @SuppressWarnings("unchecked")
@@ -124,7 +129,7 @@ public class JRTConfigRequester implements RequestWaiter {
     }
 
     private void doHandle(JRTConfigSubscription<ConfigInstance> sub, JRTClientConfigRequest jrtReq, Connection connection) {
-        if (subscriptionIsClosed(sub)) return; // Avoid error messages etc. after closing
+        if (sub.isClosed()) return; // Avoid error messages etc. after closing
 
         boolean validResponse = jrtReq.validateResponse();
         log.log(FINE, () -> "Request callback " + (validResponse ? "valid" : "invalid") + ". Req: " + jrtReq + "\nSpec: " + connection);
@@ -145,12 +150,7 @@ public class JRTConfigRequester implements RequestWaiter {
                 break;
             case ErrorCode.APPLICATION_NOT_LOADED:
             case ErrorCode.UNKNOWN_VESPA_VERSION:
-                if (noApplicationWarningLogged.isBefore(Instant.now().minus(delayBetweenWarnings))) {
-                    log.log(WARNING, "Request callback failed: " + ErrorCode.getName(jrtReq.errorCode()) +
-                            ". Connection spec: " + connection.getAddress() +
-                            ", error message: " + jrtReq.errorMessage());
-                    noApplicationWarningLogged = Instant.now();
-                }
+                logWarning(jrtReq, connection);
                 break;
             default:
                 log.log(WARNING, "Request callback failed. Req: " + jrtReq + "\nSpec: " + connection.getAddress() +
@@ -159,18 +159,23 @@ public class JRTConfigRequester implements RequestWaiter {
         }
     }
 
+    private void logWarning(JRTClientConfigRequest jrtReq, Connection connection) {
+        if ( ! closed && timeForLastLogWarning.isBefore(Instant.now().minus(delayBetweenWarnings))) {
+            log.log(WARNING, "Request callback failed: " + ErrorCode.getName(jrtReq.errorCode()) +
+                    ". Connection spec: " + connection.getAddress() +
+                    ", error message: " + jrtReq.errorMessage());
+            timeForLastLogWarning = Instant.now();
+        }
+    }
+
     private void handleFailedRequest(JRTClientConfigRequest jrtReq, JRTConfigSubscription<ConfigInstance> sub, Connection connection) {
         logError(jrtReq, connection);
 
-        log.log(INFO, "Failure of config subscription to " + connection.getAddress() +
-                ", clients will keep existing config until resolved: " + sub);
         connectionPool.switchConnection(connection);
         if (failures < 10)
             failures++;
         long delay = calculateFailedRequestDelay(failures, timingValues);
-        // The logging depends on whether we are configured or not.
-        Level logLevel = sub.getConfigState().getConfig() == null ? Level.FINE : Level.INFO;
-        log.log(logLevel, () -> "Request for config " + jrtReq.getShortDescription() + "' failed with error code " +
+        log.log(FINE, () -> "Request for config " + jrtReq.getShortDescription() + "' failed with error code " +
                 jrtReq.errorCode() + " (" + jrtReq.errorMessage() + "), scheduling new request " +
                 " in " + delay + " ms");
         scheduleNextRequest(jrtReq, sub, delay, calculateErrorTimeout());
@@ -190,17 +195,21 @@ public class JRTConfigRequester implements RequestWaiter {
 
     private void handleOKRequest(JRTClientConfigRequest jrtReq, JRTConfigSubscription<ConfigInstance> sub) {
         failures = 0;
-        noApplicationWarningLogged = Instant.MIN;
         sub.setLastCallBackOKTS(Instant.now());
         log.log(FINE, () -> "OK response received in handleOkRequest: " + jrtReq);
         if (jrtReq.hasUpdatedGeneration()) {
             sub.updateConfig(jrtReq);
+        } else if (jrtReq.hasUpdatedConfig()) {
+            SnippetGenerator generator = new SnippetGenerator();
+            int sizeHint = 500;
+            String config = jrtReq.getNewPayload().toString();
+            log.log(Level.WARNING, "Config " + jrtReq.getConfigKey() + " has changed without a change in config generation: generation " +
+                    jrtReq.getNewGeneration() + ", config: " + generator.makeSnippet(config, sizeHint) +
+                    ". This might happen when a newly upgraded config server responds with different config when bootstrapping  " +
+                    " (changes to code generating config that are different between versions) or non-deterministic config generation" +
+                    " (e.g. when using collections with non-deterministic iteration order)");
         }
         scheduleNextRequest(jrtReq, sub, calculateSuccessDelay(), calculateSuccessTimeout());
-    }
-
-    private boolean subscriptionIsClosed(JRTConfigSubscription<ConfigInstance> sub) {
-        return sub.getState() == ConfigSubscription.State.CLOSED;
     }
 
     private long calculateSuccessTimeout() {
@@ -237,8 +246,7 @@ public class JRTConfigRequester implements RequestWaiter {
     }
 
     public void close() {
-        // Fake that we have logged to avoid printing warnings after this
-        noApplicationWarningLogged = Instant.now();
+        closed = true;
         if (configSourceSet != null) {
             managedPool.release(configSourceSet);
         }
@@ -264,7 +272,7 @@ public class JRTConfigRequester implements RequestWaiter {
         return connectionPool;
     }
 
-    private Double getClientTimeout(JRTClientConfigRequest request) {
-        return (request.getTimeout() / 1000.0) + additionalTimeForClientTimeout;
+    private Duration getClientTimeout(JRTClientConfigRequest request) {
+        return Duration.ofMillis(request.getTimeout()).plus(additionalTimeForClientTimeout);
     }
 }

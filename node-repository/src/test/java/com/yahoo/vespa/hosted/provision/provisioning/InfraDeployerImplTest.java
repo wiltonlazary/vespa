@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.yahoo.component.Version;
@@ -14,7 +14,6 @@ import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.NodeRepositoryTester;
-import com.yahoo.vespa.hosted.provision.autoscale.MemoryMetricsDb;
 import com.yahoo.vespa.hosted.provision.maintenance.InfrastructureVersions;
 import com.yahoo.vespa.hosted.provision.node.Agent;
 import com.yahoo.vespa.hosted.provision.node.Allocation;
@@ -61,10 +60,7 @@ public class InfraDeployerImplTest {
 
     private final NodeRepositoryTester tester = new NodeRepositoryTester();
     private final NodeRepository nodeRepository = tester.nodeRepository();
-    private final Provisioner provisioner = spy(new NodeRepositoryProvisioner(nodeRepository,
-                                                                              Zone.defaultZone(),
-                                                                              new EmptyProvisionServiceProvider(),
-                                                                              new InMemoryFlagSource()));
+    private final Provisioner provisioner = spy(new NodeRepositoryProvisioner(nodeRepository, Zone.defaultZone(), new EmptyProvisionServiceProvider()));
     private final InfrastructureVersions infrastructureVersions = nodeRepository.infrastructureVersions();
     private final DuperModelInfraApi duperModelInfraApi = mock(DuperModelInfraApi.class);
     private final InfraDeployerImpl infraDeployer;
@@ -126,7 +122,7 @@ public class InfraDeployerImplTest {
         addNode(5, Node.State.dirty, Optional.empty());
         addNode(6, Node.State.ready, Optional.empty());
         Node node7 = addNode(7, Node.State.active, Optional.of(target));
-        nodeRepository.nodes().setRemovable(application.getApplicationId(), List.of(node7));
+        nodeRepository.nodes().setRemovable(application.getApplicationId(), List.of(node7), false);
 
         infraDeployer.getDeployment(application.getApplicationId()).orElseThrow().activate();
 
@@ -137,7 +133,7 @@ public class InfraDeployerImplTest {
     @SuppressWarnings("unchecked")
     private void verifyActivated(String... hostnames) {
         verify(duperModelInfraApi).infraApplicationActivated(
-                eq(application.getApplicationId()), eq(Stream.of(hostnames).map(HostName::from).collect(Collectors.toList())));
+                eq(application.getApplicationId()), eq(Stream.of(hostnames).map(HostName::of).collect(Collectors.toList())));
         ArgumentMatcher<ApplicationTransaction> transactionMatcher = t -> {
             assertEquals(application.getApplicationId(), t.application());
             return true;

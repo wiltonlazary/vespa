@@ -1,12 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.dispatch;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.component.ComponentId;
 import com.yahoo.compress.Compressor;
 import com.yahoo.container.handler.VipStatus;
-import com.yahoo.jdisc.Metric;
 import com.yahoo.prelude.fastsearch.VespaBackEndSearcher;
 import com.yahoo.processing.request.CompoundName;
 import com.yahoo.search.Query;
@@ -25,11 +24,11 @@ import com.yahoo.search.query.profile.types.QueryProfileType;
 import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.vespa.config.search.DispatchConfig;
 
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * A dispatcher communicates with search nodes to perform queries and fill hits.
@@ -46,16 +45,8 @@ import java.util.stream.Collectors;
 public class Dispatcher extends AbstractComponent {
 
     public static final String DISPATCH = "dispatch";
-    private static final String INTERNAL = "internal";
-    private static final String PROTOBUF = "protobuf";
     private static final String TOP_K_PROBABILITY = "topKProbability";
-
-    private static final String INTERNAL_METRIC = "dispatch_internal";
-
     private static final int MAX_GROUP_SELECTION_ATTEMPTS = 3;
-
-    /** If enabled, search queries will use protobuf rpc */
-    public static final CompoundName dispatchProtobuf = CompoundName.fromComponents(DISPATCH, PROTOBUF);
 
     /** If set will control computation of how many hits will be fetched from each partition.*/
     public static final CompoundName topKProbability = CompoundName.fromComponents(DISPATCH, TOP_K_PROBABILITY);
@@ -63,14 +54,8 @@ public class Dispatcher extends AbstractComponent {
     /** A model of the search cluster this dispatches to */
     private final SearchCluster searchCluster;
     private final ClusterMonitor<Node> clusterMonitor;
-
     private final LoadBalancer loadBalancer;
-
     private final InvokerFactory invokerFactory;
-
-    private final Metric metric;
-    private final Metric.Context metricContext;
-
     private final int maxHitsPerNode;
 
     private static final QueryProfileType argumentType;
@@ -79,8 +64,6 @@ public class Dispatcher extends AbstractComponent {
         argumentType = new QueryProfileType(DISPATCH);
         argumentType.setStrict(true);
         argumentType.setBuiltin(true);
-        argumentType.addField(new FieldDescription(INTERNAL, FieldType.booleanType));
-        argumentType.addField(new FieldDescription(PROTOBUF, FieldType.booleanType));
         argumentType.addField(new FieldDescription(TOP_K_PROBABILITY, FieldType.doubleType));
         argumentType.freeze();
     }
@@ -91,34 +74,38 @@ public class Dispatcher extends AbstractComponent {
     public Dispatcher(RpcResourcePool resourcePool,
                       ComponentId clusterId,
                       DispatchConfig dispatchConfig,
-                      VipStatus vipStatus,
-                      Metric metric) {
+                      VipStatus vipStatus) {
         this(resourcePool, new SearchCluster(clusterId.stringValue(), dispatchConfig,
                                              vipStatus, new RpcPingFactory(resourcePool)),
-             dispatchConfig, metric);
+             dispatchConfig);
 
     }
 
-    private Dispatcher(RpcResourcePool resourcePool, SearchCluster searchCluster, DispatchConfig dispatchConfig, Metric metric) {
-        this(new ClusterMonitor<>(searchCluster, true), searchCluster, dispatchConfig, new RpcInvokerFactory(resourcePool, searchCluster), metric);
+    private Dispatcher(RpcResourcePool resourcePool, SearchCluster searchCluster, DispatchConfig dispatchConfig) {
+        this(new ClusterMonitor<>(searchCluster, true), searchCluster, dispatchConfig, new RpcInvokerFactory(resourcePool, searchCluster));
+    }
+
+    private static LoadBalancer.Policy toLoadBalancerPolicy(DispatchConfig.DistributionPolicy.Enum policy) {
+        return switch (policy) {
+            case ROUNDROBIN: yield LoadBalancer.Policy.ROUNDROBIN;
+            case BEST_OF_RANDOM_2: yield LoadBalancer.Policy.BEST_OF_RANDOM_2;
+            case ADAPTIVE,LATENCY_AMORTIZED_OVER_REQUESTS: yield LoadBalancer.Policy.LATENCY_AMORTIZED_OVER_REQUESTS;
+            case LATENCY_AMORTIZED_OVER_TIME: yield LoadBalancer.Policy.LATENCY_AMORTIZED_OVER_TIME;
+        };
     }
 
     /* Protected for simple mocking in tests. Beware that searchCluster is shutdown on in deconstruct() */
     protected Dispatcher(ClusterMonitor<Node> clusterMonitor,
                          SearchCluster searchCluster,
                          DispatchConfig dispatchConfig,
-                         InvokerFactory invokerFactory,
-                         Metric metric) {
+                         InvokerFactory invokerFactory) {
         if (dispatchConfig.useMultilevelDispatch())
             throw new IllegalArgumentException(searchCluster + " is configured with multilevel dispatch, but this is not supported");
 
         this.searchCluster = searchCluster;
         this.clusterMonitor = clusterMonitor;
-        this.loadBalancer = new LoadBalancer(searchCluster,
-                                  dispatchConfig.distributionPolicy() == DispatchConfig.DistributionPolicy.ROUNDROBIN);
+        this.loadBalancer = new LoadBalancer(searchCluster, toLoadBalancerPolicy(dispatchConfig.distributionPolicy()));
         this.invokerFactory = invokerFactory;
-        this.metric = metric;
-        this.metricContext = metric.createContext(null);
         this.maxHitsPerNode = dispatchConfig.maxHitsPerNode();
         searchCluster.addMonitoring(clusterMonitor);
         Thread warmup = new Thread(() -> warmup(dispatchConfig.warmuptime()));
@@ -141,8 +128,8 @@ public class Dispatcher extends AbstractComponent {
      * Will run important code in order to trigger JIT compilation and avoid cold start issues.
      * Currently warms up lz4 compression code.
      */
-    private static long warmup(double seconds) {
-        return new Compressor().warmup(seconds);
+    private static void warmup(double seconds) {
+        new Compressor().warmup(seconds);
     }
 
     /** Returns the search cluster this dispatches to */
@@ -168,7 +155,6 @@ public class Dispatcher extends AbstractComponent {
             query.setHits(0);
             query.setOffset(0);
         }
-        metric.add(INTERNAL_METRIC, 1, metricContext);
         return invoker;
     }
 
@@ -221,12 +207,12 @@ public class Dispatcher extends AbstractComponent {
                                                                                  acceptIncompleteCoverage,
                                                                                  maxHitsPerNode);
             if (invoker.isPresent()) {
-                query.trace(false, 2, "Dispatching to group ", group.id());
+                query.trace(false, 2, "Dispatching to group ", group.id(), " after retries = ", i);
                 query.getModel().setSearchPath("/" + group.id());
                 invoker.get().teardown((success, time) -> loadBalancer.releaseGroup(group, success, time));
                 return invoker.get();
             } else {
-                loadBalancer.releaseGroup(group, false, 0);
+                loadBalancer.releaseGroup(group, false, RequestDuration.of(Duration.ZERO));
                 if (rejected == null) {
                     rejected = new HashSet<>();
                 }
@@ -246,7 +232,7 @@ public class Dispatcher extends AbstractComponent {
      */
     private Set<Integer> rejectGroupBlockingFeed(List<Group> groups) {
         if (groups.size() == 1) return null;
-        List<Group> groupsRejectingFeed = groups.stream().filter(Group::isBlockingWrites).collect(Collectors.toList());
+        List<Group> groupsRejectingFeed = groups.stream().filter(Group::isBlockingWrites).toList();
         if (groupsRejectingFeed.size() != 1) return null;
         Set<Integer> rejected = new HashSet<>();
         rejected.add(groupsRejectingFeed.get(0).id());

@@ -20,17 +20,17 @@ BTree<KeyT, DataT, AggrT, CompareT, TraitsT, AggrCalcT>::~BTree()
 {
     clear();
     _alloc.freeze();
-    _alloc.clearHoldLists();
+    _alloc.reclaim_all_memory();
 }
 
 template <typename KeyT, typename DataT, typename AggrT, typename CompareT,
           typename TraitsT, class AggrCalcT>
 void
-BTree<KeyT, DataT, AggrT, CompareT, TraitsT, AggrCalcT>::compact_worst()
+BTree<KeyT, DataT, AggrT, CompareT, TraitsT, AggrCalcT>::compact_worst(const datastore::CompactionStrategy& compaction_strategy)
 {
-    auto to_hold = _alloc.start_compact_worst();
+    auto compacting_buffers = _alloc.start_compact_worst(compaction_strategy);
     _tree.move_nodes(_alloc);
-    _alloc.finishCompact(to_hold);
+    compacting_buffers->finish();
 }
 
 }

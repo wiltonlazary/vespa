@@ -2,19 +2,18 @@
 
 #pragma once
 
-#include "allocator.hpp"
 #include "datastore.h"
+#include "allocator.hpp"
 #include "free_list_allocator.hpp"
 #include "free_list_raw_allocator.hpp"
 #include "raw_allocator.hpp"
-#include <vespa/vespalib/util/array.hpp>
+#include <vespa/vespalib/util/generation_hold_list.hpp>
 
 namespace vespalib::datastore {
 
 template <typename RefT>
 DataStoreT<RefT>::DataStoreT()
-    : DataStoreBase(RefType::numBuffers(),
-                    RefType::unscaled_offset_size())
+    : DataStoreBase(RefType::numBuffers(), RefType::offset_bits, RefType::offsetSize())
 {
 }
 
@@ -23,23 +22,11 @@ DataStoreT<RefT>::~DataStoreT() = default;
 
 template <typename RefT>
 void
-DataStoreT<RefT>::freeElem(EntryRef ref, size_t numElems)
+DataStoreT<RefT>::free_elem_internal(EntryRef ref, size_t numElems)
 {
     RefType intRef(ref);
     BufferState &state = getBufferState(intRef.bufferId());
-    if (state.isActive()) {
-        if (state.freeListList() != nullptr && numElems == state.getArraySize()) {
-            if (state.isFreeListEmpty()) {
-                state.addToFreeListList();
-            }
-            state.freeList().push_back(ref);
-        }
-    } else {
-        assert(state.isOnHold());
-    }
-    state.incDeadElems(numElems);
-    state.cleanHold(getBuffer(intRef.bufferId()),
-                    intRef.unscaled_offset() * state.getArraySize(), numElems);
+    state.free_elems(ref, numElems, intRef.offset());
 }
 
 template <typename RefT>
@@ -47,56 +34,28 @@ void
 DataStoreT<RefT>::holdElem(EntryRef ref, size_t numElems, size_t extraBytes)
 {
     RefType intRef(ref);
-    size_t alignedLen = RefType::align(numElems);
     BufferState &state = getBufferState(intRef.bufferId());
-    assert(state.isActive());
-    if (state.hasDisabledElemHoldList()) {
-        state.incDeadElems(alignedLen);
-        return;
-    }
-    _elemHold1List.push_back(ElemHold1ListElem(ref, alignedLen));
-    state.incHoldElems(alignedLen);
-    state.incExtraHoldBytes(extraBytes);
-}
-
-template <typename RefT>
-void
-DataStoreT<RefT>::trimElemHoldList(generation_t usedGen)
-{
-    ElemHold2List &elemHold2List = _elemHold2List;
-
-    ElemHold2List::iterator it(elemHold2List.begin());
-    ElemHold2List::iterator ite(elemHold2List.end());
-    uint32_t freed = 0;
-    for (; it != ite; ++it) {
-        if (static_cast<sgeneration_t>(it->_generation - usedGen) >= 0)
-            break;
-        RefType intRef(it->_ref);
-        BufferState &state = getBufferState(intRef.bufferId());
-        freeElem(it->_ref, it->_len);
-        state.decHoldElems(it->_len);
-        ++freed;
-    }
-    if (freed != 0) {
-        elemHold2List.erase(elemHold2List.begin(), it);
+    if (!state.hold_elems(numElems, extraBytes)) {
+        _entry_ref_hold_list.insert({ref, numElems});
     }
 }
 
 template <typename RefT>
 void
-DataStoreT<RefT>::clearElemHoldList()
+DataStoreT<RefT>::reclaim_entry_refs(generation_t oldest_used_gen)
 {
-    ElemHold2List &elemHold2List = _elemHold2List;
+    _entry_ref_hold_list.reclaim(oldest_used_gen, [this](const auto& elem) {
+        free_elem_internal(elem.ref, elem.num_elems);
+    });
+}
 
-    ElemHold2List::iterator it(elemHold2List.begin());
-    ElemHold2List::iterator ite(elemHold2List.end());
-    for (; it != ite; ++it) {
-        RefType intRef(it->_ref);
-        BufferState &state = getBufferState(intRef.bufferId());
-        freeElem(it->_ref, it->_len);
-        state.decHoldElems(it->_len);
-    }
-    elemHold2List.clear();
+template <typename RefT>
+void
+DataStoreT<RefT>::reclaim_all_entry_refs()
+{
+    _entry_ref_hold_list.reclaim_all([this](const auto& elem) {
+        free_elem_internal(elem.ref, elem.num_elems);
+    });
 }
 
 template <typename RefT>
@@ -165,15 +124,6 @@ DataStore<EntryType, RefT>::addEntry(const EntryType &e)
     using NoOpReclaimer = DefaultReclaimer<EntryType>;
     // Note: This will fallback to regular allocation if free lists are not enabled.
     return FreeListAllocator<EntryType, RefT, NoOpReclaimer>(*this, 0).alloc(e).ref;
-}
-
-template <typename EntryType, typename RefT>
-const EntryType &
-DataStore<EntryType, RefT>::getEntry(EntryRef ref) const
-{
-    RefType intRef(ref);
-    const EntryType *be = this->template getEntry<EntryType>(intRef);
-    return *be;
 }
 
 extern template class DataStoreT<EntryRefT<22> >;

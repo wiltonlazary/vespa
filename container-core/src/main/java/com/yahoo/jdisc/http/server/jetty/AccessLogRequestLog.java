@@ -6,8 +6,8 @@ import com.yahoo.container.logging.AccessLog;
 import com.yahoo.container.logging.AccessLogEntry;
 import com.yahoo.container.logging.RequestLog;
 import com.yahoo.container.logging.RequestLogEntry;
+import com.yahoo.jdisc.http.HttpRequest;
 import com.yahoo.jdisc.http.ServerConfig;
-import com.yahoo.jdisc.http.servlet.ServletRequest;
 import org.eclipse.jetty.http2.HTTP2Stream;
 import org.eclipse.jetty.http2.server.HttpTransportOverHTTP2;
 import org.eclipse.jetty.server.HttpChannel;
@@ -17,7 +17,6 @@ import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.component.AbstractLifeCycle;
 
 import javax.servlet.http.HttpServletRequest;
-import java.security.Principal;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
@@ -77,17 +76,19 @@ class AccessLogRequestLog extends AbstractLifeCycle implements org.eclipse.jetty
             addNonNullValue(builder, request.getProtocol(), RequestLogEntry.Builder::httpVersion);
             addNonNullValue(builder, request.getScheme(), RequestLogEntry.Builder::scheme);
             addNonNullValue(builder, request.getHeader("User-Agent"), RequestLogEntry.Builder::userAgent);
-            addNonNullValue(builder, request.getHeader("Host"), RequestLogEntry.Builder::hostString);
+            addNonNullValue(builder, getServerName(request), RequestLogEntry.Builder::hostString);
             addNonNullValue(builder, request.getHeader("Referer"), RequestLogEntry.Builder::referer);
             addNonNullValue(builder, request.getQueryString(), RequestLogEntry.Builder::rawQuery);
 
-            Principal principal = (Principal) request.getAttribute(ServletRequest.JDISC_REQUEST_PRINCIPAL);
-            addNonNullValue(builder, principal, RequestLogEntry.Builder::userPrincipal);
+            HttpRequest jdiscRequest  = (HttpRequest) request.getAttribute(HttpRequest.class.getName());
+            if (jdiscRequest != null) {
+                addNonNullValue(builder, jdiscRequest.getUserPrincipal(), RequestLogEntry.Builder::userPrincipal);
+            }
 
-            String requestFilterId = (String) request.getAttribute(ServletRequest.JDISC_REQUEST_CHAIN);
+            String requestFilterId = (String) request.getAttribute(RequestUtils.JDISC_REQUEST_CHAIN);
             addNonNullValue(builder, requestFilterId, (b, chain) -> b.addExtraAttribute("request-chain", chain));
 
-            String responseFilterId = (String) request.getAttribute(ServletRequest.JDISC_RESPONSE_CHAIN);
+            String responseFilterId = (String) request.getAttribute(RequestUtils.JDISC_RESPONSE_CHAIN);
             addNonNullValue(builder, responseFilterId, (b, chain) -> b.addExtraAttribute("response-chain", chain));
 
             UUID connectionId = (UUID) request.getAttribute(JettyConnectionLogger.CONNECTION_ID_REQUEST_ATTRIBUTE);
@@ -107,7 +108,7 @@ class AccessLogRequestLog extends AbstractLifeCycle implements org.eclipse.jetty
                     builder.addExtraAttribute(header, value);
                 }
             });
-            X509Certificate[] clientCert = (X509Certificate[]) request.getAttribute(ServletRequest.SERVLET_REQUEST_X509CERT);
+            X509Certificate[] clientCert = (X509Certificate[]) request.getAttribute(RequestUtils.SERVLET_REQUEST_X509CERT);
             if (clientCert != null && clientCert.length > 0) {
                 builder.sslPrincipal(clientCert[0].getSubjectX500Principal());
             }
@@ -127,6 +128,19 @@ class AccessLogRequestLog extends AbstractLifeCycle implements org.eclipse.jetty
         } catch (Exception e) {
             // Catching any exceptions here as it is unclear how Jetty handles exceptions from a RequestLog.
             logger.log(Level.SEVERE, "Failed to log access log entry: " + e.getMessage(), e);
+        }
+    }
+
+    private static String getServerName(Request request) {
+        try {
+            return request.getServerName();
+        } catch (IllegalArgumentException e) {
+            /*
+             * getServerName() may throw IllegalArgumentException for invalid requests where request line contains a URI with relative path.
+             * Jetty correctly responds with '400 Bad Request' prior to invoking our request log implementation.
+             */
+            logger.log(Level.FINE, e, () -> "Fallback to 'Host' header");
+            return request.getHeader("Host");
         }
     }
 

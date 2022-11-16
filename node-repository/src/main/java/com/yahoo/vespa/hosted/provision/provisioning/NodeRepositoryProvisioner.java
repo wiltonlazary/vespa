@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.provisioning;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationTransaction;
@@ -17,7 +17,6 @@ import com.yahoo.config.provision.ProvisionLogger;
 import com.yahoo.config.provision.Provisioner;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.transaction.Mutex;
-import com.yahoo.vespa.flags.FlagSource;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
@@ -27,7 +26,7 @@ import com.yahoo.vespa.hosted.provision.autoscale.AllocatableClusterResources;
 import com.yahoo.vespa.hosted.provision.autoscale.AllocationOptimizer;
 import com.yahoo.vespa.hosted.provision.autoscale.ClusterModel;
 import com.yahoo.vespa.hosted.provision.autoscale.Limits;
-import com.yahoo.vespa.hosted.provision.autoscale.ResourceTarget;
+import com.yahoo.vespa.hosted.provision.autoscale.Load;
 import com.yahoo.vespa.hosted.provision.node.Allocation;
 import com.yahoo.vespa.hosted.provision.node.filter.ApplicationFilter;
 import com.yahoo.vespa.hosted.provision.node.filter.NodeHostFilter;
@@ -62,12 +61,12 @@ public class NodeRepositoryProvisioner implements Provisioner {
     @Inject
     public NodeRepositoryProvisioner(NodeRepository nodeRepository,
                                      Zone zone,
-                                     ProvisionServiceProvider provisionServiceProvider, FlagSource flagSource) {
+                                     ProvisionServiceProvider provisionServiceProvider) {
         this.nodeRepository = nodeRepository;
         this.allocationOptimizer = new AllocationOptimizer(nodeRepository);
         this.capacityPolicies = new CapacityPolicies(nodeRepository);
         this.zone = zone;
-        this.loadBalancerProvisioner = provisionServiceProvider.getLoadBalancerService(nodeRepository)
+        this.loadBalancerProvisioner = provisionServiceProvider.getLoadBalancerService()
                                                                .map(lbService -> new LoadBalancerProvisioner(nodeRepository, lbService));
         this.nodeResourceLimits = new NodeResourceLimits(nodeRepository);
         this.preparer = new Preparer(nodeRepository,
@@ -84,8 +83,8 @@ public class NodeRepositoryProvisioner implements Provisioner {
     @Override
     public List<HostSpec> prepare(ApplicationId application, ClusterSpec cluster, Capacity requested,
                                   ProvisionLogger logger) {
-        log.log(Level.FINE, () -> "Received deploy prepare request for " + requested +
-                                  " for application " + application + ", cluster " + cluster);
+        log.log(Level.FINE, "Received deploy prepare request for " + requested +
+                            " for application " + application + ", cluster " + cluster);
 
         if (cluster.group().isPresent()) throw new IllegalArgumentException("Node requests cannot specify a group");
 
@@ -96,20 +95,29 @@ public class NodeRepositoryProvisioner implements Provisioner {
         NodeResources resources;
         NodeSpec nodeSpec;
         if (requested.type() == NodeType.tenant) {
-            ClusterResources target = decideTargetResources(application, cluster, requested);
-            int nodeCount = capacityPolicies.decideSize(target.nodes(), requested, cluster, application);
-            groups = Math.min(target.groups(), nodeCount); // cannot have more groups than nodes
-            resources = capacityPolicies.decideNodeResources(target.nodeResources(), requested, cluster);
             boolean exclusive = capacityPolicies.decideExclusivity(requested, cluster.isExclusive());
-            nodeSpec = NodeSpec.from(nodeCount, resources, exclusive, requested.canFail());
-            logIfDownscaled(target.nodes(), nodeCount, cluster, logger);
+            Capacity actual = capacityPolicies.applyOn(requested, application, exclusive);
+            ClusterResources target = decideTargetResources(application, cluster, actual);
+            ensureRedundancy(target.nodes(), cluster, actual.canFail(), application);
+            logIfDownscaled(requested.minResources().nodes(), actual.minResources().nodes(), cluster, logger);
+
+            groups = target.groups();
+            resources = getNodeResources(cluster, target.nodeResources(), application, exclusive);
+            nodeSpec = NodeSpec.from(target.nodes(), resources, exclusive, actual.canFail(),
+                                     requested.cloudAccount().orElse(nodeRepository.zone().cloud().account()));
         }
         else {
             groups = 1; // type request with multiple groups is not supported
-            resources = requested.minResources().nodeResources();
-            nodeSpec = NodeSpec.from(requested.type());
+            resources = getNodeResources(cluster, requested.minResources().nodeResources(), application, true);
+            nodeSpec = NodeSpec.from(requested.type(), nodeRepository.zone().cloud().account());
         }
         return asSortedHosts(preparer.prepare(application, cluster, nodeSpec, groups), resources);
+    }
+
+    private NodeResources getNodeResources(ClusterSpec cluster, NodeResources nodeResources, ApplicationId applicationId, boolean exclusive) {
+        return nodeResources.isUnspecified()
+                ? capacityPolicies.defaultNodeResources(cluster, applicationId, exclusive)
+                : nodeResources;
     }
 
     @Override
@@ -131,7 +139,7 @@ public class NodeRepositoryProvisioner implements Provisioner {
 
     @Override
     public ProvisionLock lock(ApplicationId application) {
-        return new ProvisionLock(application, nodeRepository.nodes().lock(application));
+        return new ProvisionLock(application, nodeRepository.applications().lock(application));
     }
 
     /**
@@ -139,9 +147,9 @@ public class NodeRepositoryProvisioner implements Provisioner {
      * and updates the application store with the received min and max.
      */
     private ClusterResources decideTargetResources(ApplicationId applicationId, ClusterSpec clusterSpec, Capacity requested) {
-        try (Mutex lock = nodeRepository.nodes().lock(applicationId)) {
+        try (Mutex lock = nodeRepository.applications().lock(applicationId)) {
             var application = nodeRepository.applications().get(applicationId).orElse(Application.empty(applicationId))
-                              .withCluster(clusterSpec.id(), clusterSpec.isExclusive(), requested.minResources(), requested.maxResources());
+                              .withCluster(clusterSpec.id(), clusterSpec.isExclusive(), requested);
             nodeRepository.applications().put(application, lock);
             var cluster = application.cluster(clusterSpec.id()).get();
             return cluster.targetResources().orElseGet(() -> currentResources(application, clusterSpec, cluster, requested));
@@ -160,11 +168,20 @@ public class NodeRepositoryProvisioner implements Provisioner {
         boolean firstDeployment = nodes.isEmpty();
         AllocatableClusterResources currentResources =
                 firstDeployment // start at min, preserve current resources otherwise
-                ? new AllocatableClusterResources(requested.minResources(), clusterSpec, nodeRepository)
-                : new AllocatableClusterResources(nodes.asList(), nodeRepository);
-        var clusterModel = new ClusterModel(application, cluster, clusterSpec, nodes, nodeRepository.metricsDb(), nodeRepository.clock());
+                ? new AllocatableClusterResources(initialResourcesFrom(requested, clusterSpec, application.id()), clusterSpec, nodeRepository)
+                : new AllocatableClusterResources(nodes, nodeRepository);
+        var clusterModel = new ClusterModel(application, clusterSpec, cluster, nodes, nodeRepository.metricsDb(), nodeRepository.clock());
         return within(Limits.of(requested), currentResources, firstDeployment, clusterModel);
     }
+
+    private ClusterResources initialResourcesFrom(Capacity requested, ClusterSpec clusterSpec, ApplicationId applicationId) {
+        var initial = requested.minResources();
+        if (initial.nodeResources().isUnspecified())
+            initial = initial.with(capacityPolicies.defaultNodeResources(clusterSpec, applicationId,
+                                                                         capacityPolicies.decideExclusivity(requested, clusterSpec.isExclusive())));
+        return initial;
+    }
+
 
     /** Make the minimal adjustments needed to the current resources to stay within the limits */
     private ClusterResources within(Limits limits,
@@ -178,7 +195,7 @@ public class NodeRepositoryProvisioner implements Provisioner {
         if (! firstDeployment && currentAsAdvertised.isWithin(limits.min(), limits.max())) return currentAsAdvertised;
 
         // Otherwise, find an allocation that preserves the current resources as well as possible
-        return allocationOptimizer.findBestAllocation(ResourceTarget.preserve(current),
+        return allocationOptimizer.findBestAllocation(Load.one(),
                                                       current,
                                                       clusterModel,
                                                       limits)
@@ -186,10 +203,28 @@ public class NodeRepositoryProvisioner implements Provisioner {
                                   .advertisedResources();
     }
 
-    private void logIfDownscaled(int targetNodes, int actualNodes, ClusterSpec cluster, ProvisionLogger logger) {
-        if (zone.environment().isManuallyDeployed() && actualNodes < targetNodes)
-            logger.log(Level.INFO, "Requested " + targetNodes + " nodes for " + cluster +
-                                   ", downscaling to " + actualNodes + " nodes in " + zone.environment());
+    /**
+     * Throw if the node count is 1 for container and content clusters and we're in a production zone
+     *
+     * @throws IllegalArgumentException if only one node is requested and we can fail
+     */
+    private void ensureRedundancy(int nodeCount, ClusterSpec cluster, boolean canFail, ApplicationId application) {
+        if (! application.instance().isTester() &&
+            canFail &&
+            nodeCount == 1 &&
+            requiresRedundancy(cluster.type()) &&
+            zone.environment().isProduction())
+            throw new IllegalArgumentException("Deployments to prod require at least 2 nodes per cluster for redundancy. Not fulfilled for " + cluster);
+    }
+
+    private static boolean requiresRedundancy(ClusterSpec.Type clusterType) {
+        return clusterType.isContent() || clusterType.isContainer();
+    }
+
+    private void logIfDownscaled(int requestedMinNodes, int actualMinNodes, ClusterSpec cluster, ProvisionLogger logger) {
+        if (zone.environment().isManuallyDeployed() && actualMinNodes < requestedMinNodes)
+            logger.log(Level.INFO, "Requested " + requestedMinNodes + " nodes for " + cluster +
+                                   ", downscaling to " + actualMinNodes + " nodes in " + zone.environment());
     }
 
     private List<HostSpec> asSortedHosts(List<Node> nodes, NodeResources requestedResources) {
@@ -225,7 +260,7 @@ public class NodeRepositoryProvisioner implements Provisioner {
     private IllegalArgumentException newNoAllocationPossible(ClusterSpec spec, Limits limits) {
         StringBuilder message = new StringBuilder("No allocation possible within ").append(limits);
 
-        boolean exclusiveHosts = spec.isExclusive() || nodeRepository.zone().getCloud().dynamicProvisioning();
+        boolean exclusiveHosts = spec.isExclusive() || ! nodeRepository.zone().cloud().allowHostSharing();
         if (exclusiveHosts)
             message.append(". Nearest allowed node resources: ").append(findNearestNodeResources(limits));
 
@@ -247,6 +282,7 @@ public class NodeRepositoryProvisioner implements Provisioner {
                                                            .map(flavor -> nodeRepository.resourcesCalculator().advertisedResourcesOf(flavor))
                                                            .filter(resources -> resources.diskSpeed().compatibleWith(requestedResources.diskSpeed()))
                                                            .filter(resources -> resources.storageType().compatibleWith(requestedResources.storageType()))
+                                                           .filter(resources -> resources.architecture().compatibleWith(requestedResources.architecture()))
                                                            .min(Comparator.comparingDouble(resources -> resources.distanceTo(requestedResources)))
                                                            .orElseThrow()
                                                            .withBandwidthGbps(requestedResources.bandwidthGbps());

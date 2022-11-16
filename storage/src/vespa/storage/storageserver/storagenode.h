@@ -14,7 +14,6 @@
 
 #include <vespa/config-stor-distribution.h>
 #include <vespa/config-upgrading.h>
-#include <vespa/config/helper/configfetcher.h>
 #include <vespa/config/helper/ifetchercallback.h>
 #include <vespa/config/subscription/configuri.h>
 #include <vespa/document/config/config-documenttypes.h>
@@ -24,9 +23,11 @@
 #include <vespa/storage/storageutil/resumeguard.h>
 #include <vespa/storageframework/defaultimplementation/component/componentregisterimpl.h>
 #include <vespa/storageframework/generic/metric/metricupdatehook.h>
+#include <atomic>
 #include <mutex>
 
 namespace document { class DocumentTypeRepo; }
+namespace config { class ConfigFetcher; }
 
 namespace storage {
 
@@ -35,7 +36,6 @@ class CommunicationManager;
 class FileStorManager;
 class HostInfo;
 class IStorageChainBuilder;
-class MemoryStatusViewer;
 class NodeIdentity;
 class StateManager;
 class StateReporter;
@@ -110,7 +110,7 @@ private:
     StorageNodeContext& _context;
     ApplicationGenerationFetcher& _generationFetcher;
     vespalib::string _rootFolder;
-    bool _attemptedStopped;
+    std::atomic<bool> _attemptedStopped;
     vespalib::string _pidFile;
 
     // First components that doesn't depend on others
@@ -133,7 +133,7 @@ private:
     void configure(std::unique_ptr<StorServerConfig> config) override;
     void configure(std::unique_ptr<UpgradingConfig> config) override;
     void configure(std::unique_ptr<StorDistributionConfig> config) override;
-    virtual void configure(std::unique_ptr<document::DocumenttypesConfig> config,
+    virtual void configure(std::unique_ptr<document::config::DocumenttypesConfig> config,
                            bool hasChanged, int64_t generation);
     void configure(std::unique_ptr<BucketspacesConfig>) override;
     void updateUpgradeFlag(const UpgradingConfig&);
@@ -148,13 +148,13 @@ protected:
     std::unique_ptr<StorServerConfig> _serverConfig;
     std::unique_ptr<UpgradingConfig> _clusterConfig;
     std::unique_ptr<StorDistributionConfig> _distributionConfig;
-    std::unique_ptr<document::DocumenttypesConfig> _doctypesConfig;
+    std::unique_ptr<document::config::DocumenttypesConfig> _doctypesConfig;
     std::unique_ptr<BucketspacesConfig> _bucketSpacesConfig;
         // New configs gotten that has yet to have been handled
     std::unique_ptr<StorServerConfig> _newServerConfig;
     std::unique_ptr<UpgradingConfig> _newClusterConfig;
     std::unique_ptr<StorDistributionConfig> _newDistributionConfig;
-    std::unique_ptr<document::DocumenttypesConfig> _newDoctypesConfig;
+    std::unique_ptr<document::config::DocumenttypesConfig> _newDoctypesConfig;
     std::unique_ptr<BucketspacesConfig> _newBucketSpacesConfig;
     std::unique_ptr<StorageComponent> _component;
     std::unique_ptr<NodeIdentity> _node_identity;

@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "disk_mem_usage_sampler.h"
-#include <vespa/vespalib/util/scheduledexecutor.h>
+#include <vespa/searchcore/proton/common/scheduledexecutor.h>
 #include <vespa/vespalib/util/lambdatask.h>
 #include <vespa/searchcore/proton/common/i_transient_resource_usage_provider.h>
 #include <filesystem>
@@ -10,12 +10,12 @@ using vespalib::makeLambdaTask;
 
 namespace proton {
 
-DiskMemUsageSampler::DiskMemUsageSampler(const std::string &path_in, const Config &config)
+DiskMemUsageSampler::DiskMemUsageSampler(FNET_Transport & transport, const std::string &path_in, const Config &config)
     : _filter(config.hwInfo),
       _path(path_in),
       _sampleInterval(60s),
       _lastSampleTime(vespalib::steady_clock::now()),
-      _periodicTimer(),
+      _periodicTimer(std::make_unique<ScheduledExecutor>(transport)),
       _lock(),
       _transient_usage_providers()
 {
@@ -30,29 +30,35 @@ DiskMemUsageSampler::~DiskMemUsageSampler()
 void
 DiskMemUsageSampler::setConfig(const Config &config)
 {
-    _periodicTimer.reset();
+    _periodicTimer->reset();
     _filter.setConfig(config.filterConfig);
     _sampleInterval = config.sampleInterval;
-    sampleUsage();
+    sampleAndReportUsage();
     _lastSampleTime = vespalib::steady_clock::now();
-    _periodicTimer = std::make_unique<vespalib::ScheduledExecutor>();
     vespalib::duration maxInterval = std::min(vespalib::duration(1s), _sampleInterval);
     _periodicTimer->scheduleAtFixedRate(makeLambdaTask([this]() {
                                             if (_filter.acceptWriteOperation() && (vespalib::steady_clock::now() < (_lastSampleTime + _sampleInterval))) {
                                                 return;
                                             }
-                                            sampleUsage();
+                                            sampleAndReportUsage();
                                             _lastSampleTime = vespalib::steady_clock::now();
                                         }),
                                         maxInterval, maxInterval);
 }
 
 void
-DiskMemUsageSampler::sampleUsage()
+DiskMemUsageSampler::sampleAndReportUsage()
 {
-    sampleMemoryUsage();
-    sampleDiskUsage();
-    sample_transient_resource_usage();
+    TransientResourceUsage transientUsage = sample_transient_resource_usage();
+    /* It is important that transient resource usage is sampled first. This prevents
+     * a false positive where we report a too high disk or memory usage causing
+     * either feed blocked, or an alert due to metric spike.
+     * A false negative is less of a problem, as it will only be a short drop in the metric,
+     * and a short period of allowed feed. The latter will be very rare as you are rarely feed blocked anyway.
+     */
+    vespalib::ProcessMemoryStats memoryStats = sampleMemoryUsage();
+    uint64_t diskUsage = sampleDiskUsage();
+    _filter.set_resource_usage(transientUsage, memoryStats, diskUsage);
 }
 
 namespace {
@@ -107,34 +113,32 @@ sampleDiskUsageInDirectory(const fs::path &path)
 
 }
 
-void
+uint64_t
 DiskMemUsageSampler::sampleDiskUsage()
 {
     const auto &disk = _filter.getHwInfo().disk();
-    _filter.setDiskUsedSize(disk.shared() ?
-                            sampleDiskUsageInDirectory(_path) :
-                            sampleDiskUsageOnFileSystem(_path, disk));
+    return disk.shared()
+        ? sampleDiskUsageInDirectory(_path)
+        : sampleDiskUsageOnFileSystem(_path, disk);
 }
 
-void
+vespalib::ProcessMemoryStats
 DiskMemUsageSampler::sampleMemoryUsage()
 {
-    _filter.setMemoryStats(vespalib::ProcessMemoryStats::create());
+    return vespalib::ProcessMemoryStats::create();
 }
 
-void
+TransientResourceUsage
 DiskMemUsageSampler::sample_transient_resource_usage()
 {
-    size_t max_transient_memory_usage = 0;
-    size_t max_transient_disk_usage = 0;
+    TransientResourceUsage transient_usage;
     {
         std::lock_guard<std::mutex> guard(_lock);
         for (auto provider : _transient_usage_providers) {
-            max_transient_memory_usage = std::max(max_transient_memory_usage, provider->get_transient_memory_usage());
-            max_transient_disk_usage = std::max(max_transient_disk_usage, provider->get_transient_disk_usage());
+            transient_usage.merge(provider->get_transient_resource_usage());
         }
     }
-    _filter.set_transient_resource_usage(max_transient_memory_usage, max_transient_disk_usage);
+    return transient_usage;
 }
 
 void

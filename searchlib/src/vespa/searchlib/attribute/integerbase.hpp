@@ -3,22 +3,38 @@
 
 #include "integerbase.h"
 #include <vespa/vespalib/util/exceptions.h>
+#include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/searchcommon/attribute/config.h>
 
 namespace search {
 
 using largeint_t = attribute::IAttributeVector::largeint_t;
 
 template<typename T>
-uint32_t
-IntegerAttributeTemplate<T>::getRawValues(DocId, const multivalue::Value<T> * &) const {
-    throw std::runtime_error(getNativeClassName() + "::getRawValues() not implemented.");
+IntegerAttributeTemplate<T>::IntegerAttributeTemplate(const vespalib::string & name)
+    : IntegerAttributeTemplate(name, BasicType::fromType(T()))
+{ }
+
+template<typename T>
+IntegerAttributeTemplate<T>::IntegerAttributeTemplate(const vespalib::string & name, const Config & c)
+    : IntegerAttribute(name, c),
+      _defaultValue(ChangeBase::UPDATE, 0, defaultValue())
+{
+    assert(c.basicType() == BasicType::fromType(T()));
 }
 
 template<typename T>
-uint32_t
-IntegerAttributeTemplate<T>::getRawValues(DocId, const multivalue::WeightedValue<T> * &) const {
-    throw std::runtime_error(getNativeClassName() + "::getRawValues() not implemented.");
+IntegerAttributeTemplate<T>::IntegerAttributeTemplate(const vespalib::string & name, const Config & c, const BasicType &realType)
+    : IntegerAttribute(name, c),
+      _defaultValue(ChangeBase::UPDATE, 0, 0u)
+{
+    assert(c.basicType() == realType);
+    (void) realType;
+    assert(BasicType::fromType(T()) == BasicType::INT8);
 }
+
+template<typename T>
+IntegerAttributeTemplate<T>::~IntegerAttributeTemplate() = default;
 
 template<typename T>
 bool
@@ -46,39 +62,17 @@ IntegerAttributeTemplate<T>::findFoldedEnums(const char *value) const
 }
 
 template<typename T>
-largeint_t
-IntegerAttributeTemplate<T>::getIntFromEnum(EnumHandle e) const {
-    T v(getFromEnum(e));
-    if (attribute::isUndefined<T>(v)) {
-        return attribute::getUndefined<largeint_t>();
-    }
-    return v;
+long
+IntegerAttributeTemplate<T>::onSerializeForAscendingSort(DocId doc, void * serTo, long available, const common::BlobConverter *) const {
+    T origValue(get(doc));
+    return vespalib::serializeForSort< vespalib::convertForSort<T, true> >(origValue, serTo, available);
 }
 
 template<typename T>
 long
-IntegerAttributeTemplate<T>::onSerializeForAscendingSort(DocId doc, void * serTo, long available, const common::BlobConverter * bc) const {
-    (void) bc;
-    if (available >= long(sizeof(T))) {
-        T origValue(get(doc));
-        vespalib::serializeForSort< vespalib::convertForSort<T, true> >(origValue, serTo);
-    } else {
-        return -1;
-    }
-    return sizeof(T);
-}
-
-template<typename T>
-long
-IntegerAttributeTemplate<T>::onSerializeForDescendingSort(DocId doc, void * serTo, long available, const common::BlobConverter * bc) const {
-    (void) bc;
-    if (available >= long(sizeof(T))) {
-        T origValue(get(doc));
-        vespalib::serializeForSort< vespalib::convertForSort<T, false> >(origValue, serTo);
-    } else {
-        return -1;
-    }
-    return sizeof(T);
+IntegerAttributeTemplate<T>::onSerializeForDescendingSort(DocId doc, void * serTo, long available, const common::BlobConverter *) const {
+    T origValue(get(doc));
+    return vespalib::serializeForSort< vespalib::convertForSort<T, false> >(origValue, serTo, available);
 }
 
 }

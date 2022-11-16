@@ -13,19 +13,22 @@
       "name": "ArchiveUriUpdater"
     },
     {
-      "name": "ChangeRequestMaintainer"
+      "name": "ArtifactExpirer"
     },
     {
-      "name": "CloudEventTracker"
+      "name": "AwsOsUpgrader"
+    },
+    {
+      "name": "BillingDatabaseMaintainer"
+    },
+    {
+      "name": "ChangeRequestMaintainer"
     },
     {
       "name": "CloudTrialExpirer"
     },
     {
       "name": "ContactInformationMaintainer"
-    },
-    {
-      "name": "ContainerImageExpirer"
     },
     {
       "name": "CostReportMaintainer"
@@ -55,6 +58,9 @@
       "name": "JobRunner"
     },
     {
+      "name": "MeteringMonitorMaintainer"
+    },
+    {
       "name": "MetricsReporter"
     },
     {
@@ -82,16 +88,13 @@
       "name": "ResourceTagMaintainer"
     },
     {
-      "name":"RetriggerMaintainer"
-    },
-    {
-      "name": "SystemRoutingPolicyMaintainer"
+      "name": "RetriggerMaintainer"
     },
     {
       "name": "SystemUpgrader"
     },
     {
-      "name":"TenantRoleMaintainer"
+      "name": "TenantRoleMaintainer"
     },
     {
       "name": "TrafficShareUpdater"

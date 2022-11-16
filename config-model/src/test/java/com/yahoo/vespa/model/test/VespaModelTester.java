@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.yahoo.config.provision.NodeResources.Architecture;
 import static com.yahoo.vespa.model.test.utils.ApplicationPackageUtils.generateSchemas;
 
 /**
@@ -53,6 +54,7 @@ public class VespaModelTester {
     private final Map<NodeResources, Collection<Host>> hostsByResources = new HashMap<>();
     private ApplicationId applicationId = ApplicationId.defaultId();
     private boolean useDedicatedNodeForLogserver = false;
+    private Architecture adminClusterArchitecture = Architecture.getDefault();;
     private HostProvisioner provisioner;
 
     public VespaModelTester() {
@@ -100,6 +102,11 @@ public class VespaModelTester {
     /** Sets whether this sets up a model for a hosted system. Default: true */
     public void setHosted(boolean hosted) { this.hosted = hosted; }
 
+    /** Sets architecture to use for admin clusters. Default: x86_64 */
+    public void setAdminClusterArchitecture(Architecture architecture) {
+        this.adminClusterArchitecture = architecture;
+    }
+
     /** Sets the tenant, application name, and instance name of the model being built. */
     public void setApplicationId(String tenant, String applicationName, String instanceName) {
         applicationId = ApplicationId.from(tenant, applicationName, instanceName);
@@ -116,7 +123,12 @@ public class VespaModelTester {
 
     /** Creates a model which uses 0 as start index */
     public VespaModel createModel(String services, boolean failOnOutOfCapacity, String ... retiredHostNames) {
-        return createModel(Zone.defaultZone(), services, failOnOutOfCapacity, false, false, 0,
+        return createModel(services, null, failOnOutOfCapacity, retiredHostNames);
+    }
+
+    /** Creates a model which uses 0 as start index */
+    public VespaModel createModel(String services, String hosts, boolean failOnOutOfCapacity, String ... retiredHostNames) {
+        return createModel(Zone.defaultZone(), services, hosts, failOnOutOfCapacity, false, false, 0,
                            Optional.empty(), new DeployState.Builder(), retiredHostNames);
     }
 
@@ -156,36 +168,50 @@ public class VespaModelTester {
                            Optional.empty(), deployStateBuilder, retiredHostNames);
     }
 
+    public VespaModel createModel(Zone zone, String services, boolean failOnOutOfCapacity, boolean useMaxResources,
+                                  boolean alwaysReturnOneNode,
+                                  int startIndexForClusters, Optional<VespaModel> previousModel,
+                                  DeployState.Builder deployStatebuilder, String ... retiredHostNames) {
+        return createModel(zone, services, null, failOnOutOfCapacity, useMaxResources, alwaysReturnOneNode,
+                           startIndexForClusters, previousModel, deployStatebuilder, retiredHostNames);
+    }
     /**
      * Creates a model using the hosts already added to this
      *
      * @param services the services xml string
+     * @param hosts the hosts xml string, or null if none
      * @param useMaxResources false to use the minmal resources (when given a range), true to use max
      * @param failOnOutOfCapacity whether we should get an exception when not enough hosts of the requested flavor
      *        is available or if we should just silently receive a smaller allocation
      * @return the resulting model
      */
-    public VespaModel createModel(Zone zone, String services, boolean failOnOutOfCapacity, boolean useMaxResources,
+    public VespaModel createModel(Zone zone, String services, String hosts, boolean failOnOutOfCapacity, boolean useMaxResources,
                                   boolean alwaysReturnOneNode,
                                   int startIndexForClusters, Optional<VespaModel> previousModel,
                                   DeployState.Builder deployStatebuilder, String ... retiredHostNames) {
-        VespaModelCreatorWithMockPkg modelCreatorWithMockPkg = new VespaModelCreatorWithMockPkg(null, services, generateSchemas("type1"));
+        VespaModelCreatorWithMockPkg modelCreatorWithMockPkg = new VespaModelCreatorWithMockPkg(hosts, services, generateSchemas("type1"));
         ApplicationPackage appPkg = modelCreatorWithMockPkg.appPkg;
 
-        provisioner = hosted ?        new ProvisionerAdapter(new InMemoryProvisioner(hostsByResources,
-                                                                                     failOnOutOfCapacity,
-                                                                                     useMaxResources,
-                                                                                     alwaysReturnOneNode,
-                                                                                     false,
-                                                                                     startIndexForClusters,
-                                                                                     retiredHostNames)) :
-                                      new SingleNodeProvisioner();
+        if (hosted) {
+            InMemoryProvisioner provisioner = new InMemoryProvisioner(hostsByResources,
+                                                                      failOnOutOfCapacity,
+                                                                      useMaxResources,
+                                                                      alwaysReturnOneNode,
+                                                                      false,
+                                                                      startIndexForClusters,
+                                                                      retiredHostNames);
+            provisioner.setEnvironment(zone.environment());
+            this.provisioner = new ProvisionerAdapter(provisioner);
+        } else {
+            provisioner = new SingleNodeProvisioner();
+        }
 
         TestProperties properties = new TestProperties()
                 .setMultitenant(hosted) // Note: system tests are multitenant but not hosted
                 .setHostedVespa(hosted)
                 .setApplicationId(applicationId)
-                .setUseDedicatedNodeForLogserver(useDedicatedNodeForLogserver);
+                .setUseDedicatedNodeForLogserver(useDedicatedNodeForLogserver)
+                .setAdminClusterNodeResourcesArchitecture(adminClusterArchitecture);
 
         DeployState.Builder deployState = deployStatebuilder
                 .applicationPackage(appPkg)

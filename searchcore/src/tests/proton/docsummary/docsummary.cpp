@@ -1,49 +1,80 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <tests/proton/common/dummydbowner.h>
+#include <vespa/config-bucketspaces.h>
 #include <vespa/config/helper/configgetter.hpp>
+#include <vespa/document/annotation/annotation.h>
+#include <vespa/document/annotation/span.h>
+#include <vespa/document/annotation/spanlist.h>
+#include <vespa/document/annotation/spantree.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
+#include <vespa/document/datatype/annotationtype.h>
+#include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/datatype/tensor_data_type.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/arrayfieldvalue.h>
+#include <vespa/document/fieldvalue/bytefieldvalue.h>
+#include <vespa/document/fieldvalue/doublefieldvalue.h>
+#include <vespa/document/fieldvalue/floatfieldvalue.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
+#include <vespa/document/fieldvalue/longfieldvalue.h>
+#include <vespa/document/fieldvalue/rawfieldvalue.h>
+#include <vespa/document/fieldvalue/shortfieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/tensorfieldvalue.h>
+#include <vespa/document/fieldvalue/weightedsetfieldvalue.h>
+#include <vespa/document/repo/documenttyperepo.h>
+#include <vespa/document/repo/configbuilder.h>
+#include <vespa/document/repo/fixedtyperepo.h>
+#include <vespa/document/test/make_bucket_space.h>
 #include <vespa/eval/eval/simple_value.h>
 #include <vespa/eval/eval/tensor_spec.h>
-#include <vespa/eval/eval/value.h>
 #include <vespa/eval/eval/test/value_compare.h>
-#include <vespa/document/repo/documenttyperepo.h>
-#include <vespa/document/test/make_bucket_space.h>
+#include <vespa/eval/eval/value.h>
 #include <vespa/searchcore/proton/attribute/attribute_writer.h>
-#include <vespa/searchcore/proton/test/bucketfactory.h>
 #include <vespa/searchcore/proton/docsummary/docsumcontext.h>
 #include <vespa/searchcore/proton/docsummary/documentstoreadapter.h>
-#include <vespa/searchcore/proton/docsummary/summarymanager.h>
 #include <vespa/searchcore/proton/documentmetastore/documentmetastore.h>
 #include <vespa/searchcore/proton/feedoperation/putoperation.h>
+#include <vespa/searchcore/proton/matching/querylimiter.h>
 #include <vespa/searchcore/proton/metrics/metricswireservice.h>
 #include <vespa/searchcore/proton/server/bootstrapconfig.h>
 #include <vespa/searchcore/proton/server/documentdb.h>
-#include <vespa/searchcore/proton/server/feedhandler.h>
 #include <vespa/searchcore/proton/server/documentdbconfigmanager.h>
+#include <vespa/searchcore/proton/server/feedhandler.h>
 #include <vespa/searchcore/proton/server/idocumentsubdb.h>
 #include <vespa/searchcore/proton/server/memoryconfigstore.h>
 #include <vespa/searchcore/proton/server/searchview.h>
 #include <vespa/searchcore/proton/server/summaryadapter.h>
-#include <vespa/searchcore/proton/matching/querylimiter.h>
-#include <vespa/persistence/dummyimpl/dummy_bucket_executor.h>
-#include <vespa/vespalib/util/destructor_callbacks.h>
+#include <vespa/searchcore/proton/test/bucketfactory.h>
+#include <vespa/searchcore/proton/test/mock_shared_threading_service.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/engine/docsumapi.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/tensor/tensor_attribute.h>
+#include <vespa/searchlib/test/doc_builder.h>
 #include <vespa/searchlib/transactionlog/nosyncproxy.h>
 #include <vespa/searchlib/transactionlog/translogserver.h>
-#include <vespa/vespalib/data/slime/slime.h>
-#include <vespa/vespalib/data/slime/json_format.h>
+#include <vespa/searchsummary/docsummary/i_docsum_field_writer_factory.h>
+#include <vespa/searchsummary/docsummary/i_docsum_store_document.h>
+#include <vespa/searchsummary/docsummary/i_juniper_converter.h>
+#include <vespa/searchsummary/docsummary/linguisticsannotation.h>
 #include <vespa/vespalib/data/simple_buffer.h>
+#include <vespa/vespalib/data/slime/json_format.h>
+#include <vespa/vespalib/data/slime/slime.h>
 #include <vespa/vespalib/encoding/base64.h>
-#include <vespa/vespalib/util/size_literals.h>
-#include <vespa/config-bucketspaces.h>
 #include <vespa/vespalib/testkit/testapp.h>
+#include <vespa/vespalib/geo/zcurve.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <vespa/config-summary.h>
+#include <filesystem>
 #include <regex>
 
 #include <vespa/log/log.h>
 LOG_SETUP("docsummary_test");
+
+using config::ConfigGetter;
 
 using namespace cloud::config::filedistribution;
 using namespace document;
@@ -55,85 +86,110 @@ using namespace search;
 using namespace std::chrono_literals;
 
 using vespalib::IDestructorCallback;
-using document::DocumenttypesConfig;
 using document::test::makeBucketSpace;
 using search::TuneFileDocumentDB;
 using search::index::DummyFileHeaderContext;
-using search::index::schema::CollectionType;
+using search::linguistics::SPANTREE_NAME;
+using search::test::DocBuilder;
 using storage::spi::Timestamp;
 using vespa::config::search::core::ProtonConfig;
 using vespa::config::content::core::BucketspacesConfig;
-using vespalib::eval::TensorSpec;
 using vespalib::eval::SimpleValue;
+using vespalib::eval::TensorSpec;
+using vespalib::eval::ValueType;
+using vespalib::GateCallback;
 using vespalib::Slime;
+using vespalib::geo::ZCurve;
 using namespace vespalib::slime;
 
-typedef std::unique_ptr<GeneralResult> GeneralResultPtr;
-
 namespace proton {
+
+class MockDocsumFieldWriterFactory : public search::docsummary::IDocsumFieldWriterFactory
+{
+public:
+    std::unique_ptr<DocsumFieldWriter> create_docsum_field_writer(const vespalib::string&, const vespalib::string&, const vespalib::string&) override {
+        return {};
+    }
+
+};
 
 class DirMaker
 {
 public:
-    DirMaker(const vespalib::string & dir) :
+    explicit DirMaker(const vespalib::string & dir) :
         _dir(dir)
     {
-        FastOS_File::MakeDirectory(dir.c_str());
+        std::filesystem::create_directory(std::filesystem::path(dir));
     }
-    ~DirMaker()
-    {
-        FastOS_File::EmptyAndRemoveDirectory(_dir.c_str());
+    ~DirMaker() {
+        std::filesystem::remove_all(std::filesystem::path(_dir));
     }
 private:
     vespalib::string _dir;
 };
 
-class BuildContext
+class BuildContext : public DocBuilder
 {
 public:
     DirMaker _dmk;
-    DocBuilder _bld;
-    std::shared_ptr<const DocumentTypeRepo> _repo;
+    document::FixedTypeRepo                 _fixed_repo;
     DummyFileHeaderContext _fileHeaderContext;
     vespalib::ThreadStackExecutor _summaryExecutor;
     search::transactionlog::NoSyncProxy _noTlSyncer;
     search::LogDocumentStore _str;
     uint64_t _serialNum;
 
-    BuildContext(const Schema &schema)
-        : _dmk("summary"),
-          _bld(schema),
-          _repo(std::make_shared<DocumentTypeRepo>(_bld.getDocumentType())),
-          _summaryExecutor(4, 128_Ki),
-          _noTlSyncer(),
-          _str(_summaryExecutor, "summary",
-               LogDocumentStore::Config(
-                   DocumentStore::Config(),
-                   LogDataStore::Config()),
-               GrowStrategy(),
-               TuneFileSummary(),
-               _fileHeaderContext,
-               _noTlSyncer,
-               nullptr),
-          _serialNum(1)
-    {
-    }
+    explicit BuildContext(AddFieldsType addfields);
 
-    ~BuildContext()
-    {
-    }
+    ~BuildContext();
+
+    const document::FixedTypeRepo& get_fixed_repo() { return _fixed_repo; }
 
     void
-    endDocument(uint32_t docId)
+    put_document(uint32_t docId, std::unique_ptr<Document> doc)
     {
-        Document::UP doc = _bld.endDocument();
         _str.write(_serialNum++, docId, *doc);
     }
 
-    FieldCacheRepo::UP createFieldCacheRepo(const ResultConfig &resConfig) const {
-        return std::make_unique<FieldCacheRepo>(resConfig, _bld.getDocumentType());
-    }
+    StringFieldValue make_annotated_string();
 };
+
+BuildContext::BuildContext(AddFieldsType add_fields)
+    : DocBuilder(add_fields),
+      _dmk("summary"),
+      _fixed_repo(get_repo(), get_document_type()),
+      _summaryExecutor(4, 128_Ki),
+      _noTlSyncer(),
+      _str(_summaryExecutor, "summary",
+           LogDocumentStore::Config(
+                   DocumentStore::Config(),
+                   LogDataStore::Config()),
+           GrowStrategy(),
+           TuneFileSummary(),
+           _fileHeaderContext,
+           _noTlSyncer,
+           nullptr),
+      _serialNum(1)
+{
+}
+
+BuildContext::~BuildContext() = default;
+
+StringFieldValue
+BuildContext::make_annotated_string()
+{
+    auto span_list_up = std::make_unique<SpanList>();
+    auto span_list = span_list_up.get();
+    auto tree = std::make_unique<SpanTree>(SPANTREE_NAME, std::move(span_list_up));
+    tree->annotate(span_list->add(std::make_unique<Span>(0, 3)), *AnnotationType::TERM);
+    tree->annotate(span_list->add(std::make_unique<Span>(4, 3)),
+                   Annotation(*AnnotationType::TERM, std::make_unique<StringFieldValue>("baz")));
+    StringFieldValue value("foo bar");
+    StringFieldValue::SpanTrees trees;
+    trees.push_back(std::move(tree));
+    value.setSpanTrees(trees, _fixed_repo);
+    return value;
+}
 
 namespace {
 
@@ -154,12 +210,6 @@ vespalib::string asVstring(const Inspector &value) {
     return asVstring(value.asString());
 }
 
-void decode(const ResEntry *entry, vespalib::Slime &slime) {
-    vespalib::Memory mem(entry->_dataval, entry->_datalen);
-    size_t decodeRes = BinaryFormat::decode(mem, slime);
-    ASSERT_EQUAL(decodeRes, mem.size);
-}
-
 std::string b64encode(const Inspector &value) {
     vespalib::Memory mem = value.asData();
     std::string str(mem.data, mem.size);
@@ -172,15 +222,14 @@ class DBContext : public DummyDBOwner
 {
 public:
     DirMaker _dmk;
-    DummyFileHeaderContext _fileHeaderContext;
-    TransLogServer _tls;
+    DummyFileHeaderContext        _fileHeaderContext;
     vespalib::ThreadStackExecutor _summaryExecutor;
-    storage::spi::dummy::DummyBucketExecutor _bucketExecutor;
-    bool _mkdirOk;
+    MockSharedThreadingService    _shared_service;
+    TransLogServer                _tls;
+    bool _made_dir;
     matching::QueryLimiter _queryLimiter;
-    vespalib::Clock _clock;
     DummyWireService _dummy;
-    config::DirSpec _spec;
+    ::config::DirSpec _spec;
     DocumentDBConfigHelper _configMgr;
     DocumentDBConfig::DocumenttypesConfigSP _documenttypesConfig;
     const std::shared_ptr<const DocumentTypeRepo> _repo;
@@ -190,40 +239,38 @@ public:
     AttributeWriter::UP _aw;
     ISummaryAdapter::SP _sa;
 
-    DBContext(const std::shared_ptr<const DocumentTypeRepo> &repo, const char *docTypeName)
+    DBContext(std::shared_ptr<const DocumentTypeRepo> repo, const char *docTypeName)
         : _dmk(docTypeName),
           _fileHeaderContext(),
-          _tls("tmp", 9013, ".", _fileHeaderContext),
           _summaryExecutor(8, 128_Ki),
-          _bucketExecutor(2),
-          _mkdirOk(FastOS_File::MakeDirectory("tmpdb")),
+          _shared_service(_summaryExecutor, _summaryExecutor),
+          _tls(_shared_service.transport(), "tmp", 9013, ".", _fileHeaderContext),
+          _made_dir(std::filesystem::create_directory(std::filesystem::path("tmpdb"))),
           _queryLimiter(),
-          _clock(),
           _dummy(),
           _spec(TEST_PATH("")),
           _configMgr(_spec, getDocTypeName()),
           _documenttypesConfig(std::make_shared<DocumenttypesConfig>()),
-          _repo(repo),
+          _repo(std::move(repo)),
           _tuneFileDocumentDB(std::make_shared<TuneFileDocumentDB>()),
           _hwInfo(),
           _ddb(),
           _aw(),
           _sa()
     {
-        assert(_mkdirOk);
+        (void) _made_dir;
         auto b = std::make_shared<BootstrapConfig>(1, _documenttypesConfig, _repo,
                                                    std::make_shared<ProtonConfig>(),
                                                    std::make_shared<FiledistributorrpcConfig>(),
                                                    std::make_shared<BucketspacesConfig>(),
                                                    _tuneFileDocumentDB, _hwInfo);
         _configMgr.forwardConfig(b);
-        _configMgr.nextGeneration(0ms);
-        if (! FastOS_File::MakeDirectory((std::string("tmpdb/") + docTypeName).c_str())) {
-            LOG_ABORT("should not be reached");
-        }
-        _ddb = DocumentDB::create("tmpdb", _configMgr.getConfig(), "tcp/localhost:9013", _queryLimiter, _clock,
+        _configMgr.nextGeneration(_shared_service.transport(), 0ms);
+        std::filesystem::create_directory(std::filesystem::path(std::string("tmpdb/") + docTypeName));
+        _ddb = DocumentDB::create("tmpdb", _configMgr.getConfig(), "tcp/localhost:9013", _queryLimiter,
                                   DocTypeName(docTypeName), makeBucketSpace(), *b->getProtonConfigSP(), *this,
-                                  _summaryExecutor, _summaryExecutor, _bucketExecutor, _tls, _dummy, _fileHeaderContext,
+                                  _shared_service, _tls, _dummy, _fileHeaderContext,
+                                  std::make_shared<search::attribute::Interlock>(),
                                   std::make_unique<MemoryConfigStore>(),
                                   std::make_shared<vespalib::ThreadStackExecutor>(16, 128_Ki), _hwInfo),
             _ddb->start();
@@ -231,14 +278,7 @@ public:
         _aw = std::make_unique<AttributeWriter>(_ddb->getReadySubDB()->getAttributeManager());
         _sa = _ddb->getReadySubDB()->getSummaryAdapter();
     }
-    ~DBContext()
-    {
-        _sa.reset();
-        _aw.reset();
-        _ddb.reset();
-        FastOS_File::EmptyAndRemoveDirectory("tmp");
-        FastOS_File::EmptyAndRemoveDirectory("tmpdb");
-    }
+    ~DBContext() override;
 
     void
     put(const document::Document &doc, const search::DocumentIdT lid)
@@ -251,9 +291,13 @@ public:
                               Timestamp(0u), docSize, lid, 0u));
         LOG_ASSERT(putRes.ok());
         uint64_t serialNum = _ddb->getFeedHandler().inc_serial_num();
+        dms.commit(CommitParam(serialNum));
         _aw->put(serialNum, doc, lid, std::shared_ptr<IDestructorCallback>());
-        _aw->forceCommit(serialNum, std::shared_ptr<IDestructorCallback>());
-        _ddb->getReadySubDB()->getAttributeManager()->getAttributeFieldWriter().sync();
+        {
+            vespalib::Gate gate;
+            _aw->forceCommit(serialNum, std::make_shared<GateCallback>(gate));
+            gate.await();
+        }
         _sa->put(serialNum, lid, doc);
         const GlobalId &gid = docId.getGlobalId();
         BucketId bucketId(gid.convertToBucketId());
@@ -280,12 +324,20 @@ public:
     }
 };
 
+DBContext::~DBContext()
+{
+    _sa.reset();
+    _aw.reset();
+    _ddb.reset();
+    std::filesystem::remove_all(std::filesystem::path("tmp"));
+    std::filesystem::remove_all(std::filesystem::path("tmpdb"));
+}
+
 class Fixture
 {
 private:
     std::unique_ptr<vespa::config::search::SummaryConfig> _summaryCfg;
     ResultConfig               _resultCfg;
-    std::set<vespalib::string> _markupFields;
 
 public:
     Fixture();
@@ -294,30 +346,36 @@ public:
     const ResultConfig &getResultConfig() const{
         return _resultCfg;
     }
-
-    const std::set<vespalib::string> &getMarkupFields() const{
-        return _markupFields;
-    }
 };
 
-GeneralResultPtr
-getResult(DocumentStoreAdapter & dsa, uint32_t docId)
+class MockJuniperConverter : public IJuniperConverter
 {
-    DocsumStoreValue docsum = dsa.getMappedDocsum(docId);
-    ASSERT_TRUE(docsum.pt() != nullptr);
-    auto retval = std::make_unique<GeneralResult>(dsa.getResultClass());
-    // skip the 4 byte class id
-    ASSERT_TRUE(retval->unpack(docsum.pt() + 4, docsum.len() - 4));
-    return retval;
-}
+    vespalib::string _result;
+public:
+    void convert(vespalib::stringref input, vespalib::slime::Inserter&) override {
+        _result = input;
+    }
+    const vespalib::string& get_result() const noexcept { return _result; }
+};
 
 bool
 assertString(const std::string & exp, const std::string & fieldName,
              DocumentStoreAdapter &dsa, uint32_t id)
 {
-    GeneralResultPtr res = getResult(dsa, id);
-    return EXPECT_EQUAL(exp, std::string(res->GetEntry(fieldName.c_str())->_stringval,
-                                         res->GetEntry(fieldName.c_str())->_stringlen));
+    auto res = dsa.get_document(id);
+    return EXPECT_EQUAL(exp, res->get_field_value(fieldName)->getAsString());
+}
+
+bool
+assertAnnotatedString(const std::string & exp, const std::string & fieldName,
+                      DocumentStoreAdapter &dsa, uint32_t id)
+{
+    auto res = dsa.get_document(id);
+    MockJuniperConverter converter;
+    vespalib::Slime slime;
+    vespalib::slime::SlimeInserter inserter(slime);
+    res->insert_juniper_field(fieldName, inserter, converter);
+    return EXPECT_EQUAL(exp, converter.get_result());
 }
 
 void
@@ -350,96 +408,80 @@ bool assertSlime(const std::string &exp, const DocsumReply &reply) {
 
 TEST_F("requireThatAdapterHandlesAllFieldTypes", Fixture)
 {
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("a", schema::DataType::INT8));
-    s.addSummaryField(Schema::SummaryField("b", schema::DataType::INT16));
-    s.addSummaryField(Schema::SummaryField("c", schema::DataType::INT32));
-    s.addSummaryField(Schema::SummaryField("d", schema::DataType::INT64));
-    s.addSummaryField(Schema::SummaryField("e", schema::DataType::FLOAT));
-    s.addSummaryField(Schema::SummaryField("f", schema::DataType::DOUBLE));
-    s.addSummaryField(Schema::SummaryField("g", schema::DataType::STRING));
-    s.addSummaryField(Schema::SummaryField("h", schema::DataType::STRING));
-    s.addSummaryField(Schema::SummaryField("i", schema::DataType::RAW));
-    s.addSummaryField(Schema::SummaryField("j", schema::DataType::RAW));
-    s.addSummaryField(Schema::SummaryField("k", schema::DataType::STRING));
-    s.addSummaryField(Schema::SummaryField("l", schema::DataType::STRING));
+    BuildContext bc([](auto& header)
+                    {
+                        header
+                            .addField("a", DataType::T_BYTE)
+                            .addField("b", DataType::T_SHORT)
+                            .addField("c", DataType::T_INT)
+                            .addField("d", DataType::T_LONG)
+                            .addField("e", DataType::T_FLOAT)
+                            .addField("f", DataType::T_DOUBLE)
+                            .addField("g", DataType::T_STRING)
+                            .addField("h", DataType::T_STRING)
+                            .addField("i", DataType::T_RAW)
+                            .addField("j", DataType::T_RAW)
+                            .addField("k", DataType::T_STRING)
+                            .addField("l", DataType::T_STRING);
+                    });
 
-    BuildContext bc(s);
-    bc._bld.startDocument("id:ns:searchdocument::0");
-    bc._bld.startSummaryField("a").addInt(255).endField();
-    bc._bld.startSummaryField("b").addInt(32767).endField();
-    bc._bld.startSummaryField("c").addInt(2147483647).endField();
-    bc._bld.startSummaryField("d").addInt(2147483648).endField();
-    bc._bld.startSummaryField("e").addFloat(1234.56).endField();
-    bc._bld.startSummaryField("f").addFloat(9876.54).endField();
-    bc._bld.startSummaryField("g").addStr("foo").endField();
-    bc._bld.startSummaryField("h").addStr("bar").endField();
-    bc._bld.startSummaryField("i").addStr("baz").endField();
-    bc._bld.startSummaryField("j").addStr("qux").endField();
-    bc._bld.startSummaryField("k").addStr("<foo>").endField();
-    bc._bld.startSummaryField("l").addStr("{foo:10}").endField();
-    bc.endDocument(0);
+    auto doc = bc.make_document("id:ns:searchdocument::0");
+    doc->setValue("a", ByteFieldValue(-1));
+    doc->setValue("b", ShortFieldValue(32767));
+    doc->setValue("c", IntFieldValue(2147483647));
+    doc->setValue("d", LongFieldValue(2147483648));
+    doc->setValue("e", FloatFieldValue(1234.56));
+    doc->setValue("f", DoubleFieldValue(9876.54));
+    doc->setValue("g", StringFieldValue("foo"));
+    doc->setValue("h", StringFieldValue("bar"));
+    doc->setValue("i", RawFieldValue("baz"));
+    doc->setValue("j", RawFieldValue("qux"));
+    doc->setValue("k", StringFieldValue("<foo>"));
+    doc->setValue("l", StringFieldValue("{foo:10}"));
+    bc.put_document(0, std::move(doc));
 
-    DocumentStoreAdapter dsa(bc._str,
-                             *bc._repo,
-                             f.getResultConfig(), "class0",
-                             bc.createFieldCacheRepo(f.getResultConfig())->getFieldCache("class0"),
-                             f.getMarkupFields());
-    GeneralResultPtr res = getResult(dsa, 0);
-    EXPECT_EQUAL(255u,        res->GetEntry("a")->_intval);
-    EXPECT_EQUAL(32767u,      res->GetEntry("b")->_intval);
-    EXPECT_EQUAL(2147483647u, res->GetEntry("c")->_intval);
-    EXPECT_EQUAL(2147483648u, res->GetEntry("d")->_int64val);
-    EXPECT_APPROX(1234.56,    res->GetEntry("e")->_doubleval, 10e-5);
-    EXPECT_APPROX(9876.54,    res->GetEntry("f")->_doubleval, 10e-5);
-    EXPECT_EQUAL("foo",       std::string(res->GetEntry("g")->_stringval,
-                                          res->GetEntry("g")->_stringlen));
-    EXPECT_EQUAL("bar",       std::string(res->GetEntry("h")->_stringval,
-                                          res->GetEntry("h")->_stringlen));
-    EXPECT_EQUAL("baz",       std::string(res->GetEntry("i")->_dataval,
-                                          res->GetEntry("i")->_datalen));
-    EXPECT_EQUAL("qux",       std::string(res->GetEntry("j")->_dataval,
-                                          res->GetEntry("j")->_datalen));
-    EXPECT_EQUAL("<foo>",     std::string(res->GetEntry("k")->_stringval,
-                                          res->GetEntry("k")->_stringlen));
-    EXPECT_EQUAL("{foo:10}",  std::string(res->GetEntry("l")->_stringval,
-                                          res->GetEntry("l")->_stringlen));
+    DocumentStoreAdapter dsa(bc._str, bc.get_repo());
+    auto res = dsa.get_document(0);
+    EXPECT_EQUAL(-1,          res->get_field_value("a")->getAsInt());
+    EXPECT_EQUAL(32767,       res->get_field_value("b")->getAsInt());
+    EXPECT_EQUAL(2147483647,  res->get_field_value("c")->getAsInt());
+    EXPECT_EQUAL(INT64_C(2147483648), res->get_field_value("d")->getAsLong());
+    EXPECT_APPROX(1234.56,    res->get_field_value("e")->getAsFloat(), 10e-5);
+    EXPECT_APPROX(9876.54,    res->get_field_value("f")->getAsDouble(), 10e-5);
+    EXPECT_EQUAL("foo",       res->get_field_value("g")->getAsString());
+    EXPECT_EQUAL("bar",       res->get_field_value("h")->getAsString());
+    EXPECT_EQUAL("baz",       res->get_field_value("i")->getAsString());
+    EXPECT_EQUAL("qux",       res->get_field_value("j")->getAsString());
+    EXPECT_EQUAL("<foo>",     res->get_field_value("k")->getAsString());
+    EXPECT_EQUAL("{foo:10}",  res->get_field_value("l")->getAsString());
 }
 
 TEST_F("requireThatAdapterHandlesMultipleDocuments", Fixture)
 {
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("a", schema::DataType::INT32));
+    BuildContext bc([](auto& header) { header.addField("a", DataType::T_INT); });
+    auto doc = bc.make_document("id:ns:searchdocument::0");
+    doc->setValue("a", IntFieldValue(1000));
+    bc.put_document(0, std::move(doc));
+    doc = bc.make_document("id:ns:searchdocument::1");
+    doc->setValue("a", IntFieldValue(2000));
+    bc.put_document(1, std::move(doc));
 
-    BuildContext bc(s);
-    bc._bld.startDocument("id:ns:searchdocument::0").
-        startSummaryField("a").
-        addInt(1000).
-        endField();
-    bc.endDocument(0);
-    bc._bld.startDocument("id:ns:searchdocument::1").
-        startSummaryField("a").
-        addInt(2000).endField();
-    bc.endDocument(1);
-
-    DocumentStoreAdapter dsa(bc._str, *bc._repo, f.getResultConfig(), "class1",
-                             bc.createFieldCacheRepo(f.getResultConfig())->getFieldCache("class1"),
-                             f.getMarkupFields());
+    DocumentStoreAdapter dsa(bc._str, bc.get_repo());
     { // doc 0
-        GeneralResultPtr res = getResult(dsa, 0);
-        EXPECT_EQUAL(1000u, res->GetEntry("a")->_intval);
+        auto res = dsa.get_document(0);
+        EXPECT_EQUAL(1000, res->get_field_value("a")->getAsInt());
     }
     { // doc 1
-        GeneralResultPtr res = getResult(dsa, 1);
-        EXPECT_EQUAL(2000u, res->GetEntry("a")->_intval);
+        auto res = dsa.get_document(1);
+        EXPECT_EQUAL(2000, res->get_field_value("a")->getAsInt());
     }
     { // doc 2
-        DocsumStoreValue docsum = dsa.getMappedDocsum(2);
-        EXPECT_TRUE(docsum.pt() == nullptr);
+        auto res = dsa.get_document(2);
+        EXPECT_TRUE(!res);
     }
     { // doc 0 (again)
-        GeneralResultPtr res = getResult(dsa, 0);
-        EXPECT_EQUAL(1000u, res->GetEntry("a")->_intval);
+        auto res = dsa.get_document(0);
+        EXPECT_EQUAL(1000, res->get_field_value("a")->getAsInt());
     }
     EXPECT_EQUAL(0u, bc._str.lastSyncToken());
     uint64_t flushToken = bc._str.initFlush(bc._serialNum - 1);
@@ -448,20 +490,15 @@ TEST_F("requireThatAdapterHandlesMultipleDocuments", Fixture)
 
 TEST_F("requireThatAdapterHandlesDocumentIdField", Fixture)
 {
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("documentid", schema::DataType::STRING));
-    BuildContext bc(s);
-    bc._bld.startDocument("id:ns:searchdocument::0").
-        startSummaryField("documentid").
-        addStr("foo").
-        endField();
-    bc.endDocument(0);
-    DocumentStoreAdapter dsa(bc._str, *bc._repo, f.getResultConfig(), "class4",
-                             bc.createFieldCacheRepo(f.getResultConfig())->getFieldCache("class4"),
-                             f.getMarkupFields());
-    GeneralResultPtr res = getResult(dsa, 0);
-    EXPECT_EQUAL("id:ns:searchdocument::0", std::string(res->GetEntry("documentid")->_stringval,
-                                                        res->GetEntry("documentid")->_stringlen));
+    BuildContext bc([](auto&) noexcept {});
+    auto doc = bc.make_document("id:ns:searchdocument::0");
+    bc.put_document(0, std::move(doc));
+    DocumentStoreAdapter dsa(bc._str, bc.get_repo());
+    auto res = dsa.get_document(0);
+    vespalib::Slime slime;
+    vespalib::slime::SlimeInserter inserter(slime);
+    res->insert_document_id(inserter);
+    EXPECT_EQUAL("id:ns:searchdocument::0", slime.get().asString().make_string());
 }
 
 GlobalId gid1 = DocumentId("id:ns:searchdocument::1").getGlobalId(); // lid 1
@@ -472,99 +509,67 @@ GlobalId gid9 = DocumentId("id:ns:searchdocument::9").getGlobalId(); // not exis
 
 TEST("requireThatDocsumRequestIsProcessed")
 {
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("a", schema::DataType::INT32));
-
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::1").
-           startSummaryField("a").
-           addInt(10).
-           endField().
-           endDocument(),
-           1);
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::2").
-           startSummaryField("a").
-           addInt(20).
-           endField().
-           endDocument(),
-           2);
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::3").
-           startSummaryField("a").
-           addInt(30).
-           endField().
-           endDocument(),
-           3);
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::4").
-           startSummaryField("a").
-           addInt(40).
-           endField().
-           endDocument(),
-           4);
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::5").
-           startSummaryField("a").
-           addInt(50).
-           endField().
-           endDocument(),
-           5);
+    BuildContext bc([](auto& header) { header.addField("a", DataType::T_INT); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto doc = bc.make_document("id:ns:searchdocument::1");
+    doc->setValue("a", IntFieldValue(10));
+    dc.put(*doc, 1);
+    doc = bc.make_document("id:ns:searchdocument::2");
+    doc->setValue("a", IntFieldValue(20));
+    dc.put(*doc, 2);
+    doc = bc.make_document("id:ns:searchdocument::3");
+    doc->setValue("a", IntFieldValue(30));
+    dc.put(*doc, 3);
+    doc = bc.make_document("id:ns:searchdocument::4");
+    doc->setValue("a", IntFieldValue(40));
+    dc.put(*doc, 4);
+    doc = bc.make_document("id:ns:searchdocument::5");
+    doc->setValue("a", IntFieldValue(50));
+    dc.put(*doc, 5);
 
     DocsumRequest req;
     req.resultClassName = "class1";
-    req.hits.push_back(DocsumRequest::Hit(gid2));
-    req.hits.push_back(DocsumRequest::Hit(gid4));
-    req.hits.push_back(DocsumRequest::Hit(gid9));
+    req.hits.emplace_back(gid2);
+    req.hits.emplace_back(gid4);
+    req.hits.emplace_back(gid9);
     DocsumReply::UP rep = dc._ddb->getDocsums(req);
     EXPECT_TRUE(assertSlime("{docsums:[ {docsum:{a:20}}, {docsum:{a:40}}, {} ]}", *rep));
 }
 
 TEST("requireThatRewritersAreUsed")
 {
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("aa", schema::DataType::INT32));
-    s.addSummaryField(Schema::SummaryField("ab", schema::DataType::INT32));
-
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::1").
-           startSummaryField("aa").
-           addInt(10).
-           endField().
-           startSummaryField("ab").
-           addInt(20).
-           endField().
-           endDocument(),
-           1);
+    BuildContext bc([](auto& header)
+                    { header.addField("aa", DataType::T_INT)
+                            .addField("ab", DataType::T_INT); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto doc = bc.make_document("id:ns:searchdocument::1");
+    doc->setValue("aa", IntFieldValue(10));
+    doc->setValue("ab", IntFieldValue(20));
+    dc.put(*doc, 1);
 
     DocsumRequest req;
     req.resultClassName = "class2";
-    req.hits.push_back(DocsumRequest::Hit(gid1));
+    req.hits.emplace_back(gid1);
     DocsumReply::UP rep = dc._ddb->getDocsums(req);
     EXPECT_TRUE(assertSlime("{docsums:[ {docsum:{aa:20}} ]}", *rep));
 }
 
 TEST("requireThatSummariesTimeout")
 {
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("aa", schema::DataType::INT32));
-    s.addSummaryField(Schema::SummaryField("ab", schema::DataType::INT32));
-
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::1").
-           startSummaryField("aa").
-           addInt(10).
-           endField().
-           startSummaryField("ab").
-           addInt(20).
-           endField().
-           endDocument(),
-           1);
+    BuildContext bc([](auto& header)
+                    { header.addField("aa", DataType::T_INT)
+                            .addField("ab", DataType::T_INT); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto doc = bc.make_document("id:ns:searchdocument::1");
+    doc->setValue("aa", IntFieldValue(10));
+    doc->setValue("ab", IntFieldValue(20));
+    dc.put(*doc, 1);
 
     DocsumRequest req;
     req.setTimeout(vespalib::duration::zero());
     EXPECT_TRUE(req.expired());
     req.resultClassName = "class2";
-    req.hits.push_back(DocsumRequest::Hit(gid1));
+    req.hits.emplace_back(gid1);
     DocsumReply::UP rep = dc._ddb->getDocsums(req);
     const auto & root = rep->root();
     const auto & field = root["errors"];
@@ -574,108 +579,91 @@ TEST("requireThatSummariesTimeout")
     EXPECT_TRUE(std::regex_search(bufstring.data, bufstring.data + bufstring.size, std::regex("Timed out 1 summaries with -[0-9]+us left.")));
 }
 
-void
-addField(Schema & s,
-         const std::string &name,
-         Schema::DataType dtype,
-         Schema::CollectionType ctype,
-         const std::string& tensor_spec = "")
+void verifyFieldListHonoured(DocsumRequest::FieldList fields, const std::string & json) {
+    BuildContext bc([](auto& header)
+                    { header.addField("ba", DataType::T_INT)
+                            .addField("bb", DataType::T_FLOAT); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto doc = bc.make_document("id:ns:searchdocument::1");
+    doc->setValue("ba", IntFieldValue(10));
+    doc->setValue("bb", FloatFieldValue(10.1250));
+    dc.put(*doc, 1);
+    DocsumRequest req;
+    req.resultClassName = "class6";
+    req.hits.emplace_back(gid1);
+    req.setFields(fields);
+    DocsumReply::UP rep = dc._ddb->getDocsums(req);
+    EXPECT_TRUE(assertSlime(json, *rep));
+}
+
+TEST("requireThatFieldListIsHonoured")
 {
-    s.addSummaryField(Schema::SummaryField(name, dtype, ctype, tensor_spec));
-    s.addAttributeField(Schema::AttributeField(name, dtype, ctype, tensor_spec));
+    verifyFieldListHonoured({}, "{docsums:[ {docsum:{ba:10,bb:10.1250}} ]}");
+    verifyFieldListHonoured({"ba","bb"}, "{docsums:[ {docsum:{ba:10,bb:10.1250}} ]}");
+    verifyFieldListHonoured({"ba"}, "{docsums:[ {docsum:{ba:10}} ]}");
+    verifyFieldListHonoured({"bb"}, "{docsums:[ {docsum:{bb:10.1250}} ]}");
+    verifyFieldListHonoured({"unknown"}, "{docsums:[ {docsum:{}} ]}");
+    verifyFieldListHonoured({"ba", "unknown"}, "{docsums:[ {docsum:{ba:10}} ]}");
 }
 
 TEST("requireThatAttributesAreUsed")
 {
-    Schema s;
-    addField(s, "ba", schema::DataType::INT32, CollectionType::SINGLE);
-    addField(s, "bb", schema::DataType::FLOAT, CollectionType::SINGLE);
-    addField(s, "bc", schema::DataType::STRING, CollectionType::SINGLE);
-    addField(s, "bd", schema::DataType::INT32, CollectionType::ARRAY);
-    addField(s, "be", schema::DataType::FLOAT, CollectionType::ARRAY);
-    addField(s, "bf", schema::DataType::STRING, CollectionType::ARRAY);
-    addField(s, "bg", schema::DataType::INT32, CollectionType::WEIGHTEDSET);
-    addField(s, "bh", schema::DataType::FLOAT, CollectionType::WEIGHTEDSET);
-    addField(s, "bi", schema::DataType::STRING, CollectionType::WEIGHTEDSET);
-    addField(s, "bj", schema::DataType::TENSOR, CollectionType::SINGLE, "tensor(x{},y{})");
-
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::1").
-           endDocument(),
-           1); // empty doc
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::2").
-           startAttributeField("ba").
-           addInt(10).
-           endField().
-           startAttributeField("bb").
-           addFloat(10.1250).
-           endField().
-           startAttributeField("bc").
-           addStr("foo").
-           endField().
-           startAttributeField("bd").
-           startElement().
-           addInt(20).
-           endElement().
-           startElement().
-           addInt(30).
-           endElement().
-           endField().
-           startAttributeField("be").
-           startElement().
-           addFloat(20.2500).
-           endElement().
-           startElement().
-           addFloat(30.3125).
-           endElement().
-           endField().
-           startAttributeField("bf").
-           startElement().
-           addStr("bar").
-           endElement().
-           startElement().
-           addStr("baz").
-           endElement().
-           endField().
-           startAttributeField("bg").
-           startElement(2).
-           addInt(40).
-           endElement().
-           startElement(3).
-           addInt(50).
-           endElement().
-           endField().
-           startAttributeField("bh").
-           startElement(4).
-           addFloat(40.4375).
-           endElement().
-           startElement(5).
-           addFloat(50.5625).
-           endElement().
-           endField().
-           startAttributeField("bi").
-           startElement(7).
-           addStr("quux").
-           endElement().
-           startElement(6).
-           addStr("qux").
-           endElement().
-           endField().
-           startAttributeField("bj").
-           addTensor(make_tensor(TensorSpec("tensor(x{},y{})")
-                                 .add({{"x", "f"}, {"y", "g"}}, 3))).
-           endField().
-           endDocument(),
-           2);
-    dc.put(*bc._bld.startDocument("id:ns:searchdocument::3").
-           endDocument(),
-           3); // empty doc
+    BuildContext bc([](auto& header)
+                    { using namespace document::config_builder;
+                        header.addField("ba", DataType::T_INT)
+                            .addField("bb", DataType::T_FLOAT)
+                            .addField("bc", DataType::T_STRING)
+                            .addField("bd", Array(DataType::T_INT))
+                            .addField("be", Array(DataType::T_FLOAT))
+                            .addField("bf", Array(DataType::T_STRING))
+                            .addField("bg", Wset(DataType::T_INT))
+                            .addField("bh", Wset(DataType::T_FLOAT))
+                            .addField("bi", Wset(DataType::T_STRING))
+                            .addTensorField("bj", "tensor(x{},y{})"); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto doc = bc.make_document("id:ns:searchdocument::1");
+    dc.put(*doc, 1); // empty doc
+    doc = bc.make_document("id:ns:searchdocument::2");
+    doc->setValue("ba", IntFieldValue(10));
+    doc->setValue("bb", FloatFieldValue(10.1250));
+    doc->setValue("bc", StringFieldValue("foo"));
+    auto int_array = bc.make_array("bd");
+    int_array.add(IntFieldValue(20));
+    int_array.add(IntFieldValue(30));
+    doc->setValue("bd", int_array);
+    auto float_array = bc.make_array("be");
+    float_array.add(FloatFieldValue(20.25000));
+    float_array.add(FloatFieldValue(30.31250));
+    doc->setValue("be", float_array);
+    auto string_array = bc.make_array("bf");
+    string_array.add(StringFieldValue("bar"));
+    string_array.add(StringFieldValue("baz"));
+    doc->setValue("bf", string_array);
+    auto int_wset = bc.make_wset("bg");
+    int_wset.add(IntFieldValue(40), 2);
+    int_wset.add(IntFieldValue(50), 3);
+    doc->setValue("bg", int_wset);
+    auto float_wset = bc.make_wset("bh");
+    float_wset.add(FloatFieldValue(40.4375), 4);
+    float_wset.add(FloatFieldValue(50.5625), 5);
+    doc->setValue("bh", float_wset);
+    auto string_wset = bc.make_wset("bi");
+    string_wset.add(StringFieldValue("quux"), 7);
+    string_wset.add(StringFieldValue("qux"), 6);
+    doc->setValue("bi", string_wset);
+    TensorDataType tensor_data_type(ValueType::from_spec("tensor(x{},y{})"));
+    TensorFieldValue tensor(tensor_data_type);
+    tensor = make_tensor(TensorSpec("tensor(x{},y{})")
+                         .add({{"x", "f"}, {"y", "g"}}, 3));
+    doc->setValue("bj", tensor);
+    dc.put(*doc, 2);
+    doc = bc.make_document("id:ns:searchdocument::3");
+    dc.put(*doc, 3); // empty doc
 
     DocsumRequest req;
     req.resultClassName = "class3";
-    req.hits.push_back(DocsumRequest::Hit(gid2));
-    req.hits.push_back(DocsumRequest::Hit(gid3));
+    req.hits.emplace_back(gid2);
+    req.hits.emplace_back(gid3);
     DocsumReply::UP rep = dc._ddb->getDocsums(req);
 
     EXPECT_TRUE(assertSlime("{docsums:[ {docsum:{"
@@ -699,13 +687,18 @@ TEST("requireThatAttributesAreUsed")
     search::AttributeVector *bjAttr = attributeManager->getWritableAttribute("bj");
     auto bjTensorAttr = dynamic_cast<search::tensor::TensorAttribute *>(bjAttr);
 
-    attributeFieldWriter.execute(attributeFieldWriter.getExecutorIdFromName(bjAttr->getNamePrefix()),
-                                 [&]() {
-                                     bjTensorAttr->setTensor(3, *make_tensor(TensorSpec("tensor(x{},y{})")
+    vespalib::Gate gate;
+    {
+        auto on_write_done = std::make_shared<GateCallback>(gate);
+        attributeFieldWriter.execute(attributeFieldWriter.getExecutorIdFromName(bjAttr->getNamePrefix()),
+                                     [&, on_write_done]() {
+                                         (void) on_write_done;
+                                         bjTensorAttr->setTensor(3, *make_tensor(TensorSpec("tensor(x{},y{})")
                                                                              .add({{"x", "a"}, {"y", "b"}}, 4)));
-                                     bjTensorAttr->commit();
+                                         bjTensorAttr->commit();
                                  });
-    attributeFieldWriter.sync();
+    }
+    gate.await();
 
     DocsumReply::UP rep2 = dc._ddb->getDocsums(req);
     TEST_DO(assertTensor(make_tensor(TensorSpec("tensor(x{},y{})")
@@ -714,37 +707,32 @@ TEST("requireThatAttributesAreUsed")
 
     DocsumRequest req3;
     req3.resultClassName = "class3";
-    req3.hits.push_back(DocsumRequest::Hit(gid3));
+    req3.hits.emplace_back(gid3);
     DocsumReply::UP rep3 = dc._ddb->getDocsums(req3);
     EXPECT_TRUE(assertSlime("{docsums:[{docsum:{bj:x01020178017901016101624010000000000000}}]}", *rep3));
 }
 
 TEST("requireThatSummaryAdapterHandlesPutAndRemove")
 {
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("f1", schema::DataType::STRING, CollectionType::SINGLE));
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    Document::UP exp = bc._bld.startDocument("id:ns:searchdocument::1").
-        startSummaryField("f1").
-        addStr("foo").
-        endField().
-        endDocument();
+    BuildContext bc([](auto& header) { header.addField("f1", DataType::T_STRING); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto exp = bc.make_document("id:ns:searchdocument::1");
+    exp->setValue("f1", StringFieldValue("foo"));
     dc._sa->put(1, 1, *exp);
     IDocumentStore & store = dc._ddb->getReadySubDB()->getSummaryManager()->getBackingStore();
-    Document::UP act = store.read(1, *bc._repo);
+    Document::UP act = store.read(1, bc.get_repo());
     EXPECT_TRUE(act.get() != nullptr);
     EXPECT_EQUAL(exp->getType(), act->getType());
     EXPECT_EQUAL("foo", act->getValue("f1")->toString());
     dc._sa->remove(2, 1);
-    EXPECT_TRUE(store.read(1, *bc._repo).get() == nullptr);
+    EXPECT_TRUE(store.read(1, bc.get_repo()).get() == nullptr);
 }
 
 const std::string TERM_ORIG = "\357\277\271";
 const std::string TERM_INDEX = "\357\277\272";
 const std::string TERM_END = "\357\277\273";
 const std::string TERM_SEP = "\037";
-const std::string TERM_EMPTY = "";
+const std::string TERM_EMPTY;
 namespace
 {
 const std::string empty;
@@ -752,211 +740,77 @@ const std::string empty;
 
 TEST_F("requireThatAnnotationsAreUsed", Fixture)
 {
-    Schema s;
-    s.addIndexField(Schema::IndexField("g", schema::DataType::STRING, CollectionType::SINGLE));
-    s.addSummaryField(Schema::SummaryField("g", schema::DataType::STRING, CollectionType::SINGLE));
-    s.addIndexField(Schema::IndexField("dynamicstring", schema::DataType::STRING, CollectionType::SINGLE));
-    s.addSummaryField(Schema::SummaryField("dynamicstring", schema::DataType::STRING, CollectionType::SINGLE));
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    Document::UP exp = bc._bld.startDocument("id:ns:searchdocument::0").
-        startIndexField("g").
-        addStr("foo").
-        addStr("bar").
-        addTermAnnotation("baz").
-        endField().
-        startIndexField("dynamicstring").
-        setAutoAnnotate(false).
-        addStr("foo").
-        addSpan().
-        addAlphabeticTokenAnnotation().
-        addTermAnnotation().
-        addNoWordStr(" ").
-        addSpan().
-        addSpaceTokenAnnotation().
-        addStr("bar").
-        addSpan().
-        addAlphabeticTokenAnnotation().
-        addTermAnnotation("baz").
-        setAutoAnnotate(true).
-        endField().
-        endDocument();
+    BuildContext bc([](auto& header)
+                    { header.addField("g", DataType::T_STRING)
+                            .addField("dynamicstring", DataType::T_STRING); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto exp = bc.make_document("id:ns:searchdocument::0");
+    exp->setValue("g", bc.make_annotated_string());
+    exp->setValue("dynamicstring", bc.make_annotated_string());
     dc._sa->put(1, 1, *exp);
 
     IDocumentStore & store = dc._ddb->getReadySubDB()->getSummaryManager()->getBackingStore();
-    Document::UP act = store.read(1, *bc._repo);
+    Document::UP act = store.read(1, bc.get_repo());
     EXPECT_TRUE(act.get() != nullptr);
     EXPECT_EQUAL(exp->getType(), act->getType());
     EXPECT_EQUAL("foo bar", act->getValue("g")->getAsString());
     EXPECT_EQUAL("foo bar", act->getValue("dynamicstring")->getAsString());
 
-    DocumentStoreAdapter dsa(store, *bc._repo, f.getResultConfig(), "class0",
-                             bc.createFieldCacheRepo(f.getResultConfig())->getFieldCache("class0"),
-                             f.getMarkupFields());
+    DocumentStoreAdapter dsa(store, bc.get_repo());
     EXPECT_TRUE(assertString("foo bar", "g", dsa, 1));
-    EXPECT_TRUE(assertString(TERM_EMPTY + "foo" + TERM_SEP +
-                             " " + TERM_SEP +
-                             TERM_ORIG + "bar" + TERM_INDEX + "baz" + TERM_END +
-                             TERM_SEP,
-                             "dynamicstring", dsa, 1));
+    EXPECT_TRUE(assertAnnotatedString(TERM_EMPTY + "foo" + TERM_SEP +
+                                      " " + TERM_SEP +
+                                      TERM_ORIG + "bar" + TERM_INDEX + "baz" + TERM_END +
+                                      TERM_SEP,
+                                      "dynamicstring", dsa, 1));
 }
 
 TEST_F("requireThatUrisAreUsed", Fixture)
 {
-    Schema s;
-    s.addUriIndexFields(Schema::IndexField("urisingle", schema::DataType::STRING, CollectionType::SINGLE));
-    s.addSummaryField(Schema::SummaryField("urisingle", schema::DataType::STRING, CollectionType::SINGLE));
-    s.addUriIndexFields(Schema::IndexField("uriarray", schema::DataType::STRING, CollectionType::ARRAY));
-    s.addSummaryField(Schema::SummaryField("uriarray", schema::DataType::STRING, CollectionType::ARRAY));
-    s.addUriIndexFields(Schema::IndexField("uriwset", schema::DataType::STRING, CollectionType::WEIGHTEDSET));
-    s.addSummaryField(Schema::SummaryField("uriwset", schema::DataType::STRING, CollectionType::WEIGHTEDSET));
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    Document::UP exp = bc._bld.startDocument("id:ns:searchdocument::0").
-        startIndexField("urisingle").
-        startSubField("all").
-        addUrlTokenizedString("http://www.example.com:81/fluke?ab=2#4").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.example.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("81").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("4").
-        endSubField().
-        endField().
-        startIndexField("uriarray").
-        startElement(1).
-        startSubField("all").
-        addUrlTokenizedString("http://www.example.com:82/fluke?ab=2#8").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.example.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("82").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("8").
-        endSubField().
-        endElement().
-        startElement(1).
-        startSubField("all").
-        addUrlTokenizedString("http://www.flickr.com:82/fluke?ab=2#9").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.flickr.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("82").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("9").
-        endSubField().
-        endElement().
-        endField().
-        startIndexField("uriwset").
-        startElement(4).
-        startSubField("all").
-        addUrlTokenizedString("http://www.example.com:83/fluke?ab=2#12").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.example.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("83").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("12").
-        endSubField().
-        endElement().
-        startElement(7).
-        startSubField("all").
-        addUrlTokenizedString("http://www.flickr.com:85/fluke?ab=2#13").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.flickr.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("85").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("13").
-        endSubField().
-        endElement().
-        endField().
-        endDocument();
+    BuildContext bc([](auto& header)
+                    { using namespace document::config_builder;
+                        header.addField("urisingle", DataType::T_URI)
+                            .addField("uriarray", Array(DataType::T_URI))
+                            .addField("uriwset", Wset(DataType::T_URI)); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto exp = bc.make_document("id:ns:searchdocument::0");
+    exp->setValue("urisingle", StringFieldValue("http://www.example.com:81/fluke?ab=2#4"));
+    auto uri_array = bc.make_array("uriarray");
+    uri_array.add(StringFieldValue("http://www.example.com:82/fluke?ab=2#8"));
+    uri_array.add(StringFieldValue("http://www.flickr.com:82/fluke?ab=2#9"));
+    exp->setValue("uriarray", uri_array);
+    auto uri_wset = bc.make_wset("uriwset");
+    uri_wset.add(StringFieldValue("http://www.example.com:83/fluke?ab=2#12"), 4);
+    uri_wset.add(StringFieldValue("http://www.flickr.com:85/fluke?ab=2#13"), 7);
+    exp->setValue("uriwset", uri_wset);
     dc._sa->put(1, 1, *exp);
 
     IDocumentStore & store =
         dc._ddb->getReadySubDB()->getSummaryManager()->getBackingStore();
-    Document::UP act = store.read(1, *bc._repo);
+    Document::UP act = store.read(1, bc.get_repo());
     EXPECT_TRUE(act.get() != nullptr);
     EXPECT_EQUAL(exp->getType(), act->getType());
 
-    DocumentStoreAdapter dsa(store, *bc._repo, f.getResultConfig(), "class0",
-                             bc.createFieldCacheRepo(f.getResultConfig())->getFieldCache("class0"),
-                             f.getMarkupFields());
-
-    EXPECT_TRUE(assertString("http://www.example.com:81/fluke?ab=2#4", "urisingle", dsa, 1));
-    GeneralResultPtr res = getResult(dsa, 1);
+    DocumentStoreAdapter dsa(store, bc.get_repo());
+    auto res = dsa.get_document(1);
     {
         vespalib::Slime slime;
-        decode(res->GetEntry("uriarray"), slime);
+        vespalib::slime::SlimeInserter inserter(slime);
+        res->insert_summary_field("urisingle", inserter);
+        EXPECT_EQUAL("http://www.example.com:81/fluke?ab=2#4", asVstring(slime.get()));
+    }
+    {
+        vespalib::Slime slime;
+        vespalib::slime::SlimeInserter inserter(slime);
+        res->insert_summary_field("uriarray", inserter);
         EXPECT_TRUE(slime.get().valid());
         EXPECT_EQUAL("http://www.example.com:82/fluke?ab=2#8",  asVstring(slime.get()[0]));
         EXPECT_EQUAL("http://www.flickr.com:82/fluke?ab=2#9", asVstring(slime.get()[1]));
     }
     {
         vespalib::Slime slime;
-        decode(res->GetEntry("uriwset"), slime);
+        vespalib::slime::SlimeInserter inserter(slime);
+        res->insert_summary_field("uriwset", inserter);
         EXPECT_TRUE(slime.get().valid());
         EXPECT_EQUAL(4L, slime.get()[0]["weight"].asLong());
         EXPECT_EQUAL(7L, slime.get()[1]["weight"].asLong());
@@ -969,39 +823,35 @@ TEST_F("requireThatUrisAreUsed", Fixture)
 
 TEST("requireThatPositionsAreUsed")
 {
-    Schema s;
-    s.addAttributeField(Schema::AttributeField("sp2", schema::DataType::INT64));
-    s.addAttributeField(Schema::AttributeField("ap2", schema::DataType::INT64, CollectionType::ARRAY));
-    s.addAttributeField(Schema::AttributeField("wp2", schema::DataType::INT64, CollectionType::WEIGHTEDSET));
-
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    Document::UP exp = bc._bld.startDocument("id:ns:searchdocument::1").
-        startAttributeField("sp2").
-        addPosition(1002, 1003).
-        endField().
-        startAttributeField("ap2").
-        startElement().addPosition(1006, 1007).endElement().
-        startElement().addPosition(1008, 1009).endElement().
-        endField().
-        startAttributeField("wp2").
-        startElement(43).addPosition(1012, 1013).endElement().
-        startElement(44).addPosition(1014, 1015).endElement().
-        endField().
-        endDocument();
+    BuildContext bc([](auto& header)
+                    { using namespace document::config_builder;
+                        header.addField("sp2", DataType::T_LONG)
+                            .addField("ap2", Array(DataType::T_LONG))
+                            .addField("wp2", Wset(DataType::T_LONG)); });
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto exp = bc.make_document("id:ns:searchdocument::1");
+    exp->setValue("sp2", LongFieldValue(ZCurve::encode(1002, 1003)));
+    auto pos_array = bc.make_array("ap2");
+    pos_array.add(LongFieldValue(ZCurve::encode(1006, 1007)));
+    pos_array.add(LongFieldValue(ZCurve::encode(1008, 1009)));
+    exp->setValue("ap2", pos_array);
+    auto pos_wset = bc.make_wset("wp2");
+    pos_wset.add(LongFieldValue(ZCurve::encode(1012, 1013)), 43);
+    pos_wset.add(LongFieldValue(ZCurve::encode(1014, 1015)), 44);
+    exp->setValue("wp2", pos_wset);
     dc.put(*exp, 1);
 
     IDocumentStore & store = dc._ddb->getReadySubDB()->getSummaryManager()->getBackingStore();
-    Document::UP act = store.read(1, *bc._repo);
+    Document::UP act = store.read(1, bc.get_repo());
     EXPECT_TRUE(act);
     EXPECT_EQUAL(exp->getType(), act->getType());
 
     DocsumRequest req;
     req.resultClassName = "class5";
-    req.hits.push_back(DocsumRequest::Hit(gid1));
+    req.hits.emplace_back(gid1);
     DocsumReply::UP rep = dc._ddb->getDocsums(req);
     EXPECT_TRUE(assertSlime("{docsums:["
-                            "{docsum:{sp2:'1047758'"
+                            "{docsum:{sp2:1047758"
                             ",sp2x:{x:1002, y:1003, latlong:'N0.001003;E0.001002'}"
                             ",ap2:[1047806,1048322]"
                             ",ap2x:[{x:1006, y:1007, latlong:'N0.001007;E0.001006'},"
@@ -1014,11 +864,11 @@ TEST("requireThatPositionsAreUsed")
 
 TEST_F("requireThatRawFieldsWorks", Fixture)
 {
-    Schema s;
-    s.addSummaryField(Schema::AttributeField("i", schema::DataType::RAW));
-    s.addSummaryField(Schema::AttributeField("araw", schema::DataType::RAW, CollectionType::ARRAY));
-    s.addSummaryField(Schema::AttributeField("wraw", schema::DataType::RAW, CollectionType::WEIGHTEDSET));
-
+    BuildContext bc([](auto& header)
+                    { using namespace document::config_builder;
+                        header.addField("i", DataType::T_RAW)
+                            .addField("araw", Array(DataType::T_RAW))
+                            .addField("wraw", Wset(DataType::T_RAW)); });
     std::vector<char> binaryBlob;
     binaryBlob.push_back('\0');
     binaryBlob.push_back('\2');
@@ -1039,53 +889,41 @@ TEST_F("requireThatRawFieldsWorks", Fixture)
     raw1w1 += std::string(&binaryBlob[0],
                           &binaryBlob[0] + binaryBlob.size());
 
-    BuildContext bc(s);
-    DBContext dc(bc._repo, getDocTypeName());
-    Document::UP exp = bc._bld.startDocument("id:ns:searchdocument::0").
-        startSummaryField("i").
-        addRaw(raw1s.c_str(), raw1s.size()).
-        endField().
-        startSummaryField("araw").
-        startElement().
-        addRaw(raw1a0.c_str(), raw1a0.size()).
-        endElement().
-        startElement().
-        addRaw(raw1a1.c_str(), raw1a1.size()).
-        endElement().
-        endField().
-        startSummaryField("wraw").
-        startElement(46).
-        addRaw(raw1w1.c_str(), raw1w1.size()).
-        endElement().
-        startElement(45).
-        addRaw(raw1w0.c_str(), raw1w0.size()).
-        endElement().
-        endField().
-        endDocument();
+    DBContext dc(bc.get_repo_sp(), getDocTypeName());
+    auto exp = bc.make_document("id:ns:searchdocument::0");
+    exp->setValue("i", RawFieldValue(raw1s));
+    auto raw_array = bc.make_array("araw");
+    raw_array.add(RawFieldValue(raw1a0));
+    raw_array.add(RawFieldValue(raw1a1));
+    exp->setValue("araw", raw_array);
+    auto raw_wset = bc.make_wset("wraw");
+    raw_wset.add(RawFieldValue(raw1w1), 46);
+    raw_wset.add(RawFieldValue(raw1w0), 45);
+    exp->setValue("wraw", raw_wset);
     dc._sa->put(1, 1, *exp);
 
     IDocumentStore & store = dc._ddb->getReadySubDB()->getSummaryManager()->getBackingStore();
-    Document::UP act = store.read(1, *bc._repo);
+    Document::UP act = store.read(1, bc.get_repo());
     EXPECT_TRUE(act.get() != nullptr);
     EXPECT_EQUAL(exp->getType(), act->getType());
 
-    DocumentStoreAdapter dsa(store, *bc._repo, f.getResultConfig(), "class0",
-                             bc.createFieldCacheRepo(f.getResultConfig())->getFieldCache("class0"),
-                             f.getMarkupFields());
+    DocumentStoreAdapter dsa(store, bc.get_repo());
 
     ASSERT_TRUE(assertString(raw1s, "i", dsa, 1));
 
-    GeneralResultPtr res = getResult(dsa, 1);
+    auto res = dsa.get_document(1);
     {
         vespalib::Slime slime;
-        decode(res->GetEntry("araw"), slime);
+        vespalib::slime::SlimeInserter inserter(slime);
+        res->insert_summary_field("araw", inserter);
         EXPECT_TRUE(slime.get().valid());
         EXPECT_EQUAL(vespalib::Base64::encode(raw1a0), b64encode(slime.get()[0]));
         EXPECT_EQUAL(vespalib::Base64::encode(raw1a1), b64encode(slime.get()[1]));
     }
     {
         vespalib::Slime slime;
-        decode(res->GetEntry("wraw"), slime);
+        vespalib::slime::SlimeInserter inserter(slime);
+        res->insert_summary_field("wraw", inserter);
         EXPECT_TRUE(slime.get().valid());
         EXPECT_EQUAL(46L, slime.get()[0]["weight"].asLong());
         EXPECT_EQUAL(45L, slime.get()[1]["weight"].asLong());
@@ -1096,41 +934,15 @@ TEST_F("requireThatRawFieldsWorks", Fixture)
     }
 }
 
-TEST_F("requireThatFieldCacheRepoCanReturnDefaultFieldCache", Fixture)
-{
-    Schema s;
-    s.addSummaryField(Schema::SummaryField("a", schema::DataType::INT32));
-    BuildContext bc(s);
-    FieldCacheRepo::UP repo = bc.createFieldCacheRepo(f.getResultConfig());
-    FieldCache::CSP cache = repo->getFieldCache("");
-    EXPECT_TRUE(cache.get() == repo->getFieldCache("class1").get());
-    EXPECT_EQUAL(1u, cache->size());
-    EXPECT_EQUAL("a", cache->getField(0)->getName());
-}
-
 Fixture::Fixture()
     : _summaryCfg(),
-      _resultCfg(),
-      _markupFields()
+      _resultCfg()
 {
     std::string cfgId("summary");
-    _summaryCfg = config::ConfigGetter<vespa::config::search::SummaryConfig>::getConfig(
-        cfgId, config::FileSpec(TEST_PATH("summary.cfg")));
-    _resultCfg.ReadConfig(*_summaryCfg, cfgId.c_str());
-    std::string mapCfgId("summarymap");
-    std::unique_ptr<vespa::config::search::SummarymapConfig> mapCfg = config::ConfigGetter<vespa::config::search::SummarymapConfig>::getConfig(
-        mapCfgId, config::FileSpec(TEST_PATH("summarymap.cfg")));
-    for (size_t i = 0; i < mapCfg->override.size(); ++i) {
-        const vespa::config::search::SummarymapConfig::Override & o = mapCfg->override[i];
-        if (o.command == "dynamicteaser") {
-            vespalib::string markupField = o.arguments;
-            if (markupField.empty())
-                continue;
-            // Assume just one argument: source field that must contain markup
-            _markupFields.insert(markupField);
-            LOG(info, "Field %s has markup", markupField.c_str());
-        }
-    }
+    _summaryCfg = ConfigGetter<vespa::config::search::SummaryConfig>::getConfig(
+        cfgId, ::config::FileSpec(TEST_PATH("summary.cfg")));
+    auto docsum_field_writer_factory = std::make_unique<MockDocsumFieldWriterFactory>();
+    _resultCfg.readConfig(*_summaryCfg, cfgId.c_str(), *docsum_field_writer_factory);
 }
 
 Fixture::~Fixture() = default;

@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.role;
 
 import com.yahoo.restapi.Path;
@@ -20,11 +20,13 @@ import java.util.Set;
 enum PathGroup {
 
     /** Paths exclusive to operators (including read), used for system management. */
-    classifiedOperator("/configserver/v1/{*}",
+    classifiedOperator("/application/v4/notifications",
+                       "/configserver/v1/{*}",
                        "/deployment/v1/{*}"),
 
     /** Paths used for system management by operators. */
-    operator("/controller/v1/{*}",
+    operator("/cores/v1/{*}",
+             "/controller/v1/{*}",
              "/flags/v1/{*}",
              "/loadbalancers/v1/{*}",
              "/nodes/v2/{*}",
@@ -54,6 +56,10 @@ enum PathGroup {
     tenantInfo(Matcher.tenant,
                "/application/v4/tenant/{tenant}/application/",
                "/application/v4/tenant/{tenant}/info/",
+               "/application/v4/tenant/{tenant}/info/profile",
+               "/application/v4/tenant/{tenant}/info/billing",
+               "/application/v4/tenant/{tenant}/info/contacts",
+               "/application/v4/tenant/{tenant}/info/resend-mail-verification",
                "/application/v4/tenant/{tenant}/notifications",
                "/routing/v1/status/tenant/{tenant}/{*}"),
 
@@ -61,7 +67,10 @@ enum PathGroup {
                "/application/v4/tenant/{tenant}/key/"),
 
     tenantArchiveAccess(Matcher.tenant,
-                       "/application/v4/tenant/{tenant}/archive-access"),
+                       "/application/v4/tenant/{tenant}/archive-access",
+                       "/application/v4/tenant/{tenant}/archive-access/aws",
+                       "/application/v4/tenant/{tenant}/archive-access/gcp"),
+
 
     billingToken(Matcher.tenant,
                  "/billing/v1/tenant/{tenant}/token"),
@@ -83,6 +92,8 @@ enum PathGroup {
 
     accountant("/billing/v2/accountant/{*}"),
 
+    userSearch("/user/v1/find"),
+
     applicationKeys(Matcher.tenant,
                     Matcher.application,
                     "/application/v4/tenant/{tenant}/application/{application}/key/"),
@@ -102,6 +113,7 @@ enum PathGroup {
     /** Paths used by application administrators. */
     applicationInfo(Matcher.tenant,
                     Matcher.application,
+                    "/application/v4/tenant/{tenant}/application/{application}/submit/{build}",
                     "/application/v4/tenant/{tenant}/application/{application}/package",
                     "/application/v4/tenant/{tenant}/application/{application}/diff/{number}",
                     "/application/v4/tenant/{tenant}/application/{application}/compile-version",
@@ -113,10 +125,12 @@ enum PathGroup {
                     "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/clusters",
                     "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/content/{*}",
                     "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/logs",
+                    "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/orchestrator",
                     "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/suspended",
                     "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/service/{*}",
                     "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/access/support",
                     "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/global-rotation/{*}",
+                    "/application/v4/tenant/{tenant}/application/{application}/instance/{ignored}/environment/{environment}/region/{region}/scaling",
                     "/application/v4/tenant/{tenant}/application/{application}/environment/{environment}/region/{region}/instance/{ignored}/nodes",
                     "/application/v4/tenant/{tenant}/application/{application}/environment/{environment}/region/{region}/instance/{ignored}/clusters",
                     "/application/v4/tenant/{tenant}/application/{application}/environment/{environment}/region/{region}/instance/{ignored}/logs",
@@ -210,7 +224,9 @@ enum PathGroup {
     /** Paths providing public information. */
     publicInfo("/user/v1/user",     // Information about who you are.
                "/badge/v1/{*}",     // Badges for deployment jobs.
-               "/zone/v1/{*}"),     // Lists environment and regions.
+               "/zone/v1/{*}",      // Lists environment and regions.
+               "/cli/v1/{*}",       // Public information for Vespa CLI.
+               "/.well-known/{*}"),
 
     /** Paths used for deploying system-wide feature flags. */
     systemFlagsDeploy("/system-flags/v1/deploy"),
@@ -224,16 +240,27 @@ enum PathGroup {
 
     /** Paths used for invoice management */
     hostedAccountant("/billing/v1/invoice/{*}",
-                     "/billing/v1/billing"),
+                     "/billing/v1/billing",
+                     "/billing/v1/plans"),
 
-    /** Path used for listing endpoint certificate request info */
-    endpointCertificateRequestInfo("/certificateRequests/"),
+    /** Path used for listing endpoint certificate request and re-requesting endpoint certificates */
+    endpointCertificates("/endpointcertificates/"),
 
     /** Path used for secret store management */
     secretStore(Matcher.tenant, "/application/v4/tenant/{tenant}/secret-store/{*}"),
 
     /** Paths used to proxy Horizon metric requests */
-    horizonProxy("/horizon/v1/{*}");
+    horizonProxy("/horizon/v1/{*}"),
+
+    /** Paths used to list and request access to tenant resources */
+    accessRequests(Matcher.tenant, "/application/v4/tenant/{tenant}/access/request/operator"),
+
+    /** Paths used to approve requests to access tenant resources */
+    accessRequestApproval(Matcher.tenant, "/application/v4/tenant/{tenant}/access/approve/operator",
+            "/application/v4/tenant/{tenant}/access/managed/operator"),
+
+    /** Path used for email verification */
+    emailVerification("/user/v1/email/verify");
 
     final List<String> pathSpecs;
     final List<Matcher> matchers;
@@ -281,9 +308,10 @@ enum PathGroup {
         return EnumSet.complementOf(EnumSet.copyOf(pathGroups));
     }
 
-    static Set<PathGroup> billingPaths() {
+    static Set<PathGroup> operatorRestrictedPaths() {
         var paths = billingPathsNoToken();
         paths.add(PathGroup.billingToken);
+        paths.add(accessRequestApproval);
         return paths;
     }
 

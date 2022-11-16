@@ -1,10 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
-#include "types.h"
 #include <vespa/storage/common/servicelayercomponent.h>
 #include <vespa/storage/persistence/filestorage/filestorhandler.h>
 #include <vespa/storage/persistence/filestorage/filestormetrics.h>
+#include <vespa/storage/bucketdb/storbucketdb.h>
 #include <vespa/storageframework/generic/clock/timer.h>
 #include <vespa/storageapi/messageapi/returncode.h>
 #include <vespa/persistence/spi/result.h>
@@ -15,6 +15,7 @@
 namespace storage::api {
     class StorageMessage;
     class StorageReply;
+    class BucketInfo;
 }
 
 namespace storage::spi {
@@ -25,12 +26,13 @@ namespace storage {
 
 class PersistenceUtil;
 
-class MessageTracker : protected Types {
+class MessageTracker {
 public:
-    typedef std::unique_ptr<MessageTracker> UP;
+    using UP = std::unique_ptr<MessageTracker>;
 
     MessageTracker(const framework::MilliSecTimer & timer, const PersistenceUtil & env, MessageSender & replySender,
-                   FileStorHandler::BucketLockInterface::SP bucketLock, std::shared_ptr<api::StorageMessage> msg);
+                   FileStorHandler::BucketLockInterface::SP bucketLock, std::shared_ptr<api::StorageMessage> msg,
+                   ThrottleToken throttle_token);
 
     ~MessageTracker();
 
@@ -47,7 +49,7 @@ public:
     }
 
     /** Utility function to be able to write a bit less in client. */
-    void fail(uint32_t result, const String& message = "") {
+    void fail(uint32_t result, const vespalib::string & message = "") {
         fail(api::ReturnCode((api::ReturnCode::Result)result, message));
     }
     /** Set the request to fail with the given failure. */
@@ -81,13 +83,18 @@ public:
 
     bool checkForError(const spi::Result& response);
 
+    // Returns a non-nullptr notifier instance iff the underlying operation wants to be notified
+    // when the sync phase is complete. Otherwise returns a nullptr shared_ptr.
+    std::shared_ptr<FileStorHandler::OperationSyncPhaseDoneNotifier> sync_phase_done_notifier_or_nullptr() const;
+
     static MessageTracker::UP
     createForTesting(const framework::MilliSecTimer & timer, PersistenceUtil & env, MessageSender & replySender,
                      FileStorHandler::BucketLockInterface::SP bucketLock, std::shared_ptr<api::StorageMessage> msg);
 
 private:
     MessageTracker(const framework::MilliSecTimer & timer, const PersistenceUtil & env, MessageSender & replySender, bool updateBucketInfo,
-                   FileStorHandler::BucketLockInterface::SP bucketLock, std::shared_ptr<api::StorageMessage> msg);
+                   FileStorHandler::BucketLockInterface::SP bucketLock, std::shared_ptr<api::StorageMessage> msg,
+                   ThrottleToken throttle_token);
 
     [[nodiscard]] bool count_result_as_failure() const noexcept;
 
@@ -95,6 +102,7 @@ private:
     bool                                     _updateBucketInfo;
     FileStorHandler::BucketLockInterface::SP _bucketLock;
     std::shared_ptr<api::StorageMessage>     _msg;
+    ThrottleToken                            _throttle_token;
     spi::Context                             _context;
     const PersistenceUtil                   &_env;
     MessageSender                           &_replySender;

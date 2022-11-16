@@ -1,12 +1,13 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.deployment;
 
+import com.yahoo.component.Version;
 import com.yahoo.config.application.api.DeploymentInstanceSpec;
 import com.yahoo.config.application.api.DeploymentSpec;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.Path;
 import com.yahoo.restapi.SlimeJsonResponse;
@@ -14,13 +15,16 @@ import com.yahoo.restapi.UriBuilder;
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.Slime;
 import com.yahoo.vespa.hosted.controller.Controller;
+import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationVersion;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
 import com.yahoo.vespa.hosted.controller.application.ApplicationList;
 import com.yahoo.vespa.hosted.controller.application.Change;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentStatus;
 import com.yahoo.vespa.hosted.controller.deployment.Run;
+import com.yahoo.vespa.hosted.controller.deployment.RunStatus;
 import com.yahoo.vespa.hosted.controller.deployment.Versions;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 import com.yahoo.vespa.hosted.controller.restapi.application.EmptyResponse;
 import com.yahoo.vespa.hosted.controller.versions.DeploymentStatistics;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion;
@@ -30,7 +34,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.logging.Level;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -47,11 +51,11 @@ import static java.util.stream.Collectors.toUnmodifiableMap;
  * @author bratseth
  */
 @SuppressWarnings("unused") // Injected
-public class DeploymentApiHandler extends LoggingRequestHandler {
+public class DeploymentApiHandler extends ThreadedHttpRequestHandler {
 
     private final Controller controller;
 
-    public DeploymentApiHandler(LoggingRequestHandler.Context parentCtx, Controller controller) {
+    public DeploymentApiHandler(ThreadedHttpRequestHandler.Context parentCtx, Controller controller) {
         super(parentCtx);
         this.controller = controller;
     }
@@ -59,18 +63,17 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
     @Override
     public HttpResponse handle(HttpRequest request) {
         try {
-            switch (request.getMethod()) {
-                case GET: return handleGET(request);
-                case OPTIONS: return handleOPTIONS();
-                default: return ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is not supported");
-            }
+            return switch (request.getMethod()) {
+                case GET -> handleGET(request);
+                case OPTIONS -> handleOPTIONS();
+                default -> ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is not supported");
+            };
         }
         catch (IllegalArgumentException e) {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
         }
         catch (RuntimeException e) {
-            log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
-            return ErrorResponse.internalServerError(Exceptions.toMessageString(e));
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
 
@@ -93,11 +96,11 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
         Cursor root = slime.setObject();
         Cursor platformArray = root.setArray("versions");
         var versionStatus = controller.readVersionStatus();
-        var systemVersion = controller.systemVersion(versionStatus);
-        var deploymentStatuses = controller.jobController().deploymentStatuses(ApplicationList.from(controller.applications().asList()), systemVersion);
-        var deploymentStatistics = DeploymentStatistics.compute(versionStatus.versions().stream().map(VespaVersion::versionNumber).collect(toList()),
-                                                                deploymentStatuses)
-                                                       .stream().collect(toMap(DeploymentStatistics::version, identity()));
+        ApplicationList applications = ApplicationList.from(controller.applications().asList()).withJobs();
+        var deploymentStatuses = controller.jobController().deploymentStatuses(applications, versionStatus);
+        Map<Version, DeploymentStatistics> deploymentStatistics = DeploymentStatistics.compute(versionStatus.versions().stream().map(VespaVersion::versionNumber).collect(toList()),
+                                                                                               deploymentStatuses)
+                                                                                      .stream().collect(toMap(DeploymentStatistics::version, identity()));
         for (VespaVersion version : versionStatus.versions()) {
             Cursor versionObject = platformArray.addObject();
             versionObject.setString("version", version.versionNumber().toString());
@@ -119,7 +122,7 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
                 Cursor applicationObject = failingArray.addObject();
                 toSlime(applicationObject, run.id().application(), request);
                 applicationObject.setString("failing", run.id().type().jobName());
-                applicationObject.setString("status", run.status().name());
+                applicationObject.setString("status", nameOf(run.status()));
             }
 
             var statusByInstance = deploymentStatuses.asList().stream()
@@ -131,7 +134,7 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
                                                                             entry -> entry.getValue().instanceJobs().get(entry.getKey())));
             Cursor productionArray = versionObject.setArray("productionApplications");
             statistics.productionSuccesses().stream()
-                      .collect(groupingBy(run -> run.id().application()))
+                      .collect(groupingBy(run -> run.id().application(), TreeMap::new, toList()))
                       .forEach((id, runs) -> {
                           Cursor applicationObject = productionArray.addObject();
                           toSlime(applicationObject, id, request);
@@ -174,18 +177,21 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
                       instanceObject.setString("upgradePolicy", toString(status.application().deploymentSpec().instance(instance.instance())
                                                                                .map(DeploymentInstanceSpec::upgradePolicy)
                                                                                .orElse(DeploymentSpec.UpgradePolicy.defaultPolicy)));
+                      status.application().revisions().last().flatMap(ApplicationVersion::compileVersion)
+                            .ifPresent(compiled -> instanceObject.setString("compileVersion", compiled.toFullString()));
                       Cursor jobsArray = instanceObject.setArray("jobs");
                       status.jobSteps().forEach((job, jobStatus) -> {
                           if ( ! job.application().equals(instance)) return;
                           Cursor jobObject = jobsArray.addObject();
                           jobObject.setString("name", job.type().jobName());
                           jobStatus.pausedUntil().ifPresent(until -> jobObject.setLong("pausedUntil", until.toEpochMilli()));
-                          jobStatus.coolingDownUntil(status.application().require(instance.instance()).change())
+                          jobStatus.coolingDownUntil(status.application().require(instance.instance()).change(), Optional.empty())
                                    .ifPresent(until -> jobObject.setLong("coolingDownUntil", until.toEpochMilli()));
                           if (jobsToRun.containsKey(job)) {
                               List<Versions> versionsOnThisPlatform = jobsToRun.get(job).stream()
-                                      .filter(versions -> versions.targetPlatform().equals(statistics.version()))
-                                      .collect(Collectors.toList());
+                                                                               .map(DeploymentStatus.Job::versions)
+                                                                               .filter(versions -> versions.targetPlatform().equals(statistics.version()))
+                                                                               .toList();
                               if ( ! versionsOnThisPlatform.isEmpty())
                                   jobObject.setString("pending", versionsOnThisPlatform.stream()
                                                                                        .allMatch(versions -> versions.sourcePlatform()
@@ -207,7 +213,7 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
                       });
                   });
         }
-        JobType.allIn(controller.system()).stream()
+        JobType.allIn(controller.zoneRegistry()).stream()
                .filter(job -> ! job.environment().isManuallyDeployed())
                .map(JobType::jobName).forEach(root.setArray("jobs")::addString);
         return new SlimeJsonResponse(slime);
@@ -219,7 +225,7 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
         runObject.setLong("number", run.id().number());
         runObject.setLong("start", run.start().toEpochMilli());
         run.end().ifPresent(end -> runObject.setLong("end", end.toEpochMilli()));
-        runObject.setString("status", run.status().name());
+        runObject.setString("status", nameOf(run.status()));
     }
 
     private void toSlime(Cursor object, ApplicationId id, HttpRequest request) {
@@ -240,6 +246,21 @@ public class DeploymentApiHandler extends LoggingRequestHandler {
             return "default";
         }
         return upgradePolicy.name();
+    }
+
+    public static String nameOf(RunStatus status) {
+        return switch (status) {
+            case reset, running                       -> "running";
+            case aborted                              -> "aborted";
+            case error                                -> "error";
+            case testFailure                          -> "testFailure";
+            case noTests                              -> "noTests";
+            case endpointCertificateTimeout           -> "endpointCertificateTimeout";
+            case nodeAllocationFailure                -> "nodeAllocationFailure";
+            case installationFailed                   -> "installationFailed";
+            case invalidApplication, deploymentFailed -> "deploymentFailed";
+            case success                              -> "success";
+        };
     }
 
     private static class RunInfo {

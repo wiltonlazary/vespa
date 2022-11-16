@@ -1,6 +1,5 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "cachestats.h"
 #include "documentstore.h"
 #include "visitcache.h"
 #include "ibucketizer.h"
@@ -16,6 +15,7 @@
 LOG_SETUP(".searchlib.docstore.documentstore");
 
 using document::DocumentTypeRepo;
+using vespalib::CacheStats;
 using vespalib::compression::CompressionConfig;
 
 namespace search {
@@ -112,7 +112,6 @@ public:
 
 }
 
-using VisitCache = docstore::VisitCache;
 using docstore::Value;
 
 bool
@@ -239,7 +238,14 @@ DocumentStore::remove(uint64_t syncToken, DocumentIdT lid)
 }
 
 void
-DocumentStore::compact(uint64_t syncToken)
+DocumentStore::compactBloat(uint64_t syncToken)
+{
+    (void) syncToken;
+    // Most implementations does not offer compact.
+}
+
+void
+DocumentStore::compactSpread(uint64_t syncToken)
 {
     (void) syncToken;
     // Most implementations does not offer compact.
@@ -431,8 +437,8 @@ DocumentStore::getFileChunkStats() const
 
 CacheStats DocumentStore::getCacheStats() const {
     CacheStats visitStats = _visitCache->getCacheStats();
-    CacheStats singleStats(_cache->getHit(), _cache->getMiss() + _uncached_lookups,
-                           _cache->size(), _cache->sizeBytes(), _cache->getInvalidate());
+    CacheStats singleStats = _cache->get_stats();
+    singleStats.add_extra_misses(_uncached_lookups.load(std::memory_order_relaxed));
     singleStats += visitStats;
     return singleStats;
 }

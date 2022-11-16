@@ -10,6 +10,7 @@
 #include <vespa/searchcommon/attribute/search_context_params.h>
 #include <vespa/searchcommon/common/range.h>
 #include <vespa/vespalib/util/regexp.h>
+#include <vespa/vespalib/fuzzy/fuzzy_matcher.h>
 #include <regex>
 
 namespace search::attribute {
@@ -24,6 +25,7 @@ class ISearchContext;
 class PostingListSearchContext : public IPostingListSearchContext
 {
 protected:
+    using AtomicEntryRef = vespalib::datastore::AtomicEntryRef;
     using Dictionary = EnumPostingTree;
     using DictionaryConstIterator = Dictionary::ConstIterator;
     using FrozenDictionary = Dictionary::FrozenView;
@@ -44,14 +46,14 @@ protected:
     float _FSTC;  // Filtering Search Time Constant
     float _PLSTC; // Posting List Search Time Constant
     uint32_t                _minBvDocFreq;
-    const GrowableBitVector *_gbv; // bitvector if _useBitVector has been set
+    const BitVector *_bv; // bitvector if _useBitVector has been set
     const ISearchContext    &_baseSearchCtx;
 
 
     PostingListSearchContext(const IEnumStoreDictionary& dictionary, uint32_t docIdLimit, uint64_t numValues, bool hasWeight,
                              uint32_t minBvDocFreq, bool useBitVector, const ISearchContext &baseSearchCtx);
 
-    ~PostingListSearchContext();
+    ~PostingListSearchContext() override;
 
     void lookupTerm(const vespalib::datastore::EntryComparator &comp);
     void lookupRange(const vespalib::datastore::EntryComparator &low, const vespalib::datastore::EntryComparator &high);
@@ -88,8 +90,6 @@ protected:
         return (numHits > 1000) &&
             (calculateFilteringCost() < calculatePostingListCost(numHits));
     }
-
-public:
 };
 
 
@@ -101,6 +101,7 @@ protected:
     using Traits = PostingListTraits<DataType>;
     using PostingList = typename Traits::PostingList;
     using Posting = typename Traits::Posting;
+    using AtomicEntryRef = vespalib::datastore::AtomicEntryRef;
     using EntryRef = vespalib::datastore::EntryRef;
     using FrozenView = typename PostingList::BTreeType::FrozenView;
 
@@ -166,12 +167,11 @@ class PostingSearchContext: public BaseSC,
 {
 public:
     using EnumStore = typename AttrT::EnumStore;
-    using QueryTermSimpleUP = std::unique_ptr<QueryTermSimple>;
 protected:
     const AttrT           &_toBeSearched;
     const EnumStore       &_enumStore;
 
-    PostingSearchContext(QueryTermSimpleUP qTerm, bool useBitVector, const AttrT &toBeSearched);
+    PostingSearchContext(BaseSC&& base_sc, bool useBitVector, const AttrT &toBeSearched);
     ~PostingSearchContext();
 };
 
@@ -182,11 +182,10 @@ class StringPostingSearchContext
 private:
     using Parent = PostingSearchContext<BaseSC, PostingListFoldedSearchContextT<DataT>, AttrT>;
     using RegexpUtil = vespalib::RegexpUtil;
-    using QueryTermSimpleUP = typename Parent::QueryTermSimpleUP;
     using Parent::_enumStore;
     bool useThis(const PostingListSearchContext::DictionaryConstIterator & it) const override;
 public:
-    StringPostingSearchContext(QueryTermSimpleUP qTerm, bool useBitVector, const AttrT &toBeSearched);
+    StringPostingSearchContext(BaseSC&& base_sc, bool useBitVector, const AttrT &toBeSearched);
 };
 
 template <typename BaseSC, typename AttrT, typename DataT>
@@ -197,7 +196,6 @@ private:
     using Parent = PostingSearchContext<BaseSC, PostingListSearchContextT<DataT>, AttrT>;
     typedef typename AttrT::T BaseType;
     using Params = attribute::SearchContextParams;
-    using QueryTermSimpleUP = typename Parent::QueryTermSimpleUP;
     using Parent::_low;
     using Parent::_high;
     using Parent::_toBeSearched;
@@ -232,15 +230,15 @@ private:
     }
 
 public:
-    NumericPostingSearchContext(QueryTermSimpleUP qTerm, const Params & params, const AttrT &toBeSearched);
+    NumericPostingSearchContext(BaseSC&& base_sc, const Params & params, const AttrT &toBeSearched);
     const Params &params() const { return _params; }
 };
 
 
 template <typename BaseSC, typename BaseSC2, typename AttrT>
 PostingSearchContext<BaseSC, BaseSC2, AttrT>::
-PostingSearchContext(QueryTermSimpleUP qTerm, bool useBitVector, const AttrT &toBeSearched)
-    : BaseSC(std::move(qTerm), toBeSearched),
+PostingSearchContext(BaseSC&& base_sc, bool useBitVector, const AttrT &toBeSearched)
+    : BaseSC(std::move(base_sc)),
       BaseSC2(toBeSearched.getEnumStore().get_dictionary(),
               toBeSearched.getCommittedDocIdLimit(),
               toBeSearched.getStatus().getNumValues(),
@@ -261,8 +259,8 @@ PostingSearchContext<BaseSC, BaseSC2, AttrT>::~PostingSearchContext() = default;
 
 template <typename BaseSC, typename AttrT, typename DataT>
 StringPostingSearchContext<BaseSC, AttrT, DataT>::
-StringPostingSearchContext(QueryTermSimpleUP qTerm, bool useBitVector, const AttrT &toBeSearched)
-    : Parent(std::move(qTerm), useBitVector, toBeSearched)
+StringPostingSearchContext(BaseSC&& base_sc, bool useBitVector, const AttrT &toBeSearched)
+    : Parent(std::move(base_sc), useBitVector, toBeSearched)
 {
     // after benchmarking prefix search performance on single, array, and weighted set fast-aggregate string attributes
     // with 1M values the following constant has been derived:
@@ -280,12 +278,24 @@ StringPostingSearchContext(QueryTermSimpleUP qTerm, bool useBitVector, const Att
             vespalib::string prefix(RegexpUtil::get_prefix(this->queryTerm()->getTerm()));
             auto comp = _enumStore.make_folded_comparator_prefix(prefix.c_str());
             this->lookupRange(comp, comp);
+        } else if (this->isFuzzy()) {
+            vespalib::string prefix(this->getFuzzyMatcher().getPrefix());
+            auto comp = _enumStore.make_folded_comparator_prefix(prefix.c_str());
+            this->lookupRange(comp, comp);
         } else {
             auto comp = _enumStore.make_folded_comparator(this->queryTerm()->getTerm());
             this->lookupTerm(comp);
         }
         if (this->_uniqueValues == 1u) {
-            this->lookupSingle();
+            /*
+             * A single dictionary entry from lookupRange() might not be
+             * a match if this is a regex search or a fuzzy search.
+             */
+            if (!this->_lowerDictItr.valid() || useThis(this->_lowerDictItr)) {
+                this->lookupSingle();
+            } else {
+                this->_uniqueValues = 0;
+            }
         }
     }
 }
@@ -295,18 +305,20 @@ bool
 StringPostingSearchContext<BaseSC, AttrT, DataT>::useThis(const PostingListSearchContext::DictionaryConstIterator & it) const {
     if ( this->isRegex() ) {
         return this->getRegex().valid()
-            ? this->getRegex().partial_match(_enumStore.get_value(it.getKey()))
+            ? this->getRegex().partial_match(_enumStore.get_value(it.getKey().load_acquire()))
             : false;
     } else if ( this->isCased() ) {
-        return this->isMatch(_enumStore.get_value(it.getKey()));
+        return this->match(_enumStore.get_value(it.getKey().load_acquire()));
+    } else if (this->isFuzzy()) {
+        return this->getFuzzyMatcher().isMatch(_enumStore.get_value(it.getKey().load_acquire()));
     }
     return true;
 }
 
 template <typename BaseSC, typename AttrT, typename DataT>
 NumericPostingSearchContext<BaseSC, AttrT, DataT>::
-NumericPostingSearchContext(QueryTermSimpleUP qTerm, const Params & params_in, const AttrT &toBeSearched)
-    : Parent(std::move(qTerm), params_in.useBitVector(), toBeSearched),
+NumericPostingSearchContext(BaseSC&& base_sc, const Params & params_in, const AttrT &toBeSearched)
+    : Parent(std::move(base_sc), params_in.useBitVector(), toBeSearched),
       _params(params_in)
 {
     // after simplyfying the formula and simple benchmarking and thumbs in the air
@@ -354,10 +366,10 @@ getIterators(bool shouldApplyRangeLimit)
     }
 
     if (this->_lowerDictItr != this->_upperDictItr) {
-        _low = _enumStore.get_value(this->_lowerDictItr.getKey());
+        _low = _enumStore.get_value(this->_lowerDictItr.getKey().load_acquire());
         auto last = this->_upperDictItr;
         --last;
-        _high = _enumStore.get_value(last.getKey());
+        _high = _enumStore.get_value(last.getKey().load_acquire());
     }
 }
 

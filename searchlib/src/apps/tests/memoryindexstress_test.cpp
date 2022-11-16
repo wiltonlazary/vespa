@@ -1,5 +1,18 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+
+#include <vespa/searchlib/common/scheduletaskcallback.h>
+#include <vespa/searchlib/fef/matchdata.h>
+#include <vespa/searchlib/fef/matchdatalayout.h>
+#include <vespa/searchlib/fef/termfieldmatchdata.h>
+#include <vespa/searchlib/memoryindex/memory_index.h>
+#include <vespa/searchlib/query/tree/simplequery.h>
+#include <vespa/searchlib/queryeval/fake_requestcontext.h>
+#include <vespa/searchlib/queryeval/fake_search.h>
+#include <vespa/searchlib/queryeval/fake_searchable.h>
+#include <vespa/searchlib/queryeval/searchiterator.h>
+#include <vespa/searchlib/queryeval/blueprint.h>
+#include <vespa/searchlib/test/index/mock_field_length_inspector.h>
 #include <vespa/document/annotation/spanlist.h>
 #include <vespa/document/annotation/spantree.h>
 #include <vespa/document/datatype/documenttype.h>
@@ -8,23 +21,12 @@
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/repo/fixedtyperepo.h>
-#include <vespa/searchlib/common/scheduletaskcallback.h>
-#include <vespa/searchlib/fef/matchdata.h>
-#include <vespa/searchlib/fef/matchdatalayout.h>
-#include <vespa/searchlib/fef/termfieldmatchdata.h>
-#include <vespa/searchlib/index/i_field_length_inspector.h>
-#include <vespa/searchlib/memoryindex/memory_index.h>
-#include <vespa/searchlib/query/tree/simplequery.h>
-#include <vespa/searchlib/queryeval/fake_requestcontext.h>
-#include <vespa/searchlib/queryeval/fake_search.h>
-#include <vespa/searchlib/queryeval/fake_searchable.h>
-#include <vespa/searchlib/queryeval/searchiterator.h>
-#include <vespa/searchlib/test/index/mock_field_length_inspector.h>
 #include <vespa/vespalib/util/rand48.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/stllike/asciistream.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("memoryindexstress_test");
@@ -48,6 +50,7 @@ using search::query::Node;
 using search::query::SimplePhrase;
 using search::query::SimpleStringTerm;
 using search::index::test::MockFieldLengthInspector;
+using vespalib::IDestructorCallback;
 using vespalib::asciistream;
 using vespalib::makeLambdaTask;
 
@@ -72,7 +75,7 @@ makeSchema()
     return schema;
 }
 
-document::DocumenttypesConfig
+document::config::DocumenttypesConfig
 makeDocTypeRepoConfig()
 {
     const int32_t doc_type_id = 787121340;
@@ -136,7 +139,7 @@ setFieldValue(Document &doc, const vespalib::string &fieldName,
               const vespalib::string &fieldString)
 {
     std::unique_ptr<StringFieldValue> fieldValue =
-        std::make_unique<StringFieldValue>(fieldString);
+        StringFieldValue::make(fieldString);
     document::FixedTypeRepo repo(*doc.getRepo(), doc.getType());
     tokenizeStringFieldValue(repo, *fieldValue);
     doc.setFieldValue(doc.getField(fieldName), std::move(fieldValue));
@@ -190,6 +193,16 @@ Node::UP makePhrase(const std::string &term1, const std::string &term2) {
     return node;
 }
 
+class HoldDoc : public IDestructorCallback {
+    std::unique_ptr<Document> _doc;
+public:
+    HoldDoc(std::unique_ptr<Document> doc) noexcept
+        : _doc(std::move(doc))
+    {
+    }
+    ~HoldDoc() override = default;
+};
+
 }  // namespace
 
 struct Fixture {
@@ -224,10 +237,13 @@ struct Fixture {
         gate.await();
     }
     void put(uint32_t id, Document::UP doc) {
-        index.insertDocument(id, *doc);
+        auto& docref = *doc;
+        index.insertDocument(id, docref, std::make_shared<HoldDoc>(std::move(doc)));
     }
      void remove(uint32_t id) {
-        index.removeDocument(id);
+        std::vector<uint32_t> lids;
+        lids.push_back(id);
+        index.removeDocuments(std::move(lids));
     }
 
     void readWork(uint32_t cnt);
@@ -313,8 +329,7 @@ Fixture::readWork(uint32_t cnt)
         FieldSpec field(fieldName, fieldId, handle);
         FieldSpecList fields;
         fields.add(field);
-        Blueprint::UP result = index.createBlueprint(requestContext,
-                                                     fields, term);
+        Blueprint::UP result = index.createBlueprint(requestContext, fields, term);
         if (!EXPECT_TRUE(result.get() != 0)) {
             LOG(error, "Did not get blueprint");
             break;

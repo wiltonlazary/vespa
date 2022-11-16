@@ -13,8 +13,8 @@ namespace search {
  * multi value mapping uses an underlying posting list to provide faster search.
  * This class is used for both array and weighted set types.
  *
- * B: EnumAttribute<P, BaseClass>
- * M: multivalue::Value<IEnumStore::Index> (array) or
+ * B: EnumAttribute<BaseClass>
+ * M: IEnumStore::Index (array) or
  *    multivalue::WeightedValue<IEnumStore::Index> (weighted set)
  * M specifies the type stored in the MultiValueMapping
  */
@@ -40,6 +40,7 @@ private:
         void collect_folded(vespalib::datastore::EntryRef enum_idx, vespalib::datastore::EntryRef dictionary_snapshot, const std::function<void(vespalib::datastore::EntryRef)>& callback) const override;
         void create(vespalib::datastore::EntryRef idx, std::vector<DocumentWeightIterator> &dst) const override;
         DocumentWeightIterator create(vespalib::datastore::EntryRef idx) const override;
+        std::unique_ptr<queryeval::SearchIterator> make_bitvector_iterator(vespalib::datastore::EntryRef idx, uint32_t doc_id_limit, fef::TermFieldMatchData &match_data, bool strict) const override;
     };
     DocumentWeightAttributeAdapter _document_weight_attribute_adapter;
 
@@ -52,9 +53,6 @@ private:
     using PostingParent = PostingListAttributeSubBase<AttributeWeightPosting, LoadedVector,
                                                       typename B::LoadedValueType, EnumStore>;
 
-    using ArraySearchContext = typename MultiValueNumericEnumAttribute<B, M>::ArraySearchContext;
-    using ArrayNumericSearchContext = ArraySearchContext;
-    using ArrayPostingSearchContext = attribute::NumericPostingSearchContext<ArrayNumericSearchContext, SelfType, int32_t>;
     using ComparatorType = typename EnumStore::ComparatorType;
     using Dictionary = EnumPostingTree;
     using DictionaryConstIterator = typename Dictionary::ConstIterator;
@@ -65,9 +63,6 @@ private:
     using PostingList = typename PostingParent::PostingList;
     using PostingMap = typename PostingParent::PostingMap;
     using QueryTermSimpleUP = AttributeVector::QueryTermSimpleUP;
-    using SetSearchContext = typename MultiValueNumericEnumAttribute<B, M>::SetSearchContext;
-    using SetNumericSearchContext = SetSearchContext;
-    using SetPostingSearchContext = attribute::NumericPostingSearchContext<SetNumericSearchContext, SelfType, int32_t>;
     using WeightedIndex = typename MultiValueNumericEnumAttribute<B, M>::WeightedIndex;
     using generation_t = typename MultiValueNumericEnumAttribute<B, M>::generation_t;
 
@@ -85,10 +80,10 @@ public:
     MultiValueNumericPostingAttribute(const vespalib::string & name, const AttributeVector::Config & cfg);
     ~MultiValueNumericPostingAttribute();
 
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
 
-    AttributeVector::SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams & params) const override;
 
     const IDocumentWeightAttribute *asDocumentWeightAttribute() const override;

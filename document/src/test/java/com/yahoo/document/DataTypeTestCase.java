@@ -21,9 +21,9 @@ public class DataTypeTestCase {
     public void testWeightedSetTypes() {
         DataType stringDefault = DataType.getWeightedSet(DataType.STRING);
         DataType stringTag=DataType.getWeightedSet(DataType.STRING,true,true);
-        assertTrue(stringDefault.equals(stringDefault));
-        assertTrue(stringTag.equals(stringTag));
-        assertFalse(stringDefault.equals(stringTag));
+        assertEquals(stringDefault, stringDefault);
+        assertEquals(stringTag, stringTag);
+        assertNotEquals(stringDefault, stringTag);
         assertEquals("WeightedSet<string>",stringDefault.getName());
         assertEquals(18, stringTag.getCode());
         //assertEquals("WeightedSet<string>;Add;Remove",stringTag.getName());
@@ -34,9 +34,9 @@ public class DataTypeTestCase {
     public void testTagType() {
         DocumentTypeManager manager = new DocumentTypeManager();
         //assertEquals(DataType.getWeightedSet(DataType.STRING,true,true),DataType.TAG.getBaseType());
-        assertNotNull(manager.getDataType("tag"));
-        assertEquals(DataType.TAG, manager.getDataType("tag"));
-        assertEquals(manager.getDataType("tag").getCode(), 18);
+        assertNotNull(manager.getDataTypeInternal("tag"));
+        assertEquals(DataType.TAG, manager.getDataTypeInternal("tag"));
+        assertEquals(manager.getDataTypeInternal("tag").getCode(), 18);
         assertEquals(DataType.getWeightedSet(DataType.STRING,true,true).getCode(), 18);
     }
 
@@ -55,6 +55,7 @@ public class DataTypeTestCase {
         assertEquals(PredicateFieldValue.class, DataType.PREDICATE.createFieldValue().getClass());
     }
 
+    @SuppressWarnings("unchecked")
     @Test
     public void testCreateFieldValueWithArg() {
         {

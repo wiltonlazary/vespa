@@ -43,7 +43,6 @@ import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -162,11 +161,6 @@ public class MetricsReporterTest {
         TestMetric metric = new TestMetric();
         MetricsReporter metricsReporter = metricsReporter(metric, tester);
         metricsReporter.maintain();
-
-        // Only verify metrics that are set for hosts
-        TreeMap<String, Number> metrics = new TreeMap<>(metric.values);
-        assertTrue(metrics.containsKey("wantToEncrypt"));
-        assertTrue(metrics.containsKey("diskEncrypted"));
     }
 
     private void verifyAndRemoveIntegerMetricSum(TestMetric metric, String key, int expected) {
@@ -183,11 +177,11 @@ public class MetricsReporterTest {
         // Allow 4 containers
         Set<String> ipAddressPool = Set.of("::2", "::3", "::4", "::5");
 
-        Node dockerHost = Node.create("openStackId1", new IP.Config(Set.of("::1"), ipAddressPool), "dockerHost",
+        Node dockerHost = Node.create("node-id-1", new IP.Config(Set.of("::1"), ipAddressPool), "dockerHost",
                                       nodeFlavors.getFlavorOrThrow("host"), NodeType.host).build();
         nodeRepository.nodes().addNodes(List.of(dockerHost), Agent.system);
         nodeRepository.nodes().deallocateRecursively("dockerHost", Agent.system, getClass().getSimpleName());
-        nodeRepository.nodes().setReady("dockerHost", Agent.system, getClass().getSimpleName());
+        tester.move(Node.State.ready, "dockerHost");
 
         Node container1 = Node.reserve(Set.of("::2"), "container1",
                                        "dockerHost", new NodeResources(1, 3, 2, 1), NodeType.tenant).build();
@@ -339,7 +333,6 @@ public class MetricsReporterTest {
     private MetricsReporter metricsReporter(TestMetric metric, ProvisioningTester tester) {
         return new MetricsReporter(tester.nodeRepository(),
                                    metric,
-                                   tester.orchestrator(),
                                    serviceMonitor,
                                    () -> 42,
                                    LONG_INTERVAL);

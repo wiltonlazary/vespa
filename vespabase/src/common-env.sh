@@ -35,26 +35,7 @@ consider_fallback () {
 read_conf_file () {
     deffile="$VESPA_HOME/conf/vespa/default-env.txt"
     if [ -f "${deffile}" ]; then
-        eval $(perl -ne '
-            chomp;
-            my ($action, $varname, $value) = split(" ", $_, 3);
-            $varname =~ s{[.]}{__}g;
-            if ($varname !~ m{^\w+}) {
-                # print STDERR "invalid var name $varname"
-                next;
-            }
-            if ($action eq "fallback" || $action eq "override") {
-                next if ($action eq "fallback" && $ENV{$varname} ne "");
-                # quote value
-                if ($value !~ m{^["][^"]*["]$} ) {
-                    $value =~ s{(\W)}{\\$1}g;
-                }
-                print "$varname=$value; export $varname; "
-            }
-            if ($action eq "unset") {
-                print "export -n $varname; unset $varname; "
-            }
-        ' < $deffile)
+        eval $(${VESPA_HOME}/libexec/vespa/script-utils export-env)
     fi
 }
 
@@ -111,10 +92,67 @@ prepend_path () {
 }
 
 add_valgrind_suppressions_file() {
-    if [ -f "$1" ]
-    then
+    if [ -f "$1" ] ; then
 	VESPA_VALGRIND_SUPPREESSIONS_OPT="$VESPA_VALGRIND_SUPPREESSIONS_OPT --suppressions=$1"
     fi
+}
+
+optionally_reduce_base_frequency() {
+    if [ -z "$VESPA_TIMER_HZ" ]; then
+        os_release=`uname -r`
+        if [[ "$os_release" == *linuxkit* ]]; then
+            export VESPA_TIMER_HZ=100
+            : "Running docker on macos. Reducing base frequency from 1000hz to 100hz due to high cost of sampling time. This will reduce timeout accuracy. VESPA_TIMER_HZ=$VESPA_TIMER_HZ"
+        fi
+    else
+        : "VESPA_TIMER_HZ already set to $VESPA_TIMER_HZ. Skipping auto detection."
+    fi
+}
+
+get_thp_size_mb() {
+    local thp_size=2
+    if [ -r /sys/kernel/mm/transparent_hugepage/hpage_pmd_size ]; then
+        local bytes
+        read -r bytes < /sys/kernel/mm/transparent_hugepage/hpage_pmd_size
+        thp_size=$((bytes / 1024 / 1024))
+    fi
+    echo "$thp_size"
+}
+
+get_jvm_hugepage_settings() {
+    local heap_mb="$1"
+    local sz_mb=$(get_thp_size_mb)
+    if (($sz_mb * 2 < $heap_mb)); then
+        options=" -XX:+UseTransparentHugePages"
+    fi
+    echo "$options"
+}
+
+get_heap_size() {
+    local param=$1
+    local args=$2
+    local value=$3
+    for token in $args
+    do
+        [[ "$token" =~ ^"${param}"([0-9]+)(.)$ ]] || continue
+        size="${BASH_REMATCH[1]}"
+        unit="${BASH_REMATCH[2],,}" # lower-case
+        case "$unit" in
+            k) value=$(( $size / 1024 )) ;;
+            m) value="$size" ;;
+            g) value=$(( $size * 1024 )) ;;
+            *) echo "Warning: Invalid unit in '$token'" >&2 ;;
+        esac
+    done
+    echo "$value"
+}
+
+get_min_heap_mb() {
+    get_heap_size "-Xms" "$1" $2
+}
+
+get_max_heap_mb() {
+    get_heap_size "-Xmx" "$1" $2
 }
 
 populate_environment
@@ -122,8 +160,10 @@ populate_environment
 export LD_LIBRARY_PATH=$VESPA_HOME/lib64
 export MALLOC_ARENA_MAX=1
 
+optionally_reduce_base_frequency
+
 # Prefer newer gdb and pstack
-prepend_path /opt/rh/gcc-toolset-10/root/usr/bin
+prepend_path /opt/rh/gcc-toolset-11/root/usr/bin
 
 # Maven is needed for tester applications
 prepend_path "$VESPA_HOME/local/maven/bin"
@@ -148,15 +188,16 @@ consider_fallback VESPA_VALGRIND_OPT "--num-callers=32 \
 --show-reachable=yes \
 ${VESPA_VALGRIND_SUPPREESSIONS_OPT}"
 
-consider_fallback VESPA_USE_HUGEPAGES_LIST  $(get_var "hugepages_list")
+consider_fallback VESPA_USE_HUGEPAGES_LIST  "$(get_var hugepages_list)"
 consider_fallback VESPA_USE_HUGEPAGES_LIST  "all"
 
-consider_fallback VESPA_USE_MADVISE_LIST    $(get_var "madvise_list")
+consider_fallback VESPA_USE_MADVISE_LIST    "$(get_var madvise_list)"
 
-consider_fallback VESPA_USE_VESPAMALLOC     $(get_var "vespamalloc_list")
-consider_fallback VESPA_USE_VESPAMALLOC_D   $(get_var "vespamallocd_list")
-consider_fallback VESPA_USE_VESPAMALLOC_DST $(get_var "vespamallocdst_list")
-consider_fallback VESPA_USE_NO_VESPAMALLOC  $(get_var "no_vespamalloc_list")
+consider_fallback VESPA_USE_VESPAMALLOC     "$(get_var vespamalloc_list)"
+consider_fallback VESPA_USE_VESPAMALLOC_D   "$(get_var vespamallocd_list)"
+consider_fallback VESPA_USE_VESPAMALLOC_DST "$(get_var vespamallocdst_list)"
+consider_fallback VESPA_USE_NO_VESPAMALLOC  "$(get_var no_vespamalloc_list)"
+consider_fallback VESPA_USE_NO_VESPAMALLOC  "vespa-rpc-invoke vespa-get-config vespa-sentinel-cmd vespa-route vespa-proton-cmd vespa-configproxy-cmd vespa-config-status"
 
 # TODO:
 # if [ "$VESPA_USE_HUGEPAGES_LIST" = "all" ]; then
@@ -166,26 +207,45 @@ consider_fallback VESPA_USE_NO_VESPAMALLOC  $(get_var "no_vespamalloc_list")
 
 
 fixlimits () {
-    # Cannot bump limits when not root (for testing)
-    if [ "${VESPA_UNPRIVILEGED}" = yes ]; then
-	return 0
-    fi
-    # number of open files:
-    if varhasvalue file_descriptor_limit; then
-       ulimit -n ${file_descriptor_limit} || exit 1
-    elif [ `ulimit -n` -lt 262144 ]; then
-        ulimit -n 262144 || exit 1
+    max_processes_limit=409600
+    if ! varhasvalue file_descriptor_limit; then
+        file_descriptor_limit=262144
     fi
 
-    # core file size
-    if [ `ulimit -c` != "unlimited" ]; then
-        ulimit -c unlimited
-    fi
+    max_processes=$(ulimit -u)
+    core_size=$(ulimit -c)
+    file_descriptor=$(ulimit -n)
+    # Warn if we Cannot bump limits when not root
+    if [ "$(id -u)" -ne 0 ]; then
+        # number of open files:
+        if [ $file_descriptor -lt $file_descriptor_limit ]; then
+            echo "Expected file descriptor limit to be at least $file_descriptor_limit, was $file_descriptor" >&2
+        fi
 
-    # number of processes/threads
-    max_processes=`ulimit -u`
-    if [ "$max_processes" != "unlimited" ] && [ "$max_processes" -lt 409600 ]; then
-        ulimit -u 409600
+        # core file size
+        if [ "$core_size" != "unlimited" ]; then
+            echo "Expected core file size to be unlimited, was $core_size" >&2
+        fi
+
+        # number of processes/threads
+        if [ "$max_processes" != "unlimited" ] && [ "$max_processes" -lt "$max_processes_limit" ]; then
+            echo "Expected max processes to be at least $max_processes_limit, was $max_processes" >&2
+        fi
+    else
+        # number of open files:
+        if [ $file_descriptor -lt $file_descriptor_limit ]; then
+            ulimit -n "$file_descriptor_limit" || exit 1
+        fi
+
+        # core file size
+        if [ "$core_size" != "unlimited" ]; then
+            ulimit -c unlimited
+        fi
+
+        # number of processes/threads
+        if [ "$max_processes" != "unlimited" ] && [ "$max_processes" -lt "$max_processes_limit" ]; then
+            ulimit -u "$max_processes_limit"
+        fi
     fi
 }
 
@@ -237,7 +297,7 @@ drop_caches () {
     fi
 }
 
-no_transparent_hugepages () {
+enable_transparent_hugepages_with_background_compaction () {
     # Should probably also be done on host.
     if grep -q "release 6" /etc/redhat-release; then
         dn=/sys/kernel/mm/redhat_transparent_hugepage
@@ -269,8 +329,7 @@ use_configserver_if_needed () {
 }
 
 getJavaOptionsIPV46() {
-    canon_ipv4=$(hostname | perl -pe 'chomp; ($_,$rest) = gethostbyname($_);')
-    if [ -z "${canon_ipv4}" ]; then
+    if ${VESPA_HOME}/libexec/vespa/script-utils ipv6-only; then
         echo " -Djava.net.preferIPv6Addresses=true"
     fi
 }
@@ -295,6 +354,10 @@ log_warning_message () {
 
 get_numa_ctl_cmd () {
     if ! type numactl &> /dev/null; then
+        if test "$(uname -s)" = Darwin
+        then
+            return 0
+        fi
         echo "FATAL: Could not find required program numactl."
         exit 1
     fi

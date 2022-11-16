@@ -6,8 +6,10 @@
 class ChildHandler {
 private:
     bool _childRunning;
+    vespalib::string _runningPrefix;
 public:
     void startChild(const vespalib::string &prefix);
+    void stopChild();
     void stopChild(const vespalib::string &prefix);
     ChildHandler();
 };

@@ -15,6 +15,7 @@ import com.yahoo.jrt.Task;
 import com.yahoo.jrt.TransportThread;
 import com.yahoo.jrt.Values;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -87,6 +88,7 @@ public class Register {
                 public void handleRequestDone(Request req) {
                     reqDone = true;
                     updateTask.scheduleNow();
+                    transportThread.wakeup_if_not_self();
                 }
             };
         m_list = new Method("slobrok.callback.listNamesServed",
@@ -159,6 +161,7 @@ public class Register {
         pending.add(name);
         discard(unreg, name);
         updateTask.scheduleNow();
+        transportThread.wakeup();
     }
 
     /**
@@ -171,6 +174,7 @@ public class Register {
         discard(pending, name);
         unreg.add(name);
         updateTask.scheduleNow();
+        transportThread.wakeup();
     }
 
     /**
@@ -276,7 +280,7 @@ public class Register {
         req.parameters().add(new StringValue(name));
         req.parameters().add(new StringValue(mySpec));
         log.log(Level.FINE, logMessagePrefix() + " now");
-        target.invokeAsync(req, 35.0, reqWait);
+        target.invokeAsync(req, Duration.ofSeconds(35), reqWait);
     }
 
     private String logMessagePrefix() {

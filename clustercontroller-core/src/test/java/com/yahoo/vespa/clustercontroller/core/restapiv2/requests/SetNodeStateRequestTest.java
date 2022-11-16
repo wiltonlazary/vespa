@@ -10,13 +10,13 @@ import com.yahoo.vdslib.state.State;
 import com.yahoo.vespa.clustercontroller.core.ContentCluster;
 import com.yahoo.vespa.clustercontroller.core.NodeInfo;
 import com.yahoo.vespa.clustercontroller.core.NodeStateChangeChecker;
-import com.yahoo.vespa.clustercontroller.core.listeners.NodeStateOrHostInfoChangeHandler;
+import com.yahoo.vespa.clustercontroller.core.listeners.NodeListener;
 import com.yahoo.vespa.clustercontroller.utils.staterestapi.errors.StateRestApiException;
 import com.yahoo.vespa.clustercontroller.utils.staterestapi.requests.SetUnitStateRequest;
 import com.yahoo.vespa.clustercontroller.utils.staterestapi.response.SetResponse;
 import com.yahoo.vespa.clustercontroller.utils.staterestapi.response.UnitState;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -38,18 +38,18 @@ public class SetNodeStateRequestTest {
     private final UnitState unitState = mock(UnitState.class);
     private final int NODE_INDEX = 2;
     private final Node storageNode = new Node(NodeType.STORAGE, NODE_INDEX);
-    private final NodeStateOrHostInfoChangeHandler stateListener = mock(NodeStateOrHostInfoChangeHandler.class);
+    private final NodeListener stateListener = mock(NodeListener.class);
     private final ClusterState currentClusterState = mock(ClusterState.class);
     private boolean inMasterMoratorium = false;
     private boolean probe = false;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         newStates.put("user", unitState);
     }
 
     @Test
-    public void testUpToMaintenance() throws StateRestApiException {
+    void testUpToMaintenance() throws StateRestApiException {
         testSetStateRequest(
                 "maintenance",
                 State.UP, State.UP,
@@ -58,7 +58,7 @@ public class SetNodeStateRequestTest {
     }
 
     @Test
-    public void testProbingDoesntChangeState() throws StateRestApiException {
+    void testProbingDoesntChangeState() throws StateRestApiException {
         probe = true;
         testSetStateRequest(
                 "maintenance",
@@ -68,7 +68,7 @@ public class SetNodeStateRequestTest {
     }
 
     @Test
-    public void testUpToDown() throws StateRestApiException {
+    void testUpToDown() throws StateRestApiException {
         testSetStateRequest(
                 "down",
                 State.UP, State.UP,
@@ -77,7 +77,7 @@ public class SetNodeStateRequestTest {
     }
 
     @Test
-    public void testMaintenanceToUp() throws StateRestApiException {
+    void testMaintenanceToUp() throws StateRestApiException {
         testSetStateRequest(
                 "up",
                 State.MAINTENANCE, State.DOWN,
@@ -86,7 +86,7 @@ public class SetNodeStateRequestTest {
     }
 
     @Test
-    public void testDownToUp() throws StateRestApiException {
+    void testDownToUp() throws StateRestApiException {
         testSetStateRequest(
                 "up",
                 State.DOWN, State.DOWN,
@@ -95,7 +95,7 @@ public class SetNodeStateRequestTest {
     }
 
     @Test
-    public void testOnlyStorageInMaintenaceToMaintenance() throws StateRestApiException {
+    void testOnlyStorageInMaintenaceToMaintenance() throws StateRestApiException {
         testSetStateRequest(
                 "maintenance",
                 State.MAINTENANCE, State.UP,
@@ -104,7 +104,7 @@ public class SetNodeStateRequestTest {
     }
 
     @Test
-    public void testNoOpMaintenaceToMaintenance() throws StateRestApiException {
+    void testNoOpMaintenaceToMaintenance() throws StateRestApiException {
         testSetStateRequest(
                 "maintenance",
                 State.MAINTENANCE, State.DOWN,

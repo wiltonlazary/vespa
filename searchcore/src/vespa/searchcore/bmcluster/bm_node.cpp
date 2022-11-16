@@ -7,13 +7,9 @@
 #include "bm_node_stats.h"
 #include "bm_storage_chain_builder.h"
 #include "bm_storage_link_context.h"
-#include "storage_api_chain_bm_feed_handler.h"
-#include "storage_api_message_bus_bm_feed_handler.h"
-#include "storage_api_rpc_bm_feed_handler.h"
-#include "document_api_message_bus_bm_feed_handler.h"
 #include "i_bm_distribution.h"
-#include "i_bm_feed_handler.h"
-#include "spi_bm_feed_handler.h"
+#include "storage_api_rpc_bm_feed_handler.h"
+#include <tests/proton/common/dummydbowner.h>
 #include <vespa/config-attributes.h>
 #include <vespa/config-bucketspaces.h>
 #include <vespa/config-imported-fields.h>
@@ -24,10 +20,10 @@
 #include <vespa/config-stor-distribution.h>
 #include <vespa/config-stor-filestor.h>
 #include <vespa/config-summary.h>
-#include <vespa/config-summarymap.h>
 #include <vespa/config-upgrading.h>
 #include <vespa/config/common/configcontext.h>
 #include <vespa/document/bucket/bucketspace.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/document_type_repo_factory.h>
 #include <vespa/document/repo/documenttyperepo.h>
@@ -35,28 +31,28 @@
 #include <vespa/messagebus/config-messagebus.h>
 #include <vespa/messagebus/testlib/slobrok.h>
 #include <vespa/metrics/config-metricsmanager.h>
-#include <vespa/searchcommon/common/schemaconfigurer.h>
 #include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/matching/querylimiter.h>
 #include <vespa/searchcore/proton/metrics/metricswireservice.h>
-#include <vespa/searchcore/proton/persistenceengine/ipersistenceengineowner.h>
 #include <vespa/searchcore/proton/persistenceengine/i_resource_write_filter.h>
+#include <vespa/searchcore/proton/persistenceengine/ipersistenceengineowner.h>
 #include <vespa/searchcore/proton/persistenceengine/persistenceengine.h>
 #include <vespa/searchcore/proton/server/bootstrapconfig.h>
-#include <vespa/searchcore/proton/server/documentdb.h>
 #include <vespa/searchcore/proton/server/document_db_maintenance_config.h>
 #include <vespa/searchcore/proton/server/document_meta_store_read_guards.h>
+#include <vespa/searchcore/proton/server/documentdb.h>
 #include <vespa/searchcore/proton/server/documentdbconfigmanager.h>
 #include <vespa/searchcore/proton/server/fileconfigmanager.h>
 #include <vespa/searchcore/proton/server/memoryconfigstore.h>
 #include <vespa/searchcore/proton/server/persistencehandlerproxy.h>
 #include <vespa/searchcore/proton/test/disk_mem_usage_notifier.h>
+#include <vespa/searchcore/proton/test/mock_shared_threading_service.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/transactionlog/translogserver.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
 #include <vespa/storage/bucketdb/config-stor-bucket-init.h>
 #include <vespa/storage/common/i_storage_chain_builder.h>
-#include <vespa/storage/common/storagelink.h>
 #include <vespa/storage/config/config-stor-bouncer.h>
 #include <vespa/storage/config/config-stor-communicationmanager.h>
 #include <vespa/storage/config/config-stor-distributormanager.h>
@@ -72,10 +68,9 @@
 #include <vespa/storageserver/app/distributorprocess.h>
 #include <vespa/storageserver/app/servicelayerprocess.h>
 #include <vespa/vdslib/state/clusterstate.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/size_literals.h>
-#include <tests/proton/common/dummydbowner.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".bmcluster.bm_node");
@@ -84,8 +79,6 @@ using cloud::config::SlobroksConfigBuilder;
 using cloud::config::filedistribution::FiledistributorrpcConfig;
 using config::ConfigSet;
 using document::BucketSpace;
-using document::DocumenttypesConfig;
-using document::DocumenttypesConfigBuilder;
 using document::DocumentType;
 using document::DocumentTypeRepo;
 using document::Field;
@@ -97,7 +90,6 @@ using proton::DocumentDB;
 using proton::DocumentDBConfig;
 using proton::HwInfo;
 using search::index::Schema;
-using search::index::SchemaBuilder;
 using search::transactionlog::TransLogServer;
 using storage::MergeThrottler;
 using storage::distributor::BucketSpacesStatsProvider;
@@ -126,7 +118,6 @@ using vespa::config::search::ImportedFieldsConfig;
 using vespa::config::search::IndexschemaConfig;
 using vespa::config::search::RankProfilesConfig;
 using vespa::config::search::SummaryConfig;
-using vespa::config::search::SummarymapConfig;
 using vespa::config::search::core::ProtonConfig;
 using vespa::config::search::core::ProtonConfigBuilder;
 using vespa::config::search::summary::JuniperrcConfig;
@@ -153,8 +144,6 @@ int port_number(int base_port, PortBias bias)
 {
     return base_port + static_cast<int>(bias);
 }
-
-storage::spi::Context context(storage::spi::Priority(0), 0);
 
 template <class ChainLink, class Process>
 ChainLink* extract_chain_link(Process &process)
@@ -187,10 +176,7 @@ std::shared_ptr<DocumentDBConfig> make_document_db_config(std::shared_ptr<Docume
     auto indexschema = std::make_shared<IndexschemaConfig>();
     auto attributes = make_attributes_config();
     auto summary = std::make_shared<SummaryConfig>();
-    std::shared_ptr<Schema> schema(new Schema());
-    SchemaBuilder::build(*indexschema, *schema);
-    SchemaBuilder::build(*attributes, *schema);
-    SchemaBuilder::build(*summary, *schema);
+    auto schema = DocumentDBConfig::build_schema(*attributes, *indexschema);
     return std::make_shared<DocumentDBConfig>(
             1,
             std::make_shared<RankProfilesConfig>(),
@@ -200,7 +186,6 @@ std::shared_ptr<DocumentDBConfig> make_document_db_config(std::shared_ptr<Docume
             indexschema,
             attributes,
             summary,
-            std::make_shared<SummarymapConfig>(),
             std::make_shared<JuniperrcConfig>(),
             document_types,
             repo,
@@ -209,8 +194,8 @@ std::shared_ptr<DocumentDBConfig> make_document_db_config(std::shared_ptr<Docume
             schema,
             std::make_shared<proton::DocumentDBMaintenanceConfig>(),
             search::LogDocumentStore::Config(),
-            std::make_shared<const proton::ThreadingServiceConfig>(proton::ThreadingServiceConfig::make(1)),
-            std::make_shared<const proton::AllocConfig>(),
+            proton::ThreadingServiceConfig::make(),
+            proton::AllocConfig::makeDefault(),
             "client",
             doc_type_name.getName());
 }
@@ -340,7 +325,6 @@ struct StorageConfigSet
         }
         stor_communicationmanager.mbusport = mbus_port;
         stor_communicationmanager.rpcport = rpc_port;
-        stor_communicationmanager.skipThread = params.get_skip_communicationmanager_thread();
 
         stor_status.httpport = status_port;
         make_bucketspaces_config(bucketspaces);
@@ -449,13 +433,13 @@ class MyBmNode : public BmNode
     int                                        _distributor_mbus_port;
     int                                        _distributor_rpc_port;
     int                                        _distributor_status_port;
-    TransLogServer                             _tls;
     vespalib::string                           _tls_spec;
     proton::matching::QueryLimiter             _query_limiter;
-    vespalib::Clock                            _clock;
     proton::DummyWireService                   _metrics_wire_service;
     proton::MemoryConfigStores                 _config_stores;
     vespalib::ThreadStackExecutor              _summary_executor;
+    proton::MockSharedThreadingService         _shared_service;
+    TransLogServer                             _tls;
     proton::DummyDBOwner                       _document_db_owner;
     BucketSpace                                _bucket_space;
     std::shared_ptr<DocumentDB>                _document_db;
@@ -478,7 +462,7 @@ class MyBmNode : public BmNode
 
     void create_document_db(const BmClusterParams&  params);
 public:
-    MyBmNode(const vespalib::string &base_dir, int base_port, uint32_t node_idx, BmCluster& cluster, const BmClusterParams& params, std::shared_ptr<document::DocumenttypesConfig> document_types, int slobrok_port);
+    MyBmNode(const vespalib::string &base_dir, int base_port, uint32_t node_idx, BmCluster& cluster, const BmClusterParams& params, std::shared_ptr<DocumenttypesConfig> document_types, int slobrok_port);
     ~MyBmNode() override;
     void initialize_persistence_provider() override;
     void create_bucket(const document::Bucket& bucket) override;
@@ -495,7 +479,7 @@ public:
     void merge_node_stats(std::vector<BmNodeStats>& node_stats, storage::lib::ClusterState &baseline_state) override;
 };
 
-MyBmNode::MyBmNode(const vespalib::string& base_dir, int base_port, uint32_t node_idx, BmCluster& cluster, const BmClusterParams& params, std::shared_ptr<document::DocumenttypesConfig> document_types, int slobrok_port)
+MyBmNode::MyBmNode(const vespalib::string& base_dir, int base_port, uint32_t node_idx, BmCluster& cluster, const BmClusterParams& params, std::shared_ptr<DocumenttypesConfig> document_types, int slobrok_port)
     : BmNode(),
       _cluster(cluster),
       _document_types(std::move(document_types)),
@@ -513,13 +497,13 @@ MyBmNode::MyBmNode(const vespalib::string& base_dir, int base_port, uint32_t nod
       _distributor_mbus_port(port_number(base_port, PortBias::DISTRIBUTOR_MBUS_PORT)),
       _distributor_rpc_port(port_number(base_port, PortBias::DISTRIBUTOR_RPC_PORT)),
       _distributor_status_port(port_number(base_port, PortBias::DISTRIBUTOR_STATUS_PORT)),
-      _tls("tls", _tls_listen_port, _base_dir, _file_header_context),
       _tls_spec(vespalib::make_string("tcp/localhost:%d", _tls_listen_port)),
       _query_limiter(),
-      _clock(),
       _metrics_wire_service(),
       _config_stores(),
       _summary_executor(8, 128_Ki),
+      _shared_service(_summary_executor, _summary_executor),
+      _tls(_shared_service.transport(), "tls", _tls_listen_port, _base_dir, _file_header_context),
       _document_db_owner(),
       _bucket_space(document::test::makeBucketSpace(_doc_type_name.getName())),
       _document_db(),
@@ -562,11 +546,11 @@ MyBmNode::~MyBmNode()
 void
 MyBmNode::create_document_db(const BmClusterParams& params)
 {
-    vespalib::mkdir(_base_dir, false);
-    vespalib::mkdir(_base_dir + "/" + _doc_type_name.getName(), false);
+    std::filesystem::create_directory(std::filesystem::path(_base_dir));
+    std::filesystem::create_directory(std::filesystem::path(_base_dir + "/" + _doc_type_name.getName()));
     vespalib::string input_cfg = _base_dir + "/" + _doc_type_name.getName() + "/baseconfig";
     {
-        proton::FileConfigManager fileCfg(input_cfg, "", _doc_type_name.getName());
+        proton::FileConfigManager fileCfg(_shared_service.transport(), input_cfg, "", _doc_type_name.getName());
         fileCfg.saveConfig(*_document_db_config, 1);
     }
     config::DirSpec spec(input_cfg + "/config-1");
@@ -588,11 +572,12 @@ MyBmNode::create_document_db(const BmClusterParams& params)
                                                               std::make_shared<BucketspacesConfig>(),
                                                               tuneFileDocDB, HwInfo());
     mgr.forwardConfig(bootstrap_config);
-    mgr.nextGeneration(0ms);
-    _document_db = DocumentDB::create(_base_dir, mgr.getConfig(), _tls_spec, _query_limiter, _clock, _doc_type_name,
+    mgr.nextGeneration(_shared_service.transport(), 0ms);
+    _document_db = DocumentDB::create(_base_dir, mgr.getConfig(), _tls_spec, _query_limiter, _doc_type_name,
                                       _bucket_space, *bootstrap_config->getProtonConfigSP(), _document_db_owner,
-                                      _summary_executor, _summary_executor, *_persistence_engine, _tls,
+                                      _shared_service, _tls,
                                       _metrics_wire_service, _file_header_context,
+                                      std::make_shared<search::attribute::Interlock>(),
                                       _config_stores.getConfigStore(_doc_type_name.toString()),
                                       std::make_shared<vespalib::ThreadStackExecutor>(16, 128_Ki), HwInfo());
     _document_db->start();
@@ -608,7 +593,7 @@ MyBmNode::initialize_persistence_provider()
 void
 MyBmNode::create_bucket(const document::Bucket& bucket)
 {
-    get_persistence_provider()->createBucket(storage::spi::Bucket(bucket), context);
+    get_persistence_provider()->createBucket(storage::spi::Bucket(bucket));
 }
 
 void
@@ -794,7 +779,7 @@ MyBmNode::merge_node_stats(std::vector<BmNodeStats>& node_stats, storage::lib::C
 }
 
 std::unique_ptr<BmNode>
-BmNode::create(const vespalib::string& base_dir, int base_port, uint32_t node_idx, BmCluster &cluster, const BmClusterParams& params, std::shared_ptr<document::DocumenttypesConfig> document_types, int slobrok_port)
+BmNode::create(const vespalib::string& base_dir, int base_port, uint32_t node_idx, BmCluster &cluster, const BmClusterParams& params, std::shared_ptr<DocumenttypesConfig> document_types, int slobrok_port)
 {
     return std::make_unique<MyBmNode>(base_dir, base_port, node_idx, cluster, params, std::move(document_types), slobrok_port);
 }

@@ -16,7 +16,7 @@ PersistenceThread::PersistenceThread(PersistenceHandler & persistenceHandler, Fi
       _stripeId(stripeId),
       _thread()
 {
-    _thread = component.startThread(*this, 60s, 1s);
+    _thread = component.startThread(*this, 60s, 1s, 1, vespalib::CpuUsage::Category::WRITE);
 }
 
 PersistenceThread::~PersistenceThread()
@@ -33,12 +33,15 @@ PersistenceThread::run(framework::ThreadHandle& thread)
 {
     LOG(debug, "Started persistence thread");
 
+    vespalib::duration max_wait_time = vespalib::adjustTimeoutByDetectedHz(100ms);
     while (!thread.interrupted()) {
-        thread.registerTick();
+        vespalib::steady_time now = vespalib::steady_clock::now();
+        thread.registerTick(framework::UNKNOWN_CYCLE, now);
 
-        FileStorHandler::LockedMessage lock(_fileStorHandler.getNextMessage(_stripeId));
+        vespalib::steady_time deadline = now + max_wait_time;
+        FileStorHandler::LockedMessage lock(_fileStorHandler.getNextMessage(_stripeId, deadline));
 
-        if (lock.first) {
+        if (lock.lock) {
             _persistenceHandler.processLockedMessage(std::move(lock));
         }
     }

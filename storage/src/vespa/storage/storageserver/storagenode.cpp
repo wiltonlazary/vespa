@@ -14,11 +14,12 @@
 #include <vespa/storage/common/storage_chain_builder.h>
 #include <vespa/storage/frameworkimpl/status/statuswebserver.h>
 #include <vespa/storage/frameworkimpl/thread/deadlockdetector.h>
+#include <vespa/config/helper/configfetcher.hpp>
 #include <vespa/vdslib/distribution/distribution.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/util/time.h>
 #include <fcntl.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 
@@ -40,7 +41,7 @@ namespace {
         vespalib::string mypid = vespalib::make_string("%d\n", getpid());
         size_t lastSlash = pidfile.rfind('/');
         if (lastSlash != vespalib::string::npos) {
-            vespalib::mkdir(pidfile.substr(0, lastSlash));
+            std::filesystem::create_directories(std::filesystem::path(pidfile.substr(0, lastSlash)));
         }
         int fd = open(pidfile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd != -1) {
@@ -171,7 +172,7 @@ StorageNode::initialize()
     // Create VDS root folder, in case it doesn't already exist.
     // Maybe better to rather fail if it doesn't exist, but tests
     // might break if we do that. Might alter later.
-    vespalib::mkdir(_rootFolder);
+    std::filesystem::create_directories(std::filesystem::path(_rootFolder));
 
     initializeNodeSpecific();
 
@@ -272,7 +273,6 @@ StorageNode::handleLiveConfigUpdate(const InitialGuard & initGuard)
     // we want to handle.
 
     if (_newServerConfig) {
-        bool updated = false;
         StorServerConfigBuilder oldC(*_serverConfig);
         StorServerConfig& newC(*_newServerConfig);
         DIFFERWARN(rootFolder, "Cannot alter root folder of node live");
@@ -281,7 +281,10 @@ StorageNode::handleLiveConfigUpdate(const InitialGuard & initGuard)
         DIFFERWARN(isDistributor, "Cannot alter role of node live");
         _serverConfig = std::make_unique<StorServerConfig>(oldC);
         _newServerConfig.reset();
-        (void)updated;
+        _deadLockDetector->enableWarning(_serverConfig->enableDeadLockDetectorWarnings);
+        _deadLockDetector->enableShutdown(_serverConfig->enableDeadLockDetector);
+        _deadLockDetector->setProcessSlack(vespalib::from_s(_serverConfig->deadLockDetectorTimeoutSlack));
+        _deadLockDetector->setWaitSlack(vespalib::from_s(_serverConfig->deadLockDetectorTimeoutSlack));
     }
     if (_newDistributionConfig) {
         StorDistributionConfigBuilder oldC(*_distributionConfig);
@@ -374,7 +377,7 @@ StorageNode::shutdown()
     // we might be shutting down after init exception causing only parts
     // of the server to have initialize
     LOG(debug, "Shutting down storage node of type %s", getNodeType().toString().c_str());
-    if (!_attemptedStopped) {
+    if (!attemptedStopped()) {
         LOG(debug, "Storage killed before requestShutdown() was called. No "
                    "reason has been given for why we're stopping.");
     }
@@ -485,7 +488,7 @@ void StorageNode::configure(std::unique_ptr<StorDistributionConfig> config) {
     }
 }
 void
-StorageNode::configure(std::unique_ptr<document::DocumenttypesConfig> config,
+StorageNode::configure(std::unique_ptr<document::config::DocumenttypesConfig> config,
                        bool hasChanged, int64_t generation)
 {
     log_config_received(*config);
@@ -517,7 +520,7 @@ void StorageNode::configure(std::unique_ptr<BucketspacesConfig> config) {
 bool
 StorageNode::attemptedStopped() const
 {
-    return _attemptedStopped;
+    return _attemptedStopped.load(std::memory_order_relaxed);
 }
 
 void
@@ -549,7 +552,12 @@ StorageNode::waitUntilInitialized(uint32_t timeout) {
 void
 StorageNode::requestShutdown(vespalib::stringref reason)
 {
-    if (_attemptedStopped) return;
+    bool was_stopped = false;
+    const bool stop_now = _attemptedStopped.compare_exchange_strong(was_stopped, true,
+                                                                    std::memory_order_relaxed, std::memory_order_relaxed);
+    if (!stop_now) {
+        return; // Someone else beat us to it.
+    }
     if (_component) {
         NodeStateUpdater::Lock::SP lock(_component->getStateUpdater().grabStateChangeLock());
         lib::NodeState nodeState(*_component->getStateUpdater().getReportedNodeState());
@@ -559,7 +567,6 @@ StorageNode::requestShutdown(vespalib::stringref reason)
             _component->getStateUpdater().setReportedNodeState(nodeState);
         }
     }
-    _attemptedStopped = true;
 }
 
 std::unique_ptr<StateManager>

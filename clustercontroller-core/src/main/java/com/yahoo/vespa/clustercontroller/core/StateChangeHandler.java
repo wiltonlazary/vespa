@@ -8,7 +8,7 @@ import com.yahoo.vdslib.state.NodeState;
 import com.yahoo.vdslib.state.NodeType;
 import com.yahoo.vdslib.state.State;
 import com.yahoo.vespa.clustercontroller.core.database.DatabaseHandler;
-import com.yahoo.vespa.clustercontroller.core.listeners.NodeStateOrHostInfoChangeHandler;
+import com.yahoo.vespa.clustercontroller.core.listeners.NodeListener;
 
 import java.util.Map;
 import java.util.Set;
@@ -28,6 +28,7 @@ public class StateChangeHandler {
 
     private static final Logger log = Logger.getLogger(StateChangeHandler.class.getName());
 
+    private final FleetControllerContext context;
     private final Timer timer;
     private final EventLogInterface eventLog;
     private boolean stateMayHaveChanged = false;
@@ -40,7 +41,8 @@ public class StateChangeHandler {
     private int maxSlobrokDisconnectGracePeriod = 1000;
     private static final boolean disableUnstableNodes = true;
 
-    public StateChangeHandler(Timer timer, EventLogInterface eventLog) {
+    public StateChangeHandler(FleetControllerContext context, Timer timer, EventLogInterface eventLog) {
+        this.context = context;
         this.timer = timer;
         this.eventLog = eventLog;
         maxTransitionTime.put(NodeType.DISTRIBUTOR, 5000);
@@ -50,9 +52,9 @@ public class StateChangeHandler {
     public void handleAllDistributorsInSync(final ClusterState currentState,
                                             final Set<ConfiguredNode> nodes,
                                             final DatabaseHandler database,
-                                            final DatabaseHandler.Context dbContext) throws InterruptedException {
+                                            final DatabaseHandler.DatabaseContext dbContext) throws InterruptedException {
         int startTimestampsReset = 0;
-        log.log(Level.FINE, "handleAllDistributorsInSync invoked for state version %d", currentState.getVersion());
+        context.log(log, Level.FINE, "handleAllDistributorsInSync invoked for state version %d", currentState.getVersion());
         for (NodeType nodeType : NodeType.getTypes()) {
             for (ConfiguredNode configuredNode : nodes) {
                 final Node node = new Node(nodeType, configuredNode.index());
@@ -111,7 +113,7 @@ public class StateChangeHandler {
     public void handleNewReportedNodeState(final ClusterState currentClusterState,
                                            final NodeInfo node,
                                            final NodeState reportedState,
-                                           final NodeStateOrHostInfoChangeHandler nodeListener)
+                                           final NodeListener nodeListener)
     {
         final NodeState currentState = currentClusterState.getNodeState(node.getNode());
         final Level level = (currentState.equals(reportedState) && node.getVersion() == 0) ? Level.FINEST : Level.FINE;
@@ -162,7 +164,7 @@ public class StateChangeHandler {
 
     public void handleMissingNode(final ClusterState currentClusterState,
                                   final NodeInfo node,
-                                  final NodeStateOrHostInfoChangeHandler nodeListener) {
+                                  final NodeListener nodeListener) {
         final long timeNow = timer.getCurrentTimeInMillis();
 
         if (node.getLatestNodeStateRequestTime() != null) {
@@ -226,11 +228,11 @@ public class StateChangeHandler {
     }
 
     void reconfigureFromOptions(FleetControllerOptions options) {
-        setMaxPrematureCrashes(options.maxPrematureCrashes);
-        setStableStateTimePeriod(options.stableStateTimePeriod);
-        setMaxInitProgressTime(options.maxInitProgressTime);
-        setMaxSlobrokDisconnectGracePeriod(options.maxSlobrokDisconnectGracePeriod);
-        setMaxTransitionTime(options.maxTransitionTime);
+        setMaxPrematureCrashes(options.maxPrematureCrashes());
+        setStableStateTimePeriod(options.stableStateTimePeriod());
+        setMaxInitProgressTime(options.maxInitProgressTime());
+        setMaxSlobrokDisconnectGracePeriod(options.maxSlobrokDisconnectGracePeriod());
+        setMaxTransitionTime(options.maxTransitionTime());
     }
 
     // TODO too many hidden behavior dependencies between this and the actually
@@ -239,12 +241,12 @@ public class StateChangeHandler {
     //  `--> this will require adding more event edges and premature crash handling to it. Which is fine.
     public boolean watchTimers(final ContentCluster cluster,
                                final ClusterState currentClusterState,
-                               final NodeStateOrHostInfoChangeHandler nodeListener)
+                               final NodeListener nodeListener)
     {
         boolean triggeredAnyTimers = false;
         final long currentTime = timer.getCurrentTimeInMillis();
 
-        for(NodeInfo node : cluster.getNodeInfo()) {
+        for(NodeInfo node : cluster.getNodeInfos()) {
             triggeredAnyTimers |= handleTimeDependentOpsForNode(currentClusterState, nodeListener, currentTime, node);
         }
 
@@ -255,7 +257,7 @@ public class StateChangeHandler {
     }
 
     private boolean handleTimeDependentOpsForNode(final ClusterState currentClusterState,
-                                                  final NodeStateOrHostInfoChangeHandler nodeListener,
+                                                  final NodeListener nodeListener,
                                                   final long currentTime,
                                                   final NodeInfo node)
     {
@@ -327,24 +329,24 @@ public class StateChangeHandler {
     {
         return currentStateInSystem.getState().equals(State.MAINTENANCE)
             && node.getWantedState().above(new NodeState(node.getNode().getType(), State.DOWN))
-            && (lastReportedState.getState().equals(State.DOWN) || node.isRpcAddressOutdated())
+            && (lastReportedState.getState().equals(State.DOWN) || node.isNotInSlobrok())
             && node.getTransitionTime() + maxTransitionTime.get(node.getNode().getType()) < currentTime;
     }
 
     private boolean reportDownIfOutdatedSlobrokNode(ClusterState currentClusterState,
-                                                    NodeStateOrHostInfoChangeHandler nodeListener,
+                                                    NodeListener nodeListener,
                                                     long currentTime,
                                                     NodeInfo node,
                                                     NodeState lastReportedState)
     {
-        if (node.isRpcAddressOutdated()
+        if (node.isNotInSlobrok()
             && !lastReportedState.getState().equals(State.DOWN)
-            && node.getRpcAddressOutdatedTimestamp() + maxSlobrokDisconnectGracePeriod <= currentTime)
+            && node.lastSeenInSlobrok() + maxSlobrokDisconnectGracePeriod <= currentTime)
         {
             final String desc = String.format(
                     "Set node down as it has been out of slobrok for %d ms which " +
                     "is more than the max limit of %d ms.",
-                    currentTime - node.getRpcAddressOutdatedTimestamp(),
+                    currentTime - node.lastSeenInSlobrok(),
                     maxSlobrokDisconnectGracePeriod);
             node.abortCurrentNodeStateRequests();
             NodeState state = lastReportedState.clone();
@@ -377,7 +379,7 @@ public class StateChangeHandler {
     private void updateNodeInfoFromReportedState(final NodeInfo node,
                                                  final NodeState currentState,
                                                  final NodeState reportedState,
-                                                 final NodeStateOrHostInfoChangeHandler nodeListener) {
+                                                 final NodeListener nodeListener) {
         final long timeNow = timer.getCurrentTimeInMillis();
         log.log(Level.FINE, () -> String.format("Finding new cluster state entry for %s switching state %s", node, currentState.getTextualDifference(reportedState)));
 
@@ -398,7 +400,7 @@ public class StateChangeHandler {
     private void markNodeUnstableIfDownEdgeDuringInit(final NodeInfo node,
                                                       final NodeState currentState,
                                                       final NodeState reportedState,
-                                                      final NodeStateOrHostInfoChangeHandler nodeListener,
+                                                      final NodeListener nodeListener,
                                                       final long timeNow) {
         if (currentState.getState().equals(State.INITIALIZING)
                 && reportedState.getState().oneOf("ds")
@@ -417,7 +419,7 @@ public class StateChangeHandler {
     private boolean handleImplicitCrashEdgeFromReverseInitProgress(final NodeInfo node,
                                                                    final NodeState currentState,
                                                                    final NodeState reportedState,
-                                                                   final NodeStateOrHostInfoChangeHandler nodeListener,
+                                                                   final NodeListener nodeListener,
                                                                    final long timeNow) {
         if (currentState.getState().equals(State.INITIALIZING) &&
             (reportedState.getState().equals(State.INITIALIZING) && reportedState.getInitProgress() < currentState.getInitProgress()))
@@ -436,7 +438,7 @@ public class StateChangeHandler {
     }
 
     private boolean handleReportedNodeCrashEdge(NodeInfo node, NodeState currentState,
-                                                NodeState reportedState, NodeStateOrHostInfoChangeHandler nodeListener,
+                                                NodeState reportedState, NodeListener nodeListener,
                                                 long timeNow) {
         if (nodeUpToDownEdge(node, currentState, reportedState)) {
             node.setTransitionTime(timeNow);
@@ -465,7 +467,7 @@ public class StateChangeHandler {
             && (node.getWantedState().getState().equals(State.RETIRED) || !reportedState.getState().equals(State.INITIALIZING));
     }
 
-    private boolean handlePrematureCrash(NodeInfo node, NodeStateOrHostInfoChangeHandler changeListener) {
+    private boolean handlePrematureCrash(NodeInfo node, NodeListener changeListener) {
         node.setPrematureCrashCount(node.getPrematureCrashCount() + 1);
         if (disableUnstableNodes && node.getPrematureCrashCount() > maxPrematureCrashes) {
             NodeState wantedState = new NodeState(node.getNode().getType(), State.DOWN)

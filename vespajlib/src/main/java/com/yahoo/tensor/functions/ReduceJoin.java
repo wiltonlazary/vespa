@@ -11,6 +11,7 @@ import com.yahoo.tensor.evaluation.Name;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.DoubleBinaryOperator;
 import java.util.stream.Collectors;
 
@@ -314,7 +315,7 @@ public class ReduceJoin<NAMETYPE extends Name> extends CompositeTensorFunction<N
     }
 
     @Override
-    public String toString(ToStringContext context) {
+    public String toString(ToStringContext<NAMETYPE> context) {
         return "reduce_join(" + argumentA.toString(context) + ", " +
                                 argumentB.toString(context) + ", " +
                                 combinator + ", " +
@@ -322,10 +323,15 @@ public class ReduceJoin<NAMETYPE extends Name> extends CompositeTensorFunction<N
                                 Reduce.commaSeparated(dimensions) + ")";
     }
 
+    @Override
+    public int hashCode() {
+        return Objects.hash("reduce_join", argumentA, argumentB, combinator, aggregator, dimensions);
+    }
+
     private static class MultiDimensionIterator {
 
-        private long[] bounds;
-        private long[] iterator;
+        private final long[] bounds;
+        private final long[] iterator;
         private int remaining;
 
         MultiDimensionIterator(TensorType type) {
@@ -364,9 +370,11 @@ public class ReduceJoin<NAMETYPE extends Name> extends CompositeTensorFunction<N
             remaining -= 1;
         }
 
+        @Override
         public String toString() {
             return Arrays.toString(iterator);
         }
+
     }
 
 }

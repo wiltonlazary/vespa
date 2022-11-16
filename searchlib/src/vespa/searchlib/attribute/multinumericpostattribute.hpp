@@ -3,6 +3,7 @@
 #pragma once
 
 #include "multinumericpostattribute.h"
+#include "multi_numeric_enum_search_context.h"
 #include <charconv>
 
 namespace search {
@@ -18,7 +19,8 @@ template <typename B, typename M>
 void
 MultiValueNumericPostingAttribute<B, M>::mergeMemoryStats(vespalib::MemoryUsage & total)
 {
-    total.merge(this->getPostingList().update_stat());
+    auto& compaction_strategy = this->getConfig().getCompactionStrategy();
+    total.merge(this->getPostingList().update_stat(compaction_strategy));
 }
 
 template <typename B, typename M>
@@ -54,32 +56,31 @@ MultiValueNumericPostingAttribute<B, M>::~MultiValueNumericPostingAttribute()
 
 template <typename B, typename M>
 void
-MultiValueNumericPostingAttribute<B, M>::removeOldGenerations(generation_t firstUsed)
+MultiValueNumericPostingAttribute<B, M>::reclaim_memory(generation_t oldest_used_gen)
 {
-    MultiValueNumericEnumAttribute<B, M>::removeOldGenerations(firstUsed);
-    _postingList.trimHoldLists(firstUsed);
+    MultiValueNumericEnumAttribute<B, M>::reclaim_memory(oldest_used_gen);
+    _postingList.reclaim_memory(oldest_used_gen);
 }
 
 template <typename B, typename M>
 void
-MultiValueNumericPostingAttribute<B, M>::onGenerationChange(generation_t generation)
+MultiValueNumericPostingAttribute<B, M>::before_inc_generation(generation_t current_gen)
 {
     _postingList.freeze();
-    MultiValueNumericEnumAttribute<B, M>::onGenerationChange(generation);
-    _postingList.transferHoldLists(generation - 1);
+    MultiValueNumericEnumAttribute<B, M>::before_inc_generation(current_gen);
+    _postingList.assign_generation(current_gen);
 }
 
 template <typename B, typename M>
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 MultiValueNumericPostingAttribute<B, M>::getSearch(QueryTermSimpleUP qTerm,
                                                    const attribute::SearchContextParams & params) const
 {
-    std::unique_ptr<search::AttributeVector::SearchContext> sc;
-    sc.reset(new typename std::conditional<M::_hasWeight,
-                                           SetPostingSearchContext,
-                                           ArrayPostingSearchContext>::
-             type(std::move(qTerm), params, *this));
-    return sc;
+    using BaseSC = attribute::MultiNumericEnumSearchContext<typename B::BaseClass::BaseType, M>;
+    using SC = attribute::NumericPostingSearchContext<BaseSC, SelfType, int32_t>;
+    auto doc_id_limit = this->getCommittedDocIdLimit();
+    BaseSC base_sc(std::move(qTerm), *this, this->_mvMapping.make_read_view(doc_id_limit), this->_enumStore);
+    return std::make_unique<SC>(std::move(base_sc), params, *this);
 }
 
 template <typename B, typename M>
@@ -134,6 +135,13 @@ MultiValueNumericPostingAttribute<B, M>::DocumentWeightAttributeAdapter::create(
 {
     assert(idx.valid());
     return self.getPostingList().beginFrozen(idx);
+}
+
+template <typename B, typename M>
+std::unique_ptr<queryeval::SearchIterator>
+MultiValueNumericPostingAttribute<B, M>::DocumentWeightAttributeAdapter::make_bitvector_iterator(vespalib::datastore::EntryRef idx, uint32_t doc_id_limit, fef::TermFieldMatchData &match_data, bool strict) const
+{
+    return self.getPostingList().make_bitvector_iterator(idx, doc_id_limit, match_data, strict);
 }
 
 template <typename B, typename M>

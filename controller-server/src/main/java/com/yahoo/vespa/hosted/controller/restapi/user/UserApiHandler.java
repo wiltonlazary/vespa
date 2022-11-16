@@ -1,14 +1,14 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.user;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.config.provision.ApplicationName;
-import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.io.IOUtils;
+import com.yahoo.jdisc.http.filter.security.misc.User;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.MessageResponse;
 import com.yahoo.restapi.Path;
@@ -25,9 +25,9 @@ import com.yahoo.vespa.flags.IntFlag;
 import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.LockedTenant;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.Plan;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.PlanId;
 import com.yahoo.vespa.hosted.controller.api.integration.user.Roles;
-import com.yahoo.vespa.hosted.controller.api.integration.user.User;
 import com.yahoo.vespa.hosted.controller.api.integration.user.UserId;
 import com.yahoo.vespa.hosted.controller.api.integration.user.UserManagement;
 import com.yahoo.vespa.hosted.controller.api.role.Role;
@@ -35,6 +35,8 @@ import com.yahoo.vespa.hosted.controller.api.role.RoleDefinition;
 import com.yahoo.vespa.hosted.controller.api.role.SecurityContext;
 import com.yahoo.vespa.hosted.controller.api.role.SimplePrincipal;
 import com.yahoo.vespa.hosted.controller.api.role.TenantRole;
+import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 import com.yahoo.vespa.hosted.controller.restapi.application.EmptyResponse;
 import com.yahoo.vespa.hosted.controller.tenant.Tenant;
 import com.yahoo.yolean.Exceptions;
@@ -51,7 +53,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -61,7 +62,7 @@ import java.util.stream.Collectors;
  * @author jonmv
  */
 @SuppressWarnings("unused") // Handler
-public class UserApiHandler extends LoggingRequestHandler {
+public class UserApiHandler extends ThreadedHttpRequestHandler {
 
     private final static Logger log = Logger.getLogger(UserApiHandler.class.getName());
 
@@ -95,13 +96,13 @@ public class UserApiHandler extends LoggingRequestHandler {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
         }
         catch (RuntimeException e) {
-            log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
-            return ErrorResponse.internalServerError(Exceptions.toMessageString(e));
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
 
     private HttpResponse handleGET(Path path, HttpRequest request) {
         if (path.matches("/user/v1/user")) return userMetadata(request);
+        if (path.matches("/user/v1/find")) return findUser(request);
         if (path.matches("/user/v1/tenant/{tenant}")) return listTenantRoleMembers(path.get("tenant"));
         if (path.matches("/user/v1/tenant/{tenant}/application/{application}")) return listApplicationRoleMembers(path.get("tenant"), path.get("application"));
 
@@ -111,7 +112,7 @@ public class UserApiHandler extends LoggingRequestHandler {
 
     private HttpResponse handlePOST(Path path, HttpRequest request) {
         if (path.matches("/user/v1/tenant/{tenant}")) return addTenantRoleMember(path.get("tenant"), request);
-        if (path.matches("/user/v1/tenant/{tenant}/application/{application}")) return addApplicationRoleMember(path.get("tenant"), path.get("application"), request);
+        if (path.matches("/user/v1/email/verify")) return verifyEmail(request);
 
         return ErrorResponse.notFoundError(Text.format("No '%s' handler at '%s'", request.getMethod(),
                                                          request.getUri().getPath()));
@@ -119,7 +120,6 @@ public class UserApiHandler extends LoggingRequestHandler {
 
     private HttpResponse handleDELETE(Path path, HttpRequest request) {
         if (path.matches("/user/v1/tenant/{tenant}")) return removeTenantRoleMember(path.get("tenant"), request);
-        if (path.matches("/user/v1/tenant/{tenant}/application/{application}")) return removeApplicationRoleMember(path.get("tenant"), path.get("application"), request);
 
         return ErrorResponse.notFoundError(Text.format("No '%s' handler at '%s'", request.getMethod(),
                                                          request.getUri().getPath()));
@@ -136,6 +136,45 @@ public class UserApiHandler extends LoggingRequestHandler {
             RoleDefinition.hostedSupporter,
             RoleDefinition.hostedAccountant);
 
+    private HttpResponse findUser(HttpRequest request) {
+        var email = request.getProperty("email");
+        var query = request.getProperty("query");
+        if (email != null) return userMetadataFromUserId(email);
+        if (query != null) return userMetadataQuery(query);
+        return ErrorResponse.badRequest("Need 'email' or 'query' parameter");
+    }
+
+    private HttpResponse userMetadataFromUserId(String email) {
+        var maybeUser = users.findUser(email);
+
+        var slime = new Slime();
+        var root = slime.setObject();
+        var usersRoot = root.setArray("users");
+
+        if (maybeUser.isPresent()) {
+            var user = maybeUser.get();
+            var roles = users.listRoles(new UserId(user.email()));
+            renderUserMetaData(usersRoot.addObject(), user, Set.copyOf(roles));
+        }
+
+        return new SlimeJsonResponse(slime);
+    }
+
+    private HttpResponse userMetadataQuery(String query) {
+        var userList = users.findUsers(query);
+
+        var slime = new Slime();
+        var root = slime.setObject();
+        var userSlime = root.setArray("users");
+
+        for (var user : userList) {
+            var roles = users.listRoles(new UserId((user.email())));
+            renderUserMetaData(userSlime.addObject(), user, Set.copyOf(roles));
+        }
+
+        return new SlimeJsonResponse(slime);
+    }
+
     private HttpResponse userMetadata(HttpRequest request) {
         User user;
         if (request.getJDiscRequest().context().get(User.ATTRIBUTE_NAME) instanceof User) {
@@ -149,6 +188,12 @@ public class UserApiHandler extends LoggingRequestHandler {
 
         Set<Role> roles = getAttribute(request, SecurityContext.ATTRIBUTE_NAME, SecurityContext.class).roles();
 
+        var slime = new Slime();
+        renderUserMetaData(slime.setObject(), user, roles);
+        return new SlimeJsonResponse(slime);
+    }
+
+    private void renderUserMetaData(Cursor root, User user, Set<Role> roles) {
         Map<TenantName, List<TenantRole>> tenantRolesByTenantName = roles.stream()
                 .flatMap(role -> filterTenantRoles(role).stream())
                 .distinct()
@@ -159,10 +204,7 @@ public class UserApiHandler extends LoggingRequestHandler {
         List<Role> operatorRoles = roles.stream()
                 .filter(role -> hostedOperators.contains(role.definition()))
                 .sorted(Comparator.comparing(Role::definition))
-                .collect(Collectors.toList());
-
-        Slime slime = new Slime();
-        Cursor root = slime.setObject();
+                .toList();
 
         root.setBool("isPublic", controller.system().isPublic());
         root.setBool("isCd", controller.system().isCd());
@@ -171,11 +213,11 @@ public class UserApiHandler extends LoggingRequestHandler {
         toSlime(root.setObject("user"), user);
 
         Cursor tenants = root.setObject("tenants");
-        InstanceName userInstance = InstanceName.from(user.nickname());
         tenantRolesByTenantName.keySet().stream()
                 .sorted()
                 .forEach(tenant -> {
                     Cursor tenantObject = tenants.setObject(tenant.value());
+                    tenantObject.setBool("supported", hasSupportedPlan(tenant));
 
                     Cursor tenantRolesObject = tenantObject.setArray("roles");
                     tenantRolesByTenantName.getOrDefault(tenant, List.of())
@@ -188,29 +230,34 @@ public class UserApiHandler extends LoggingRequestHandler {
         }
 
         UserFlagsSerializer.toSlime(root, flagsDb.getAllFlagData(), tenantRolesByTenantName.keySet(), !operatorRoles.isEmpty(), user.email());
-
-        return new SlimeJsonResponse(slime);
     }
 
     private HttpResponse listTenantRoleMembers(String tenantName) {
-        Slime slime = new Slime();
-        Cursor root = slime.setObject();
-        root.setString("tenant", tenantName);
-        fillRoles(root,
-                  Roles.tenantRoles(TenantName.from(tenantName)),
-                  Collections.emptyList());
-        return new SlimeJsonResponse(slime);
+        if (controller.tenants().get(tenantName).isPresent()) {
+            Slime slime = new Slime();
+            Cursor root = slime.setObject();
+            root.setString("tenant", tenantName);
+            fillRoles(root,
+                    Roles.tenantRoles(TenantName.from(tenantName)),
+                    Collections.emptyList());
+            return new SlimeJsonResponse(slime);
+        }
+        return ErrorResponse.notFoundError("Tenant '" + tenantName + "' does not exist");
     }
 
     private HttpResponse listApplicationRoleMembers(String tenantName, String applicationName) {
-        Slime slime = new Slime();
-        Cursor root = slime.setObject();
-        root.setString("tenant", tenantName);
-        root.setString("application", applicationName);
-        fillRoles(root,
-                  Roles.applicationRoles(TenantName.from(tenantName), ApplicationName.from(applicationName)),
-                  Roles.tenantRoles(TenantName.from(tenantName)));
-        return new SlimeJsonResponse(slime);
+        var id = TenantAndApplicationId.from(tenantName, applicationName);
+        if (controller.applications().getApplication(id).isPresent()) {
+            Slime slime = new Slime();
+            Cursor root = slime.setObject();
+            root.setString("tenant", tenantName);
+            root.setString("application", applicationName);
+            fillRoles(root,
+                    Roles.applicationRoles(TenantName.from(tenantName), ApplicationName.from(applicationName)),
+                    Roles.tenantRoles(TenantName.from(tenantName)));
+            return new SlimeJsonResponse(slime);
+        }
+        return ErrorResponse.notFoundError("Application '" + id + "' does not exist");
     }
 
     private void fillRoles(Cursor root, List<? extends Role> roles, List<? extends Role> superRoles) {
@@ -255,71 +302,42 @@ public class UserApiHandler extends LoggingRequestHandler {
 
     private HttpResponse addTenantRoleMember(String tenantName, HttpRequest request) {
         Inspector requestObject = bodyInspector(request);
-        if (requestObject.field("roles").valid()) {
-            return addMultipleTenantRoleMembers(tenantName, requestObject);
-        }
-        return addTenantRoleMember(tenantName, requestObject);
-    }
-
-    private HttpResponse addTenantRoleMember(String tenantName, Inspector requestObject) {
-        String roleName = require("roleName", Inspector::asString, requestObject);
-        UserId user = new UserId(require("user", Inspector::asString, requestObject));
-        Role role = Roles.toRole(TenantName.from(tenantName), roleName);
-        users.addUsers(role, List.of(user));
-        return new MessageResponse(user + " is now a member of " + role);
-    }
-
-    private HttpResponse addMultipleTenantRoleMembers(String tenantName, Inspector requestObject) {
         var tenant = TenantName.from(tenantName);
         var user = new UserId(require("user", Inspector::asString, requestObject));
         var roles = SlimeStream.fromArray(requestObject.field("roles"), Inspector::asString)
                 .map(roleName -> Roles.toRole(tenant, roleName))
-                .collect(Collectors.toUnmodifiableList());
+                .toList();
 
         users.addToRoles(user, roles);
         return new MessageResponse(user + " is now a member of " + roles.stream().map(Role::toString).collect(Collectors.joining(", ")));
     }
 
-    private HttpResponse addApplicationRoleMember(String tenantName, String applicationName, HttpRequest request) {
-        Inspector requestObject = bodyInspector(request);
-        String roleName = require("roleName", Inspector::asString, requestObject);
-        UserId user = new UserId(require("user", Inspector::asString, requestObject));
-        Role role = Roles.toRole(TenantName.from(tenantName), ApplicationName.from(applicationName), roleName);
-        users.addUsers(role, List.of(user));
-        return new MessageResponse(user + " is now a member of " + role);
+    private HttpResponse verifyEmail(HttpRequest request) {
+        var inspector = bodyInspector(request);
+        var verificationCode = require("verificationCode", Inspector::asString, inspector);
+        var verified = controller.mailVerifier().verifyMail(verificationCode);
+
+        if (verified)
+            return new MessageResponse("Email with verification code " + verificationCode + " has been verified");
+        return ErrorResponse.notFoundError("No pending email verification with code " + verificationCode + " found");
     }
 
     private HttpResponse removeTenantRoleMember(String tenantName, HttpRequest request) {
         Inspector requestObject = bodyInspector(request);
-        if (requestObject.field("roles").valid()) {
-            return removeMultipleTenantRoleMembers(tenantName, requestObject);
-        }
-        return removeTenantRoleMember(tenantName, requestObject);
-    }
-
-    private HttpResponse removeTenantRoleMember(String tenantName, Inspector requestObject) {
-        TenantName tenant = TenantName.from(tenantName);
-        String roleName = require("roleName", Inspector::asString, requestObject);
-        UserId user = new UserId(require("user", Inspector::asString, requestObject));
-        List<Role> roles = Collections.singletonList(Roles.toRole(tenant, roleName));
-
-        enforceLastAdminOfTenant(tenant, user, roles);
-        removeDeveloperKey(tenant, user, roles);
-        users.removeFromRoles(user, roles);
-
-        return new MessageResponse(user + " is no longer a member of " + roles.stream().map(Role::toString).collect(Collectors.joining(", ")));
-    }
-
-    private HttpResponse removeMultipleTenantRoleMembers(String tenantName, Inspector requestObject) {
         var tenant = TenantName.from(tenantName);
         var user = new UserId(require("user", Inspector::asString, requestObject));
         var roles = SlimeStream.fromArray(requestObject.field("roles"), Inspector::asString)
                 .map(roleName -> Roles.toRole(tenant, roleName))
-                .collect(Collectors.toUnmodifiableList());
+                .toList();
 
         enforceLastAdminOfTenant(tenant, user, roles);
         removeDeveloperKey(tenant, user, roles);
         users.removeFromRoles(user, roles);
+
+        controller.tenants().lockIfPresent(tenant, LockedTenant.class, lockedTenant -> {
+            if (lockedTenant instanceof LockedTenant.Cloud cloudTenant)
+                controller.tenants().store(cloudTenant.withInvalidateUserSessionsBefore(controller.clock().instant()));
+        });
 
         return new MessageResponse(user + " is no longer a member of " + roles.stream().map(Role::toString).collect(Collectors.joining(", ")));
     }
@@ -346,15 +364,6 @@ public class UserApiHandler extends LoggingRequestHandler {
                 break;
             }
         }
-    }
-
-    private HttpResponse removeApplicationRoleMember(String tenantName, String applicationName, HttpRequest request) {
-        Inspector requestObject = bodyInspector(request);
-        String roleName = require("roleName", Inspector::asString, requestObject);
-        UserId user = new UserId(require("user", Inspector::asString, requestObject));
-        Role role = Roles.toRole(TenantName.from(tenantName), ApplicationName.from(applicationName), roleName);
-        users.removeUsers(role, List.of(user));
-        return new MessageResponse(user + " is no longer a member of " + role);
     }
 
     private boolean hasTrialCapacity() {
@@ -384,18 +393,12 @@ public class UserApiHandler extends LoggingRequestHandler {
     }
 
     private static Collection<TenantRole> filterTenantRoles(Role role) {
-        if (!(role instanceof TenantRole))
-            return Set.of();
-
-        TenantRole tenantRole = (TenantRole) role;
-        if (tenantRole.definition() == RoleDefinition.administrator
-                || tenantRole.definition() == RoleDefinition.developer
-                || tenantRole.definition() == RoleDefinition.reader)
-            return Set.of(tenantRole);
-
-        if (tenantRole.definition() == RoleDefinition.athenzTenantAdmin)
-            return Roles.tenantRoles(tenantRole.tenant());
-
+        if (role instanceof TenantRole tenantRole) {
+            switch (tenantRole.definition()) {
+                case administrator, developer, reader, hostedDeveloper: return Set.of(tenantRole);
+                case athenzTenantAdmin: return Roles.tenantRoles(tenantRole.tenant());
+            }
+        }
         return Set.of();
     }
 
@@ -404,5 +407,12 @@ public class UserApiHandler extends LoggingRequestHandler {
                 .filter(clazz::isInstance)
                 .map(clazz::cast)
                 .orElseThrow(() -> new IllegalArgumentException("Attribute '" + attributeName + "' was not set on request"));
+    }
+
+    private boolean hasSupportedPlan(TenantName tenantName) {
+        var planId = controller.serviceRegistry().billingController().getPlan(tenantName);
+        return controller.serviceRegistry().planRegistry().plan(planId)
+                .map(Plan::isSupported)
+                .orElse(false);
     }
 }

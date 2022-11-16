@@ -1,63 +1,59 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.clustercontroller.core;
 
-import com.yahoo.jrt.Supervisor;
-import com.yahoo.jrt.Transport;
 import com.yahoo.vdslib.state.Node;
 import com.yahoo.vdslib.state.NodeState;
 import com.yahoo.vdslib.state.NodeType;
 import com.yahoo.vdslib.state.State;
 import com.yahoo.vespa.clustercontroller.core.database.DatabaseHandler;
 import com.yahoo.vespa.clustercontroller.core.database.ZooKeeperDatabaseFactory;
+import com.yahoo.vespa.clustercontroller.core.status.StatusHandler;
 import com.yahoo.vespa.clustercontroller.utils.util.NoMetricReporter;
-import org.junit.Before;
-import org.junit.Test;
-
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static com.yahoo.vespa.clustercontroller.core.FeedBlockUtil.createResourceUsageJson;
 import static com.yahoo.vespa.clustercontroller.core.FeedBlockUtil.mapOf;
 import static com.yahoo.vespa.clustercontroller.core.FeedBlockUtil.setOf;
 import static com.yahoo.vespa.clustercontroller.core.FeedBlockUtil.usage;
-import static com.yahoo.vespa.clustercontroller.core.FeedBlockUtil.createResourceUsageJson;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@ExtendWith(CleanupZookeeperLogsOnSuccess.class)
 public class ClusterFeedBlockTest extends FleetControllerTest {
 
     private static final int NODE_COUNT = 3;
 
     // TODO dedupe fixture and setup stuff with other tests
-    private Supervisor supervisor;
     private FleetController ctrl;
     private DummyCommunicator communicator;
 
-    @Before
-    public void setUp() {
-        supervisor = new Supervisor(new Transport());
-    }
-
     private void initialize(FleetControllerOptions options) throws Exception {
         List<Node> nodes = new ArrayList<>();
-        for (int i = 0; i < options.nodes.size(); ++i) {
+        for (int i = 0; i < options.nodes().size(); ++i) {
             nodes.add(new Node(NodeType.STORAGE, i));
             nodes.add(new Node(NodeType.DISTRIBUTOR, i));
         }
 
+        var context = new TestFleetControllerContext(options);
         communicator = new DummyCommunicator(nodes, timer);
-        MetricUpdater metricUpdater = new MetricUpdater(new NoMetricReporter(), options.fleetControllerIndex, options.clusterName);
-        EventLog eventLog = new EventLog(timer, metricUpdater);
-        ContentCluster cluster = new ContentCluster(options.clusterName, options.nodes, options.storageDistribution);
-        NodeStateGatherer stateGatherer = new NodeStateGatherer(timer, timer, eventLog);
-        DatabaseHandler database = new DatabaseHandler(new ZooKeeperDatabaseFactory(), timer, options.zooKeeperServerAddress, options.fleetControllerIndex, timer);
-        StateChangeHandler stateGenerator = new StateChangeHandler(timer, eventLog);
-        SystemStateBroadcaster stateBroadcaster = new SystemStateBroadcaster(timer, timer);
-        MasterElectionHandler masterElectionHandler = new MasterElectionHandler(options.fleetControllerIndex, options.fleetControllerCount, timer, timer);
-        ctrl = new FleetController(timer, eventLog, cluster, stateGatherer, communicator, null, null, communicator, database, stateGenerator, stateBroadcaster, masterElectionHandler, metricUpdater, options);
+        var metricUpdater = new MetricUpdater(new NoMetricReporter(), options.fleetControllerIndex(), options.clusterName());
+        var eventLog = new EventLog(timer, metricUpdater);
+        var cluster = new ContentCluster(options.clusterName(), options.nodes(), options.storageDistribution());
+        var stateGatherer = new NodeStateGatherer(timer, timer, eventLog);
+        var database = new DatabaseHandler(context, new ZooKeeperDatabaseFactory(context), timer, options.zooKeeperServerAddress(), timer);
+        var stateGenerator = new StateChangeHandler(context, timer, eventLog);
+        var stateBroadcaster = new SystemStateBroadcaster(context, timer, timer);
+        var masterElectionHandler = new MasterElectionHandler(context, options.fleetControllerIndex(), options.fleetControllerCount(), timer, timer);
+        var status = new StatusHandler.ContainerStatusPageServer();
+        ctrl = new FleetController(context, timer, eventLog, cluster, stateGatherer, communicator, status, null, communicator, database,
+                                   stateGenerator, stateBroadcaster, masterElectionHandler, metricUpdater, options);
 
         ctrl.tick();
         markAllNodesAsUp(options);
@@ -65,30 +61,20 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
     }
 
     private void markAllNodesAsUp(FleetControllerOptions options) throws Exception {
-        for (int i = 0; i < options.nodes.size(); ++i) {
+        for (int i = 0; i < options.nodes().size(); ++i) {
             communicator.setNodeState(new Node(NodeType.STORAGE, i), State.UP, "");
             communicator.setNodeState(new Node(NodeType.DISTRIBUTOR, i), State.UP, "");
         }
         ctrl.tick();
     }
 
-    public void tearDown() throws Exception {
-        if (supervisor != null) {
-            supervisor.transport().shutdown().join();
-            supervisor = null;
-        }
-        super.tearDown();
-    }
-
-    private static FleetControllerOptions createOptions(Map<String, Double> feedBlockLimits,
-                                                        double clusterFeedBlockNoiseLevel) {
-        FleetControllerOptions options = defaultOptions("mycluster");
-        options.setStorageDistribution(DistributionBuilder.forFlatCluster(NODE_COUNT));
-        options.nodes = new HashSet<>(DistributionBuilder.buildConfiguredNodes(NODE_COUNT));
-        options.clusterFeedBlockEnabled = true;
-        options.clusterFeedBlockLimit = Map.copyOf(feedBlockLimits);
-        options.clusterFeedBlockNoiseLevel = clusterFeedBlockNoiseLevel;
-        return options;
+    private static FleetControllerOptions createOptions(Map<String, Double> feedBlockLimits, double clusterFeedBlockNoiseLevel) {
+        return defaultOptions("mycluster")
+                .setStorageDistribution(DistributionBuilder.forFlatCluster(NODE_COUNT))
+                .setNodes(new HashSet<>(DistributionBuilder.buildConfiguredNodes(NODE_COUNT)))
+                .setClusterFeedBlockEnabled(true)
+                .setClusterFeedBlockLimit(feedBlockLimits)
+                .setClusterFeedBlockNoiseLevel(clusterFeedBlockNoiseLevel).build();
     }
 
     private static FleetControllerOptions createOptions(Map<String, Double> feedBlockLimits) {
@@ -106,7 +92,7 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
     }
 
     @Test
-    public void cluster_feed_can_be_blocked_and_unblocked_by_single_node() throws Exception {
+    void cluster_feed_can_be_blocked_and_unblocked_by_single_node() throws Exception {
         initialize(createOptions(mapOf(usage("cheese", 0.7), usage("wine", 0.4))));
         assertFalse(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
 
@@ -126,7 +112,7 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
     }
 
     @Test
-    public void cluster_feed_block_state_is_recomputed_when_options_are_updated() throws Exception {
+    void cluster_feed_block_state_is_recomputed_when_options_are_updated() throws Exception {
         initialize(createOptions(mapOf(usage("cheese", 0.7), usage("wine", 0.4))));
         assertFalse(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
 
@@ -134,15 +120,14 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
         assertTrue(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
 
         // Increase cheese allowance. Should now automatically unblock since reported usage is lower.
-        int dummyConfigGeneration = 2;
-        ctrl.updateOptions(createOptions(mapOf(usage("cheese", 0.9), usage("wine", 0.4))), dummyConfigGeneration);
+        ctrl.updateOptions(createOptions(mapOf(usage("cheese", 0.9), usage("wine", 0.4))));
         ctrl.tick(); // Options propagation
         ctrl.tick(); // State recomputation
         assertFalse(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
     }
 
     @Test
-    public void cluster_feed_block_state_is_recomputed_when_resource_block_set_differs() throws Exception {
+    void cluster_feed_block_state_is_recomputed_when_resource_block_set_differs() throws Exception {
         initialize(createOptions(mapOf(usage("cheese", 0.7), usage("wine", 0.4))));
         assertFalse(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
 
@@ -155,12 +140,12 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
         bundle = ctrl.getClusterStateBundle();
         assertTrue(bundle.clusterFeedIsBlocked());
         assertEquals("cheese on node 1 [unknown hostname] (0.800 > 0.700), " +
-                     "wine on node 1 [unknown hostname] (0.500 > 0.400)",
-                     bundle.getFeedBlock().get().getDescription());
+                "wine on node 1 [unknown hostname] (0.500 > 0.400)",
+                bundle.getFeedBlock().get().getDescription());
     }
 
     @Test
-    public void cluster_feed_block_state_is_not_recomputed_when_only_resource_usage_levels_differ() throws Exception {
+    void cluster_feed_block_state_is_not_recomputed_when_only_resource_usage_levels_differ() throws Exception {
         initialize(createOptions(mapOf(usage("cheese", 0.7), usage("wine", 0.4))));
         assertFalse(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
 
@@ -177,7 +162,7 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
     }
 
     @Test
-    public void cluster_feed_block_state_is_recomputed_when_usage_enters_hysteresis_range() throws Exception {
+    void cluster_feed_block_state_is_recomputed_when_usage_enters_hysteresis_range() throws Exception {
         initialize(createOptions(mapOf(usage("cheese", 0.7), usage("wine", 0.4)), 0.1));
         assertFalse(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
 
@@ -193,22 +178,22 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
         // is not discovered here. Still correct in terms of what resources are blocked or not, but
         // the description is not up to date here.
         assertEquals("cheese on node 1 [unknown hostname] (0.750 > 0.700)",
-                     bundle.getFeedBlock().get().getDescription());
+                bundle.getFeedBlock().get().getDescription());
 
         // Trigger an explicit recompute by adding a separate resource exhaustion
         reportResourceUsageFromNode(1, setOf(usage("cheese", 0.67), usage("wine", 0.5)));
         bundle = ctrl.getClusterStateBundle();
         assertTrue(bundle.clusterFeedIsBlocked());
         assertEquals("cheese on node 1 [unknown hostname] (0.670 > 0.600), " +
-                     "wine on node 1 [unknown hostname] (0.500 > 0.400)", // Not under hysteresis
-                     bundle.getFeedBlock().get().getDescription());
+                "wine on node 1 [unknown hostname] (0.500 > 0.400)", // Not under hysteresis
+                bundle.getFeedBlock().get().getDescription());
 
         // Wine usage drops beyond hysteresis range, should be unblocked immediately.
         reportResourceUsageFromNode(1, setOf(usage("cheese", 0.61), usage("wine", 0.2)));
         bundle = ctrl.getClusterStateBundle();
         assertTrue(bundle.clusterFeedIsBlocked());
         assertEquals("cheese on node 1 [unknown hostname] (0.610 > 0.600)",
-                     bundle.getFeedBlock().get().getDescription());
+                bundle.getFeedBlock().get().getDescription());
 
         // Cheese now drops below hysteresis range, should be unblocked as well.
         reportResourceUsageFromNode(1, setOf(usage("cheese", 0.59), usage("wine", 0.2)));
@@ -217,7 +202,7 @@ public class ClusterFeedBlockTest extends FleetControllerTest {
     }
 
     @Test
-    public void unavailable_nodes_are_not_considered_when_computing_feed_blocked_state() throws Exception {
+    void unavailable_nodes_are_not_considered_when_computing_feed_blocked_state() throws Exception {
         initialize(createOptions(mapOf(usage("cheese", 0.7), usage("wine", 0.4)), 0.1));
         assertFalse(ctrl.getClusterStateBundle().clusterFeedIsBlocked());
 

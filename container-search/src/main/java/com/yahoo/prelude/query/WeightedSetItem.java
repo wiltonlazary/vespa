@@ -8,6 +8,9 @@ import com.yahoo.prelude.query.textualrepresentation.Discloser;
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
+
+import static java.util.Objects.requireNonNullElse;
 
 /**
  * A term which contains a weighted set.
@@ -21,28 +24,20 @@ import java.util.Map;
  * contain the weights of all the matched tokens in descending
  * order. Each matched weight will be represented as a standard
  * occurrence on position 0 in element 0.
- *
  */
 public class WeightedSetItem extends SimpleTaggableItem {
 
     private String indexName;
-    private CopyOnWriteHashMap<Object,Integer> set;
+    private CopyOnWriteHashMap<Object, Integer> set;
 
     /** Creates an empty weighted set; note you must provide an index name up front */
     public WeightedSetItem(String indexName) {
-        if (indexName == null) {
-            this.indexName = "";
-        } else {
-            this.indexName = indexName;
-        }
+        this.indexName = requireNonNullElse(indexName, "");
         set = new CopyOnWriteHashMap<>(1000);
     }
+
     public WeightedSetItem(String indexName, Map<Object, Integer> map) {
-        if (indexName == null) {
-            this.indexName = "";
-        } else {
-            this.indexName = indexName;
-        }
+        this.indexName = requireNonNullElse(indexName, "");
         set = new CopyOnWriteHashMap<>(map);
     }
 
@@ -51,11 +46,11 @@ public class WeightedSetItem extends SimpleTaggableItem {
     }
 
     /**
-     * Add weighted token.
-     * If token is already in the set, the maximum weight is kept.
-     * NOTE: The weight must be 1 or more; negative values (and zero) are not allowed.
+     * Adds a weighted token.
+     * If this token is already in the set, the maximum weight is kept.
+     * The weight must be 1 or more; negative values (and zero) are not allowed.
      *
-     * @return weight of added token (might be old value, if kept)
+     * @return the weight of the added token (might be the old value, if kept)
      */
     public Integer addToken(String token, int weight) {
         if (token == null) throw new IllegalArgumentException("token must be a string");
@@ -72,14 +67,12 @@ public class WeightedSetItem extends SimpleTaggableItem {
         return newWeight;
     }
 
-    /**
-     * Add token with weight 1.
-     */
+    /** Adds a token with weight 1. */
     public Integer addToken(String token) {
         return addToken(token, 1);
     }
 
-    public Integer getTokenWeight(String token) {
+    public Integer getTokenWeight(Object token) {
         return set.get(token);
     }
 
@@ -97,11 +90,7 @@ public class WeightedSetItem extends SimpleTaggableItem {
 
     @Override
     public void setIndexName(String index) {
-        if (index == null) {
-            this.indexName = "";
-        } else {
-            this.indexName = index;
-        }
+        this.indexName = requireNonNullElse(index, "");
     }
 
     public String getIndexName() {
@@ -138,11 +127,8 @@ public class WeightedSetItem extends SimpleTaggableItem {
     public void disclose(Discloser discloser) {
         super.disclose(discloser);
         discloser.addProperty("index", indexName);
-        for (Map.Entry<Object, Integer> entry : set.entrySet()) {
-            WordItem subitem = new WordItem(entry.getKey().toString(), indexName);
-            subitem.setWeight(entry.getValue());
-            discloser.addChild(subitem);
-        }
+        for (Map.Entry<Object, Integer> entry : set.entrySet())
+            discloser.addChild(asItem(entry));
     }
 
     @Override
@@ -150,15 +136,18 @@ public class WeightedSetItem extends SimpleTaggableItem {
         encodeThis(buffer);
         int itemCount = 1;
         for (Map.Entry<Object, Integer> entry : set.entrySet()) {
-            Object key = entry.getKey();
-            if (key instanceof Long) {
-                new PureWeightedInteger((Long)key, entry.getValue()).encode(buffer);
-            } else {
-                new PureWeightedString(key.toString(), entry.getValue()).encode(buffer);
-            }
+            asItem(entry).encode(buffer);
             itemCount++;
         }
         return itemCount;
+    }
+
+    private PureWeightedItem asItem(Map.Entry<Object, Integer> entry) {
+        Object key = entry.getKey();
+        if (key instanceof Long)
+            return new PureWeightedInteger((Long)key, entry.getValue());
+        else
+            return new PureWeightedString(key.toString(), entry.getValue());
     }
 
     @Override
@@ -178,6 +167,21 @@ public class WeightedSetItem extends SimpleTaggableItem {
         WeightedSetItem clone = (WeightedSetItem)super.clone();
         clone.set = this.set.clone();
         return clone;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (o == this) return true;
+        if ( ! super.equals(o)) return false;
+        var other = (WeightedSetItem)o;
+        if ( ! Objects.equals(this.indexName, other.indexName)) return false;
+        if ( ! Objects.equals(this.set, other.set)) return false;
+        return true;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(super.hashCode(), indexName, set);
     }
 
 }

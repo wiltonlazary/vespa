@@ -2,8 +2,11 @@
 
 #pragma once
 
-#include "i_field_index_remove_listener.h"
-#include <vespa/searchlib/index/schema_index_fields.h>
+#include <vespa/vespalib/util/monitored_refcount.h>
+
+#include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace document {
     class DataType;
@@ -13,13 +16,11 @@ namespace document {
     class FieldValue;
 }
 
-namespace vespalib {
-    class IDestructorCallback;
-    class ISequencedTaskExecutor;
-}
+namespace vespalib { class IDestructorCallback; }
 
 namespace search::memoryindex {
 
+class DocumentInverterContext;
 class FieldInverter;
 class UrlFieldInverter;
 class IFieldIndexCollection;
@@ -31,41 +32,25 @@ class IFieldIndexCollection;
  */
 class DocumentInverter {
 private:
-    using ISequencedTaskExecutor = vespalib::ISequencedTaskExecutor;
     DocumentInverter(const DocumentInverter &) = delete;
     DocumentInverter &operator=(const DocumentInverter &) = delete;
 
-    const index::Schema &_schema;
+    DocumentInverterContext& _context;
 
-    void addFieldPath(const document::DocumentType &docType, uint32_t fieldId);
-    void buildFieldPath(const document::DocumentType & docType, const document::DataType *dataType);
-
-    using FieldPath = document::Field;
-    using IndexedFieldPaths = std::vector<std::unique_ptr<FieldPath>>;
-    IndexedFieldPaths          _indexedFieldPaths;
-    const document::DataType * _dataType;
-    index::SchemaIndexFields   _schemaIndexFields;
+    using LidVector = std::vector<uint32_t>;
+    using OnWriteDoneType = const std::shared_ptr<vespalib::IDestructorCallback> &;
 
     std::vector<std::unique_ptr<FieldInverter>> _inverters;
     std::vector<std::unique_ptr<UrlFieldInverter>> _urlInverters;
-    ISequencedTaskExecutor &_invertThreads;
-    ISequencedTaskExecutor &_pushThreads;
-
-    const index::Schema &getSchema() const { return _schema; }
+    vespalib::MonitoredRefCount                    _ref_count;
 
 public:
     /**
      * Create a new document inverter based on the given schema.
      *
-     * @param schema        the schema with which text and uri fields to consider.
-     * @param invertThreads the executor with threads for doing document inverting.
-     * @param pushThreads   the executor with threads for doing pushing of inverted documents
-     *                      to corresponding field indexes.
+     * @param context       A document inverter context shared between related document inverters.
      */
-    DocumentInverter(const index::Schema &schema,
-                     ISequencedTaskExecutor &invertThreads,
-                     ISequencedTaskExecutor &pushThreads,
-                     IFieldIndexCollection &fieldIndexes);
+    DocumentInverter(DocumentInverterContext& context);
 
     ~DocumentInverter();
 
@@ -75,13 +60,13 @@ public:
      * This function is async:
      * For each field inverter a task for pushing the inverted documents to the corresponding field index
      * is added to the 'push threads' executor, then this function returns.
-     * All tasks hold a reference to the 'onWriteDone' callback, so when the last task is completed,
+     * All tasks hold a reference to the 'on_write_done' callback, so when the last task is completed,
      * the callback is destructed.
      *
      * NOTE: The caller of this function should sync the 'invert threads' executor first,
      * to ensure that inverting is completed before pushing starts.
      */
-    void pushDocuments(const std::shared_ptr<vespalib::IDestructorCallback> &onWriteDone);
+    void pushDocuments(OnWriteDoneType on_write_done);
 
     /**
      * Invert (add) the given document.
@@ -90,7 +75,7 @@ public:
      * For each text and uri field in the document a task for inverting and adding that
      * field (using a field inverter) is added to the 'invert threads' executor, then this function returns.
      **/
-    void invertDocument(uint32_t docId, const document::Document &doc);
+    void invertDocument(uint32_t docId, const document::Document &doc, OnWriteDoneType on_write_done);
 
     /**
      * Remove the given document.
@@ -100,14 +85,16 @@ public:
      * (using a field inverter) is added to the 'invert threads' executor', then this function returns.
      */
     void removeDocument(uint32_t docId);
+    void removeDocuments(LidVector lids);
 
     FieldInverter *getInverter(uint32_t fieldId) const {
         return _inverters[fieldId].get();
     }
 
-    const std::vector<std::unique_ptr<FieldInverter> > & getInverters() const { return _inverters; }
-
     uint32_t getNumFields() const { return _inverters.size(); }
+    void wait_for_zero_ref_count() { _ref_count.waitForZeroRefCount(); }
+    bool has_zero_ref_count() { return _ref_count.has_zero_ref_count(); }
+    vespalib::MonitoredRefCount& get_ref_count() noexcept { return _ref_count; }
 };
 
 }

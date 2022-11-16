@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.ListIterator;
 
 /**
  * The root node of a query tree. This is always present above the actual semantic root to ease query manipulation,
@@ -47,7 +48,7 @@ public class QueryTree extends CompositeItem {
         return getRoot().encode(buffer);
     }
 
-    //Lets not pollute toString() by adding "ROOT"
+    // Let's not pollute toString() by adding "ROOT"
     protected void appendHeadingString(StringBuilder sb) {
     }
 
@@ -64,7 +65,7 @@ public class QueryTree extends CompositeItem {
         if (this.getItemCount() == 0) // initializing
             super.addItem(root);
         else
-            setItem(0,root); // replacing
+            setItem(0, root); // replacing
     }
 
     @Override
@@ -87,7 +88,7 @@ public class QueryTree extends CompositeItem {
 
     @Override
     public void addItem(Item item) {
-        if (getItemCount()==0)
+        if (getItemCount() == 0)
             super.addItem(item);
         else
             throw new RuntimeException("Programming error: Cannot add multiple roots");
@@ -95,8 +96,8 @@ public class QueryTree extends CompositeItem {
 
     @Override
     public void addItem(int index, Item item) {
-        if (getItemCount()==0 && index==0)
-            super.addItem(index,item);
+        if (getItemCount() == 0 && index == 0)
+            super.addItem(index, item);
         else
             throw new RuntimeException("Programming error: Cannot add multiple roots, have '" + getRoot() + "'");
     }
@@ -107,6 +108,19 @@ public class QueryTree extends CompositeItem {
     }
 
     // -------------- Facade
+
+    /**
+     * Modifies this query to become the current query RANK with the given item.
+     *
+     * @return the resulting root item in this
+     */
+    public Item withRank(Item item) {
+        var result = new RankItem();
+        result.addItem(getRoot());
+        result.addItem(item);
+        setRoot(result);
+        return result;
+    }
 
     /**
      * Modifies this query to become the current query AND the given item.
@@ -126,22 +140,18 @@ public class QueryTree extends CompositeItem {
         else if (b == null || b instanceof NullItem) {
             return a;
         }
-        else if (a instanceof NotItem && b instanceof NotItem) {
-            NotItem notItemA = (NotItem)a;
-            NotItem notItemB = (NotItem)b;
+        else if (a instanceof NotItem notItemA && b instanceof NotItem notItemB) {
             NotItem combined = new NotItem();
             combined.addPositiveItem(and(notItemA.getPositiveItem(), notItemB.getPositiveItem()));
             notItemA.negativeItems().forEach(item -> combined.addNegativeItem(item));
             notItemB.negativeItems().forEach(item -> combined.addNegativeItem(item));
             return combined;
         }
-        else if (a instanceof NotItem){
-            NotItem notItem = (NotItem)a;
+        else if (a instanceof NotItem notItem){
             notItem.addPositiveItem(b);
             return a;
         }
-        else if (b instanceof NotItem){
-            NotItem notItem = (NotItem)b;
+        else if (b instanceof NotItem notItem){
             notItem.addPositiveItem(a);
             return notItem;
         }
@@ -165,18 +175,35 @@ public class QueryTree extends CompositeItem {
     }
 
     private static void getPositiveTerms(Item item, List<IndexedItem> terms) {
-        if (item instanceof NotItem) {
-            getPositiveTerms(((NotItem) item).getPositiveItem(), terms);
-        } else if (item instanceof PhraseItem) {
-            PhraseItem pItem = (PhraseItem)item;
-            terms.add(pItem);
-        } else if (item instanceof CompositeItem) {
-            for (Iterator<Item> i = ((CompositeItem) item).getItemIterator(); i.hasNext();) {
+        if (item instanceof NotItem notItem) {
+            getPositiveTerms(notItem.getPositiveItem(), terms);
+        } else if (item instanceof PhraseItem phraseItem) {
+            terms.add(phraseItem);
+        } else if (item instanceof CompositeItem compositeItem) {
+            for (Iterator<Item> i = compositeItem.getItemIterator(); i.hasNext();) {
                 getPositiveTerms(i.next(), terms);
             }
-        } else if (item instanceof TermItem) {
-            terms.add((TermItem)item);
+        } else if (item instanceof TermItem termItem) {
+            terms.add(termItem);
         }
+    }
+
+    /**
+     * Returns the total number of items in this query tree.
+     */
+    public int treeSize() {
+        if (isEmpty()) return 0;
+        return countItemsRecursively(getItemIterator().next());
+    }
+
+    private int countItemsRecursively(Item item) {
+        int children = 0;
+        if (item instanceof CompositeItem composite) {
+            for (ListIterator<Item> i = composite.getItemIterator(); i.hasNext(); ) {
+                children += countItemsRecursively(i.next());
+            }
+        }
+        return children + 1;
     }
 
 }

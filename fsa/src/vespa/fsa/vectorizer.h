@@ -49,7 +49,7 @@ public:
     /**
      * @brief Default constructor, creates empty item with zero weight.
      */
-    VectorItem() : _term(), _weight(0.0), _hits() {}
+    VectorItem() noexcept : _term(), _weight(0.0), _hits() {}
 
     /**
      * @brief Copy constructor.
@@ -447,10 +447,6 @@ private:
     };
 
     // }}}
-
-#if (__GNUG__<3 || (__GNUG__ == 3 && __GNUC_MINOR__ < 1))
-    friend RawVector::iterator;
-#endif
 
   private:
 

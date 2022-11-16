@@ -26,10 +26,6 @@ public final class RendererRegistry extends ComponentRegistry<com.yahoo.processi
     public static final ComponentId jsonRendererId = ComponentId.fromString("JsonRenderer");
     public static final ComponentId defaultRendererId = jsonRendererId;
     
-    /** Creates a registry containing the built-in renderers only */
-    public RendererRegistry() {
-        this(Collections.emptyList());
-    }
 
     /** 
      * Creates a registry containing the built-in renderers only, using a custom executor.
@@ -38,11 +34,6 @@ public final class RendererRegistry extends ComponentRegistry<com.yahoo.processi
      */
     public RendererRegistry(Executor executor) {
         this(Collections.emptyList(), executor);
-    }
-
-    /** Creates a registry of the given renderers plus the built-in ones */
-    public RendererRegistry(Collection<Renderer> renderers) {
-        this(renderers, null);
     }
 
     /** 

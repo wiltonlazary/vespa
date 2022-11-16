@@ -42,13 +42,9 @@ public abstract class CompositeItem extends Item {
     }
 
     public void ensureNotInSubtree(CompositeItem item) {
-        for (Iterator<Item> i = item.getItemIterator(); i.hasNext();) {
-            Item possibleCycle = i.next();
-
-            if (this == possibleCycle) {
+        for (Item i = this; i != null; i = i.getParent()) {
+            if (i == item) {
                 throw new IllegalArgumentException("Cannot add " + item + " to " + this + " as it would create a cycle");
-            } else if (possibleCycle instanceof CompositeItem) {
-                ensureNotInSubtree((CompositeItem) possibleCycle);
             }
         }
     }
@@ -74,16 +70,10 @@ public abstract class CompositeItem extends Item {
      * @throws IndexOutOfBoundsException if the index is out of range
      */
     public void addItem(int index, Item item) {
-        if (index > subitems.size() || index < 0) {
+        if (index > subitems.size() || index < 0)
             throw new IndexOutOfBoundsException("Could not add a subitem at position " + index + " to " + this);
-        }
         adding(item);
         subitems.add(index, item);
-    }
-
-    /** For NOT items, which may wish to insert nulls */
-    void insertNullFirstItem() {
-        subitems.add(0, null);
     }
 
     /**
@@ -97,7 +87,7 @@ public abstract class CompositeItem extends Item {
     }
 
     /**
-     * Replaces the item at the given index
+     * Replaces the item at the given index.
      *
      * @param  index the (0-base) index of the item to replace
      * @param  item the new item
@@ -110,7 +100,7 @@ public abstract class CompositeItem extends Item {
 
         adding(item);
         Item old = subitems.set(index, item);
-        if (old!=item)
+        if (old != item)
             removing(old);
         return old;
     }
@@ -118,7 +108,7 @@ public abstract class CompositeItem extends Item {
     /**
      * Returns the index of a subitem
      *
-     * @param  item The child item to find the index of
+     * @param  item the child item to find the index of
      * @return the 0-base index of the child or -1 if there is no such child
      */
     public int getItemIndex(Item item) {
@@ -189,9 +179,7 @@ public abstract class CompositeItem extends Item {
         return itemCount;
     }
 
-    /**
-     * Encodes just this item, not it's usual subitems, to the given buffer.
-     */
+    /** Encodes just this item, not its regular subitems, to the given buffer. */
     protected void encodeThis(ByteBuffer buffer) {
         super.encodeThis(buffer);
         IntegerCompressor.putCompressedPositiveNumber(encodingArity(), buffer);
@@ -213,11 +201,12 @@ public abstract class CompositeItem extends Item {
     }
 
     /** Composite items should be parenthized when not on the top level */
-    protected boolean shouldParenthize() {
+    protected boolean shouldParenthesize() {
         return getParent()!= null && ! (getParent() instanceof QueryTree);
     }
 
     /** Returns a deep copy of this item */
+    @Override
     public CompositeItem clone() {
         CompositeItem copy = (CompositeItem) super.clone();
 
@@ -271,30 +260,21 @@ public abstract class CompositeItem extends Item {
         return -1;
     }
 
+    @Override
     public int hashCode() {
         int code = getName().hashCode() + subitems.size() * 17;
-
-        for (int i = 0; i < subitems.size() && i <= 5; i++) {
+        for (int i = 0; i < subitems.size() && i <= 5; i++)
             code += subitems.get(i).hashCode();
-        }
         return code;
     }
 
-    /**
-     * Returns whether this item is of the same class and
-     * contains the same state as the given item
-     */
+    /** Returns whether this item is of the same class and contains the same state as the given item. */
+    @Override
     public boolean equals(Object object) {
-        if (!super.equals(object)) {
-            return false;
-        }
+        if (!super.equals(object)) return false;
 
         CompositeItem other = (CompositeItem) object; // Ensured by superclass
-
-        if (!this.subitems.equals(other.subitems)) {
-            return false;
-        }
-
+        if ( ! this.subitems.equals(other.subitems)) return false;
         return true;
     }
 
@@ -306,12 +286,25 @@ public abstract class CompositeItem extends Item {
         return false;
     }
 
+    @Override
+    public int getTermCount() {
+        int terms = 0;
+        for (Item item : subitems)
+            terms += item.getTermCount();
+        return terms;
+    }
+
+    /** Returns the single child of this, if this can be omitted without changes to recall semantics. */
+    public Optional<Item> extractSingleChild() {
+        return getItemCount() == 1 ? Optional.of(getItem(0)) : Optional.empty();
+    }
+
     /** Handles mutator calls correctly */
     private static class ListIteratorWrapper implements ListIterator<Item> {
 
-        private CompositeItem owner;
+        private final CompositeItem owner;
 
-        private ListIterator<Item> wrapped;
+        private final ListIterator<Item> wrapped;
 
         private Item current = null;
 
@@ -320,47 +313,54 @@ public abstract class CompositeItem extends Item {
             wrapped = owner.subitems.listIterator();
         }
 
+        @Override
         public boolean hasNext() {
             return wrapped.hasNext();
         }
 
+        @Override
         public Item next() {
             current = wrapped.next();
             return current;
         }
 
+        @Override
         public boolean hasPrevious() {
             return wrapped.hasPrevious();
         }
 
+        @Override
         public Item previous() {
-            Item current = wrapped.previous();
-
+            current = wrapped.previous();
             return current;
         }
 
+        @Override
         public int nextIndex() {
             return wrapped.nextIndex();
         }
 
+        @Override
         public int previousIndex() {
             return wrapped.previousIndex();
         }
 
+        @Override
         public void remove() {
             owner.removing(current);
             wrapped.remove();
         }
 
+        @Override
         public void set(Item o) {
             Item newItem = o;
-
             owner.removing(current);
             owner.adding(newItem);
             current = newItem;
             wrapped.set(newItem);
         }
 
+        @Override
         public void add(Item o) {
             Item newItem = o;
 
@@ -369,24 +369,6 @@ public abstract class CompositeItem extends Item {
             wrapped.add(o);
         }
 
-    }
-
-    @Override
-    public int getTermCount() {
-        int terms = 0;
-        for (Item item : subitems) {
-            terms += item.getTermCount();
-        }
-        return terms;
-    }
-
-    /**
-     * Will return its single child if itself can safely be omitted.
-     *
-     * @return a valid Item or empty Optional if it can not be done
-     */
-    public Optional<Item> extractSingleChild() {
-        return getItemCount() == 1 ? Optional.of(getItem(0)) : Optional.empty();
     }
 
 }

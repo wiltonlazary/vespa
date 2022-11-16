@@ -27,9 +27,9 @@ public class StatusHandlerTest {
 
     @Test
     public void require_that_handler_works() throws IOException {
-        ModelFactoryRegistry modelFactoryRegistry = new ModelFactoryRegistry(List.of(new VespaModelFactory(new NullConfigModelRegistry())));
+        ModelFactoryRegistry modelFactoryRegistry = new ModelFactoryRegistry(List.of(VespaModelFactory.createTestFactory()));
         ConfigserverConfig configserverConfig = new ConfigserverConfig.Builder().build();
-        StatusHandler handler = new StatusHandler(StatusHandler.testOnlyContext(), modelFactoryRegistry, configserverConfig);
+        StatusHandler handler = new StatusHandler(StatusHandler.testContext(), modelFactoryRegistry, configserverConfig);
 
         HttpResponse response = handler.handle(HttpRequest.createTestRequest("/status", GET));
         JsonNode jsonNode = mapper.readTree(SessionHandlerTest.getRenderedString(response));

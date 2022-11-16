@@ -10,8 +10,10 @@ import com.yahoo.yolean.Exceptions;
 import java.time.Duration;
 import java.util.logging.Level;
 
+import static com.yahoo.vespa.hosted.controller.api.integration.organization.SystemMonitor.Confidence.aborted;
 import static com.yahoo.vespa.hosted.controller.api.integration.organization.SystemMonitor.Confidence.broken;
 import static com.yahoo.vespa.hosted.controller.api.integration.organization.SystemMonitor.Confidence.high;
+import static com.yahoo.vespa.hosted.controller.api.integration.organization.SystemMonitor.Confidence.legacy;
 import static com.yahoo.vespa.hosted.controller.api.integration.organization.SystemMonitor.Confidence.low;
 import static com.yahoo.vespa.hosted.controller.api.integration.organization.SystemMonitor.Confidence.normal;
 
@@ -46,13 +48,14 @@ public class VersionStatusUpdater extends ControllerMaintainer {
     }
 
     static SystemMonitor.Confidence convert(VespaVersion.Confidence confidence) {
-        switch (confidence) {
-            case broken: return broken;
-            case low:    return low;
-            case normal: return normal;
-            case high:   return high;
-            default: throw new IllegalArgumentException("Unexpected confidence '" + confidence + "'");
-        }
+        return switch (confidence) {
+            case aborted -> aborted;
+            case broken -> broken;
+            case low -> low;
+            case legacy -> legacy;
+            case normal -> normal;
+            case high -> high;
+        };
     }
 
 }

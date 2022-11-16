@@ -1,13 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "logutil.h"
-#include <vespa/searchlib/util/dirtraverse.h>
+#include "dirtraverse.h"
 #include <vector>
 
 using vespalib::JSONStringer;
 
-namespace search {
-namespace util {
+namespace search::util {
 
 vespalib::string
 LogUtil::extractLastElements(const vespalib::string & path, size_t numElems)
@@ -47,5 +46,4 @@ LogUtil::logDir(JSONStringer & jstr, const vespalib::string & path, size_t numEl
     jstr.endObject();
 }
 
-} // namespace util
-} // namespace search
+}

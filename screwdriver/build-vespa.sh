@@ -6,8 +6,7 @@ set -e
 readonly SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd )"
 readonly NUM_THREADS=$(( $(nproc) + 2 ))
 
-source /etc/profile.d/enable-devtoolset-10.sh
-source /etc/profile.d/enable-rh-maven35.sh
+source /etc/profile.d/enable-gcc-toolset-11.sh
 
 export MALLOC_ARENA_MAX=1
 export MAVEN_OPTS="-Xss1m -Xms128m -Xmx2g"
@@ -39,10 +38,10 @@ case $SHOULD_BUILD in
     mvn -V $VESPA_MAVEN_EXTRA_OPTS install
     ;;
   go)
-    make -C client/go -j ${NUM_THREADS}
+    make -C client/go install-all
     ;;
   *)
-    make -C client/go -j ${NUM_THREADS}
+    make -C client/go install-all
     ./bootstrap.sh java
     time mvn -V $VESPA_MAVEN_EXTRA_OPTS install
     cmake3 -DVESPA_UNPRIVILEGED=no .
@@ -53,28 +52,18 @@ case $SHOULD_BUILD in
     ;;    
 esac
 
-if [[ $SHOULD_BUILD == systemtest ]]; then  
-  yum -y --setopt=skip_missing_names_on_install=False install \
-    zstd \
-    devtoolset-10-gcc-c++ \
-    devtoolset-10-libatomic-devel \
-    devtoolset-10-binutils \
-    libxml2-devel \
-    rh-ruby27-rubygems-devel \
-    rh-ruby27-ruby-devel \
-    rh-ruby27 \
-    rh-ruby27-rubygem-net-telnet
-
-  source /opt/rh/rh-ruby27/enable
-  gem install libxml-ruby gnuplot distribution test-unit builder concurrent-ruby ffi
-
+if [[ $SHOULD_BUILD == systemtest ]]; then
   cd $HOME
   git clone https://github.com/vespa-engine/system-test
   export SYSTEM_TEST_DIR=$(pwd)/system-test
   export RUBYLIB="$SYSTEM_TEST_DIR/lib:$SYSTEM_TEST_DIR/tests"
   useradd vespa
-  export USER=vespa
 
+  # Workaround for /opt/vespa/tmp directory created by systemtest runner
+  mkdir -p /opt/vespa/tmp
+  chmod 1777 /opt/vespa/tmp
+
+  export USER=vespa
   $SYSTEM_TEST_DIR/lib/node_server.rb &
   NODE_SERVER_PID=$!
   sleep 3

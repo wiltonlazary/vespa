@@ -1,14 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.provision;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.config.provisioning.FlavorsConfig;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,6 +58,11 @@ public class NodeFlavors {
 
     private static Collection<Flavor> toFlavors(FlavorsConfig config) {
         return config.flavor().stream().map(Flavor::new).collect(Collectors.toList());
+    }
+
+    @Override
+    public String toString() {
+        return String.join(",", configuredFlavors.keySet());
     }
 
 }

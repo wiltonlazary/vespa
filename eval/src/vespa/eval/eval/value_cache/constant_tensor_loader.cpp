@@ -13,8 +13,7 @@
 #include <vespa/log/log.h>
 LOG_SETUP(".vespalib.eval.value_cache.constant_tensor_loader");
 
-namespace vespalib {
-namespace eval {
+namespace vespalib::eval {
 
 using Inspector = slime::Inspector;
 using ObjectTraverser = slime::ObjectTraverser;
@@ -69,6 +68,8 @@ void decode_json(const vespalib::string &path, Slime &slime) {
 
 } // namespace vespalib::eval::<unnamed>
 
+ConstantTensorLoader::~ConstantTensorLoader() = default;
+
 ConstantValue::UP
 ConstantTensorLoader::create(const vespalib::string &path, const vespalib::string &type) const
 {
@@ -110,5 +111,4 @@ ConstantTensorLoader::create(const vespalib::string &path, const vespalib::strin
     }
 }
 
-} // namespace vespalib::eval
-} // namespace vespalib
+}

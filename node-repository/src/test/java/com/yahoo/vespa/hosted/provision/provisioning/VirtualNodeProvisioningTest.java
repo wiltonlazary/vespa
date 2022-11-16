@@ -12,9 +12,9 @@ import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.InstanceName;
+import com.yahoo.config.provision.NodeAllocationException;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
-import com.yahoo.config.provision.OutOfCapacityException;
 import com.yahoo.config.provision.ProvisionLock;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.SystemName;
@@ -23,7 +23,6 @@ import com.yahoo.config.provision.Zone;
 import com.yahoo.transaction.NestedTransaction;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
-import com.yahoo.vespa.hosted.provision.node.Agent;
 import org.junit.Test;
 
 import java.util.HashSet;
@@ -75,14 +74,14 @@ public class VirtualNodeProvisioningTest {
 
         // Go down to 3 nodes in container cluster
         List<HostSpec> containerHosts2 = tester.prepare(applicationId, containerClusterSpec, containerNodeCount - 1, groups, resources1);
-        tester.activate(applicationId, containerHosts2);
+        tester.activate(applicationId, concat(containerHosts2, contentHosts));
         NodeList nodes2 = tester.getNodes(applicationId, Node.State.active);
         assertDistinctParentHosts(nodes2, ClusterSpec.Type.container, containerNodeCount - 1);
 
         // The surplus node is dirtied and then readied for new allocations
         List<Node> dirtyNode = tester.nodeRepository().nodes().list(Node.State.dirty).owner(applicationId).asList();
         assertEquals(1, dirtyNode.size());
-        tester.nodeRepository().nodes().setReady(dirtyNode, Agent.system, getClass().getSimpleName());
+        tester.move(Node.State.ready, dirtyNode);
 
         // Go up to 4 nodes again in container cluster
         List<HostSpec> containerHosts3 = tester.prepare(applicationId, containerClusterSpec, containerNodeCount, groups, resources1);
@@ -155,7 +154,7 @@ public class VirtualNodeProvisioningTest {
         assertEquals(2, nodes.stream().filter(n -> n.allocation().get().membership().retired()).count());
     }
 
-    @Test(expected = OutOfCapacityException.class)
+    @Test(expected = NodeAllocationException.class)
     public void fail_when_too_few_distinct_parent_hosts() {
         ProvisioningTester tester = new ProvisioningTester.Builder().build();
         tester.makeReadyChildren(2, resources1, "parentHost1");
@@ -192,10 +191,10 @@ public class VirtualNodeProvisioningTest {
         tester.makeReadyChildren(1, resources1, "parentHost1");
         tester.makeReadyChildren(2, resources1, "parentHost2");
 
-        OutOfCapacityException expectedException = null;
+        NodeAllocationException expectedException = null;
         try {
             tester.prepare(applicationId, contentClusterSpec, contentNodeCount, groups, resources1);
-        } catch (OutOfCapacityException e) {
+        } catch (NodeAllocationException e) {
             expectedException = e;
         }
         assertNotNull(expectedException);
@@ -279,7 +278,7 @@ public class VirtualNodeProvisioningTest {
                                                   ClusterSpec.request(ClusterSpec.Type.content, ClusterSpec.Id.from("myContent")).vespaVersion(wantedVespaVersion).build(),
                                                   nodeCount, 1, resources2);
             fail("Expected the allocation to fail due to parent hosts not being active yet");
-        } catch (OutOfCapacityException expected) { }
+        } catch (NodeAllocationException expected) { }
 
         // Activate the hosts, thereby allocating the parents
         tester.activateTenantHosts();
@@ -321,7 +320,7 @@ public class VirtualNodeProvisioningTest {
                            5, 1, resources);
             fail("Expected exception");
         }
-        catch (OutOfCapacityException e) {
+        catch (NodeAllocationException e) {
             // Success: Not enough nonreserved hosts left
         }
 
@@ -349,8 +348,8 @@ public class VirtualNodeProvisioningTest {
             tester.prepare(applicationId,
                     ClusterSpec.request(ClusterSpec.Type.container, ClusterSpec.Id.from("myContent")).vespaVersion(wantedVespaVersion).build(),
                     6, 1, resources);
-            fail("Expected to fail due to out of capacity");
-        } catch (OutOfCapacityException ignored) { }
+            fail("Expected to fail node allocation");
+        } catch (NodeAllocationException ignored) { }
 
         // Same cluster, but content type is now 'content'
         List<HostSpec> nodes = tester.prepare(applicationId,
@@ -445,10 +444,10 @@ public class VirtualNodeProvisioningTest {
         catch (Exception e) {
             assertEquals("No room for 3 nodes as 2 of 4 hosts are exclusive",
                          "Could not satisfy request for 3 nodes with " +
-                         "[vcpu: 1.0, memory: 4.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps] " +
+                         "[vcpu: 1.0, memory: 4.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps, architecture: x86_64] " +
                          "in tenant2.app2 container cluster 'myContainer' 6.39: " +
-                         "Out of capacity on group 0: " +
-                         "Not enough nodes available due to host exclusivity constraints",
+                         "Node allocation failure on group 0: " +
+                         "Not enough suitable nodes available due to host exclusivity constraints",
                          e.getMessage());
         }
 
@@ -470,11 +469,11 @@ public class VirtualNodeProvisioningTest {
                            2, 1,
                            resources2.with(NodeResources.StorageType.remote));
         }
-        catch (OutOfCapacityException e) {
+        catch (NodeAllocationException e) {
             assertEquals("Could not satisfy request for 2 nodes with " +
-                         "[vcpu: 1.0, memory: 4.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps, storage type: remote] " +
+                         "[vcpu: 1.0, memory: 4.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps, storage type: remote, architecture: x86_64] " +
                          "in tenant.app1 content cluster 'myContent'" +
-                         " 6.42: Out of capacity on group 0",
+                         " 6.42: Node allocation failure on group 0",
                          e.getMessage());
         }
     }
@@ -522,14 +521,14 @@ public class VirtualNodeProvisioningTest {
         var newMaxResources = new NodeResources(20, 10, 30, 1);
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(7, 1, newMinResources),
                                                       new ClusterResources(7, 1, newMaxResources)));
-        tester.assertNodes("New allocation preserves total resources",
-                           7, 1, 7, 6.7, 14.3, 1.0,
+        tester.assertNodes("New allocation preserves total (redundancy adjusted) resources",
+                           7, 1, 5, 6.0, 11, 1.0,
                            app1, cluster1);
 
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(7, 1, newMinResources),
                                                       new ClusterResources(7, 1, newMaxResources)));
         tester.assertNodes("Redeploying does not cause changes",
-                           7, 1, 7, 6.7, 14.3, 1.0,
+                           7, 1, 5, 6.0, 11, 1.0,
                            app1, cluster1);
     }
 
@@ -554,8 +553,8 @@ public class VirtualNodeProvisioningTest {
         }
         catch (IllegalArgumentException e) {
             assertEquals("No allocation possible within limits: " +
-                         "from 2 nodes with [vcpu: 1.0, memory: 5.0 Gb, disk 10.0 Gb, bandwidth: 1.0 Gbps] " +
-                         "to 4 nodes with [vcpu: 1.0, memory: 5.0 Gb, disk 10.0 Gb, bandwidth: 1.0 Gbps]",
+                         "from 2 nodes with [vcpu: 1.0, memory: 5.0 Gb, disk 10.0 Gb, bandwidth: 1.0 Gbps, architecture: x86_64] " +
+                         "to 4 nodes with [vcpu: 1.0, memory: 5.0 Gb, disk 10.0 Gb, bandwidth: 1.0 Gbps, architecture: x86_64]",
                          e.getMessage());
         }
     }
@@ -578,9 +577,9 @@ public class VirtualNodeProvisioningTest {
         }
         catch (IllegalArgumentException e) {
             assertEquals("No allocation possible within limits: " +
-                         "from 2 nodes with [vcpu: 20.0, memory: 37.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps] " +
-                         "to 4 nodes with [vcpu: 20.0, memory: 37.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps]. " +
-                         "Nearest allowed node resources: [vcpu: 20.0, memory: 40.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps, storage type: remote]",
+                         "from 2 nodes with [vcpu: 20.0, memory: 37.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps, architecture: x86_64] " +
+                         "to 4 nodes with [vcpu: 20.0, memory: 37.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps, architecture: x86_64]. " +
+                         "Nearest allowed node resources: [vcpu: 20.0, memory: 40.0 Gb, disk 100.0 Gb, bandwidth: 1.0 Gbps, storage type: remote, architecture: x86_64]",
                          e.getMessage());
         }
     }
@@ -599,7 +598,7 @@ public class VirtualNodeProvisioningTest {
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(5, 1, r)));
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(2, 1, r)));
 
-        var tx = new ApplicationTransaction(new ProvisionLock(app1, tester.nodeRepository().nodes().lock(app1)), new NestedTransaction());
+        var tx = new ApplicationTransaction(new ProvisionLock(app1, tester.nodeRepository().applications().lock(app1)), new NestedTransaction());
         tester.nodeRepository().nodes().deactivate(tester.nodeRepository().nodes().list(Node.State.active).owner(app1).retired().asList(), tx);
         tx.nested().commit();
 
@@ -637,7 +636,7 @@ public class VirtualNodeProvisioningTest {
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(2, 1, r)));
 
         // Deactivate any retired nodes - usually done by the RetiredExpirer
-        tester.nodeRepository().nodes().setRemovable(app1, tester.getNodes(app1).retired().asList());
+        tester.nodeRepository().nodes().setRemovable(app1, tester.getNodes(app1).retired().asList(), false);
         tester.activate(app1, cluster1, Capacity.from(new ClusterResources(2, 1, r)));
 
         if (expectedReuse) {
@@ -648,7 +647,7 @@ public class VirtualNodeProvisioningTest {
         else {
             assertEquals(0, tester.getNodes(app1, Node.State.inactive).size());
             assertEquals(2, tester.nodeRepository().nodes().list(Node.State.dirty).size());
-            tester.nodeRepository().nodes().setReady(tester.nodeRepository().nodes().list(Node.State.dirty).asList(), Agent.system, "test");
+            tester.move(Node.State.ready, tester.nodeRepository().nodes().list(Node.State.dirty).asList());
             tester.activate(app1, cluster1, Capacity.from(new ClusterResources(4, 1, r)));
         }
 
@@ -691,7 +690,7 @@ public class VirtualNodeProvisioningTest {
     }
 
     private static <T> List<T> concat(List<T> list1, List<T> list2) {
-        return Stream.concat(list1.stream(), list2.stream()).collect(Collectors.toList());
+        return Stream.concat(list1.stream(), list2.stream()).toList();
     }
 
 }

@@ -82,11 +82,9 @@ ClusterControllerTuning = element cluster-controller {
 
 DispatchTuning = element dispatch {
     element max-hits-per-partition { xsd:nonNegativeInteger }? &
-    element dispatch-policy { string "round-robin" | string "adaptive" | string "random" }? &
-    element min-group-coverage { xsd:double }? & # TODO: Ignored, remove on Vespa 8
+    element dispatch-policy { string "round-robin" | string "adaptive" | string "random" | "best-of-random-2" | "latency-amortized-over-requests" | "latency-amortized-over-time"}? &
     element min-active-docs-coverage { xsd:double }? &
-    element top-k-probability { xsd:double }? &
-    element use-local-node { string "true" | string "false" }?
+    element top-k-probability { xsd:double }?
 }
 
 ClusterTuning = element tuning {
@@ -191,7 +189,6 @@ Documents = element documents {
     DocumentProcessing? &
 
     element document {
-        GenericConfig* &
         attribute type { xsd:string } &
         attribute selection { xsd:string }? &
         attribute mode { string "index" | string "streaming" | string "store-only" } &
@@ -206,10 +203,10 @@ ContentNode = element node {
     attribute capacity { xsd:double { minExclusive = "0.0" } }? &
     attribute mmap-core-limit { xsd:nonNegativeInteger }? &
     attribute core-on-oom { xsd:boolean }? &
-    attribute no-vespamalloc { xsd:string }? &
-    attribute vespamalloc { xsd:string }? &
-    attribute vespamalloc-debug { xsd:string }? &
-    attribute vespamalloc-debug-stacktrace { xsd:string }? &
+    attribute no-vespamalloc { xsd:NMTOKENS }? &
+    attribute vespamalloc { xsd:NMTOKENS }? &
+    attribute vespamalloc-debug { xsd:NMTOKENS }? &
+    attribute vespamalloc-debug-stacktrace { xsd:NMTOKENS }? &
     attribute cpu-socket { xsd:nonNegativeInteger }?
 }
 
@@ -218,10 +215,10 @@ ContentNodes = element nodes {
     attribute cpu-socket-affinity { xsd:string }? &
     attribute mmap-core-limit { xsd:nonNegativeInteger }? &
     attribute core-on-oom { xsd:boolean }? &
-    attribute no-vespamalloc { xsd:string }? &
-    attribute vespamalloc { xsd:string }? &
-    attribute vespamalloc-debug { xsd:string }? &
-    attribute vespamalloc-debug-stacktrace { xsd:string }? &
+    attribute no-vespamalloc { xsd:NMTOKENS }? &
+    attribute vespamalloc { xsd:NMTOKENS }? &
+    attribute vespamalloc-debug { xsd:NMTOKENS }? &
+    attribute vespamalloc-debug-stacktrace { xsd:NMTOKENS }? &
     (
       (
         attribute count { xsd:positiveInteger | xsd:string } &
@@ -245,10 +242,10 @@ TopGroup = element group {
     attribute cpu-socket-affinity { xsd:string }? &
     attribute mmap-core-limit { xsd:nonNegativeInteger }? &
     attribute core-on-oom { xsd:boolean }? &
-    attribute no-vespamalloc { xsd:string }? &
-    attribute vespamalloc { xsd:string }? &
-    attribute vespamalloc-debug { xsd:string }? &
-    attribute vespamalloc-debug-stacktrace { xsd:string }? &
+    attribute no-vespamalloc { xsd:NMTOKENS }? &
+    attribute vespamalloc { xsd:NMTOKENS }? &
+    attribute vespamalloc-debug { xsd:NMTOKENS }? &
+    attribute vespamalloc-debug-stacktrace { xsd:NMTOKENS }? &
     attribute distribution-key { xsd:nonNegativeInteger }? &
     (
         ContentNode +

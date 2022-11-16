@@ -1,14 +1,15 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "prod_features.h"
-#include <vespa/searchlib/attribute/attributeguard.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
+#include <vespa/searchlib/attribute/attributeguard.h>
 #include <vespa/searchlib/attribute/attributevector.h>
 #include <vespa/searchlib/attribute/extendableattributes.h>
 #include <vespa/searchlib/attribute/floatbase.h>
 #include <vespa/searchlib/attribute/integerbase.h>
-#include <vespa/searchlib/attribute/stringbase.h>
 #include <vespa/searchlib/attribute/singleboolattribute.h>
+#include <vespa/searchlib/attribute/stringbase.h>
 #include <vespa/searchlib/features/agefeature.h>
 #include <vespa/searchlib/features/array_parser.hpp>
 #include <vespa/searchlib/features/attributefeature.h>
@@ -20,30 +21,32 @@
 #include <vespa/searchlib/features/firstphasefeature.h>
 #include <vespa/searchlib/features/foreachfeature.h>
 #include <vespa/searchlib/features/freshnessfeature.h>
+#include <vespa/searchlib/features/global_sequence_feature.h>
+#include <vespa/searchlib/features/great_circle_distance_feature.h>
 #include <vespa/searchlib/features/matchcountfeature.h>
 #include <vespa/searchlib/features/matchesfeature.h>
 #include <vespa/searchlib/features/matchfeature.h>
 #include <vespa/searchlib/features/nowfeature.h>
 #include <vespa/searchlib/features/queryfeature.h>
 #include <vespa/searchlib/features/querytermcountfeature.h>
-#include <vespa/searchlib/features/randomfeature.h>
 #include <vespa/searchlib/features/random_normal_feature.h>
 #include <vespa/searchlib/features/random_normal_stable_feature.h>
+#include <vespa/searchlib/features/randomfeature.h>
 #include <vespa/searchlib/features/rankingexpressionfeature.h>
 #include <vespa/searchlib/features/setup.h>
 #include <vespa/searchlib/features/termfeature.h>
 #include <vespa/searchlib/features/utils.h>
-#include <vespa/searchlib/features/global_sequence_feature.h>
 #include <vespa/searchlib/features/weighted_set_parser.hpp>
 #include <vespa/searchlib/fef/featurenamebuilder.h>
 #include <vespa/searchlib/fef/indexproperties.h>
 #include <vespa/searchlib/fef/queryproperties.h>
-#include <vespa/searchlib/fef/test/plugin/setup.h>
 #include <vespa/searchlib/fef/test/dummy_dependency_handler.h>
-#include <vespa/vespalib/util/rand48.h>
-#include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/searchlib/fef/test/plugin/setup.h>
+#include <vespa/searchlib/test/attribute_builder.h>
 #include <vespa/vespalib/geo/zcurve.h>
+#include <vespa/vespalib/util/rand48.h>
 #include <vespa/vespalib/util/string_hash.h>
+#include <vespa/vespalib/util/stringfmt.h>
 #include <cmath>
 
 #include <vespa/log/log.h>
@@ -53,14 +56,15 @@ using namespace search::features;
 using namespace search::fef;
 using namespace search::fef::test;
 
-using search::AttributeVector;
 using search::AttributeFactory;
-using search::IntegerAttribute;
+using search::AttributeVector;
 using search::FloatingPointAttribute;
-using search::StringAttribute;
+using search::IntegerAttribute;
 using search::SingleBoolAttribute;
+using search::StringAttribute;
 using search::WeightedSetStringExtAttribute;
 using search::attribute::WeightedEnumContent;
+using search::attribute::test::AttributeBuilder;
 using search::common::GeoLocation;
 using search::common::GeoLocationSpec;
 
@@ -93,6 +97,7 @@ Test::Main()
     TEST_DO(testAttributeMatch());      TEST_FLUSH();
     TEST_DO(testCloseness());           TEST_FLUSH();
     TEST_DO(testMatchCount());          TEST_FLUSH();
+    TEST_DO(testGreatCircleDistance()); TEST_FLUSH();
     TEST_DO(testDistance());            TEST_FLUSH();
     TEST_DO(testDistanceToPath());      TEST_FLUSH();
     TEST_DO(testDotProduct());          TEST_FLUSH();
@@ -208,15 +213,12 @@ Test::assertAge(feature_t expAge, const vespalib::string & attr, uint64_t now, u
 }
 
 void
-Test::setupForAgeTest(FtFeatureTest & ft, uint64_t docTime)
+Test::setupForAgeTest(FtFeatureTest & ft, int64_t docTime)
 {
-    AttributePtr doctime = AttributeFactory::createAttribute("doctime", AVC(AVBT::INT64,  AVCT::SINGLE));
+    auto doctime = AttributeBuilder("doctime", AVC(AVBT::INT64,  AVCT::SINGLE)).
+            fill({docTime}).get();
     ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::SINGLE, "doctime");
-    doctime->addReservedDoc();
-    doctime->addDocs(1);
     ft.getIndexEnv().getAttributeMap().add(doctime);
-    (dynamic_cast<IntegerAttribute *>(doctime.get()))->update(1, docTime);
-    doctime->commit();
 }
 
 void
@@ -480,8 +482,6 @@ Test::testCloseness()
         TEST_DO(assertCloseness(1,   "pos", 0));
         assertCloseness(0.8, "pos", 1802661);
         assertCloseness(0,   "pos", 9013306);
-        // use non-existing attribute -> default distance
-        TEST_DO(assertCloseness(0, "no", 0));
         // two-argument version
         TEST_DO(assertCloseness(0.8, "field,pos", 1802661));
 
@@ -819,6 +819,67 @@ Test::assertFreshness(feature_t expFreshness, const vespalib::string & attr, uin
     ASSERT_TRUE(ft.execute(RankResult().addScore(feature, expFreshness).setEpsilon(EPS)));
 }
 
+namespace {
+
+struct AirPort {
+    const char *tla;
+    double lat;
+    double lng;
+};
+
+std::pair<int32_t, int32_t> toXY(const AirPort &p) {
+    return std::make_pair((int)(p.lng * 1.0e6),
+                          (int)(p.lat * 1.0e6));
+}
+
+GeoLocation toGL(const AirPort &p) {
+    int32_t x = (int)(p.lng * 1.0e6);
+    int32_t y = (int)(p.lat * 1.0e6);
+    GeoLocation::Point gp{x, y};
+    return GeoLocation{gp};
+}
+
+}
+
+void
+Test::testGreatCircleDistance()
+{
+    { // Test blueprint.
+        GreatCircleDistanceBlueprint pt;
+        EXPECT_TRUE(assertCreateInstance(pt, "great_circle_distance"));
+        StringList params, in, out;
+        FT_SETUP_FAIL(pt, params);
+        FtIndexEnvironment idx_env;
+        idx_env
+            .getBuilder()
+            .addField(FieldType::ATTRIBUTE, CollectionType::SINGLE, DataType::INT64, "pos_zcurve");
+        FT_SETUP_OK(pt, idx_env, params.add("pos"), in,
+                    out.add("km").add("latitude").add("longitude"));
+        FT_DUMP_EMPTY(_factory, "great_circle_distance");
+    }
+    { // Test executor.
+        FtFeatureTest ft(_factory, "great_circle_distance(pos)");
+        const AirPort SFO = { "SFO",  37.618806,  -122.375416 };
+        const AirPort TRD = { "TRD",  63.457556,  10.924250 };
+        std::vector<std::pair<int32_t,int32_t>> pos = { toXY(SFO), toXY(TRD) };
+        setupForDistanceTest(ft, "pos_zcurve", pos, true);
+        const AirPort LHR = { "LHR",  51.477500,  -0.461388 };
+        const AirPort JFK = { "JFK",  40.639928,  -73.778692 };
+        ft.getQueryEnv().addLocation(GeoLocationSpec{"pos", toGL(LHR)});
+        ft.getQueryEnv().addLocation(GeoLocationSpec{"pos", toGL(JFK)});
+        ASSERT_TRUE(ft.setup());
+        double exp = 1494; // according to gcmap.com
+        ASSERT_TRUE(ft.execute(RankResult().setEpsilon(10.0).
+                               addScore("great_circle_distance(pos)", exp)));
+        ASSERT_TRUE(ft.execute(RankResult().setEpsilon(10.0).
+                               addScore("great_circle_distance(pos).km", exp)));
+        ASSERT_TRUE(ft.execute(RankResult().setEpsilon(1e-9).
+                               addScore("great_circle_distance(pos).latitude", TRD.lat)));
+        ASSERT_TRUE(ft.execute(RankResult().setEpsilon(1e-9).
+                               addScore("great_circle_distance(pos).longitude", TRD.lng)));
+    }
+}
+
 void
 Test::testDistance()
 {
@@ -829,8 +890,12 @@ Test::testDistance()
 
         StringList params, in, out;
         FT_SETUP_FAIL(pt, params);
-        FT_SETUP_OK(pt, params.add("pos"), in,
-                    out.add("out").add("index").add("latitude").add("longitude"));
+        FtIndexEnvironment idx_env;
+        idx_env
+            .getBuilder()
+            .addField(FieldType::ATTRIBUTE, CollectionType::SINGLE, DataType::INT64, "pos");
+        FT_SETUP_OK(pt, idx_env, params.add("pos"), in,
+                    out.add("out").add("index").add("latitude").add("longitude").add("km"));
         FT_DUMP_EMPTY(_factory, "distance");
     }
 
@@ -883,8 +948,7 @@ Test::testDistance()
             }
             { // wrong attribute type (float)
                 FtFeatureTest ft(_factory, "distance(pos)");
-                AttributePtr pos = AttributeFactory::createAttribute("pos", AVC(AVBT::FLOAT,  AVCT::SINGLE));
-                pos->commit();
+                auto pos = AttributeBuilder("pos", AVC(AVBT::FLOAT,  AVCT::SINGLE)).get();
                 ft.getIndexEnv().getAttributeMap().add(pos);
                 ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::SINGLE, DataType::INT64, "pos");
                 GeoLocation::Point p{0, 0};
@@ -894,8 +958,7 @@ Test::testDistance()
             }
             { // wrong attribute type (string)
                 FtFeatureTest ft(_factory, "distance(pos)");
-                AttributePtr pos = AttributeFactory::createAttribute("pos", AVC(AVBT::STRING,  AVCT::SINGLE));
-                pos->commit();
+                auto pos = AttributeBuilder("pos", AVC(AVBT::STRING,  AVCT::SINGLE)).get();
                 ft.getIndexEnv().getAttributeMap().add(pos);
                 ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::SINGLE, DataType::INT64, "pos");
                 GeoLocation::Point p{0, 0};
@@ -905,8 +968,7 @@ Test::testDistance()
             }
             { // wrong attribute collection type (weighted set)
                 FtFeatureTest ft(_factory, "distance(pos)");
-                AttributePtr pos = AttributeFactory::createAttribute("pos", AVC(AVBT::INT64,  AVCT::WSET));
-                pos->commit();
+                auto pos = AttributeBuilder("pos", AVC(AVBT::INT64,  AVCT::WSET)).get();
                 ft.getIndexEnv().getAttributeMap().add(pos);
                 ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::WEIGHTEDSET, DataType::INT64, "pos");
                 GeoLocation::Point p{0, 0};
@@ -922,10 +984,7 @@ void
 Test::setupForDistanceTest(FtFeatureTest &ft, const vespalib::string & attrName,
                            const std::vector<std::pair<int32_t, int32_t> > & positions, bool zcurve)
 {
-    AttributePtr pos = AttributeFactory::createAttribute(attrName, AVC(AVBT::INT64,  AVCT::ARRAY));
-
-    pos->addReservedDoc();
-    pos->addDocs(1);
+    auto pos = AttributeBuilder(attrName, AVC(AVBT::INT64,  AVCT::ARRAY)).docs(1).get();
     ft.getIndexEnv().getAttributeMap().add(pos);
     ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::ARRAY, DataType::INT64, attrName);
 
@@ -937,7 +996,6 @@ Test::setupForDistanceTest(FtFeatureTest &ft, const vespalib::string & attrName,
             ia->append(1, p.first, 0);
         }
     }
-
     pos->commit();
 }
 
@@ -963,6 +1021,8 @@ Test::assert2DZDistance(feature_t exp, const vespalib::string & positions,
     ASSERT_TRUE(ft.setup());
     ASSERT_TRUE(ft.execute(RankResult().setEpsilon(1e-4).
                            addScore("distance(pos)", exp)));
+    ASSERT_TRUE(ft.execute(RankResult().setEpsilon(1e-4).
+                           addScore("distance(pos).km", exp * 0.00011119508023)));
     ASSERT_TRUE(ft.execute(RankResult().setEpsilon(1e-30).
                            addScore("distance(pos).index", hit_index)));
     ASSERT_TRUE(ft.execute(RankResult().setEpsilon(1e-9).
@@ -1049,8 +1109,7 @@ Test::testDistanceToPath()
             {
                 // Wrong attribute type (float).
                 FtFeatureTest ft(_factory, "distanceToPath(pos)");
-                AttributePtr att = AttributeFactory::createAttribute("pos", AVC(AVBT::FLOAT, AVCT::SINGLE));
-                att->commit();
+                auto att = AttributeBuilder("pos", AVC(AVBT::FLOAT, AVCT::SINGLE)).get();
                 ft.getIndexEnv().getAttributeMap().add(att);
                 ft.getQueryEnv().getProperties().add("distanceToPath(pos).path", "0 0 1 1");
                 ASSERT_TRUE(ft.setup());
@@ -1059,8 +1118,7 @@ Test::testDistanceToPath()
             {
                 // Wrong attribute type (string).
                 FtFeatureTest ft(_factory, "distanceToPath(pos)");
-                AttributePtr att = AttributeFactory::createAttribute("pos", AVC(AVBT::STRING, AVCT::SINGLE));
-                att->commit();
+                auto att = AttributeBuilder("pos", AVC(AVBT::STRING, AVCT::SINGLE)).get();
                 ft.getIndexEnv().getAttributeMap().add(att);
                 ft.getQueryEnv().getProperties().add("distanceToPath(pos).path", "0 0 1 1");
                 ASSERT_TRUE(ft.setup());
@@ -1069,8 +1127,7 @@ Test::testDistanceToPath()
             {
                 // Wrong attribute collection type (weighted set).
                 FtFeatureTest ft(_factory, "distanceToPath(pos)");
-                AttributePtr att = AttributeFactory::createAttribute("pos", AVC(AVBT::INT64, AVCT::WSET));
-                att->commit();
+                auto att = AttributeBuilder("pos", AVC(AVBT::INT64, AVCT::WSET)).get();
                 ft.getIndexEnv().getAttributeMap().add(att);
                 ft.getQueryEnv().getProperties().add("distanceToPath(pos).path", "0 0 1 1");
                 ASSERT_TRUE(ft.setup());
@@ -1291,8 +1348,8 @@ Test::testDotProduct()
     TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsstr", "{a:1,b:2}", "search::features::dotproduct::wset::(anonymous namespace)::DotProductExecutorByEnum"));
     TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsstr", "{a:1}", "search::features::dotproduct::wset::(anonymous namespace)::SingleDotProductExecutorByEnum"));
     TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsstr", "{unknown:1}", "search::features::SingleZeroValueExecutor"));
-    TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsint", "{1:1, 2:3}", "search::features::dotproduct::wset::DotProductExecutor<search::MultiValueNumericAttribute<search::IntegerAttributeTemplate<int>, search::multivalue::WeightedValue<int> > >"));
-    TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsint", "{1:1}", "search::features::dotproduct::wset::(anonymous namespace)::SingleDotProductExecutorByValue<search::MultiValueNumericAttribute<search::IntegerAttributeTemplate<int>, search::multivalue::WeightedValue<int> > >"));
+    TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsint", "{1:1, 2:3}", "search::features::dotproduct::wset::DotProductByWeightedSetReadViewExecutor<int>"));
+    TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsint", "{1:1}", "search::features::dotproduct::wset::(anonymous namespace)::SingleDotProductByWeightedValueExecutor<int>"));
     TEST_DO(verifyCorrectDotProductExecutor(_factory, "wsint", "{}", "search::features::SingleZeroValueExecutor"));
 
 }
@@ -1333,65 +1390,47 @@ Test::setupForDotProductTest(FtFeatureTest & ft)
                                     {"arrint_fast", AVBT::INT32, AVCT::ARRAY, true},
                                     {"arrfloat_fast", AVBT::FLOAT, AVCT::ARRAY, true}
                                   };
-    AttributePtr a = AttributeFactory::createAttribute("wsstr", AVC(AVBT::STRING, AVCT::WSET));
-    AttributePtr c = AttributeFactory::createAttribute("sint", AVC(AVBT::INT32, AVCT::SINGLE));
-    AttributePtr d(new search::WeightedSetStringExtAttribute("wsextstr"));
+    auto a = AttributeBuilder("wsstr", AVC(AVBT::STRING, AVCT::WSET)).
+            fill_wset({{{"a", 1}, {"b", 2}, {"c", 3}, {"d", 4}, {"e", 5}}, {}}).get();
+    auto c = AttributeBuilder("sint", AVC(AVBT::INT32, AVCT::SINGLE)).docs(2).get();
+    auto d = std::make_shared<search::WeightedSetStringExtAttribute>("wsextstr");
     ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::WEIGHTEDSET, "wsstr");
     ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::SINGLE, "sint");
     ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE, CollectionType::WEIGHTEDSET, "wsextstr");
     for (const Config & cfg : cfgList) {
-        AttributePtr baf = AttributeFactory::createAttribute(cfg.name, AVC(cfg.dataType,
-                                                                           cfg.collectionType,
-                                                                           cfg.fastSearch));
+        AttributeBuilder builder(cfg.name, AVC(cfg.dataType,
+                                               cfg.collectionType,
+                                               cfg.fastSearch));
+        auto baf = builder.get();
         ft.getIndexEnv().getBuilder().addField(FieldType::ATTRIBUTE,
                                                cfg.collectionType==AVCT::ARRAY
-                                                   ? CollectionType::ARRAY
-                                                   : CollectionType::WEIGHTEDSET,
+                                               ? CollectionType::ARRAY
+                                               : CollectionType::WEIGHTEDSET,
                                                cfg.name);
-        baf->addReservedDoc();
-        baf->addDocs(2);
         ft.getIndexEnv().getAttributeMap().add(baf);
-        for (size_t i(1); i < 6; i++) {
-            auto ia = dynamic_cast<IntegerAttribute *>(baf.get());
-            if (ia) {
-                ia->append(1, i, i);
-            } else {
-                auto fa = dynamic_cast<FloatingPointAttribute *>(baf.get());
-                fa->append(1, i, i);
-            }
+        if (baf->isIntegerType()) {
+            using WIL = AttributeBuilder::WeightedIntList;
+            builder.fill_wset({WIL{{1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}}, {}});
+        } else {
+            using WDL = AttributeBuilder::WeightedDoubleList;
+            builder.fill_wset({WDL{{1.0, 1}, {2.0, 2}, {3.0, 3}, {4.0, 4}, {5.0, 5}}, {}});
         }
-        baf->commit();
     }
 
-    a->addReservedDoc();
-    c->addReservedDoc();
-    a->addDocs(2);
-    c->addDocs(2);
     ft.getIndexEnv().getAttributeMap().add(a);
     ft.getIndexEnv().getAttributeMap().add(c);
     ft.getIndexEnv().getAttributeMap().add(d);
 
-    auto sa = dynamic_cast<StringAttribute *>(a.get());
-    sa->append(1, "a", 1);
-    sa->append(1, "b", 2);
-    sa->append(1, "c", 3);
-    sa->append(1, "d", 4);
-    sa->append(1, "e", 5);
-
-    auto ea = dynamic_cast<WeightedSetStringExtAttribute *>(d.get());
-    EXPECT_TRUE(!ea->hasEnum());
+    EXPECT_TRUE(!d->hasEnum());
     uint32_t docId;
-    ea->addDoc(docId);  // reserved doc
-    ea->addDoc(docId);
-    ea->add("a", 10);
-    ea->add("b", 20);
-    ea->add("c", 30);
-    ea->add("d", 40);
-    ea->add("e", 50);
-    ea->addDoc(docId);
-
-    a->commit();
-    c->commit();
+    d->addDoc(docId);  // reserved doc
+    d->addDoc(docId);
+    d->add("a", 10);
+    d->add("b", 20);
+    d->add("c", 30);
+    d->add("d", 40);
+    d->add("e", 50);
+    d->addDoc(docId);
 }
 
 void
@@ -1407,7 +1446,7 @@ Test::testNow()
         FT_SETUP_OK  (pt, params, in, out.add("out"));
         FT_SETUP_FAIL(pt, params.add("foo"));
 
-        FT_DUMP(_factory, "now", StringList().add("now"));
+        FT_DUMP_EMPTY(_factory, "now");
     }
 
     {
@@ -1637,7 +1676,7 @@ Test::testMatches()
         FT_SETUP_OK(pt, ft.getIndexEnv(), params.clear().add("bar"), in, out);
         FT_SETUP_OK(pt, ft.getIndexEnv(), params.add("1"), in, out);
 
-        FT_DUMP_EMPTY(_factory, "matches");
+        FT_DUMP(_factory, "matches", ft.getIndexEnv(), StringList().add("matches(foo)").add("matches(bar)"));
     }
     { // Test executor for index fields
         EXPECT_TRUE(assertMatches(0, "x", "a", "matches(foo)"));

@@ -26,7 +26,7 @@ import java.util.logging.Logger;
 public class DocumentRouteSelectorPolicy
         implements DocumentProtocolRoutingPolicy, ConfigSubscriber.SingleSubscriber<DocumentrouteselectorpolicyConfig> {
 
-    private static Logger log = Logger.getLogger(DocumentRouteSelectorPolicy.class.getName());
+    private static final Logger log = Logger.getLogger(DocumentRouteSelectorPolicy.class.getName());
     private Map<String, DocumentSelector> config;
     private String error = "Not configured.";
     private ConfigSubscriber subscriber;
@@ -39,10 +39,8 @@ public class DocumentRouteSelectorPolicy
                 selectors.put(name, new DocumentSelector(cluster.selector()));
             }
             catch (ParseException e) {
-                throw new IllegalArgumentException("Error parsing selector '" +
-                                                   cluster.selector() +
-                                                   "' for route '" + name +"'",
-                                                   e);
+                throw new IllegalArgumentException("Error parsing selector '" + cluster.selector() +
+                                                   "' for route '" + name +"'", e);
             }
         });
         this.config = Map.copyOf(selectors);
@@ -87,9 +85,9 @@ public class DocumentRouteSelectorPolicy
             DocumentSelector selector;
             try {
                 selector = new DocumentSelector(route.selector());
-                log.log(Level.CONFIG, "Selector for route '" + route.name() + "' is '" + selector + "'.");
+                log.log(Level.CONFIG, "Selector for route '" + route.name() + "' is '" + selector + "'");
             } catch (com.yahoo.document.select.parser.ParseException e) {
-                error = "Error parsing selector '" + route.selector() + "' for route '" + route.name() + "; " +
+                error = "Error parsing selector '" + route.selector() + "' for route '" + route.name() + ": " +
                         e.getMessage();
                 break;
             }

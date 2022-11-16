@@ -4,13 +4,12 @@ package com.yahoo.vespa.hosted.provision.provisioning;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
-import com.yahoo.config.provision.OutOfCapacityException;
+import com.yahoo.config.provision.NodeAllocationException;
 import com.yahoo.vespa.hosted.provision.LockedNodeList;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.NodesAndHosts;
-import com.yahoo.vespa.hosted.provision.node.Nodes;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,13 +24,11 @@ import java.util.stream.Collectors;
  */
 class Preparer {
 
-    private final NodeRepository nodeRepository;
     private final GroupPreparer groupPreparer;
     private final Optional<LoadBalancerProvisioner> loadBalancerProvisioner;
 
     public Preparer(NodeRepository nodeRepository, Optional<HostProvisioner> hostProvisioner,
                     Optional<LoadBalancerProvisioner> loadBalancerProvisioner) {
-        this.nodeRepository = nodeRepository;
         this.loadBalancerProvisioner = loadBalancerProvisioner;
         this.groupPreparer = new GroupPreparer(nodeRepository, hostProvisioner);
     }
@@ -43,10 +40,11 @@ class Preparer {
             prepareLoadBalancer(application, cluster, requestedNodes);
             return nodes;
         }
-        catch (OutOfCapacityException e) {
-            throw new OutOfCapacityException("Could not satisfy " + requestedNodes +
-                                             ( wantedGroups > 1 ? " (in " + wantedGroups + " groups)" : "") +
-                                             " in " + application + " " + cluster + ": " + e.getMessage());
+        catch (NodeAllocationException e) {
+            throw new NodeAllocationException("Could not satisfy " + requestedNodes +
+                                              ( wantedGroups > 1 ? " (in " + wantedGroups + " groups)" : "") +
+                                              " in " + application + " " + cluster + ": " + e.getMessage(),
+                                              e.retryable());
         }
     }
 
@@ -58,27 +56,29 @@ class Preparer {
      // Note: This operation may make persisted changes to the set of reserved and inactive nodes,
      // but it may not change the set of active nodes, as the active nodes must stay in sync with the
      // active config model which is changed on activate
-    private List<Node> prepareNodes(ApplicationId application, ClusterSpec cluster, NodeSpec requestedNodes, int wantedGroups) {
+    private List<Node> prepareNodes(ApplicationId application, ClusterSpec cluster, NodeSpec requestedNodes,
+                                    int wantedGroups) {
         NodesAndHosts<LockedNodeList> allNodesAndHosts = groupPreparer.createNodesAndHostUnlocked();
         NodeList appNodes = allNodesAndHosts.nodes().owner(application);
         List<Node> surplusNodes = findNodesInRemovableGroups(appNodes, cluster, wantedGroups);
 
         List<Integer> usedIndices = appNodes.cluster(cluster.id()).mapToList(node -> node.allocation().get().membership().index());
-        NodeIndices indices = new NodeIndices(usedIndices, ! cluster.type().isContent());
+        NodeIndices indices = new NodeIndices(usedIndices);
         List<Node> acceptedNodes = new ArrayList<>();
 
         for (int groupIndex = 0; groupIndex < wantedGroups; groupIndex++) {
             ClusterSpec clusterGroup = cluster.with(Optional.of(ClusterSpec.Group.from(groupIndex)));
-            GroupPreparer.PrepareResult result = groupPreparer.prepare(
-                    application, clusterGroup, requestedNodes.fraction(wantedGroups),
-                    surplusNodes, indices, wantedGroups, allNodesAndHosts);
+            GroupPreparer.PrepareResult result = groupPreparer.prepare(application, clusterGroup,
+                                                                       requestedNodes.fraction(wantedGroups),
+                                                                       surplusNodes, indices, wantedGroups,
+                                                                       allNodesAndHosts);
             allNodesAndHosts = result.allNodesAndHosts; // Might have changed
             List<Node> accepted = result.prepared;
             if (requestedNodes.rejectNonActiveParent()) {
                 NodeList activeHosts = allNodesAndHosts.nodes().state(Node.State.active).parents().nodeType(requestedNodes.type().hostType());
                 accepted = accepted.stream()
-                        .filter(node -> node.parentHostname().isEmpty() || activeHosts.parentOf(node).isPresent())
-                        .collect(Collectors.toList());
+                                   .filter(node -> node.parentHostname().isEmpty() || activeHosts.parentOf(node).isPresent())
+                                   .collect(Collectors.toList());
             }
 
             replace(acceptedNodes, accepted);
@@ -98,7 +98,7 @@ class Preparer {
      * in groups with index number above or equal the group count
      */
     private List<Node> findNodesInRemovableGroups(NodeList appNodes, ClusterSpec requestedCluster, int wantedGroups) {
-        List<Node> surplusNodes = new ArrayList<>(0);
+        List<Node> surplusNodes = new ArrayList<>();
         for (Node node : appNodes.state(Node.State.active)) {
             ClusterSpec nodeCluster = node.allocation().get().membership().cluster();
             if ( ! nodeCluster.id().equals(requestedCluster.id())) continue;

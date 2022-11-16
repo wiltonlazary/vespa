@@ -1,7 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.persistence;
 
-import com.yahoo.config.provision.HostName;
+import ai.vespa.http.DomainName;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.slime.ArrayTraverser;
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.Inspector;
@@ -37,6 +38,7 @@ public class LoadBalancerSerializer {
 
     private static final String idField = "id";
     private static final String hostnameField = "hostname";
+    private static final String lbIpAddressField = "ipAddress";
     private static final String stateField = "state";
     private static final String changedAtField = "changedAt";
     private static final String dnsZoneField = "dnsZone";
@@ -45,13 +47,15 @@ public class LoadBalancerSerializer {
     private static final String realsField = "reals";
     private static final String ipAddressField = "ipAddress";
     private static final String portField = "port";
+    private static final String cloudAccountField = "cloudAccount";
 
     public static byte[] toJson(LoadBalancer loadBalancer) {
         Slime slime = new Slime();
         Cursor root = slime.setObject();
 
         root.setString(idField, loadBalancer.id().serializedForm());
-        loadBalancer.instance().ifPresent(instance -> root.setString(hostnameField, instance.hostname().value()));
+        loadBalancer.instance().flatMap(LoadBalancerInstance::hostname).ifPresent(hostname -> root.setString(hostnameField, hostname.value()));
+        loadBalancer.instance().flatMap(LoadBalancerInstance::ipAddress).ifPresent(ip -> root.setString(lbIpAddressField, ip));
         root.setString(stateField, asString(loadBalancer.state()));
         root.setLong(changedAtField, loadBalancer.changedAt().toEpochMilli());
         loadBalancer.instance().flatMap(LoadBalancerInstance::dnsZone).ifPresent(dnsZone -> root.setString(dnsZoneField, dnsZone.id()));
@@ -66,6 +70,10 @@ public class LoadBalancerSerializer {
             realObject.setString(ipAddressField, real.ipAddress());
             realObject.setLong(portField, real.port());
         }));
+        loadBalancer.instance()
+                    .map(LoadBalancerInstance::cloudAccount)
+                    .filter(cloudAccount -> !cloudAccount.isUnspecified())
+                    .ifPresent(cloudAccount -> root.setString(cloudAccountField, cloudAccount.value()));
         try {
             return SlimeUtils.toJsonBytes(slime);
         } catch (IOException e) {
@@ -78,7 +86,7 @@ public class LoadBalancerSerializer {
 
         Set<Real> reals = new LinkedHashSet<>();
         object.field(realsField).traverse((ArrayTraverser) (i, realObject) -> {
-            reals.add(new Real(HostName.from(realObject.field(hostnameField).asString()),
+            reals.add(new Real(DomainName.of(realObject.field(hostnameField).asString()),
                                realObject.field(ipAddressField).asString(),
                                (int) realObject.field(portField).asLong()));
 
@@ -90,10 +98,12 @@ public class LoadBalancerSerializer {
         Set<String> networks = new LinkedHashSet<>();
         object.field(networksField).traverse((ArrayTraverser) (i, network) -> networks.add(network.asString()));
 
-        Optional<HostName> hostname = optionalString(object.field(hostnameField), Function.identity()).filter(s -> !s.isEmpty()).map(HostName::from);
+        Optional<DomainName> hostname = optionalString(object.field(hostnameField), Function.identity()).filter(s -> !s.isEmpty()).map(DomainName::of);
+        Optional<String> ipAddress = optionalString(object.field(lbIpAddressField), Function.identity()).filter(s -> !s.isEmpty());
         Optional<DnsZone> dnsZone = optionalString(object.field(dnsZoneField), DnsZone::new);
-        Optional<LoadBalancerInstance> instance = hostname.map(h -> new LoadBalancerInstance(h, dnsZone, ports,
-                                                                                             networks, reals));
+        CloudAccount cloudAccount = optionalString(object.field(cloudAccountField), CloudAccount::from).orElse(CloudAccount.empty);
+        Optional<LoadBalancerInstance> instance = hostname.isEmpty() && ipAddress.isEmpty() ? Optional.empty() :
+                Optional.of(new LoadBalancerInstance(hostname, ipAddress, dnsZone, ports, networks, reals, cloudAccount));
 
         return new LoadBalancer(LoadBalancerId.fromSerializedForm(object.field(idField).asString()),
                                 instance,
@@ -110,21 +120,22 @@ public class LoadBalancerSerializer {
     }
 
     private static String asString(LoadBalancer.State state) {
-        switch (state) {
-            case active: return "active";
-            case inactive: return "inactive";
-            case reserved: return "reserved";
-            default: throw new IllegalArgumentException("No serialization defined for state enum '" + state + "'");
-        }
+        return switch (state) {
+            case active -> "active";
+            case inactive -> "inactive";
+            case reserved -> "reserved";
+            case removable -> "removable";
+        };
     }
 
     private static LoadBalancer.State stateFromString(String state) {
-        switch (state) {
-            case "active": return LoadBalancer.State.active;
-            case "inactive": return LoadBalancer.State.inactive;
-            case "reserved": return LoadBalancer.State.reserved;
-            default: throw new IllegalArgumentException("No serialization defined for state string '" + state + "'");
-        }
+        return switch (state) {
+            case "active" -> LoadBalancer.State.active;
+            case "inactive" -> LoadBalancer.State.inactive;
+            case "reserved" -> LoadBalancer.State.reserved;
+            case "removable" -> LoadBalancer.State.removable;
+            default -> throw new IllegalArgumentException("No serialization defined for state string '" + state + "'");
+        };
     }
 
 }

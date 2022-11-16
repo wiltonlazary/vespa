@@ -7,6 +7,7 @@
 #include <vespa/searchlib/index/dictionaryfile.h>
 #include <vespa/searchlib/index/field_length_info.h>
 #include <vespa/searchlib/queryeval/searchable.h>
+#include <vespa/searchcommon/common/schema.h>
 #include <vespa/vespalib/stllike/string.h>
 #include <vespa/vespalib/stllike/cache.h>
 
@@ -30,7 +31,7 @@ public:
         index::PostingListCounts         counts;
         uint64_t                         bitOffset;
         typedef std::unique_ptr<LookupResult> UP;
-        LookupResult();
+        LookupResult() noexcept;
         bool valid() const { return counts._numDocs > 0; }
         void swap(LookupResult & rhs) {
             std::swap(indexId , rhs.indexId);
@@ -132,13 +133,13 @@ public:
      */
     BitVector::UP readBitVector(const LookupResult &lookupRes) const;
 
-    queryeval::Blueprint::UP createBlueprint(const queryeval::IRequestContext & requestContext,
-                                             const queryeval::FieldSpec &field,
-                                             const query::Node &term) override;
+    std::unique_ptr<queryeval::Blueprint> createBlueprint(const queryeval::IRequestContext & requestContext,
+                                                          const queryeval::FieldSpec &field,
+                                                          const query::Node &term) override;
 
-    queryeval::Blueprint::UP createBlueprint(const queryeval::IRequestContext & requestContext,
-                                             const queryeval::FieldSpecList &fields,
-                                             const query::Node &term) override;
+    std::unique_ptr<queryeval::Blueprint> createBlueprint(const queryeval::IRequestContext & requestContext,
+                                                          const queryeval::FieldSpecList &fields,
+                                                          const query::Node &term) override;
 
     /**
      * Get the size on disk of this index.

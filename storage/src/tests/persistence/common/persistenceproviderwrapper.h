@@ -21,7 +21,7 @@
 
 namespace storage {
 
-class PersistenceProviderWrapper : public spi::AbstractPersistenceProvider
+class PersistenceProviderWrapper : public spi::PersistenceProvider
 {
 public:
     enum OPERATION_FAILURE_FLAGS
@@ -47,11 +47,11 @@ public:
         // TODO: add more as needed
     };
 private:
-    spi::PersistenceProvider& _spi;
-    spi::Result _result;
-    mutable std::mutex  _lock;
+    spi::PersistenceProvider&        _spi;
+    spi::Result                      _result;
+    mutable std::mutex               _lock;
     mutable std::vector<std::string> _log;
-    uint32_t _failureMask;
+    uint32_t                         _failureMask;
     using Guard = std::lock_guard<std::mutex>;
 public:
     PersistenceProviderWrapper(spi::PersistenceProvider& spi);
@@ -72,8 +72,14 @@ public:
     /**
      * Set a mask for operations to fail with _result
      */
-    void setFailureMask(uint32_t mask) { _failureMask = mask; }
-    uint32_t getFailureMask() const { return _failureMask; }
+    void setFailureMask(uint32_t mask) {
+        Guard guard(_lock);
+        _failureMask = mask;
+    }
+    uint32_t getFailureMask() const {
+        Guard guard(_lock);
+        return _failureMask;
+    }
 
     /**
      * Get a string representation of all the operations performed on the
@@ -88,27 +94,33 @@ public:
         _log.clear();
     }
 
-    spi::Result createBucket(const spi::Bucket&, spi::Context&) override;
+    spi::Result initialize() override;
+    spi::BucketIdListResult getModifiedBuckets(BucketSpace bucketSpace) const override;
+
+    spi::Result setClusterState(BucketSpace bucketSpace, const spi::ClusterState &state) override;
+
+    void setActiveStateAsync(const spi::Bucket &bucket, spi::BucketInfo::ActiveState state,
+                             spi::OperationComplete::UP up) override;
+
+    void createBucketAsync(const spi::Bucket&, spi::OperationComplete::UP) noexcept override;
     spi::BucketIdListResult listBuckets(BucketSpace bucketSpace) const override;
     spi::BucketInfoResult getBucketInfo(const spi::Bucket&) const override;
-    spi::Result put(const spi::Bucket&, spi::Timestamp, spi::DocumentSP, spi::Context&) override;
-    spi::RemoveResult remove(const spi::Bucket&, spi::Timestamp, const spi::DocumentId&, spi::Context&) override;
-    spi::RemoveResult removeIfFound(const spi::Bucket&, spi::Timestamp, const spi::DocumentId&, spi::Context&) override;
-    spi::UpdateResult update(const spi::Bucket&, spi::Timestamp, spi::DocumentUpdateSP, spi::Context&) override;
+    void putAsync(const spi::Bucket&, spi::Timestamp, spi::DocumentSP, spi::OperationComplete::UP) override;
+    void removeAsync(const spi::Bucket&, std::vector<spi::IdAndTimestamp> ids, spi::OperationComplete::UP) override;
+    void removeIfFoundAsync(const spi::Bucket&, spi::Timestamp, const spi::DocumentId&, spi::OperationComplete::UP) override;
+    void updateAsync(const spi::Bucket&, spi::Timestamp, spi::DocumentUpdateSP, spi::OperationComplete::UP) override;
     spi::GetResult get(const spi::Bucket&, const document::FieldSet&, const spi::DocumentId&, spi::Context&) const override;
 
     spi::CreateIteratorResult
     createIterator(const spi::Bucket &bucket, FieldSetSP, const spi::Selection &, spi::IncludedVersions versions,
                    spi::Context &context) override;
 
-    spi::IterateResult iterate(spi::IteratorId, uint64_t maxByteSize, spi::Context&) const override;
-    spi::Result destroyIterator(spi::IteratorId, spi::Context&) override;
-    spi::Result deleteBucket(const spi::Bucket&, spi::Context&) override;
-    spi::Result split(const spi::Bucket& source, const spi::Bucket& target1,
-                      const spi::Bucket& target2, spi::Context&) override;
-    spi::Result join(const spi::Bucket& source1, const spi::Bucket& source2,
-                     const spi::Bucket& target, spi::Context&) override;
-    spi::Result removeEntry(const spi::Bucket&, spi::Timestamp, spi::Context&) override;
+    spi::IterateResult iterate(spi::IteratorId, uint64_t maxByteSize) const override;
+    spi::Result destroyIterator(spi::IteratorId) override;
+    void deleteBucketAsync(const spi::Bucket&, spi::OperationComplete::UP) noexcept override;
+    spi::Result split(const spi::Bucket& source, const spi::Bucket& target1, const spi::Bucket& target2) override;
+    spi::Result join(const spi::Bucket& source1, const spi::Bucket& source2, const spi::Bucket& target) override;
+    spi::Result removeEntry(const spi::Bucket&, spi::Timestamp) override;
     std::unique_ptr<vespalib::IDestructorCallback> register_resource_usage_listener(spi::IResourceUsageListener& listener) override;
     std::unique_ptr<vespalib::IDestructorCallback> register_executor(std::shared_ptr<spi::BucketExecutor>) override;
 };

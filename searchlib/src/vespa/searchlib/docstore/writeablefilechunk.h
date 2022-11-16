@@ -53,13 +53,14 @@ public:
     ssize_t read(uint32_t lid, SubChunkId chunk, vespalib::DataBuffer & buffer) const override;
     void read(LidInfoWithLidV::const_iterator begin, size_t count, IBufferVisitor & visitor) const override;
 
-    LidInfo append(uint64_t serialNum, uint32_t lid, const void * buffer, size_t len);
-    void flush(bool block, uint64_t syncToken);
+    LidInfo append(uint64_t serialNum, uint32_t lid, const void * buffer, size_t len,
+                   vespalib::CpuUsage::Category cpu_category);
+    void flush(bool block, uint64_t syncToken, vespalib::CpuUsage::Category cpu_category);
     uint64_t   getSerialNum() const { return _serialNum; }
     void setSerialNum(uint64_t serialNum) { _serialNum = std::max(_serialNum, serialNum); }
 
     vespalib::system_time getModificationTime() const override;
-    void freeze();
+    void freeze(vespalib::CpuUsage::Category cpu_category);
     size_t getDiskFootprint() const override;
     size_t getMemoryFootprint() const override;
     size_t getMemoryMetaFootprint() const override;
@@ -76,15 +77,15 @@ private:
 
     typedef std::vector<ProcessedChunkUP> ProcessedChunkQ;
 
-    bool frozen() const override { return _frozen; }
+    bool frozen() const override { return _frozen.load(std::memory_order_acquire); }
     void waitForChunkFlushedToDisk(uint32_t chunkId) const;
     void waitForAllChunksFlushedToDisk() const;
     void fileWriter(const uint32_t firstChunkId);
-    void internalFlush(uint32_t, uint64_t serialNum);
-    void enque(ProcessedChunkUP);
+    void internalFlush(uint32_t, uint64_t serialNum, vespalib::CpuUsage::Category cpu_category);
+    void enque(ProcessedChunkUP, vespalib::CpuUsage::Category cpu_category);
     int32_t flushLastIfNonEmpty(bool force);
     // _writeMonitor should not be held when calling restart
-    void restart(uint32_t nextChunkId);
+    void restart(uint32_t nextChunkId, vespalib::CpuUsage::Category cpu_category);
     ProcessedChunkQ drainQ(unique_lock & guard);
     void readDataHeader();
     void readIdxHeader(FastOS_FileInterface & idxFile);
@@ -103,10 +104,11 @@ private:
     void updateCurrentDiskFootprint();
     size_t getDiskFootprint(const unique_lock & guard) const;
     std::unique_ptr<FastOS_FileInterface> openIdx();
+    const Chunk& get_chunk(uint32_t chunk) const;
 
     Config            _config;
     SerialNum         _serialNum;
-    bool              _frozen;
+    std::atomic<bool> _frozen;
     // Lock order is _writeLock, _flushLock, _lock
     mutable std::mutex             _lock;
     mutable std::condition_variable _cond;
@@ -119,8 +121,8 @@ private:
     PendingChunks     _pendingChunks;
     uint64_t          _pendingIdx;
     uint64_t          _pendingDat;
-    uint64_t          _idxFileSize;
-    uint64_t          _currentDiskFootprint;
+    std::atomic<uint64_t> _idxFileSize;
+    std::atomic<uint64_t> _currentDiskFootprint;
     uint32_t          _nextChunkId;
     Chunk::UP         _active;
     size_t            _alignment;

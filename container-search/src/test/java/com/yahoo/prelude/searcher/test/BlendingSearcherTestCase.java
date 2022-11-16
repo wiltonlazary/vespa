@@ -12,8 +12,6 @@ import com.yahoo.component.chain.Chain;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.search.federation.FederationConfig;
 import com.yahoo.container.QrSearchersConfig;
-import com.yahoo.search.federation.StrictContractsConfig;
-import com.yahoo.prelude.IndexFacts;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.prelude.fastsearch.FastHit;
@@ -21,18 +19,21 @@ import com.yahoo.prelude.searcher.BlendingSearcher;
 import com.yahoo.prelude.searcher.FillSearcher;
 import com.yahoo.search.Searcher;
 import com.yahoo.search.federation.FederationSearcher;
+import com.yahoo.search.grouping.result.Group;
+import com.yahoo.search.grouping.result.RootGroup;
+import com.yahoo.search.grouping.result.StringBucketId;
+import com.yahoo.search.grouping.result.StringId;
+import com.yahoo.search.grouping.result.ValueGroupId;
 import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.search.result.Hit;
+import com.yahoo.search.result.Relevance;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.searchchain.SearchChain;
 import com.yahoo.search.searchchain.SearchChainRegistry;
 import com.yahoo.search.searchchain.testutil.DocumentSourceSearcher;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests the BlendingSearcher class
@@ -108,10 +109,8 @@ public class BlendingSearcherTestCase {
                                 entry.getValue()));
             }
 
-            StrictContractsConfig contracts = new StrictContractsConfig.Builder().build();
-
             FederationSearcher fedSearcher =
-                    new FederationSearcher(new FederationConfig(builder), contracts, new ComponentRegistry<>());
+                    new FederationSearcher(new FederationConfig(builder), new ComponentRegistry<>());
             BlendingSearcher blendingSearcher = new BlendingSearcher(blendingField);
             blendingChain = new SearchChain(ComponentId.createAnonymousComponentId("blendingChain"), blendingSearcher, fedSearcher);
             return true;
@@ -123,7 +122,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testitTwoPhase() {
+    void testitTwoPhase() {
         DocumentSourceSearcher chain1 = new DocumentSourceSearcher();
         DocumentSourceSearcher chain2 = new DocumentSourceSearcher();
         DocumentSourceSearcher chain3 = new DocumentSourceSearcher();
@@ -135,27 +134,63 @@ public class BlendingSearcherTestCase {
         Result r3 = new Result(q);
 
         r1.setTotalHitCount(13);
-        r1.hits().add(new Hit("http://host1.com", 101){{setSource("one");}});
-        r1.hits().add(new Hit("http://host2.com", 102){{setSource("one");}});
-        r1.hits().add(new Hit("http://host3.com", 103){{setSource("one");}});
+        r1.hits().add(new Hit("http://host1.com", 101){
+            {
+                setSource("one");
+            }
+        });
+        r1.hits().add(new Hit("http://host2.com", 102){
+            {
+                setSource("one");
+            }
+        });
+        r1.hits().add(new Hit("http://host3.com", 103){
+            {
+                setSource("one");
+            }
+        });
         chain1.addResult(q, r1);
 
         r2.setTotalHitCount(17);
-        r2.hits().add(new Hit("http://host1.com", 101){{setSource("two");}});
-        r2.hits().add(new Hit("http://host2.com", 102){{setSource("two");}});
-        r2.hits().add(new Hit("http://host4.com", 104){{setSource("two");}});
+        r2.hits().add(new Hit("http://host1.com", 101){
+            {
+                setSource("two");
+            }
+        });
+        r2.hits().add(new Hit("http://host2.com", 102){
+            {
+                setSource("two");
+            }
+        });
+        r2.hits().add(new Hit("http://host4.com", 104){
+            {
+                setSource("two");
+            }
+        });
         chain2.addResult(q, r2);
 
         r3.setTotalHitCount(37);
-        r3.hits().add(new Hit("http://host5.com", 100){{setSource("three");}});
-        r3.hits().add(new Hit("http://host6.com", 106){{setSource("three");}});
-        r3.hits().add(new Hit("http://host7.com", 105){{setSource("three");}});
+        r3.hits().add(new Hit("http://host5.com", 100){
+            {
+                setSource("three");
+            }
+        });
+        r3.hits().add(new Hit("http://host6.com", 106){
+            {
+                setSource("three");
+            }
+        });
+        r3.hits().add(new Hit("http://host7.com", 105){
+            {
+                setSource("three");
+            }
+        });
         chain3.addResult(q, r3);
 
         BlendingSearcherWrapper blender1 = new BlendingSearcherWrapper();
         blender1.addSource("one", chain1);
         blender1.initialize();
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result br1 = new Execution(blender1, Execution.Context.createContextStub()).search(q);
         assertEquals(3, br1.getHitCount());
         assertEquals(13, br1.getTotalHitCount());
@@ -165,7 +200,7 @@ public class BlendingSearcherTestCase {
         blender2.addSource("two", chain1);
         blender2.addSource("three", chain2);
         blender2.initialize();
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result br2 = new Execution(blender2, Execution.Context.createContextStub()).search(q);
         assertEquals(6, br2.getHitCount());
         assertEquals(30, br2.getTotalHitCount());
@@ -176,28 +211,28 @@ public class BlendingSearcherTestCase {
         blender3.addSource("five", chain2);
         blender3.addSource("six", chain3);
         blender3.initialize();
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result br3 = new Execution(blender3, Execution.Context.createContextStub()).search(q);
         assertEquals(9, br3.getHitCount());
         assertEquals(67, br3.getTotalHitCount());
         assertEquals("http://host6.com/", br3.hits().get(0).getId().toString());
 
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result br4 = new Execution(blender3, Execution.Context.createContextStub()).search(q);
         assertEquals(9, br4.getHitCount());
         assertEquals("http://host6.com/", br4.hits().get(0).getId().toString());
 
-        q.setWindow( 3, 10);
+        q.setWindow(3, 10);
         Result br5 = new Execution(blender3, Execution.Context.createContextStub()).search(q);
         assertEquals(6, br5.getHitCount());
         assertEquals("http://host3.com/", br5.hits().get(0).getId().toString());
 
-        q.setWindow( 3, 10);
+        q.setWindow(3, 10);
         br5 = new Execution(blender3, Execution.Context.createContextStub()).search(q);
         assertEquals(6, br5.getHitCount());
         assertEquals("http://host3.com/", br5.hits().get(0).getId().toString());
 
-        q.setWindow( 3, 10);
+        q.setWindow(3, 10);
         br5 = new Execution(blender3, Execution.Context.createContextStub()).search(q);
         assertEquals(6, br5.getHitCount());
         assertEquals("http://host3.com/", br5.hits().get(0).getId().toString());
@@ -205,7 +240,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testMultipleBackendsWithDuplicateRemoval() {
+    void testMultipleBackendsWithDuplicateRemoval() {
         DocumentSourceSearcher docSource1 = new DocumentSourceSearcher();
         DocumentSourceSearcher docSource2 = new DocumentSourceSearcher();
         Query q = new Query("/search?query=hannibal&search=a,b");
@@ -223,14 +258,14 @@ public class BlendingSearcherTestCase {
         blender.addSource(new Chain<>("a", new FillSearcher(), docSource1));
         blender.addSource(new Chain<>("b", new FillSearcher(), docSource2));
         blender.initialize();
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result cr = new Execution(blender, Execution.Context.createContextStub()).search(q);
         assertEquals(1, cr.getHitCount());
         assertEquals(101, ((int) cr.hits().get(0).getRelevance().getScore()));
     }
 
     @Test
-    public void testMultipleBackendsWithErrorMerging() {
+    void testMultipleBackendsWithErrorMerging() {
         DocumentSourceSearcher docSource1 = new DocumentSourceSearcher();
         DocumentSourceSearcher docSource2 = new DocumentSourceSearcher();
         Query q = new Query("/search?query=hannibal&search=a,b");
@@ -247,25 +282,25 @@ public class BlendingSearcherTestCase {
         blender.addSource(new Chain<>("a", new FillSearcher(), docSource1));
         blender.addSource(new Chain<>("b", new FillSearcher(), docSource2));
         blender.initialize();
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result cr = new Execution(blender, Execution.Context.createContextStub()).search(q);
         assertEquals(2, cr.getHitCount());
         assertEquals(1, cr.getConcreteHitCount());
         com.yahoo.search.result.ErrorHit errorHit = cr.hits().getErrorHit();
         Iterator errorIterator = errorHit.errorIterator();
         List<String> errorList = Arrays.asList("Source 'a': No backends in service. Try later",
-                                               "Source 'b': 2: Request too large");
+                "Source 'b': 2: Request too large");
         String a = errorIterator.next().toString();
-        assertTrue(a, errorList.contains(a));
+        assertTrue(errorList.contains(a), a);
         String b = errorIterator.next().toString();
-        assertTrue(a, errorList.contains(b));
+        assertTrue(errorList.contains(b), a);
         assertFalse(errorIterator.hasNext());
         assertEquals(102, ((int) cr.hits().get(1).getRelevance().getScore()));
         assertEquals(com.yahoo.container.protect.Error.NO_BACKENDS_IN_SERVICE.code, cr.hits().getError().getCode());
     }
 
     @Test
-    public void testBlendingWithSortSpec() {
+    void testBlendingWithSortSpec() {
         DocumentSourceSearcher docSource1 = new DocumentSourceSearcher();
         DocumentSourceSearcher docSource2 = new DocumentSourceSearcher();
 
@@ -308,7 +343,7 @@ public class BlendingSearcherTestCase {
         blender.addSource(new Chain<>("a", new FillSearcher(), docSource1));
         blender.addSource(new Chain<>("b", new FillSearcher(), docSource2));
         blender.initialize();
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result br = new Execution(blender, Execution.Context.createContextStub()).search(q);
         assertEquals(202, ((int) br.hits().get(0).getRelevance().getScore()));
         assertEquals(103, ((int) br.hits().get(1).getRelevance().getScore()));
@@ -324,7 +359,7 @@ public class BlendingSearcherTestCase {
      * But are we sure fsearch handles this case correctly?
      */
     @Test
-    public void testBlendingWithSortSpecAnd2Phase() {
+    void testBlendingWithSortSpecAnd2Phase() {
         DocumentSourceSearcher docSource1 = new DocumentSourceSearcher();
         DocumentSourceSearcher docSource2 = new DocumentSourceSearcher();
 
@@ -360,7 +395,7 @@ public class BlendingSearcherTestCase {
         blender.addSource("chainedone", docSource1);
         blender.addSource("chainedtwo", docSource2);
         blender.initialize();
-        q.setWindow( 0, 10);
+        q.setWindow(0, 10);
         Result br = new Execution(blender, Execution.Context.createContextStub()).search(q);
         assertEquals(202, ((int) br.hits().get(0).getRelevance().getScore()));
         assertEquals(103, ((int) br.hits().get(1).getRelevance().getScore()));
@@ -398,7 +433,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testOnlyFirstBackend() {
+    void testOnlyFirstBackend() {
         BlendingSearcherWrapper searcher = setupFirstAndSecond();
         Query query = new Query("/search?query=banana&search=first");
 
@@ -408,7 +443,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testOnlySecondBackend() {
+    void testOnlySecondBackend() {
         BlendingSearcherWrapper searcher = setupFirstAndSecond();
         Query query = new Query("/search?query=banana&search=second");
 
@@ -419,7 +454,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testBothBackendsExplicitly() {
+    void testBothBackendsExplicitly() {
         BlendingSearcherWrapper searcher = setupFirstAndSecond();
         Query query = new Query("/search?query=banana&search=first,second");
 
@@ -431,7 +466,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testBothBackendsImplicitly() {
+    void testBothBackendsImplicitly() {
         BlendingSearcherWrapper searcher = setupFirstAndSecond();
         Query query = new Query("/search?query=banana");
 
@@ -443,7 +478,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testNonexistingBackendCausesError() {
+    void testNonexistingBackendCausesError() {
         BlendingSearcherWrapper searcher = setupFirstAndSecond();
         Query query = new Query("/search?query=banana&search=nonesuch");
 
@@ -457,7 +492,7 @@ public class BlendingSearcherTestCase {
     }
 
     @Test
-    public void testNonexistingBackendsCausesErrorOnFirst() {
+    void testNonexistingBackendsCausesErrorOnFirst() {
         // Feel free to change to include all in the detail message...
         BlendingSearcherWrapper searcher = setupFirstAndSecond();
         Query query = new Query("/search?query=banana&search=nonesuch,orsuch");
@@ -469,11 +504,11 @@ public class BlendingSearcherTestCase {
         assertEquals("Invalid query parameter", e.getMessage());
         //TODO: Do not depend on sources order
         assertEquals("4: Invalid query parameter: Could not resolve source ref 'nonesuch'. Could not resolve source ref 'orsuch'. Valid source refs are first, second.",
-                     e.toString());
+                e.toString());
     }
 
     @Test
-    public void testExistingAndNonExistingBackendCausesBothErrorAndResult() {
+    void testExistingAndNonExistingBackendCausesBothErrorAndResult() {
         BlendingSearcherWrapper searcher = setupFirstAndSecond();
         Query query = new Query("/search?query=banana&search=first,nonesuch,second");
 
@@ -486,7 +521,110 @@ public class BlendingSearcherTestCase {
         ErrorMessage e = result.hits().getError();
         //TODO: Do not depend on sources order
         assertEquals("Could not resolve source ref 'nonesuch'. Valid source refs are first, second.",
-                     e.getDetailedMessage());
+                e.getDetailedMessage());
+    }
+
+    @Test
+    void testBlendingFederationWithGrouping() {
+        DocumentSourceSearcher docSource1 = new DocumentSourceSearcher();
+        DocumentSourceSearcher docSource2 = new DocumentSourceSearcher();
+
+        Query q = new Query("/search?query=test");
+
+        Result r1 = new Result(q);
+        Result r2 = new Result(q);
+
+        RootGroup root1 = new RootGroup(0, null);
+        Group subGroup11 = new Group(new StringBucketId("a", "b"), new Relevance(1.0));
+        subGroup11.add(new Group(new StringId("unique1"), new Relevance(1.0)));
+        subGroup11.add(new Group(new StringId("unique5"), new Relevance(1.0)));
+        subGroup11.add(new Group(new StringId("unique6"), new Relevance(1.0)));
+        subGroup11.add(new Group(new StringId("unique7"), new Relevance(1.0)));
+        root1.add(subGroup11);
+        r1.hits().add(root1);
+        docSource1.addResult(q, r1);
+
+        RootGroup root2 = new RootGroup(0, null);
+        Group subGroup21 = new Group(new StringBucketId("a", "b"), new Relevance(1.0));
+        subGroup21.add(new Group(new StringId("unique1"), new Relevance(1.0)));
+        subGroup21.add(new Group(new StringId("unique2"), new Relevance(1.0)));
+        subGroup21.add(new Group(new StringId("unique3"), new Relevance(1.0)));
+        root2.add(subGroup21);
+        Group subGroup22 = new Group(new StringBucketId("c", "d"), new Relevance(1.0));
+        subGroup22.add(new Group(new StringId("unique3"), new Relevance(1.0)));
+        subGroup22.add(new Group(new StringId("unique4"), new Relevance(1.0)));
+        root2.add(subGroup22);
+        r2.hits().add(root2);
+        docSource2.addResult(q, r2);
+
+        BlendingSearcherWrapper blender = new BlendingSearcherWrapper();
+        blender.addSource(new Chain<>("a", new FillSearcher(), docSource1));
+        blender.addSource(new Chain<>("b", new FillSearcher(), docSource2));
+        blender.initialize();
+        q.setWindow(0, 10);
+        Result result = new Execution(blender, Execution.Context.createContextStub()).search(q);
+        assertEquals(2, result.hits().size());
+
+        assertTrue(result.hits().get(0) instanceof RootGroup);
+        RootGroup resultRoot1 = (RootGroup) result.hits().get(0);
+        assertEquals(1, resultRoot1.asList().size());
+
+        assertTrue(result.hits().get(1) instanceof RootGroup);
+        RootGroup resultRoot2 = (RootGroup) result.hits().get(1);
+        assertEquals(2, resultRoot2.asList().size());
+    }
+
+    /** Multiple document types in the same cluster are returned without a top level group representing each */
+    @Test
+    void testBlendingMultipleDocumentTypesWithGrouping() {
+        DocumentSourceSearcher docSource = new DocumentSourceSearcher();
+
+        Query q = new Query("/search?query=test");
+
+        Result r = new Result(q);
+
+        RootGroup root1 = new RootGroup(0, null);
+        Group subGroup11 = new Group(new StringBucketId("a", "b"), new Relevance(1.0));
+        subGroup11.add(new Group(new StringId("unique1"), new Relevance(1.0)));
+        subGroup11.add(new Group(new StringId("unique5"), new Relevance(1.0)));
+        subGroup11.add(new Group(new StringId("unique6"), new Relevance(1.0)));
+        subGroup11.add(new Group(new StringId("unique7"), new Relevance(1.0)));
+        root1.add(subGroup11);
+        r.hits().add(root1);
+
+        RootGroup root2 = new RootGroup(0, null);
+        Group subGroup21 = new Group(new StringBucketId("a", "b"), new Relevance(1.0));
+        subGroup21.add(new Group(new StringId("unique1"), new Relevance(1.0)));
+        subGroup21.add(new Group(new StringId("unique2"), new Relevance(1.0)));
+        subGroup21.add(new Group(new StringId("unique3"), new Relevance(1.0)));
+        root2.add(subGroup21);
+        Group subGroup22 = new Group(new StringBucketId("c", "d"), new Relevance(1.0));
+        subGroup22.add(new Group(new StringId("unique3"), new Relevance(1.0)));
+        subGroup22.add(new Group(new StringId("unique4"), new Relevance(1.0)));
+        root2.add(subGroup22);
+        r.hits().add(root2);
+
+        docSource.addResult(q, r);
+
+        Chain<Searcher> chain = new Chain<>("main",
+                new FillSearcher(),
+                new BlendingSearcher(ComponentId.fromString("test"), new QrSearchersConfig.Builder().build()),
+                docSource);
+        q.setWindow(0, 10);
+        Result result = new Execution(chain, Execution.Context.createContextStub()).search(q);
+        assertEquals(3, result.hits().size());
+
+        assertTrue(result.hits().get(0) instanceof Group);
+        Group resultSubGroup1 = (Group) result.hits().get(0);
+        assertEquals(4, resultSubGroup1.asList().size());
+
+        assertTrue(result.hits().get(1) instanceof Group);
+        Group resultSubGroup2 = (Group) result.hits().get(1);
+        assertEquals(3, resultSubGroup2.asList().size());
+
+        assertTrue(result.hits().get(2) instanceof Group);
+        Group resultSubGroup3 = (Group) result.hits().get(2);
+        assertEquals(2, resultSubGroup3.asList().size());
     }
 
 }

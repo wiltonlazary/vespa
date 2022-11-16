@@ -44,6 +44,7 @@ public:
  */
 class DistanceBlueprint : public fef::Blueprint {
 private:
+    vespalib::string _field_name;
     vespalib::string _arg_string;
     uint32_t _attr_id;
     bool _use_geo_pos;
@@ -62,6 +63,7 @@ public:
         return fef::ParameterDescriptions().desc().string().desc().string().string();
     }
     bool setup(const fef::IIndexEnvironment & env, const fef::ParameterList & params) override;
+    void prepareSharedState(const fef::IQueryEnvironment& env, fef::IObjectStore& store) const override;
     fef::FeatureExecutor &createExecutor(const fef::IQueryEnvironment &env, vespalib::Stash &stash) const override;
 };
 

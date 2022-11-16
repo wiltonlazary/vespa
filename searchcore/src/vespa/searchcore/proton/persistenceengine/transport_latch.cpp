@@ -5,6 +5,7 @@
 
 using vespalib::make_string;
 using storage::spi::Result;
+using storage::spi::RemoveResult;
 
 namespace proton {
 
@@ -30,14 +31,19 @@ TransportMerger::mergeResult(ResultUP result, bool documentWasFound) {
     }
 }
 
+Result::UP
+TransportMerger::merge(ResultUP accum, ResultUP incoming, bool documentWasFound) {
+    return documentWasFound ? std::move(incoming) : std::move(accum);
+}
+
 void
 TransportMerger::mergeWithLock(ResultUP result, bool documentWasFound) {
     if (!_result) {
         _result = std::move(result);
     } else if (result->hasError()) {
         _result = std::make_unique<Result>(mergeErrorResults(*_result, *result));
-    } else if (documentWasFound) {
-        _result = std::move(result);
+    } else {
+        _result = merge(std::move(_result), std::move(result), documentWasFound);
     }
     completeIfDone();
 }
@@ -67,7 +73,7 @@ TransportLatch::send(ResultUP result, bool documentWasFound)
     _latch.countDown();
 }
 
-AsyncTranportContext::AsyncTranportContext(uint32_t cnt, OperationComplete::UP onComplete)
+AsyncTransportContext::AsyncTransportContext(uint32_t cnt, OperationComplete::UP onComplete)
     : TransportMerger(cnt > 1),
       _countDown(cnt),
       _onComplete(std::move(onComplete))
@@ -78,19 +84,26 @@ AsyncTranportContext::AsyncTranportContext(uint32_t cnt, OperationComplete::UP o
 }
 
 void
-AsyncTranportContext::completeIfDone() {
+AsyncTransportContext::completeIfDone() {
     _countDown--;
     if (_countDown == 0) {
         _onComplete->onComplete(std::move(_result));
     }
 
 }
-AsyncTranportContext::~AsyncTranportContext() = default;
+AsyncTransportContext::~AsyncTransportContext() = default;
 
 void
-AsyncTranportContext::send(ResultUP result, bool documentWasFound)
+AsyncTransportContext::send(ResultUP result, bool documentWasFound)
 {
     mergeResult(std::move(result), documentWasFound);
+}
+
+Result::UP
+AsyncRemoveTransportContext::merge(ResultUP accum, ResultUP incoming, bool) {
+    // TODO This can be static cast if necessary.
+    dynamic_cast<RemoveResult *>(accum.get())->inc_num_removed(dynamic_cast<RemoveResult *>(incoming.get())->num_removed());
+    return accum;
 }
 
 } // proton

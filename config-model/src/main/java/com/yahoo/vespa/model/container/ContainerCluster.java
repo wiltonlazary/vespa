@@ -25,12 +25,12 @@ import com.yahoo.container.jdisc.state.StateHandler;
 import com.yahoo.container.logging.AccessLog;
 import com.yahoo.container.usability.BindingsOverviewHandler;
 import com.yahoo.document.config.DocumentmanagerConfig;
-import com.yahoo.jdisc.http.filter.SecurityFilterInvoker;
 import com.yahoo.metrics.simple.runtime.MetricProperties;
 import com.yahoo.osgi.provider.model.ComponentModel;
 import com.yahoo.prelude.semantics.SemanticRulesConfig;
 import com.yahoo.search.config.IndexInfoConfig;
 import com.yahoo.search.config.QrStartConfig;
+import com.yahoo.search.config.SchemaInfoConfig;
 import com.yahoo.search.pagetemplates.PageTemplatesConfig;
 import com.yahoo.search.query.profile.config.QueryProfilesConfig;
 import com.yahoo.vespa.configdefinition.IlscriptsConfig;
@@ -47,7 +47,6 @@ import com.yahoo.vespa.model.container.component.DiscBindingsConfigGenerator;
 import com.yahoo.vespa.model.container.component.FileStatusHandlerComponent;
 import com.yahoo.vespa.model.container.component.Handler;
 import com.yahoo.vespa.model.container.component.SimpleComponent;
-import com.yahoo.vespa.model.container.component.StatisticsComponent;
 import com.yahoo.vespa.model.container.component.SystemBindingPattern;
 import com.yahoo.vespa.model.container.component.chain.ProcessingHandler;
 import com.yahoo.vespa.model.container.configserver.ConfigserverCluster;
@@ -58,19 +57,21 @@ import com.yahoo.vespa.model.container.processing.ProcessingChains;
 import com.yahoo.vespa.model.container.search.ContainerSearch;
 import com.yahoo.vespa.model.container.search.searchchain.SearchChains;
 import com.yahoo.vespa.model.content.Content;
-import com.yahoo.vespa.model.search.AbstractSearchCluster;
+import com.yahoo.vespa.model.search.SearchCluster;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
+
+import static com.yahoo.vespa.model.container.component.chain.ProcessingHandler.PROCESSING_HANDLER_CLASS;
 
 /**
  * Parent class for all container cluster types.
@@ -100,12 +101,13 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         DocprocConfig.Producer,
         ClusterInfoConfig.Producer,
         ConfigserverConfig.Producer,
-        CuratorConfig.Producer
+        CuratorConfig.Producer,
+        SchemaInfoConfig.Producer
 {
 
     /**
      * URI prefix used for internal, usually programmatic, APIs. URIs using this
-     * prefix should never considered available for direct use by customers, and
+     * prefix should never be considered available for direct use by customers, and
      * normal compatibility concerns only applies to libraries using the URIs in
      * question, not contents served from the URIs themselves.
      */
@@ -114,8 +116,8 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     public static final String APPLICATION_STATUS_HANDLER_CLASS = "com.yahoo.container.handler.observability.ApplicationStatusHandler";
     public static final String BINDINGS_OVERVIEW_HANDLER_CLASS = BindingsOverviewHandler.class.getName();
     public static final String LOG_HANDLER_CLASS = com.yahoo.container.handler.LogHandler.class.getName();
-    public static final String CMS = "-XX:+UseConcMarkSweepGC -XX:MaxTenuringThreshold=15 -XX:NewRatio=1";
     public static final String G1GC = "-XX:+UseG1GC -XX:MaxTenuringThreshold=15";
+    public static final String PARALLEL_GC = "-XX:+UseParallelGC -XX:MaxTenuringThreshold=15 -XX:NewRatio=1";
 
     public static final String STATE_HANDLER_CLASS = "com.yahoo.container.jdisc.state.StateHandler";
     public static final BindingPattern STATE_HANDLER_BINDING_1 = SystemBindingPattern.fromHttpPath(StateHandler.STATE_API_ROOT);
@@ -136,17 +138,17 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     private ContainerDocproc containerDocproc;
     private ContainerDocumentApi containerDocumentApi;
     private SecretStore secretStore;
+    private final ContainerThreadpool defaultHandlerThreadpool = new Handler.DefaultHandlerThreadpool();
 
     private boolean rpcServerEnabled = true;
     private boolean httpServerEnabled = true;
 
-    private final Set<Path> platformBundles = new LinkedHashSet<>();
+    private final Set<Path> platformBundles = new TreeSet<>(); // Ensure stable ordering
 
-    private final List<String> serviceAliases = new ArrayList<>();
-    private final List<String> endpointAliases = new ArrayList<>();
     private final ComponentGroup<Component<?, ?>> componentGroup;
     private final boolean isHostedVespa;
     private final boolean zooKeeperLocalhostAffinity;
+    private final String compressionType;
 
     private final Map<String, String> concreteDocumentTypes = new LinkedHashMap<>();
 
@@ -157,30 +159,31 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     private String hostClusterId = null;
     private String jvmGCOptions = null;
-    private String environmentVars = null;
 
     private boolean deferChangesUntilRestart = false;
 
     public ContainerCluster(AbstractConfigProducer<?> parent, String configSubId, String clusterId, DeployState deployState, boolean zooKeeperLocalhostAffinity) {
+        this(parent, configSubId, clusterId, deployState, zooKeeperLocalhostAffinity, 1);
+    }
+    public ContainerCluster(AbstractConfigProducer<?> parent, String configSubId, String clusterId, DeployState deployState, boolean zooKeeperLocalhostAffinity, int defaultPoolNumThreads) {
         super(parent, configSubId);
         this.name = clusterId;
         this.isHostedVespa = stateIsHosted(deployState);
         this.zone = (deployState != null) ? deployState.zone() : Zone.defaultZone();
         this.zooKeeperLocalhostAffinity = zooKeeperLocalhostAffinity;
+        this.compressionType = deployState.featureFlags().logFileCompressionAlgorithm("zstd");
 
         componentGroup = new ComponentGroup<>(this, "component");
 
         addCommonVespaBundles();
-
-        addComponent(new StatisticsComponent());
         addSimpleComponent(AccessLog.class);
-        addComponent(new DefaultThreadpoolProvider(this, deployState.featureFlags().metricsproxyNumThreads()));
+        addComponent(new DefaultThreadpoolProvider(this, defaultPoolNumThreads));
+        addComponent(defaultHandlerThreadpool);
         addSimpleComponent(com.yahoo.concurrent.classlock.ClassLocking.class);
-        addSimpleComponent(SecurityFilterInvoker.class);
         addSimpleComponent("com.yahoo.container.jdisc.metric.MetricConsumerProviderProvider");
         addSimpleComponent("com.yahoo.container.jdisc.metric.MetricProvider");
         addSimpleComponent("com.yahoo.container.jdisc.metric.MetricUpdater");
-        addSimpleComponent(com.yahoo.container.jdisc.LoggingRequestHandler.Context.class);
+        addSimpleComponent(com.yahoo.container.jdisc.ThreadedHttpRequestHandler.Context.class);
         addSimpleComponent(com.yahoo.metrics.simple.MetricManager.class.getName(), null, MetricProperties.BUNDLE_SYMBOLIC_NAME);
         addSimpleComponent(com.yahoo.metrics.simple.jdisc.JdiscMetricsFactory.class.getName(), null, MetricProperties.BUNDLE_SYMBOLIC_NAME);
         addSimpleComponent("com.yahoo.container.jdisc.state.StateMonitor");
@@ -189,8 +192,9 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         addSimpleComponent(com.yahoo.container.handler.ClustersStatus.class.getName());
         addSimpleComponent("com.yahoo.container.jdisc.DisabledConnectionLogProvider");
         addSimpleComponent(com.yahoo.jdisc.http.server.jetty.Janitor.class);
-        addJaxProviders();
     }
+
+    protected abstract boolean messageBusEnabled();
 
     public ClusterSpec.Id id() { return ClusterSpec.Id.from(getName()); }
 
@@ -213,49 +217,45 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     }
 
     public void addMetricStateHandler() {
-        Handler<AbstractConfigProducer<?>> stateHandler = new Handler<>(
+        Handler stateHandler = new Handler(
                 new ComponentModel(STATE_HANDLER_CLASS, null, null, null));
         stateHandler.addServerBindings(STATE_HANDLER_BINDING_1, STATE_HANDLER_BINDING_2);
         addComponent(stateHandler);
     }
 
     public void addDefaultRootHandler() {
-        Handler<AbstractConfigProducer<?>> handler = new Handler<>(
-                new ComponentModel(BundleInstantiationSpecification.getFromStrings(
+        Handler handler = new Handler(
+                new ComponentModel(BundleInstantiationSpecification.fromStrings(
                         BINDINGS_OVERVIEW_HANDLER_CLASS, null, null), null));  // null bundle, as the handler is in container-disc
         handler.addServerBindings(ROOT_HANDLER_BINDING);
         addComponent(handler);
     }
 
     public void addApplicationStatusHandler() {
-        Handler<AbstractConfigProducer<?>> statusHandler = new Handler<>(
-                new ComponentModel(BundleInstantiationSpecification.getInternalHandlerSpecificationFromStrings(
-                        APPLICATION_STATUS_HANDLER_CLASS, null), null));
+        Handler statusHandler = new Handler(
+                new ComponentModel(BundleInstantiationSpecification.fromStrings(
+                        APPLICATION_STATUS_HANDLER_CLASS, null, null), null));  // null bundle, as the handler is in container-disc
         statusHandler.addServerBindings(SystemBindingPattern.fromHttpPath("/ApplicationStatus"));
         addComponent(statusHandler);
     }
 
     public void addVipHandler() {
-        Handler<?> vipHandler = Handler.fromClassName(FileStatusHandlerComponent.CLASS);
+        Handler vipHandler = Handler.fromClassName(FileStatusHandlerComponent.CLASS);
         vipHandler.addServerBindings(VIP_HANDLER_BINDING);
         addComponent(vipHandler);
     }
 
-    @SuppressWarnings("deprecation")
-    private void addJaxProviders() {
-        addSimpleComponent(com.yahoo.container.xml.providers.DatatypeFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.DocumentBuilderFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.SAXParserFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.SchemaFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.TransformerFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.XMLEventFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.XMLInputFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.XMLOutputFactoryProvider.class);
-        addSimpleComponent(com.yahoo.container.xml.providers.XPathFactoryProvider.class);
-    }
-
     public final void addComponent(Component<?, ?> component) {
         componentGroup.addComponent(component);
+        if (component instanceof Handler handler) {
+            ensureHandlerHasThreadpool(handler);
+        }
+    }
+
+    private void ensureHandlerHasThreadpool(Handler handler) {
+        if (! handler.hasCustomThreadPool) {
+            handler.inject(defaultHandlerThreadpool);
+        }
     }
 
     public final void addSimpleComponent(String idSpec, String classSpec, String bundleSpec) {
@@ -268,7 +268,7 @@ public abstract class ContainerCluster<CONTAINER extends Container>
      * @return the removed component, or null if it was not present
      */
     @SuppressWarnings("unused") // Used from other repositories
-    public Component removeComponent(ComponentId componentId) {
+    public Component<?, ?> removeComponent(ComponentId componentId) {
         return componentGroup.removeComponent(componentId);
     }
 
@@ -299,7 +299,8 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         container.setOwner(this);
         container.setClusterName(name);
         container.setProp("clustername", name)
-                 .setProp("index", this.containers.size());
+                 .setProp("index", this.containers.size())
+                 .setProp("clustertype", "container");
         containers.add(container);
     }
 
@@ -313,10 +314,9 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
         this.processingChains = processingChains;
 
-        // Cannot use the class object for ProcessingHandler, because its superclass is not accessible
         ProcessingHandler<?> processingHandler = new ProcessingHandler<>(
                 processingChains,
-                "com.yahoo.processing.handler.ProcessingHandler");
+                BundleInstantiationSpecification.fromStrings(PROCESSING_HANDLER_CLASS, null, null));
 
         for (BindingPattern binding: serverBindings)
             processingHandler.addServerBindings(binding);
@@ -330,8 +330,8 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     public SearchChains getSearchChains() {
         if (containerSearch == null)
-            throw new IllegalStateException("Search components not found in container cluster '" + getSubId() +
-                                            "': Add <search/> to the cluster in services.xml");
+            throw new IllegalArgumentException("Search components not found in container cluster '" + getSubId() +
+                                               "': Add <search/> to the cluster in services.xml");
         return containerSearch.getChains();
     }
 
@@ -360,24 +360,19 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         this.containerDocproc = containerDocproc;
     }
 
-    public ContainerDocumentApi getDocumentApi() {
-        return containerDocumentApi;
-    }
-
     public void setDocumentApi(ContainerDocumentApi containerDocumentApi) {
         this.containerDocumentApi = containerDocumentApi;
     }
 
     public DocprocChains getDocprocChains() {
         if (containerDocproc == null)
-            throw new IllegalStateException("Document processing components not found in container cluster '" + getSubId() +
-                                                    "': Add <document-processing/> to the cluster in services.xml");
+            throw new IllegalArgumentException("Document processing components not found in container cluster '" + getSubId() +
+                                            "': Add <document-processing/> to the cluster in services.xml");
         return containerDocproc.getChains();
     }
 
-    @SuppressWarnings("unchecked")
-    public Collection<Handler<?>> getHandlers() {
-        return (Collection<Handler<?>>)(Collection)componentGroup.getComponents(Handler.class);
+    public Collection<Handler> getHandlers() {
+        return componentGroup.getComponents(Handler.class);
     }
 
     public void setSecretStore(SecretStore secretStore) {
@@ -425,8 +420,8 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     @Override
     public void getConfig(DocumentmanagerConfig.Builder builder) {
-        if (containerDocproc != null && containerDocproc.isCompressDocuments())
-            builder.enablecompression(true);
+        if (containerDocumentApi != null)
+            builder.ignoreundefinedfields(containerDocumentApi.ignoreUndefinedFields());
     }
 
     @Override
@@ -449,22 +444,36 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     @Override
     public void getConfig(ApplicationMetadataConfig.Builder builder) {
-        if (applicationMetaData != null) {
+        if (applicationMetaData != null)
             builder.name(applicationMetaData.getApplicationId().application().value()).
-                    user(applicationMetaData.getDeployedByUser()).
                     path(applicationMetaData.getDeployPath()).
                     timestamp(applicationMetaData.getDeployTimestamp()).
                     checksum(applicationMetaData.getChecksum()).
                     generation(applicationMetaData.getGeneration());
-        }
     }
 
     /**
-     * Adds the Vespa bundles that are necessary for all container types.
+     * Adds the Vespa bundles that are necessary for most container types.
+     * Note that some of these can be removed later by the individual cluster types.
      */
     public void addCommonVespaBundles() {
-        PlatformBundles.commonVespaBundles().forEach(this::addPlatformBundle);
+        PlatformBundles.COMMON_VESPA_BUNDLES.forEach(this::addPlatformBundle);
+        PlatformBundles.VESPA_SECURITY_BUNDLES.forEach(this::addPlatformBundle);
+        PlatformBundles.VESPA_ZK_BUNDLES.forEach(this::addPlatformBundle);
     }
+
+    /**
+     * Add all search/docproc/feed related platform bundles.
+     * These are only required for application configured containers as the platform bundle set is not allowed to change
+     * between config generations. For standalone container platform bundles can be added on features enabled as an
+     * update of application package requires restart.
+     */
+    public void addAllPlatformBundles() {
+        ContainerDocumentApi.addVespaClientContainerBundle(this);
+        addSearchAndDocprocBundles();
+    }
+
+    public void addSearchAndDocprocBundles() { PlatformBundles.SEARCH_AND_DOCPROC_BUNDLES.forEach(this::addPlatformBundle); }
 
     /**
      * Adds a bundle present at a known location at the target container nodes.
@@ -473,8 +482,18 @@ public abstract class ContainerCluster<CONTAINER extends Container>
      * @param bundlePath usually an absolute path, e.g. '$VESPA_HOME/lib/jars/foo.jar'
      */
     public final void addPlatformBundle(Path bundlePath) {
-        platformBundles.add(bundlePath);
+        if (! unnecessaryPlatformBundles().contains(bundlePath)) {
+            platformBundles.add(bundlePath);
+        } else {
+            log.fine(() -> "Not installing bundle " + bundlePath + " for cluster " + getName());
+        }
     }
+
+    /**
+     * Implement in subclasses to avoid installing unnecessary bundles, see {@link PlatformBundles}
+     * Should only return constant values, as there is no guarantee for when this is called.
+     */
+    protected Set<Path> unnecessaryPlatformBundles() { return Set.of(); }
 
     @Override
     public void getConfig(PlatformBundlesConfig.Builder builder) {
@@ -492,15 +511,12 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     public void getConfig(QrStartConfig.Builder builder) {
         builder.jvm
                 .verbosegc(false)
-                .availableProcessors(2)
+                .availableProcessors(1)
                 .compressedClassSpaceSize(32)
                 .minHeapsize(32)
                 .heapsize(256)
                 .heapSizeAsPercentageOfPhysicalMemory(0)
                 .gcopts(Objects.requireNonNullElse(jvmGCOptions, G1GC));
-        if (environmentVars != null) {
-            builder.qrs.env(environmentVars);
-        }
     }
 
     @Override
@@ -533,20 +549,24 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         if (containerSearch != null) containerSearch.getConfig(builder);
     }
 
-    public void initialize(Map<String, AbstractSearchCluster> clusterMap) {
+    @Override
+    public void getConfig(SchemaInfoConfig.Builder builder) {
+        if (containerSearch != null) containerSearch.getConfig(builder);
+    }
+
+    public void initialize(Map<String, SearchCluster> clusterMap) {
         if (containerSearch != null) containerSearch.connectSearchClusters(clusterMap);
     }
 
     public void addDefaultSearchAccessLog() {
-        var compressionType = isHostedVespa ? AccessLogComponent.CompressionType.ZSTD : AccessLogComponent.CompressionType.GZIP;
-        addComponent(new AccessLogComponent(this, AccessLogComponent.AccessLogType.jsonAccessLog, compressionType, getName(), isHostedVespa));
+        // In hosted Vespa with one application container per node we do not use the container name to distinguish log files
+        Optional<String> clusterName = isHostedVespa ? Optional.empty() : Optional.of(getName());
+        addComponent(new AccessLogComponent(this, AccessLogComponent.AccessLogType.jsonAccessLog, compressionType, clusterName, isHostedVespa));
     }
 
     @Override
     public void getConfig(IlscriptsConfig.Builder builder) {
-        List<AbstractSearchCluster> searchClusters = new ArrayList<>();
-        searchClusters.addAll(Content.getSearchClusters(getRoot().configModelRepo()));
-        for (AbstractSearchCluster searchCluster : searchClusters) {
+        for (SearchCluster searchCluster : Content.getSearchClusters(getRoot().configModelRepo())) {
             searchCluster.getConfig(builder);
         }
     }
@@ -575,6 +595,7 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         builder.system(zone.system().value());
         builder.environment(zone.environment().value());
         builder.region(zone.region().value());
+        builder.cloud(zone.cloud().name().value());
     }
 
     @Override
@@ -604,12 +625,6 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     public Map<String, String> concreteDocumentTypes() { return concreteDocumentTypes; }
 
-    /** The configured service aliases for the service in this cluster */
-    public List<String> serviceAliases() { return serviceAliases; }
-
-    /** The configured endpoint aliases (fqdn) for the service in this cluster */
-    public List<String> endpointAliases() { return endpointAliases; }
-
     public void setHostClusterId(String clusterId) { hostClusterId = clusterId; }
 
     /**
@@ -620,10 +635,6 @@ public abstract class ContainerCluster<CONTAINER extends Container>
     public Optional<String> getHostClusterId() { return Optional.ofNullable(hostClusterId); }
 
     public void setJvmGCOptions(String opts) { this.jvmGCOptions = opts; }
-
-    public void setEnvironmentVars(String environmentVars) { this.environmentVars = environmentVars; }
-
-    public String getEnvironmentVars() { return environmentVars; }
 
     public Optional<String> getJvmGCOptions() { return Optional.ofNullable(jvmGCOptions); }
 
@@ -640,8 +651,6 @@ public abstract class ContainerCluster<CONTAINER extends Container>
         return "container cluster '" + getName() + "'";
     }
 
-    protected abstract boolean messageBusEnabled();
-
     /**
      * Mark whether the config emitted by this cluster currently should be applied by clients already running with
      * a previous generation of it only by restarting the consuming processes.
@@ -652,4 +661,9 @@ public abstract class ContainerCluster<CONTAINER extends Container>
 
     public boolean getDeferChangesUntilRestart() { return deferChangesUntilRestart; }
 
+    /**
+     * Returns the percentage of host physical memory this application has specified for nodes in this cluster,
+     * or empty if this is not specified by the application.
+     */
+    public Optional<Integer> getMemoryPercentage() { return Optional.empty(); }
 }

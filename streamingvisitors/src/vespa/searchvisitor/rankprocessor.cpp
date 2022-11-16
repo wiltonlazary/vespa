@@ -56,6 +56,11 @@ RankProcessor::initQueryEnvironment()
     QueryWrapper::TermList & terms = _query.getTermList();
 
     for (uint32_t i = 0; i < terms.size(); ++i) {
+        if (terms[i].isGeoPosTerm()) {
+            const vespalib::string & fieldName = terms[i].getTerm()->index();
+            const vespalib::string & locStr = terms[i].getTerm()->getTermString();
+            _queryEnv.addGeoLocation(fieldName, locStr);
+        }
         if (!terms[i].isPhraseTerm() || terms[i].isFirstPhraseTerm()) { // register 1 term data per phrase
             QueryTermData & qtd = dynamic_cast<QueryTermData &>(terms[i].getTerm()->getQueryItem());
 
@@ -90,6 +95,7 @@ RankProcessor::initQueryEnvironment()
                 terms[i].getTerm()->index().c_str(), terms[i].getTerm()->getTerm());
         }
     }
+    _rankSetup.prepareSharedState(_queryEnv, _queryEnv.getObjectStore());
     _match_data = _mdLayout.createMatchData();
 }
 
@@ -206,7 +212,7 @@ RankProcessor::calculateFeatureSet()
     search::fef::FeatureResolver resolver(rankProgram.get_seeds(false));
     LOG(debug, "Feature handles: numNames(%ld)", resolver.num_features());
     RankProgramWrapper wrapper(*_match_data);
-    FeatureSet::SP sf = _hitCollector->getFeatureSet(wrapper, resolver);
+    FeatureSet::SP sf = _hitCollector->getFeatureSet(wrapper, resolver, _rankSetup.get_feature_rename_map());
     LOG(debug, "Feature set: numFeatures(%u), numDocs(%u)", sf->numFeatures(), sf->numDocs());
     return sf;
 }

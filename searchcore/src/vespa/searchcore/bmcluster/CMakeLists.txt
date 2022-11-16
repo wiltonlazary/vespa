@@ -32,6 +32,7 @@ vespa_add_library(searchcore_bmcluster STATIC
     storage_api_rpc_bm_feed_handler.cpp
     storage_reply_error_checker.cpp
     DEPENDS
+    searchcore_test
     searchcore_server
     searchcore_initializer
     searchcore_reprocessing
@@ -48,8 +49,8 @@ vespa_add_library(searchcore_bmcluster STATIC
     searchcore_grouping
     searchcore_proton_metrics
     searchcore_fconfig
+    searchcorespi
     storageserver_storageapp
     messagebus_messagebus-test
     messagebus
-    searchlib_searchlib_uca
 )

@@ -4,15 +4,17 @@ package com.yahoo.vespa.model.search;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.prelude.fastsearch.DocumentdbInfoConfig;
-import com.yahoo.searchdefinition.derived.AttributeFields;
-import com.yahoo.searchdefinition.derived.DerivedConfiguration;
+import com.yahoo.schema.Schema;
+import com.yahoo.schema.derived.AttributeFields;
+import com.yahoo.schema.derived.DerivedConfiguration;
+import com.yahoo.search.config.IndexInfoConfig;
+import com.yahoo.search.config.SchemaInfoConfig;
 import com.yahoo.vespa.config.search.AttributesConfig;
 import com.yahoo.vespa.config.search.RankProfilesConfig;
 import com.yahoo.vespa.config.search.SummaryConfig;
-import com.yahoo.vespa.config.search.SummarymapConfig;
 import com.yahoo.vespa.config.search.vsm.VsmfieldsConfig;
 import com.yahoo.vespa.config.search.vsm.VsmsummaryConfig;
-import java.util.List;
+import com.yahoo.vespa.configdefinition.IlscriptsConfig;
 
 /**
  * A search cluster of type streaming.
@@ -20,34 +22,23 @@ import java.util.List;
  * @author baldersheim
  * @author vegardh
  */
-public class StreamingSearchCluster extends SearchCluster implements 
-        DocumentdbInfoConfig.Producer, 
+public class StreamingSearchCluster extends SearchCluster implements
+        DocumentdbInfoConfig.Producer,
         RankProfilesConfig.Producer,
         VsmsummaryConfig.Producer,
         VsmfieldsConfig.Producer,
-        SummarymapConfig.Producer,
-        SummaryConfig.Producer
-{
-
-    private class AttributesProducer extends AbstractConfigProducer<AttributesProducer> implements AttributesConfig.Producer {
-        AttributesProducer(AbstractConfigProducer<?> parent, String docType) {
-            super(parent, docType);
-        }
-
-        @Override
-        public void getConfig(AttributesConfig.Builder builder) {
-            if (getSdConfig() != null) {
-                getSdConfig().getAttributeFields().getConfig(builder, AttributeFields.FieldSet.FAST_ACCESS);
-            }
-        }
-    }
+        SummaryConfig.Producer {
 
     private final String storageRouteSpec;
     private final AttributesProducer attributesConfig;
     private final String docTypeName;
-    private DerivedConfiguration sdConfig = null;
+    private DerivedConfiguration derivedConfig = null;
 
-    public StreamingSearchCluster(AbstractConfigProducer<SearchCluster> parent, String clusterName, int index, String docTypeName, String storageRouteSpec) {
+    public StreamingSearchCluster(AbstractConfigProducer<SearchCluster> parent,
+                                  String clusterName,
+                                  int index,
+                                  String docTypeName,
+                                  String storageRouteSpec) {
         super(parent, clusterName, index);
         attributesConfig = new AttributesProducer(parent, docTypeName);
         this.docTypeName = docTypeName;
@@ -61,9 +52,9 @@ public class StreamingSearchCluster extends SearchCluster implements
     protected IndexingMode getIndexingMode() { return IndexingMode.STREAMING; }
     public final String getStorageRouteSpec()       { return storageRouteSpec; }
 
-    public String getDocTypeName() {
-        return docTypeName;
-    }
+    public String getDocTypeName() { return docTypeName; }
+
+    public DerivedConfiguration derived() { return derivedConfig; }
 
     @Override
     public int getRowBits() { return 0; }
@@ -71,74 +62,77 @@ public class StreamingSearchCluster extends SearchCluster implements
     @Override
     public void getConfig(DocumentdbInfoConfig.Builder builder) {
         DocumentdbInfoConfig.Documentdb.Builder docDb = new DocumentdbInfoConfig.Documentdb.Builder();
-        String searchName = sdConfig.getSearch().getName();
-        docDb.name(searchName);
-        SummaryConfig.Producer prod = sdConfig.getSummaries();
-        convertSummaryConfig(prod, null, docDb);
-        RankProfilesConfig.Builder rpb = new RankProfilesConfig.Builder();
-        sdConfig.getRankProfileList().getConfig(rpb);
-        addRankProfilesConfig(docDb, new RankProfilesConfig(rpb));
+        docDb.name(derivedConfig.getSchema().getName());
         builder.documentdb(docDb);
     }
 
     @Override
-    protected void deriveAllSchemas(List<SchemaSpec> local, DeployState deployState) {
-        if (local.size() == 1) {
-            deriveSingleSearchDefinition(local.get(0).getSearchDefinition().getSearch(), deployState);
-        } else if (local.size() > 1){
-            throw new IllegalStateException("Logical indexes are not supported: Got " + local.size() + " search definitions, expected 1");
-        }
-    }
-    private void deriveSingleSearchDefinition(com.yahoo.searchdefinition.Search localSearch,  DeployState deployState) {
-        if (!localSearch.getName().equals(docTypeName)) {
-            throw new IllegalStateException("Mismatch between document type name (" + docTypeName + ") and name of search definition (" + localSearch.getName() + ")");
-        }
-        this.sdConfig = new DerivedConfiguration(localSearch, deployState.getDeployLogger(),
-                                                 deployState.getProperties(),
-                                                 deployState.rankProfileRegistry(),
-                                                 deployState.getQueryProfiles().getRegistry(),
-                                                 deployState.getImportedModels(),
-                                                 deployState.getExecutor());
-    }
-    @Override
-    public DerivedConfiguration getSdConfig() {
-        return sdConfig;
+    public void deriveFromSchemas(DeployState deployState) {
+        if (schemas().isEmpty()) return;
+        if (schemas().size() > 1) throw new IllegalArgumentException("Only a single schema is supported, got " + schemas().size());
+
+        Schema schema = schemas().values().stream().findAny().get().fullSchema();
+        if ( ! schema.getName().equals(docTypeName))
+            throw new IllegalArgumentException("Document type name '" + docTypeName +
+                                               "' must be the same as the schema name '" + schema.getName() + "'");
+        this.derivedConfig = new DerivedConfiguration(schema, deployState);
     }
 
     @Override
     public void defaultDocumentsConfig() { }
 
     @Override
-    public void getConfig(AttributesConfig.Builder builder) {
-        if (getSdConfig()!=null) getSdConfig().getAttributeFields().getConfig(builder);
+    public void getConfig(IndexInfoConfig.Builder builder) {
+        derivedConfig.getIndexInfo().getConfig(builder);
     }
-    
+
+    @Override
+    public void getConfig(SchemaInfoConfig.Builder builder) {
+        derivedConfig.getSchemaInfo().getConfig(builder);
+    }
+
+    @Override
+    public void getConfig(IlscriptsConfig.Builder builder) {
+        derivedConfig.getIndexingScript().getConfig(builder);
+    }
+
+    public void getConfig(AttributesConfig.Builder builder) {
+        derivedConfig.getConfig(builder);
+    }
+
+    @Override
+    public void getConfig(RankProfilesConfig.Builder builder) {
+        derivedConfig.getRankProfileList().getConfig(builder);
+    }
+
     @Override
     public void getConfig(VsmsummaryConfig.Builder builder) {
-        if (getSdConfig()!=null) 
-            if (getSdConfig().getVsmSummary()!=null)
-                getSdConfig().getVsmSummary().getConfig(builder);
+        if (derivedConfig.getVsmSummary() != null)
+            derivedConfig.getVsmSummary().getConfig(builder);
     }
     
     @Override
     public void getConfig(VsmfieldsConfig.Builder builder) {
-        if (getSdConfig()!=null)
-            if (getSdConfig().getVsmFields()!=null)
-                getSdConfig().getVsmFields().getConfig(builder);
+        if (derivedConfig.getVsmFields() != null)
+            derivedConfig.getVsmFields().getConfig(builder);
     }
     
     @Override
-    public void getConfig(SummarymapConfig.Builder builder) {
-        if (getSdConfig()!=null)
-            if (getSdConfig().getSummaryMap()!=null)
-                getSdConfig().getSummaryMap().getConfig(builder);
+    public void getConfig(SummaryConfig.Builder builder) {
+        if (derivedConfig.getSummaries() != null)
+            derivedConfig.getSummaries().getConfig(builder);
     }
 
-    @Override
-    public void getConfig(SummaryConfig.Builder builder) {
-        if (getSdConfig()!=null)
-            if (getSdConfig().getSummaries()!=null)
-                getSdConfig().getSummaries().getConfig(builder);        
+    private class AttributesProducer extends AbstractConfigProducer<AttributesProducer> implements AttributesConfig.Producer {
+
+        AttributesProducer(AbstractConfigProducer<?> parent, String docType) {
+            super(parent, docType);
+        }
+
+        @Override
+        public void getConfig(AttributesConfig.Builder builder) {
+            derivedConfig.getConfig(builder, AttributeFields.FieldSet.FAST_ACCESS);
+        }
     }
 
 }

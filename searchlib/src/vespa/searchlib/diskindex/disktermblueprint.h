@@ -13,12 +13,12 @@ namespace search::diskindex {
 class DiskTermBlueprint : public queryeval::SimpleLeafBlueprint
 {
 private:
-    queryeval::FieldSpecBase         _field;
+    queryeval::FieldSpec             _field;
     const DiskIndex               &  _diskIndex;
+    vespalib::string                 _query_term;
     DiskIndex::LookupResult::UP      _lookupRes;
     bool                             _useBitVector;
     bool                             _fetchPostingsDone;
-    bool                             _hasEquivParent;
     index::PostingListHandle::UP     _postingHandle;
     BitVector::UP                    _bitVector;
 
@@ -31,8 +31,9 @@ public:
      * @param lookupRes    the result after disk dictionary lookup.
      * @param useBitVector whether or not we should use bit vector.
      **/
-    DiskTermBlueprint(const queryeval::FieldSpecBase & field,
+    DiskTermBlueprint(const queryeval::FieldSpec & field,
                       const DiskIndex & diskIndex,
+                      const vespalib::string& query_term,
                       DiskIndex::LookupResult::UP lookupRes,
                       bool useBitVector);
 
@@ -43,6 +44,8 @@ public:
     void fetchPostings(const queryeval::ExecuteInfo &execInfo) override;
 
     std::unique_ptr<queryeval::SearchIterator> createFilterSearch(bool strict, FilterConstraint) const override;
+
+    void visitMembers(vespalib::ObjectVisitor& visitor) const override;
 };
 
 }

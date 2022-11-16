@@ -9,6 +9,7 @@
 #pragma once
 
 #include <vespa/persistence/spi/abstractpersistenceprovider.h>
+#include <vespa/persistence/spi/docentry.h>
 #include <vespa/document/base/globalid.h>
 #include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/vespalib/stllike/hash_map.h>
@@ -137,12 +138,12 @@ class DummyPersistence : public AbstractPersistenceProvider
 {
 public:
     DummyPersistence(const std::shared_ptr<const document::DocumentTypeRepo>& repo);
-    ~DummyPersistence();
+    ~DummyPersistence() override;
 
     Result initialize() override;
     BucketIdListResult listBuckets(BucketSpace bucketSpace) const override;
 
-    void setModifiedBuckets(const BucketIdListResult::List& result);
+    void setModifiedBuckets(BucketIdListResult::List result);
 
     // Important: any subsequent mutations to the bucket set in fake_info will reset
     // the bucket info due to implicit recalculation of bucket info.
@@ -155,25 +156,25 @@ public:
     BucketIdListResult getModifiedBuckets(BucketSpace bucketSpace) const override;
 
     Result setClusterState(BucketSpace bucketSpace, const ClusterState& newState) override;
-    Result setActiveState(const Bucket& bucket, BucketInfo::ActiveState newState) override;
+    void setActiveStateAsync(const Bucket&, BucketInfo::ActiveState, OperationComplete::UP) override;
     BucketInfoResult getBucketInfo(const Bucket&) const override;
-    Result put(const Bucket&, Timestamp, DocumentSP, Context&) override;
     GetResult get(const Bucket&, const document::FieldSet&, const DocumentId&, Context&) const override;
-    RemoveResult remove(const Bucket& b, Timestamp t, const DocumentId& did, Context&) override;
-    UpdateResult update(const Bucket&, Timestamp, DocumentUpdateSP, Context&) override;
+    void putAsync(const Bucket&, Timestamp, DocumentSP, OperationComplete::UP) override;
+    void removeAsync(const Bucket& b, std::vector<spi::IdAndTimestamp> ids, OperationComplete::UP) override;
+    void updateAsync(const Bucket&, Timestamp, DocumentUpdateSP, OperationComplete::UP) override;
 
     CreateIteratorResult
     createIterator(const Bucket &bucket, FieldSetSP fs, const Selection &, IncludedVersions, Context &context) override;
 
-    IterateResult iterate(IteratorId, uint64_t maxByteSize, Context&) const override;
-    Result destroyIterator(IteratorId, Context&) override;
+    IterateResult iterate(IteratorId, uint64_t maxByteSize) const override;
+    Result destroyIterator(IteratorId) override;
 
-    Result createBucket(const Bucket&, Context&) override;
-    Result deleteBucket(const Bucket&, Context&) override;
+    void createBucketAsync(const Bucket&, OperationComplete::UP) noexcept override;
+    void deleteBucketAsync(const Bucket&, OperationComplete::UP) noexcept override;
 
-    Result split(const Bucket& source, const Bucket& target1, const Bucket& target2, Context&) override;
+    Result split(const Bucket& source, const Bucket& target1, const Bucket& target2) override;
 
-    Result join(const Bucket& source1, const Bucket& source2, const Bucket& target, Context&) override;
+    Result join(const Bucket& source1, const Bucket& source2, const Bucket& target) override;
 
     std::unique_ptr<vespalib::IDestructorCallback> register_resource_usage_listener(IResourceUsageListener& listener) override;
     std::unique_ptr<vespalib::IDestructorCallback> register_executor(std::shared_ptr<BucketExecutor>) override;
@@ -203,6 +204,7 @@ private:
     // Const since funcs only alter mutable field in BucketContent
     BucketContentGuard::UP acquireBucketWithLock(const Bucket& b, LockMode lock_mode = LockMode::Exclusive) const;
     void releaseBucketNoLock(const BucketContent& bc, LockMode lock_mode = LockMode::Exclusive) const noexcept;
+    void internal_create_bucket(const Bucket &b);
 
     mutable bool _initialized;
     std::shared_ptr<const document::DocumentTypeRepo> _repo;

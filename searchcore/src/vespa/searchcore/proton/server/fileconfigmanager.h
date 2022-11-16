@@ -2,20 +2,22 @@
 #pragma once
 
 #include "configstore.h"
-#include "documentdbconfigmanager.h"
 #include <vespa/searchlib/common/indexmetainfo.h>
 #include <vespa/searchlib/common/serialnum.h>
 #include <vespa/vespalib/objects/nbostream.h>
+
+class FNET_Transport;
 
 namespace proton {
 
 class FileConfigManager : public ConfigStore {
 private:
-    vespalib::string      _baseDir;
-    vespalib::string      _configId;
-    vespalib::string      _docTypeName;
-    search::IndexMetaInfo _info;
-    ProtonConfigSP        _protonConfig;
+    FNET_Transport        & _transport;
+    vespalib::string        _baseDir;
+    vespalib::string        _configId;
+    vespalib::string        _docTypeName;
+    search::IndexMetaInfo   _info;
+    ProtonConfigSP          _protonConfig;
 
 public:
     /**
@@ -24,9 +26,8 @@ public:
      * @param baseDir the directory in which config snapshots are saved and loaded.
      * @param configId the configId that was used to subscribe to config that is later handled by this manager.
      */
-    FileConfigManager(const vespalib::string &baseDir,
-                      const vespalib::string &configId,
-                      const vespalib::string &docTypeName);
+    FileConfigManager(FNET_Transport & transport, const vespalib::string &baseDir,
+                      const vespalib::string &configId, const vespalib::string &docTypeName);
 
     ~FileConfigManager() override;
 
@@ -47,7 +48,7 @@ public:
      *                       resulting config snapshot.
      */
     void loadConfig(const DocumentDBConfig &currentSnapshot, SerialNum serialNum,
-                    DocumentDBConfig::SP &loadedSnapshot) override;
+                    std::shared_ptr<DocumentDBConfig> &loadedSnapshot) override;
 
     void removeInvalid() override;
     void prune(SerialNum serialNum) override;

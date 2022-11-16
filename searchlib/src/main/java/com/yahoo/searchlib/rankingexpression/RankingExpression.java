@@ -20,7 +20,6 @@ import java.io.Serializable;
 import java.io.StringReader;
 import java.util.Deque;
 import java.util.LinkedList;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -32,7 +31,7 @@ import java.util.Map;
  * <p>The identity of a ranking expression is decided by both its name and expression tree. Two expressions which
  * looks the same in string form are the same.</p>
  *
- * <h3>Simple usage</h3>
+ * <h2>Simple usage</h2>
 <pre><code>
 try {
     MapContext context = new MapContext();
@@ -262,11 +261,6 @@ public class RankingExpression implements Serializable {
         Map<String, String> serializedExpressions = context.serializedFunctions();
         serializedExpressions.put(propertyName(name), serializedRoot);
         return serializedExpressions;
-    }
-
-    @Deprecated
-    public Map<String, String> getRankProperties(List<ExpressionFunction> functions) {
-        return getRankProperties(new SerializationContext(functions));
     }
 
     /**

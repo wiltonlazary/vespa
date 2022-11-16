@@ -9,7 +9,6 @@ import com.yahoo.vespa.hosted.controller.deployment.DeploymentStatusList;
 import com.yahoo.vespa.hosted.controller.deployment.JobList;
 import com.yahoo.vespa.hosted.controller.deployment.JobStatus;
 import com.yahoo.vespa.hosted.controller.deployment.Run;
-import com.yahoo.vespa.hosted.controller.deployment.RunStatus;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -19,25 +18,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static java.util.Comparator.naturalOrder;
 import static java.util.function.Function.identity;
 
 /**
- * Statistics about deployments on a platform version. This is immutable.
+ * Statistics about deployments on a platform version.
+ *
+ * @param version             the version these statistics are for
+ * @param failingUpgrades     the runs on the version of this, for currently failing instances, where the failure may be because of the upgrade
+ * @param otherFailing        all other failing runs on the version of this, for currently failing instances
+ * @param productionSuccesses the production runs where the last success was on the version of this
+ * @param runningUpgrade      the currently running runs on the version of this, where an upgrade is attempted
+ * @param otherRunning        all other currently running runs on the version on this
  *
  * @author jonmv
  */
-public class DeploymentStatistics {
-    
-    private final Version version;
-    private final List<Run> failingUpgrades;
-    private final List<Run> otherFailing;
-    private final List<Run> productionSuccesses;
-    private final List<Run> runningUpgrade;
-    private final List<Run> otherRunning;
+public record DeploymentStatistics(Version version,
+                                   List<Run> failingUpgrades,
+                                   List<Run> otherFailing,
+                                   List<Run> productionSuccesses,
+                                   List<Run> runningUpgrade,
+                                   List<Run> otherRunning) {
 
     public DeploymentStatistics(Version version, List<Run> failingUpgrades, List<Run> otherFailing,
                                 List<Run> productionSuccesses, List<Run> runningUpgrade, List<Run> otherRunning) {
@@ -49,26 +52,7 @@ public class DeploymentStatistics {
         this.otherRunning = List.copyOf(otherRunning);
     }
 
-    /** Returns the version these statistics are for. */
-    public Version version() { return version; }
-
-    /** Returns the runs on the version of this, for currently failing instances, where the failure may be because of the upgrade. */
-    public List<Run> failingUpgrades() { return failingUpgrades; }
-
-    /** Returns all other failing runs on the version of this, for currently failing instances. */
-    public List<Run> otherFailing() { return otherFailing; }
-
-    /** Returns the production runs where the last success was on the version of this. */
-    public List<Run> productionSuccesses() { return productionSuccesses; }
-
-    /** Returns the currently running runs on the version of this, where an upgrade is attempted. */
-    public List<Run> runningUpgrade() { return runningUpgrade; }
-
-    /** Returns all other currently running runs on the version on this. */
-    public List<Run> otherRunning() { return otherRunning; }
-
     public static List<DeploymentStatistics> compute(Collection<Version> infrastructureVersions, DeploymentStatusList statuses) {
-
         Set<Version> allVersions = new HashSet<>(infrastructureVersions);
         Map<Version, List<Run>> failingUpgrade = new HashMap<>();
         Map<Version, List<Run>> otherFailing = new HashMap<>();
@@ -84,12 +68,10 @@ public class DeploymentStatistics {
                 for (Deployment deployment : instance.productionDeployments().values())
                     allVersions.add(deployment.version());
 
-            JobList failing = status.jobs().failing()
-                                    .not().withStatus(RunStatus.outOfCapacity)
-                                    .not().withStatus(RunStatus.aborted);
+            JobList failing = status.jobs().failingHard();
 
             // Add all unsuccessful runs for failing production jobs as any run may have resulted in an incomplete deployment
-            // where a subset of nodes have upgraded.
+            // where a subset of nodes has upgraded.
             failing.not().failingApplicationChange()
                    .production()
                    .mapToList(JobStatus::runs)
@@ -157,8 +139,7 @@ public class DeploymentStatistics {
                                                               productionSuccesses.getOrDefault(version, List.of()),
                                                               runningUpgrade.getOrDefault(version, List.of()),
                                                               otherRunning.getOrDefault(version, List.of())))
-                     .collect(Collectors.toUnmodifiableList());
-
+                     .toList();
     }
 
 }

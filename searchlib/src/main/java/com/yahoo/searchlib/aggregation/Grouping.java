@@ -4,10 +4,16 @@ package com.yahoo.searchlib.aggregation;
 import com.yahoo.searchlib.expression.BucketResultNode;
 import com.yahoo.searchlib.expression.NullResultNode;
 import com.yahoo.searchlib.expression.ResultNode;
-import com.yahoo.vespa.objects.*;
+import com.yahoo.vespa.objects.Deserializer;
+import com.yahoo.vespa.objects.Identifiable;
+import com.yahoo.vespa.objects.ObjectOperation;
+import com.yahoo.vespa.objects.ObjectPredicate;
+import com.yahoo.vespa.objects.ObjectVisitor;
+import com.yahoo.vespa.objects.Serializer;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 public class Grouping extends Identifiable {
 
@@ -23,10 +29,10 @@ public class Grouping extends Identifiable {
     // The client id for this grouping request.
     private int id = 0;
 
-    // Whether or not this grouping is valid.
+    // Whether this grouping is valid.
     private boolean valid = true;
 
-    // Whether or not to group all hits or only those with hits. Only applicable for streaming search.
+    // Whether to group all hits or only those with hits. Only applicable for streaming search.
     private boolean all = false;
 
     // How many hits to group per backend node.
@@ -46,234 +52,186 @@ public class Grouping extends Identifiable {
     // Actual root group, does not require level details.
     private Group root = new Group();
 
-    /**
-     * <p>Constructs an empty result node. <b>NOTE:</b> This instance is broken until non-optional member data is
-     * set.</p>
-     */
+    private boolean postMergeCompleted = false;
+
+    /** Constructs an empty result node. <b>NOTE:</b> This instance is broken until non-optional member data is set. */
     public Grouping() {
         super();
     }
 
-    /**
-     * <p>Constructs an instance of this class with given client id.</p>
-     *
-     * @param id The client id for this grouping request.
-     */
+    /** Constructs an instance of this class with given client id. */
     public Grouping(int id) {
         super();
         setId(id);
     }
 
-    /**
-     * <p>Merges the content of the given grouping <b>into</b> this.</p>
-     *
-     * @param rhs The grouping to merge with.
-     */
+    /** Merges the content of the given grouping <b>into</b> this. */
     public void merge(Grouping rhs) {
         root.merge(firstLevel, 0, rhs.root);
     }
 
     /**
-     * <p>This method is invoked after merging is done. It is intended used for resolving any dependencies or derivates
-     * that might have changes due to the merge.</p>
+     * Invoked after merging is done. It is intended used for resolving any dependencies or derivates
+     * that might have changes due to the merge.
      */
     public void postMerge() {
+        if (postMergeCompleted) return;
         root.postMerge(groupingLevels, firstLevel, 0);
+        postMergeCompleted = true;
     }
 
-    /**
-     * <p>Returns the client id of this grouping request.</p>
-     *
-     * @return The identifier.
-     */
+    /** Returns the client id of this grouping request. */
     public int getId() {
         return id;
     }
 
     /**
-     * <p>Sets the client id for this grouping request.</p>
+     * Sets the client id for this grouping request.
      *
-     * @param id The identifier to set.
-     * @return This, to allow chaining.
+     * @param id the identifier to set
+     * @return this, to allow chaining
      */
     public Grouping setId(int id) {
         this.id = id;
         return this;
     }
 
-    /**
-     * <p>Returns whether or not this grouping request is valid.</p>
-     *
-     * @return True if valid.
-     */
+    /** Returns whether this grouping request is valid. */
     public boolean valid() {
         return valid;
     }
 
     /**
-     * <p>Returns whether or not to perform grouping on the entire document corpus instead of only those matching the
-     * search criteria. Please see note on {@link #setAll(boolean)}.</p>
-     *
-     * @return True if grouping all documents.
+     * Returns whether to perform grouping on the entire document corpus instead of only those matching the
+     * search criteria. Please see note on {@link #setAll(boolean)}.
      */
     public boolean getAll() {
         return all;
     }
 
     /**
-     * <p>Sets whether or not to perform grouping on the entire document corpus instead of only those matching the
-     * search criteria. <b>NOTE:</b> This is only possible with streaming search.</p>
+     * Sets whether to perform grouping on the entire document corpus instead of only those matching the
+     * search criteria. <b>NOTE:</b> This is only possible with streaming search.
      *
-     * @param all True to group all documents.
-     * @return This, to allow chaining.
+     * @param all true to group all documents
+     * @return this, to allow chaining
      */
     public Grouping setAll(boolean all) {
         this.all = all;
         return this;
     }
 
-    /**
-     * <p>Returns the number of candidate documents to group.</p>
-     *
-     * @return The number.
-     */
+    /** Returns the number of candidate documents to group. */
     public long getTopN() {
         return topN;
     }
 
     /**
-     * <p>Sets the number of candidate documents to group.</p>
+     * Sets the number of candidate documents to group.
      *
-     * @param topN The number to set.
-     * @return This, to allow chaining.
+     * @param topN the number to set
+     * @return this, to allow chaining
      */
     public Grouping setTopN(long topN) {
         this.topN = topN;
         return this;
     }
 
-    /**
-     * <p>Returns the first level to start grouping work. See note on {@link #setFirstLevel(int)}.</p>
-     *
-     * @return The first level.
-     */
+    /** Returns the first level to start grouping work. See note on {@link #setFirstLevel(int)}. */
     public int getFirstLevel() {
         return firstLevel;
     }
 
     /**
-     * <p>Sets the first level to start grouping work. All the necessary work above this group level is expected to be
-     * already done.</p>
+     * Sets the first level to start grouping work. All the necessary work above this group level is expected to be
+     * already done.
      *
-     * @param level The level to set.
-     * @return This, to allow chaining.
+     * @param level the level to set
+     * @return this, to allow chaining
      */
     public Grouping setFirstLevel(int level) {
         firstLevel = level;
         return this;
     }
 
-    /**
-     * <p>Returns the last level to do grouping work. See note on {@link #setLastLevel(int)}.</p>
-     *
-     * @return The last level.
-     */
+    /** Returns the last level to do grouping work. See note on {@link #setLastLevel(int)}. */
     public int getLastLevel() {
         return lastLevel;
     }
 
     /**
-     * <p>Sets the last level to do grouping work. Executing a level will instantiate the {@link Group} objects for the
+     * Sets the last level to do grouping work. Executing a level will instantiate the {@link Group} objects for the
      * next level, if there is any. This means that grouping work ends at this level, but also instantiates the groups
-     * for level (lastLevel + 1).</p>
+     * for level (lastLevel + 1).
      *
-     * @param level The level to set.
-     * @return This, to allow chaining.
+     * @param level the level to set
+     * @return this, to allow chaining
      */
     public Grouping setLastLevel(int level) {
         lastLevel = level;
         return this;
     }
 
-    /**
-     * <p>Returns the list of grouping levels that make up this grouping request.</p>
-     *
-     * @return The list.
-     */
+    /** Returns the list of grouping levels that make up this grouping request. */
     public List<GroupingLevel> getLevels() {
         return groupingLevels;
     }
 
     /**
-     * <p>Appends the given grouping level specification to the list of levels.</p>
+     * Appends the given grouping level specification to the list of levels.
      *
-     * @param level The level to add.
-     * @return This, to allow chaining.
-     * @throws NullPointerException If <code>level</code> argument is null.
+     * @param level the level to add
+     * @return this, to allow chaining
+     * @throws NullPointerException if <code>level</code> argument is null
      */
     public Grouping addLevel(GroupingLevel level) {
-        level.getClass(); // throws NullPointerException
-        groupingLevels.add(level);
+        groupingLevels.add(Objects.requireNonNull(level));
         return this;
     }
 
-    /**
-     * <p>Returns the root group.</p>
-     *
-     * @return The root.
-     */
+    /** Returns the root group. */
     public Group getRoot() {
         return root;
     }
 
     /**
-     * <p>Sets the root group.</p>
+     * Sets the root group.
      *
-     * @param root The group to set as root.
-     * @return This, to allow chaining.
-     * @throws NullPointerException If <code>root</code> argument is null.
+     * @param root the group to set as root
+     * @return this, to allow chaining
+     * @throws NullPointerException if <code>root</code> argument is null
      */
     public Grouping setRoot(Group root) {
-        root.getClass(); // throws NullPointerException
-        this.root = root;
+        this.root = Objects.requireNonNull(root);
         return this;
     }
 
-    /**
-     * <p>Returns whether or not single pass execution of grouping is forced.</p>
-     *
-     * @return True if single pass grouping is forced.
-     */
+    /** Returns whether single pass execution of grouping is forced. */
     public boolean getForceSinglePass() {
         return forceSinglePass;
     }
 
     /**
-     * <p>Sets whether or not grouping should be forced to execute in a single pass. If false, this <code>Grouping</code>
-     * might still execute in a single pass due to other constraints.</p>
+     * Sets whether or not grouping should be forced to execute in a single pass.
+     * If false, this <code>Grouping</code>
+     * might still execute in a single pass due to other constraints.
      *
-     * @param forceSinglePass True to force execution in single pass.
-     * @return This, to allow chaining.
+     * @param forceSinglePass true to force execution in single pass
+     * @return this, to allow chaining
      */
     public Grouping setForceSinglePass(boolean forceSinglePass) {
         this.forceSinglePass = forceSinglePass;
         return this;
     }
 
-    /**
-     * <p>Returns whether or not grouping should be executed in a single pass.</p>
-     *
-     * @return True if grouping should be executed in a single pass.
-     */
+    /** Returns whether grouping should be executed in a single pass. */
     public boolean useSinglePass() {
         return needDeepResultCollection() || getForceSinglePass();
     }
 
     /**
-     * <p>Tell if ordering will need results collected in children.  in that case we will probably just do a single
-     * pass.</p>
-     *
-     * @return If deeper resultcollection is needed.
+     * Returns whether ordering will need results collected in children.
+     * In that case we will probably just do a single pass.
      */
     public boolean needDeepResultCollection() {
         if (forceSinglePass) {
@@ -418,20 +376,19 @@ public class Grouping extends Identifiable {
     }
 
     /**
-     * <p>This is a helper function to perform recursive traversal of all groups contained in this grouping object. It
+     * This is a helper function to perform recursive traversal of all groups contained in this grouping object. It
      * is invoked by the {@link #selectMembers(ObjectPredicate, ObjectOperation)} method and itself. This method will
-     * only evaluate the groups that belong to active levels.</p>
+     * only evaluate the groups that belong to active levels.
      *
-     * @param predicate The object predicate to evaluate.
-     * @param operation The operation to execute when the predicate is true.
-     * @param group     The group to evaluate.
-     * @param first     The first active level.
-     * @param last      The last active level.
-     * @param current   The level being evaluated.
+     * @param predicate the object predicate to evaluate
+     * @param operation the operation to execute when the predicate is true
+     * @param group     the group to evaluate
+     * @param first     the first active level
+     * @param last      the last active level
+     * @param current   the level being evaluated
      */
     private static void selectGroups(ObjectPredicate predicate, ObjectOperation operation,
-                                     Group group, int first, int last, int current)
-    {
+                                     Group group, int first, int last, int current) {
         if (current > last) {
             return;
         }
@@ -442,4 +399,5 @@ public class Grouping extends Identifiable {
             selectGroups(predicate, operation, child, first, last, current + 1);
         }
     }
+
 }

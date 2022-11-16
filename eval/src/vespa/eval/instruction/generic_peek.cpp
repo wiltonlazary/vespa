@@ -1,13 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "generic_peek.h"
+#include <vespa/eval/eval/value_builder_factory.h>
 #include <vespa/eval/eval/nested_loop.h>
 #include <vespa/eval/eval/wrap_param.h>
-#include <vespa/vespalib/util/overload.h>
 #include <vespa/vespalib/util/stash.h>
 #include <vespa/vespalib/util/typify.h>
 #include <vespa/vespalib/util/visit_ranges.h>
 #include <vespa/vespalib/util/shared_string_repo.h>
+#include <vespa/vespalib/util/small_vector.h>
 #include <cassert>
 #include <map>
 
@@ -255,7 +256,7 @@ struct SparsePlan {
         for (const auto & dim : lookup_specs) {
             if (dim.has_child()) {
                 int64_t child_value = get_child_value(dim.get_child_idx());
-                handles.emplace_back(vespalib::make_string("%" PRId64, child_value));
+                handles.push_back(Handle::handle_from_number(child_value));
                 view_addr.push_back(handles.back().id());
             } else {
                 view_addr.push_back(dim.get_label_name());

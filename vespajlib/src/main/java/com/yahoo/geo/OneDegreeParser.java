@@ -6,17 +6,14 @@ package com.yahoo.geo;
  * Utility for parsing one geographical coordinate
  *
  * @author arnej27959
- **/
+ */
 class OneDegreeParser {
-    /**
-     * the parsed latitude (degrees north if positive)
-     **/
+
+    /** The parsed latitude (degrees north if positive). */
     public double latitude = 0;
     public boolean foundLatitude = false;
 
-    /**
-     * the parsed longitude (degrees east if positive)
-     **/
+    /** The parsed longitude (degrees east if positive). */
     public double longitude = 0;
     public boolean foundLongitude = false;
 
@@ -78,10 +75,10 @@ class OneDegreeParser {
      * "E10o25.982" and "N63o25.105" → same <br>
      * "N63.418417" and "E10.433033" → same <br>
      * "63N25.105" and "10E25.982" → same <br>
+     *
      * @param assumeNorthSouth Latitude assumed, otherwise longitude
      * @param toParse Latitude or longitude string to parse
-     *
-     **/
+     */
     public OneDegreeParser(boolean assumeNorthSouth, String toParse) throws IllegalArgumentException {
         this.parseString = toParse;
         this.len = parseString.length();
@@ -130,9 +127,6 @@ class OneDegreeParser {
 
             if (isDigit(ch) || ch == '.') {
                 valid = true;
-                if (foundDigits) {
-                    throw new IllegalArgumentException("found digits after not consuming previous digits when parsing <"+parseString+">");
-                }
                 double divider = 1.0;
                 foundDot = false;
                 while (isDigit(ch)) {
@@ -279,4 +273,5 @@ class OneDegreeParser {
         }
         throw new IllegalArgumentException("found neither latitude nor longitude from: "+parseString);
     }
+
 }

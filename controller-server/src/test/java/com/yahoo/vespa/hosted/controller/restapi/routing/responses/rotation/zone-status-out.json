@@ -1,8 +1,8 @@
 {
-  "routingMethod": "shared",
+  "routingMethod": "sharedLayer4",
   "environment": "prod",
   "region": "us-west-1",
   "status": "out",
   "agent": "operator",
-  "changedAt": "(ignore)"
+  "changedAt": 0
 }

@@ -20,12 +20,11 @@ import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeReposi
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.TargetVersions;
 
 import java.net.URI;
-import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
@@ -35,12 +34,11 @@ import java.util.stream.Collectors;
  */
 public class NodeRepositoryMock implements NodeRepository {
 
-    private final Map<ZoneId, Map<HostName, Node>> nodeRepository = new HashMap<>();
-    private final Map<ZoneId, Map<ApplicationId, Application>> applications = new HashMap<>();
-    private final Map<ZoneId, TargetVersions> targetVersions = new HashMap<>();
-    private final Map<Integer, Duration> osUpgradeBudgets = new HashMap<>();
-    private final Map<DeploymentId, Pair<Double, Double>> trafficFractions = new HashMap<>();
-    private final Map<ZoneId, Map<TenantName, URI>> archiveUris = new HashMap<>();
+    private final Map<ZoneId, Map<HostName, Node>> nodeRepository = new ConcurrentHashMap<>();
+    private final Map<ZoneId, Map<ApplicationId, Application>> applications = new ConcurrentHashMap<>();
+    private final Map<ZoneId, TargetVersions> targetVersions = new ConcurrentHashMap<>();
+    private final Map<DeploymentId, Pair<Double, Double>> trafficFractions = new ConcurrentHashMap<>();
+    private final Map<ZoneId, Map<TenantName, URI>> archiveUris = new ConcurrentHashMap<>();
 
     private boolean allowPatching = true;
     private boolean hasSpareCapacity = false;
@@ -59,7 +57,7 @@ public class NodeRepositoryMock implements NodeRepository {
     @Override
     public void deleteNode(ZoneId zone, String hostname) {
         require(zone, hostname);
-        nodeRepository.get(zone).remove(HostName.from(hostname));
+        nodeRepository.get(zone).remove(HostName.of(hostname));
     }
 
     @Override
@@ -106,7 +104,7 @@ public class NodeRepositoryMock implements NodeRepository {
                                       .collect(Collectors.toList())
                         : List.of();
 
-        return new NodeRepoStats(Load.zero(), Load.zero(), applicationStats);
+        return new NodeRepoStats(0.0, 0.0, Load.zero(), Load.zero(), applicationStats);
     }
 
     @Override
@@ -116,7 +114,7 @@ public class NodeRepositoryMock implements NodeRepository {
 
     @Override
     public void setArchiveUri(ZoneId zone, TenantName tenantName, URI archiveUri) {
-        archiveUris.computeIfAbsent(zone, z -> new HashMap<>()).put(tenantName, archiveUri);
+        archiveUris.computeIfAbsent(zone, z -> new ConcurrentHashMap<>()).put(tenantName, archiveUri);
     }
 
     @Override
@@ -125,10 +123,16 @@ public class NodeRepositoryMock implements NodeRepository {
     }
 
     @Override
-    public void upgrade(ZoneId zone, NodeType type, Version version) {
+    public void upgrade(ZoneId zone, NodeType type, Version version, boolean allowDowngrade) {
         this.targetVersions.compute(zone, (ignored, targetVersions) -> {
             if (targetVersions == null) {
                 targetVersions = TargetVersions.EMPTY;
+            }
+            Optional<Version> current = targetVersions.vespaVersion(type);
+            if (current.isPresent() && version.isBefore(current.get()) && !allowDowngrade) {
+                throw new IllegalArgumentException("Changing wanted version for " + type + " in " + zone + " from " +
+                                                   current.get() + " to " + version +
+                                                   ", but downgrade is not allowed");
             }
             return targetVersions.withVespaVersion(type, version);
         });
@@ -141,8 +145,7 @@ public class NodeRepositoryMock implements NodeRepository {
     }
 
     @Override
-    public void upgradeOs(ZoneId zone, NodeType type, Version version, Duration upgradeBudget) {
-        this.osUpgradeBudgets.put(Objects.hash(zone, type, version), upgradeBudget);
+    public void upgradeOs(ZoneId zone, NodeType type, Version version) {
         this.targetVersions.compute(zone, (ignored, targetVersions) -> {
             if (targetVersions == null) {
                 targetVersions = TargetVersions.EMPTY;
@@ -206,7 +209,7 @@ public class NodeRepositoryMock implements NodeRepository {
 
     /** Add or update given nodes in zone */
     public void putNodes(ZoneId zone, List<Node> nodes) {
-        Map<HostName, Node> zoneNodes = nodeRepository.computeIfAbsent(zone, (k) -> new HashMap<>());
+        Map<HostName, Node> zoneNodes = nodeRepository.computeIfAbsent(zone, (k) -> new ConcurrentHashMap<>());
         for (var node : nodes) {
             zoneNodes.put(node.hostname(), node);
         }
@@ -218,7 +221,7 @@ public class NodeRepositoryMock implements NodeRepository {
     }
 
     public void putApplication(ZoneId zone, Application application) {
-        applications.computeIfAbsent(zone, (k) -> new HashMap<>())
+        applications.computeIfAbsent(zone, (k) -> new TreeMap<>())
                     .put(application.id(), application);
     }
 
@@ -239,8 +242,8 @@ public class NodeRepositoryMock implements NodeRepository {
     /** Add a fixed set of nodes to given zone */
     public void addFixedNodes(ZoneId zone) {
         var nodeA = Node.builder()
-                        .hostname(HostName.from("hostA"))
-                        .parentHostname(HostName.from("parentHostA"))
+                        .hostname(HostName.of("hostA"))
+                        .parentHostname(HostName.of("parentHostA"))
                         .state(Node.State.active)
                         .type(NodeType.tenant)
                         .owner(ApplicationId.from("tenant1", "app1", "default"))
@@ -255,8 +258,8 @@ public class NodeRepositoryMock implements NodeRepository {
                         .exclusiveTo(ApplicationId.from("t1", "a1", "i1"))
                         .build();
         var nodeB = Node.builder()
-                        .hostname(HostName.from("hostB"))
-                        .parentHostname(HostName.from("parentHostB"))
+                        .hostname(HostName.of("hostB"))
+                        .parentHostname(HostName.of("parentHostB"))
                         .state(Node.State.active)
                         .type(NodeType.tenant)
                         .owner(ApplicationId.from("tenant2", "app2", "default"))
@@ -271,10 +274,6 @@ public class NodeRepositoryMock implements NodeRepository {
                         .clusterType(Node.ClusterType.container)
                         .build();
         putNodes(zone, List.of(nodeA, nodeB));
-    }
-
-    public Optional<Duration> osUpgradeBudget(ZoneId zone, NodeType type, Version version) {
-        return Optional.ofNullable(osUpgradeBudgets.get(Objects.hash(zone, type, version)));
     }
 
     public void doUpgrade(DeploymentId deployment, Optional<HostName> hostName, Version version) {
@@ -312,7 +311,7 @@ public class NodeRepositoryMock implements NodeRepository {
     }
 
     private Node require(ZoneId zone, String hostname) {
-        return require(zone, HostName.from(hostname));
+        return require(zone, HostName.of(hostname));
     }
 
     private Node require(ZoneId zone, HostName hostname) {
@@ -322,7 +321,7 @@ public class NodeRepositoryMock implements NodeRepository {
     }
 
     private void patchNodes(ZoneId zone, String hostname, UnaryOperator<Node> patcher) {
-        patchNodes(zone, Optional.of(HostName.from(hostname)), patcher);
+        patchNodes(zone, Optional.of(HostName.of(hostname)), patcher);
     }
 
     private void patchNodes(DeploymentId deployment, Optional<HostName> hostname, UnaryOperator<Node> patcher) {

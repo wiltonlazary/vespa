@@ -1,5 +1,5 @@
 # Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-search rankproperties {
+schema rankproperties {
 
   document rankproperties {
 
@@ -28,7 +28,8 @@ search rankproperties {
       expression: match
     }
     rank-properties {
-      $test:"foo"
+      $test1:"foo"
+      query(test2): 12.3
       #$weight:1
     }
   }

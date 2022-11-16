@@ -56,7 +56,7 @@ public:
         bool contains(const Set & field) const;
         size_t size() const { return _fields.size(); }
         bool empty() const { return _fields.empty(); }
-        const CPtr * begin() const { return &_fields[0]; }
+        const CPtr * begin() const { return _fields.data(); }
         const CPtr * end() const { return begin() + _fields.size(); }
         static Set emptySet() { return Builder().build(); }
     private:
@@ -86,6 +86,8 @@ public:
      */
     Field(vespalib::stringref name, const DataType &dataType);
 
+    ~Field() override;
+
     std::unique_ptr<FieldValue> createValue() const;
 
     // Note that only id is checked for equality.
@@ -96,12 +98,12 @@ public:
     const DataType &getDataType() const { return *_dataType; }
 
     int getId() const noexcept { return _fieldId; }
-    const vespalib::string & getName() const { return _name; }
+    const vespalib::string & getName() const noexcept { return _name; }
 
     vespalib::string toString(bool verbose=false) const;
     bool contains(const FieldSet& fields) const override;
     Type getType() const override { return Type::FIELD; }
-    bool valid() const { return _fieldId != 0; }
+    bool valid() const noexcept { return _fieldId != 0; }
     uint32_t hash() const noexcept { return getId(); }
 private:
     int calculateIdV7();

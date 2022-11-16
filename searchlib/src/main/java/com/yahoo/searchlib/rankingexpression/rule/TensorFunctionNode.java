@@ -1,8 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.searchlib.rankingexpression.rule;
 
-import com.google.common.annotations.Beta;
-import com.google.common.collect.ImmutableMap;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.searchlib.rankingexpression.ExpressionFunction;
 import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.searchlib.rankingexpression.evaluation.Context;
@@ -144,6 +143,9 @@ public class TensorFunctionNode extends CompositeNode {
         return new ExpressionScalarFunction(node);
     }
 
+    @Override
+    public int hashCode() { return function.hashCode(); }
+
     private static class ExpressionScalarFunction implements ScalarFunction<Reference> {
 
         private final ExpressionNode expression;
@@ -168,8 +170,8 @@ public class TensorFunctionNode extends CompositeNode {
         }
 
         @Override
-        public String toString(ToStringContext c) {
-            ToStringContext outermost = c;
+        public String toString(ToStringContext<Reference> c) {
+            ToStringContext<Reference> outermost = c;
             while (outermost.parent() != null)
                 outermost = outermost.parent();
 
@@ -251,15 +253,20 @@ public class TensorFunctionNode extends CompositeNode {
         }
 
         @Override
-        public String toString(ToStringContext c) {
-            ToStringContext outermost = c;
+        public int hashCode() { return expression.hashCode(); }
+
+        @Override
+        public String toString(ToStringContext<Reference> c) {
+            ToStringContext<Reference> outermost = c;
             while (outermost.parent() != null)
                 outermost = outermost.parent();
 
             if (outermost instanceof ExpressionToStringContext) {
                 ExpressionToStringContext context = (ExpressionToStringContext)outermost;
                 return expression.toString(new StringBuilder(),
-                                           new ExpressionToStringContext(context.wrappedSerializationContext, c, context.path, context.parent),
+                                           new ExpressionToStringContext(context.wrappedSerializationContext, c,
+                                                                         context.path,
+                                                                         context.parent),
                                            context.path,
                                            context.parent)
                                                    .toString();
@@ -281,9 +288,9 @@ public class TensorFunctionNode extends CompositeNode {
      * to add more context, we need to keep track of both these contexts here separately and map between
      * contexts as seen in the toString methods of the function classes above.
      */
-    private static class ExpressionToStringContext extends SerializationContext implements ToStringContext {
+    private static class ExpressionToStringContext extends SerializationContext implements ToStringContext<Reference> {
 
-        private final ToStringContext wrappedToStringContext;
+        private final ToStringContext<Reference> wrappedToStringContext;
         private final SerializationContext wrappedSerializationContext;
         private final Deque<String> path;
         private final CompositeNode parent;
@@ -297,7 +304,7 @@ public class TensorFunctionNode extends CompositeNode {
         }
 
         ExpressionToStringContext(SerializationContext wrappedSerializationContext,
-                                  ToStringContext wrappedToStringContext,
+                                  ToStringContext<Reference> wrappedToStringContext,
                                   Deque<String> path,
                                   CompositeNode parent) {
             this.wrappedSerializationContext = wrappedSerializationContext;
@@ -328,9 +335,16 @@ public class TensorFunctionNode extends CompositeNode {
         /** Returns a function or null if it isn't defined in this context */
         public ExpressionFunction getFunction(String name) { return wrappedSerializationContext.getFunction(name); }
 
-        protected ImmutableMap<String, ExpressionFunction> functions() { return wrappedSerializationContext.functions(); }
+        /** Returns the type context of this, or empty if none. */
+        @Override
+        public Optional<TypeContext<Reference>> typeContext() {
+            return wrappedSerializationContext.typeContext();
+        }
 
-        public ToStringContext parent() { return wrappedToStringContext; }
+        @Override
+        protected Map<String, ExpressionFunction> getFunctions() { return wrappedSerializationContext.getFunctions(); }
+
+        public ToStringContext<Reference> parent() { return wrappedToStringContext; }
 
         /** Returns the resolution of an identifier, or null if it isn't defined in this context */
         @Override
@@ -344,16 +358,22 @@ public class TensorFunctionNode extends CompositeNode {
         /** Returns a new context with the bindings replaced by the given bindings */
         @Override
         public ExpressionToStringContext withBindings(Map<String, String> bindings) {
-            SerializationContext serializationContext = new SerializationContext(functions(), bindings, serializedFunctions());
+            SerializationContext serializationContext = new SerializationContext(getFunctions(), bindings, typeContext(), serializedFunctions());
             return new ExpressionToStringContext(serializationContext, wrappedToStringContext, path, parent);
         }
 
         /** Returns a fresh context without bindings */
         @Override
         public SerializationContext withoutBindings() {
-            SerializationContext serializationContext = new SerializationContext(functions(), null, serializedFunctions());
+            SerializationContext serializationContext = new SerializationContext(getFunctions(), null, typeContext(), serializedFunctions());
             return new ExpressionToStringContext(serializationContext, null, path, parent);
         }
+
+        @Override
+        public String toString() {
+            return "TensorFunctionNode.ExpressionToStringContext with wrapped serialization context: " + wrappedSerializationContext;
+        }
+
     }
 
     /** Turns an EvaluationContext into a Context */

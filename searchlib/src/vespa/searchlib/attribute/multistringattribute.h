@@ -2,13 +2,12 @@
 
 #pragma once
 
-#include <vespa/searchlib/attribute/stringbase.h>
-#include <vespa/searchlib/attribute/enumattribute.h>
-#include <vespa/searchlib/attribute/enumstore.h>
-#include <vespa/searchlib/attribute/multienumattribute.h>
-#include <vespa/searchlib/attribute/multi_value_mapping.h>
-#include "enumhintsearchcontext.h"
-#include "multivalue.h"
+#include "stringbase.h"
+#include "enumattribute.h"
+#include "enumstore.h"
+#include "multienumattribute.h"
+#include "multi_value_mapping.h"
+#include <vespa/searchcommon/attribute/multivalue.h>
 
 namespace search {
 
@@ -19,7 +18,7 @@ namespace search {
  * This class is used for both array and weighted set types.
  *
  * B: Base class: EnumAttribute<StringAttribute>
- * M: multivalue::Value<IEnumStore::Index> (array) or
+ * M: IEnumStore::Index (array) or
  *    multivalue::WeightedValue<IEnumStore::Index> (weighted set)
  */
 template <typename B, typename M>
@@ -38,7 +37,6 @@ protected:
     using DocId = StringAttribute::DocId;
     using EnumHandle = StringAttribute::EnumHandle;
     using LoadedVector = StringAttribute::LoadedVector;
-    using SearchContext = StringAttribute::SearchContext;
     using ValueModifier = StringAttribute::ValueModifier;
     using WeightedConstChar = StringAttribute::WeightedConstChar;
     using WeightedEnum = StringAttribute::WeightedEnum;
@@ -46,9 +44,8 @@ protected:
     using generation_t = StringAttribute::generation_t;
 
 public:
-    MultiValueStringAttributeT(const vespalib::string & name, const AttributeVector::Config & c =
-                              AttributeVector::Config(AttributeVector::BasicType::STRING,
-                                                      attribute::CollectionType::ARRAY));
+    MultiValueStringAttributeT(const vespalib::string & name, const AttributeVector::Config & c);
+    MultiValueStringAttributeT(const vespalib::string & name);
     ~MultiValueStringAttributeT();
 
     void freezeEnumDictionary() override;
@@ -61,7 +58,7 @@ public:
         if (indices.size() == 0) {
             return NULL;
         } else {
-            return this->_enumStore.get_value(indices[0].value());
+            return this->_enumStore.get_value(multivalue::get_value_ref(indices[0]).load_acquire());
         }
     }
 
@@ -77,7 +74,7 @@ public:
         WeightedIndexArrayRef indices(this->_mvMapping.get(doc));
         uint32_t valueCount = indices.size();
         for(uint32_t i = 0, m = std::min(sz, valueCount); i < m; i++) {
-            buffer[i] = this->_enumStore.get_value(indices[i].value());
+            buffer[i] = this->_enumStore.get_value(multivalue::get_value_ref(indices[i]).load_acquire());
         }
         return valueCount;
     }
@@ -94,7 +91,7 @@ public:
         WeightedIndexArrayRef indices(this->_mvMapping.get(doc));
         uint32_t valueCount = indices.size();
         for (uint32_t i = 0, m = std::min(sz, valueCount); i < m; ++i) {
-            buffer[i] = WeightedType(this->_enumStore.get_value(indices[i].value()), indices[i].weight());
+            buffer[i] = WeightedType(this->_enumStore.get_value(multivalue::get_value_ref(indices[i]).load_acquire()), multivalue::get_weight(indices[i]));
         }
         return valueCount;
     }
@@ -105,64 +102,16 @@ public:
         return getWeightedHelper(doc, v, sz);
     }
 
-    /*
-     * Specialization of SearchContext for weighted set type
-     */
-    class StringImplSearchContext : public StringAttribute::StringSearchContext {
-    public:
-        StringImplSearchContext(QueryTermSimpleUP qTerm, const StringAttribute & toBeSearched) :
-            StringAttribute::StringSearchContext(std::move(qTerm), toBeSearched)
-        { }
-    protected:
-        const MultiValueStringAttributeT<B, M> & myAttribute() const {
-            return static_cast< const MultiValueStringAttributeT<B, M> & > (attribute());
-        }
-        int32_t onFind(DocId docId, int32_t elemId) const override;
-
-        template <typename Collector>
-        int32_t findNextWeight(DocId doc, int32_t elemId, int32_t & weight, Collector & collector) const;
-    };
-
-    /*
-     * Specialization of SearchContext for weighted set type
-     */
-    class StringSetImplSearchContext : public StringImplSearchContext {
-    public:
-        StringSetImplSearchContext(SearchContext::QueryTermSimpleUP qTerm, const StringAttribute & toBeSearched) :
-            StringImplSearchContext(std::move(qTerm), toBeSearched)
-        { }
-    protected:
-        int32_t onFind(DocId docId, int32_t elemId, int32_t &weight) const override;
-    };
-
-    /*
-     * Specialization of SearchContext for array type
-     */
-    class StringArrayImplSearchContext : public StringImplSearchContext {
-    public:
-        StringArrayImplSearchContext(SearchContext::QueryTermSimpleUP qTerm, const StringAttribute & toBeSearched) :
-            StringImplSearchContext(std::move(qTerm), toBeSearched)
-        { }
-    protected:
-        int32_t onFind(DocId docId, int32_t elemId, int32_t &weight) const override;
-    };
-
-    template <typename BT>
-    class StringTemplSearchContext : public BT,
-                                     public attribute::EnumHintSearchContext
-    {
-        using BT::queryTerm;
-        using AttrType = MultiValueStringAttributeT<B, M>;
-    public:
-        StringTemplSearchContext(SearchContext::QueryTermSimpleUP qTerm, const AttrType & toBeSearched);
-    };
-
-    SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams & params) const override;
+
+    // Implements attribute::IMultiValueAttribute
+    const attribute::IArrayReadView<const char*>* make_read_view(attribute::IMultiValueAttribute::ArrayTag<const char*>, vespalib::Stash& stash) const override;
+    const attribute::IWeightedSetReadView<const char*>* make_read_view(attribute::IMultiValueAttribute::WeightedSetTag<const char*>, vespalib::Stash& stash) const override;
 };
 
 
-using ArrayStringAttribute = MultiValueStringAttributeT<EnumAttribute<StringAttribute>, multivalue::Value<IEnumStore::Index> >;
-using WeightedSetStringAttribute = MultiValueStringAttributeT<EnumAttribute<StringAttribute>, multivalue::WeightedValue<IEnumStore::Index> >;
+using ArrayStringAttribute = MultiValueStringAttributeT<EnumAttribute<StringAttribute>, vespalib::datastore::AtomicEntryRef>;
+using WeightedSetStringAttribute = MultiValueStringAttributeT<EnumAttribute<StringAttribute>, multivalue::WeightedValue<vespalib::datastore::AtomicEntryRef> >;
 
 }

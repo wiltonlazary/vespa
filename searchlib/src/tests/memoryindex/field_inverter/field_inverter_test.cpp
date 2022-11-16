@@ -1,22 +1,33 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/document/repo/fixedtyperepo.h>
-#include <vespa/searchlib/index/docbuilder.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/arrayfieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/weightedsetfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
+#include <vespa/searchcommon/common/schema.h>
 #include <vespa/searchlib/index/field_length_calculator.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchlib/test/string_field_builder.h>
 #include <vespa/searchlib/memoryindex/field_index_remover.h>
 #include <vespa/searchlib/memoryindex/field_inverter.h>
 #include <vespa/searchlib/memoryindex/word_store.h>
 #include <vespa/searchlib/test/memoryindex/ordered_field_index_inserter.h>
+#include <vespa/searchlib/test/memoryindex/ordered_field_index_inserter_backend.h>
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/vespalib/gtest/gtest.h>
 
 namespace search {
 
+using document::ArrayFieldValue;
+using document::DataType;
 using document::Document;
-using index::DocBuilder;
+using document::WeightedSetFieldValue;
 using index::Schema;
-using index::schema::CollectionType;
-using index::schema::DataType;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
+using search::test::StringFieldBuilder;
 
 using namespace index;
 
@@ -27,81 +38,79 @@ namespace {
 Document::UP
 makeDoc10(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::10");
-    b.startIndexField("f0").
-        addStr("a").addStr("b").addStr("c").addStr("d").
-        endField();
-    return b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::10");
+    doc->setValue("f0", sfb.tokenize("a b c d").build());
+    return doc;
 }
 
 Document::UP
 makeDoc11(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::11");
-    b.startIndexField("f0").
-        addStr("a").addStr("b").addStr("e").addStr("f").
-        endField();
-    b.startIndexField("f1").
-        addStr("a").addStr("g").
-        endField();
-    return b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::11");
+    doc->setValue("f0", sfb.tokenize("a b e f").build());
+    doc->setValue("f1", sfb.tokenize("a g").build());
+    return doc;
 }
 
 Document::UP
 makeDoc12(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::12");
-    b.startIndexField("f0").
-        addStr("h").addStr("doc12").
-        endField();
-    return b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::12");
+    doc->setValue("f0", sfb.tokenize("h doc12").build());
+    return doc;
 }
 
 Document::UP
 makeDoc13(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::13");
-    b.startIndexField("f0").
-        addStr("i").addStr("doc13").
-        endField();
-    return b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::13");
+    doc->setValue("f0", sfb.tokenize("i doc13").build());
+    return doc;
 }
 
 Document::UP
 makeDoc14(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::14");
-    b.startIndexField("f0").
-        addStr("j").addStr("doc14").
-        endField();
-    return b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::14");
+    doc->setValue("f0", sfb.tokenize("j doc14").build());
+    return doc;
 }
 
 Document::UP
 makeDoc15(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::15");
-    return b.endDocument();
+    return b.make_document("id:ns:searchdocument::15");
 }
 
 Document::UP
 makeDoc16(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::16");
-    b.startIndexField("f0").addStr("foo").addStr("bar").addStr("baz").
-        addTermAnnotation("altbaz").addStr("y").addTermAnnotation("alty").
-        addStr("z").endField();
-    return b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::16");
+    doc->setValue("f0", sfb.tokenize("foo bar baz").alt_word("altbaz").tokenize(" y").alt_word("alty").tokenize(" z").build());
+    return doc;
 }
 
 Document::UP
 makeDoc17(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::17");
-    b.startIndexField("f1").addStr("foo0").addStr("bar0").endField();
-    b.startIndexField("f2").startElement(1).addStr("foo").addStr("bar").endElement().startElement(1).addStr("bar").endElement().endField();
-    b.startIndexField("f3").startElement(3).addStr("foo2").addStr("bar2").endElement().startElement(4).addStr("bar2").endElement().endField();
-    return b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::17");
+    doc->setValue("f1", sfb.tokenize("foo0 bar0").build());
+    auto string_array = b.make_array("f2");
+    string_array.add(sfb.tokenize("foo bar").build());
+    string_array.add(sfb.tokenize("bar").build());
+    doc->setValue("f2", string_array);
+    auto string_wset = b.make_wset("f3");
+    string_wset.add(sfb.tokenize("foo2 bar2").build(), 3);
+    string_wset.add(sfb.tokenize("bar2").build(), 4);
+    doc->setValue("f3", string_wset);
+    return doc;
 }
 
 vespalib::string corruptWord = "corruptWord";
@@ -109,9 +118,9 @@ vespalib::string corruptWord = "corruptWord";
 Document::UP
 makeCorruptDocument(DocBuilder &b, size_t wordOffset)
 {
-    b.startDocument("id:ns:searchdocument::18");
-    b.startIndexField("f0").addStr("before").addStr(corruptWord).addStr("after").addStr("z").endField();
-    auto doc = b.endDocument();
+    StringFieldBuilder sfb(b);
+    auto doc = b.make_document("id:ns:searchdocument::18");
+    doc->setValue("f0", sfb.tokenize("before ").word(corruptWord).tokenize(" after z").build());
     vespalib::nbostream stream;
     doc->serialize(stream);
     std::vector<char> raw;
@@ -126,45 +135,50 @@ makeCorruptDocument(DocBuilder &b, size_t wordOffset)
     }
     vespalib::nbostream badstream;
     badstream.write(&raw[0], raw.size());
-    return std::make_unique<Document>(*b.getDocumentTypeRepo(), badstream);
+    return std::make_unique<Document>(b.get_repo(), badstream);
 }
 
 }
 
 struct FieldInverterTest : public ::testing::Test {
-    Schema _schema;
     DocBuilder _b;
+    Schema _schema;
     WordStore                       _word_store;
     FieldIndexRemover               _remover;
-    test::OrderedFieldIndexInserter _inserter;
+    test::OrderedFieldIndexInserterBackend _inserter_backend;
     std::vector<std::unique_ptr<FieldLengthCalculator>> _calculators;
+    std::vector<std::unique_ptr<IOrderedFieldIndexInserter>> _inserters;
     std::vector<std::unique_ptr<FieldInverter> > _inverters;
 
-    static Schema makeSchema() {
-        Schema schema;
-        schema.addIndexField(Schema::IndexField("f0", DataType::STRING));
-        schema.addIndexField(Schema::IndexField("f1", DataType::STRING));
-        schema.addIndexField(Schema::IndexField("f2", DataType::STRING, CollectionType::ARRAY));
-        schema.addIndexField(Schema::IndexField("f3", DataType::STRING, CollectionType::WEIGHTEDSET));
-        return schema;
+    static DocBuilder::AddFieldsType
+    make_add_fields()
+    {
+        return [](auto& header) { using namespace document::config_builder;
+            header.addField("f0", DataType::T_STRING)
+                .addField("f1", DataType::T_STRING)
+                .addField("f2", Array(DataType::T_STRING))
+                .addField("f3", Wset(DataType::T_STRING));
+               };
     }
 
     FieldInverterTest()
-        : _schema(makeSchema()),
-          _b(_schema),
+        : _b(make_add_fields()),
+          _schema(SchemaBuilder(_b).add_all_indexes().build()),
           _word_store(),
           _remover(_word_store),
-          _inserter(),
+          _inserter_backend(),
           _calculators(),
+          _inserters(),
           _inverters()
     {
         for (uint32_t fieldId = 0; fieldId < _schema.getNumIndexFields();
              ++fieldId) {
             _calculators.emplace_back(std::make_unique<FieldLengthCalculator>());
+            _inserters.emplace_back(std::make_unique<test::OrderedFieldIndexInserter>(_inserter_backend, fieldId));
             _inverters.push_back(std::make_unique<FieldInverter>(_schema,
                                                                  fieldId,
                                                                  _remover,
-                                                                 _inserter,
+                                                                 *_inserters.back(),
                                                                  *_calculators.back()));
         }
     }
@@ -180,11 +194,8 @@ struct FieldInverterTest : public ::testing::Test {
     }
 
     void pushDocuments() {
-        uint32_t fieldId = 0;
         for (auto &inverter : _inverters) {
-            _inserter.setFieldId(fieldId);
             inverter->pushDocuments();
-            ++fieldId;
         }
     }
 
@@ -210,7 +221,7 @@ TEST_F(FieldInverterTest, require_that_fresh_insert_works)
               "w=b,a=10,"
               "w=c,a=10,"
               "w=d,a=10",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_multiple_docs_work)
@@ -225,7 +236,7 @@ TEST_F(FieldInverterTest, require_that_multiple_docs_work)
               "w=f,a=11,"
               "f=1,w=a,a=11,"
               "w=g,a=11",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_remove_works)
@@ -240,7 +251,7 @@ TEST_F(FieldInverterTest, require_that_remove_works)
               "w=b,r=10,r=11,"
               "f=1,w=a,r=10,"
               "f=2,w=c,r=12",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_reput_works)
@@ -254,7 +265,7 @@ TEST_F(FieldInverterTest, require_that_reput_works)
               "w=f,a=10,"
               "f=1,w=a,a=10,"
               "w=g,a=10",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_abort_pending_doc_works)
@@ -275,7 +286,7 @@ TEST_F(FieldInverterTest, require_that_abort_pending_doc_works)
               "w=f,a=11,"
               "f=1,w=a,a=11,"
               "w=g,a=11",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 
     invertDocument(10, *doc10);
     invertDocument(11, *doc11);
@@ -284,7 +295,7 @@ TEST_F(FieldInverterTest, require_that_abort_pending_doc_works)
     invertDocument(14, *doc14);
     removeDocument(11);
     removeDocument(13);
-    _inserter.reset();
+    _inserter_backend.reset();
     pushDocuments();
     EXPECT_EQ("f=0,w=a,a=10,"
               "w=b,a=10,"
@@ -294,7 +305,7 @@ TEST_F(FieldInverterTest, require_that_abort_pending_doc_works)
               "w=doc14,a=14,"
               "w=h,a=12,"
               "w=j,a=14",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 
     invertDocument(10, *doc10);
     invertDocument(11, *doc11);
@@ -305,13 +316,13 @@ TEST_F(FieldInverterTest, require_that_abort_pending_doc_works)
     removeDocument(12);
     removeDocument(13);
     removeDocument(14);
-    _inserter.reset();
+    _inserter_backend.reset();
     pushDocuments();
     EXPECT_EQ("f=0,w=a,a=10,"
               "w=b,a=10,"
               "w=c,a=10,"
               "w=d,a=10",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_mix_of_add_and_remove_works)
@@ -327,7 +338,7 @@ TEST_F(FieldInverterTest, require_that_mix_of_add_and_remove_works)
               "w=c,r=9,a=10,"
               "w=d,r=10,a=10,"
               "w=z,r=12",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_empty_document_can_be_inverted)
@@ -335,13 +346,13 @@ TEST_F(FieldInverterTest, require_that_empty_document_can_be_inverted)
     invertDocument(15, *makeDoc15(_b));
     pushDocuments();
     EXPECT_EQ("",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_multiple_words_at_same_position_works)
 {
     invertDocument(16, *makeDoc16(_b));
-    _inserter.setVerbose();
+    _inserter_backend.setVerbose();
     pushDocuments();
     EXPECT_EQ("f=0,"
               "w=altbaz,a=16(e=0,w=1,l=5[2]),"
@@ -351,14 +362,14 @@ TEST_F(FieldInverterTest, require_that_multiple_words_at_same_position_works)
               "w=foo,a=16(e=0,w=1,l=5[0]),"
               "w=y,a=16(e=0,w=1,l=5[3]),"
               "w=z,a=16(e=0,w=1,l=5[4])",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_interleaved_features_are_calculated)
 {
     invertDocument(17, *makeDoc17(_b));
-    _inserter.setVerbose();
-    _inserter.set_show_interleaved_features();
+    _inserter_backend.setVerbose();
+    _inserter_backend.set_show_interleaved_features();
     pushDocuments();
     EXPECT_EQ("f=1,"
               "w=bar0,a=17(fl=2,occs=1,e=0,w=1,l=2[1]),"
@@ -369,7 +380,7 @@ TEST_F(FieldInverterTest, require_that_interleaved_features_are_calculated)
               "f=3,"
               "w=bar2,a=17(fl=3,occs=2,e=0,w=3,l=2[1],e=1,w=4,l=1[0]),"
               "w=foo2,a=17(fl=3,occs=1,e=0,w=3,l=2[0])",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_average_field_length_is_calculated)
@@ -397,7 +408,7 @@ TEST_F(FieldInverterTest, require_that_word_with_NUL_byte_is_truncated)
               "w=before,a=1,"
               "w=corrupt,a=1,"
               "w=z,a=1",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 TEST_F(FieldInverterTest, require_that_word_with_NUL_byte_is_dropped_when_truncated_to_zero_length)
@@ -408,7 +419,7 @@ TEST_F(FieldInverterTest, require_that_word_with_NUL_byte_is_dropped_when_trunca
               "w=after,a=1,"
               "w=before,a=1,"
               "w=z,a=1",
-              _inserter.toStr());
+              _inserter_backend.toStr());
 }
 
 }

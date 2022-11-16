@@ -4,16 +4,12 @@ vespa_define_module(
     fastos
     vespalog
     vespalib
-    staging_vespalib
     vespaeval
     fnet
     configdefinitions
     metrics
-    fastlib_fast
     document
     config_cloudconfig
-    persistencetypes
-    searchcommon
 
     EXTERNAL_DEPENDS
     ${VESPA_GLIBC_RT_LIB}
@@ -50,10 +46,13 @@ vespa_define_module(
     src/vespa/searchlib/test
     src/vespa/searchlib/test/diskindex
     src/vespa/searchlib/test/fakedata
+    src/vespa/searchlib/test/features
     src/vespa/searchlib/test/memoryindex
     src/vespa/searchlib/transactionlog
     src/vespa/searchlib/uca
     src/vespa/searchlib/util
+    src/vespa/searchcommon/attribute
+    src/vespa/searchcommon/common
 
     APPS
     src/apps/docstore
@@ -88,10 +87,11 @@ vespa_define_module(
     src/tests/attribute/imported_attribute_vector
     src/tests/attribute/imported_search_context
     src/tests/attribute/multi_value_mapping
+    src/tests/attribute/multi_value_read_view
     src/tests/attribute/posting_list_merger
+    src/tests/attribute/posting_store
     src/tests/attribute/postinglist
     src/tests/attribute/postinglistattribute
-    src/tests/attribute/posting_store
     src/tests/attribute/reference_attribute
     src/tests/attribute/save_target
     src/tests/attribute/searchable
@@ -102,8 +102,8 @@ vespa_define_module(
     src/tests/attribute/tensorattribute
     src/tests/bitcompression/expgolomb
     src/tests/bitvector
-    src/tests/btree
     src/tests/common/bitvector
+    src/tests/common/geogcd
     src/tests/common/location
     src/tests/common/location_iterator
     src/tests/common/matching_elements
@@ -112,8 +112,8 @@ vespa_define_module(
     src/tests/common/summaryfeatures
     src/tests/diskindex/bitvector
     src/tests/diskindex/diskindex
-    src/tests/diskindex/fieldwriter
     src/tests/diskindex/field_length_scanner
+    src/tests/diskindex/fieldwriter
     src/tests/diskindex/fusion
     src/tests/diskindex/pagedict4
     src/tests/docstore/chunk
@@ -168,14 +168,13 @@ vespa_define_module(
     src/tests/grouping
     src/tests/groupingengine
     src/tests/hitcollector
-    src/tests/index/docbuilder
-    src/tests/index/doctypebuilder
     src/tests/index/field_length_calculator
     src/tests/indexmetainfo
     src/tests/ld-library-path
     src/tests/memoryindex/compact_words_store
     src/tests/memoryindex/datastore
     src/tests/memoryindex/document_inverter
+    src/tests/memoryindex/document_inverter_collection
     src/tests/memoryindex/field_index
     src/tests/memoryindex/field_index_remover
     src/tests/memoryindex/field_inverter
@@ -185,14 +184,15 @@ vespa_define_module(
     src/tests/nearsearch
     src/tests/postinglistbm
     src/tests/predicate
-    src/tests/prettyfloat
     src/tests/query
     src/tests/queryeval
     src/tests/queryeval/blueprint
     src/tests/queryeval/dot_product
     src/tests/queryeval/equiv
     src/tests/queryeval/fake_searchable
+    src/tests/queryeval/filter_search
     src/tests/queryeval/getnodeweight
+    src/tests/queryeval/global_filter
     src/tests/queryeval/matching_elements_search
     src/tests/queryeval/monitoring_search_iterator
     src/tests/queryeval/multibitvectoriterator
@@ -212,15 +212,22 @@ vespa_define_module(
     src/tests/rankingexpression/intrinsic_blueprint_adapter
     src/tests/ranksetup
     src/tests/ranksetup/verify_feature
+    src/tests/searchcommon/attribute/config
+    src/tests/searchcommon/schema
     src/tests/sort
     src/tests/sortresults
     src/tests/sortspec
-    src/tests/stringenum
     src/tests/tensor/dense_tensor_store
     src/tests/tensor/direct_tensor_store
     src/tests/tensor/distance_functions
     src/tests/tensor/hnsw_index
+    src/tests/tensor/hnsw_nodeid_mapping
     src/tests/tensor/hnsw_saver
+    src/tests/tensor/tensor_buffer_operations
+    src/tests/tensor/tensor_buffer_store
+    src/tests/tensor/tensor_buffer_type_mapper
+    src/tests/test/schema_builder
+    src/tests/test/string_field_builder
     src/tests/transactionlog
     src/tests/transactionlogstress
     src/tests/true
@@ -232,7 +239,7 @@ vespa_define_module(
     src/tests/vespa-fileheader-inspect
 )
 
-install_java_artifact(searchlib)
+install_jar(searchlib.jar)
 
 vespa_install_script(src/main/sh/vespa-gbdt-converter bin)
 vespa_install_script(src/main/sh/vespa-treenet-converter bin)

@@ -143,9 +143,9 @@ class ResultBuilder {
     }
 
     private class GroupBuilder {
-
+        private static final int CHILDLIST_SIZE_INCREMENTS = 4;
         boolean [] results = new boolean[8];
-        GroupListBuilder [] childLists = new GroupListBuilder[8];
+        GroupListBuilder [] childLists;
         int childCount = 0;
         final ResultId resultId;
         final com.yahoo.searchlib.aggregation.Group group;
@@ -162,20 +162,22 @@ class ResultBuilder {
         }
 
         Group fill(Group group) {
-            for (AggregationResult res : this.group.getAggregationResults()) {
-                int tag = res.getTag();
-                if (res instanceof HitsAggregationResult) {
-                    group.add(newHitList(group.size(), tag, (HitsAggregationResult)res));
+            for (AggregationResult result : this.group.getAggregationResults()) {
+                int tag = result.getTag();
+                if (result instanceof HitsAggregationResult) {
+                    group.add(newHitList(group.size(), tag, (HitsAggregationResult)result));
                 } else {
-                    String label = transform.getLabel(res.getTag());
+                    String label = transform.getLabel(result.getTag());
                     if (label != null) {
-                        group.setField(label, newResult(res, tag));
+                        group.setField(label, newResult(result, tag));
                     }
                 }
             }
-            for (GroupListBuilder child : childLists) {
-                if (child != null) {
-                    group.add(child.build());
+            if (childLists != null) {
+                for (GroupListBuilder child : childLists) {
+                    if (child != null) {
+                        group.add(child.build());
+                    }
                 }
             }
             return group;
@@ -183,8 +185,12 @@ class ResultBuilder {
 
         GroupListBuilder getOrCreateChildList(int tag, boolean ranked) {
             int index = tag + 1; // Add 1 to avoid the dreaded -1 default value.
-            if (index >= childLists.length) {
-                childLists = Arrays.copyOf(childLists, tag + 8);
+            if (childLists == null || index >= childLists.length) {
+                int minSize = index + 1;
+                int reservedSize = ((minSize + (CHILDLIST_SIZE_INCREMENTS - 1))/CHILDLIST_SIZE_INCREMENTS) * CHILDLIST_SIZE_INCREMENTS;
+                childLists = (childLists == null)
+                        ? new GroupListBuilder[reservedSize]
+                        : Arrays.copyOf(childLists, reservedSize);
             }
             GroupListBuilder ret = childLists[index];
             if (ret == null) {
@@ -202,7 +208,7 @@ class ResultBuilder {
                     results = Arrays.copyOf(results, tag+8);
                 }
                 if ( ! results[tag] ) {
-                    this.group.getAggregationResults().add(res);
+                    this.group.addAggregationResult(res);
                     results[tag] = true;
                 }
             }
@@ -263,7 +269,7 @@ class ResultBuilder {
         }
 
         private long correctExpressionCountEstimate(long count, int tag) {
-            int actualGroupCount = group.getChildren().size();
+            int actualGroupCount = group.getNumChildren();
             // Use actual group count if estimate differ. If max is present, only use actual group count if less than max.
             // NOTE: If the actual group count is 0, estimate is also 0.
             if (actualGroupCount > 0 && count != actualGroupCount) {
@@ -273,7 +279,6 @@ class ResultBuilder {
             }
             return count;
         }
-
 
         HitList newHitList(int listIdx, int tag, HitsAggregationResult execResult) {
             HitList hitList = new HitList(transform.getLabel(tag));
@@ -320,10 +325,11 @@ class ResultBuilder {
 
         void addGroup(com.yahoo.searchlib.aggregation.Group execGroup) {
             GroupBuilder groupBuilder = getOrCreateGroup(execGroup);
-            if (!execGroup.getChildren().isEmpty()) {
-                boolean ranked = execGroup.getChildren().get(0).isRankedByRelevance();
+            if (execGroup.getNumChildren() > 0) {
                 execGroup.sortChildrenByRank();
-                for (com.yahoo.searchlib.aggregation.Group childGroup : execGroup.getChildren()) {
+                List<com.yahoo.searchlib.aggregation.Group> children = execGroup.getChildren();
+                boolean ranked = children.get(0).isRankedByRelevance();
+                for (com.yahoo.searchlib.aggregation.Group childGroup : children) {
                     GroupListBuilder childList = groupBuilder.getOrCreateChildList(childGroup.getTag(), ranked);
                     childList.addGroup(childGroup);
                 }
@@ -331,13 +337,13 @@ class ResultBuilder {
         }
 
         GroupBuilder getOrCreateGroup(com.yahoo.searchlib.aggregation.Group execGroup) {
-            ResultNode res = execGroup.getId();
-            GroupBuilder ret = childResultGroups.get(res);
+            ResultNode result = execGroup.getId();
+            GroupBuilder ret = childResultGroups.get(result);
             if (ret != null) {
                 ret.merge(execGroup);
             } else {
                 ret = new GroupBuilder(resultId.newChildId(childResultGroups.size()), execGroup, stableChildren);
-                childResultGroups.put(res, ret);
+                childResultGroups.put(result, ret);
                 childGroups.add(ret);
             }
             return ret;

@@ -3,7 +3,7 @@ package com.yahoo.language.provider;
 
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.container.di.componentgraph.Provider;
 import com.yahoo.language.Linguistics;
 import com.yahoo.language.opennlp.OpenNlpLinguistics;
@@ -18,10 +18,12 @@ import com.yahoo.language.opennlp.OpenNlpLinguistics;
 public class DefaultLinguisticsProvider implements Provider<Linguistics> {
 
     // Use lazy initialization to avoid expensive (memory-wise) instantiation
-    private final Supplier<Linguistics> linguisticsSupplier = Suppliers.memoize(OpenNlpLinguistics::new);
+    private final Supplier<Linguistics> linguisticsSupplier;
 
     @Inject
-    public DefaultLinguisticsProvider() { }
+    public DefaultLinguisticsProvider() {
+        linguisticsSupplier = Suppliers.memoize(OpenNlpLinguistics::new);
+    }
 
     @Override
     public Linguistics get() { return linguisticsSupplier.get(); }

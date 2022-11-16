@@ -83,8 +83,8 @@ public class RoutingContext {
      * @return A modifiable list of recipients.
      */
     public List<Route> getMatchedRecipients() {
-        List<Route> ret = new ArrayList<Route>();
-        Set<String> done = new HashSet<String>();
+        List<Route> ret = new ArrayList<>();
+        Set<String> done = new HashSet<>();
         Hop hop = getHop();
         for (Route route : node.getRecipients()) {
             if (route.hasHops() && hop.matches(route.getHop(0))) {
@@ -327,7 +327,7 @@ public class RoutingContext {
     /**
      * <p>Adds a child routing context to this based on a given route. This is
      * the typical entry point a policy will use to select recipients during a
-     * {@link RoutingPolicy#select(RoutingContext)} invokation.</p>
+     * {@link RoutingPolicy#select(RoutingContext)} invocation.</p>
      *
      * @param route The route to contain in the child context.
      */

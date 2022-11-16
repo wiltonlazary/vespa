@@ -6,12 +6,14 @@
 #include <vespa/vespalib/util/compressionconfig.h>
 #include <vespa/vespalib/util/memoryusage.h>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace vespalib {
     class nbostream;
     class DataBuffer;
 }
+namespace vespalib::alloc { class Alloc; }
 
 namespace search {
 
@@ -47,7 +49,7 @@ private:
 
 class LidMeta {
 public:
-    LidMeta() : _lid(0), _size(0) { }
+    LidMeta() noexcept : _lid(0), _size(0) { }
     LidMeta(uint32_t lid, uint32_t sz) : _lid(lid), _size(sz) { }
     uint32_t     getLid() const { return _lid; }
     uint32_t       size() const { return _size; }
@@ -89,6 +91,7 @@ public:
     ~Chunk();
     LidMeta append(uint32_t lid, const void * buffer, size_t len);
     ssize_t read(uint32_t lid, vespalib::DataBuffer & buffer) const;
+    std::pair<size_t, vespalib::alloc::Alloc> read(uint32_t lid) const;
     size_t count() const { return _lids.size(); }
     bool empty() const { return count() == 0; }
     size_t size() const;
@@ -110,6 +113,7 @@ private:
     uint64_t                      _lastSerial;
     std::unique_ptr<ChunkFormat>  _format;
     LidList                       _lids;
+    mutable std::mutex            _lock;
 };
 
 typedef std::vector<ChunkMeta> ChunkMetaV;

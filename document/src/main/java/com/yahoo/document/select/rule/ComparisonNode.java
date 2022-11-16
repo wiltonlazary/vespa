@@ -4,6 +4,7 @@ package com.yahoo.document.select.rule;
 import com.yahoo.document.BucketId;
 import com.yahoo.document.BucketIdFactory;
 import com.yahoo.document.DocumentId;
+import com.yahoo.document.datatypes.BoolFieldValue;
 import com.yahoo.document.datatypes.FieldPathIteratorHandler;
 import com.yahoo.document.datatypes.NumericFieldValue;
 import com.yahoo.document.idstring.IdIdString;
@@ -89,7 +90,6 @@ public class ComparisonNode implements ExpressionNode {
         return null;
     }
 
-    @SuppressWarnings("deprecation")
     private BucketSet compare(BucketIdFactory factory, IdNode id, LiteralNode literal, String operator) {
         String field = id.getField();
         Object value = literal.getValue();
@@ -98,9 +98,9 @@ public class ComparisonNode implements ExpressionNode {
                 String name = (String)value;
                 if ((operator.equals("=") && name.contains("*")) ||
                     (operator.equals("=~") && ((name.contains("*") || name.contains("?")))))
-                {
-                    return null; // no idea
-                }
+                    {
+                        return null; // no idea
+                    }
                 return new BucketSet(factory.getBucketId(new DocumentId(name)));
             }
         } else if (field.equalsIgnoreCase("user")) {
@@ -111,10 +111,10 @@ public class ComparisonNode implements ExpressionNode {
             if (value instanceof String) {
                 String name = (String)value;
                 if ((operator.equals("=") && name.contains("*")) ||
-                        (operator.equals("=~") && ((name.contains("*") || name.contains("?")))))
-                {
-                    return null; // no idea
-                }
+                    (operator.equals("=~") && ((name.contains("*") || name.contains("?")))))
+                    {
+                        return null; // no idea
+                    }
                 return new BucketSet(new BucketId(factory.getLocationBitCount(), IdIdString.makeLocation(name)));
             }
         } else if (field.equalsIgnoreCase("bucket")) {
@@ -269,7 +269,7 @@ public class ComparisonNode implements ExpressionNode {
         double a = getAsNumber(lhs);
         double b = getAsNumber(rhs);
         if (Double.isNaN(a) || Double.isNaN(b)) {
-        	return Result.toResult(lhs.toString().equals(rhs.toString()));
+            return Result.toResult(lhs.toString().equals(rhs.toString()));
         }
         return Result.toResult(a == b); // Ugh, comparing doubles? Should be converted to long value perhaps...
     }
@@ -279,6 +279,10 @@ public class ComparisonNode implements ExpressionNode {
             return ((Number)value).doubleValue();
         } else if (value instanceof NumericFieldValue) {
             return getAsNumber(((NumericFieldValue)value).getNumber());
+        } else if (value instanceof BoolFieldValue) {
+            return ((BoolFieldValue)value).getBoolean() ? 1 : 0;
+        } else if (value instanceof Boolean) {
+            return (Boolean)value ? 1 : 0;
         } else {
             return Double.NaN; //new IllegalStateException("Term '" + value + "' (" + value.getClass() + ") does not evaluate to a number.");
         }
@@ -292,11 +296,11 @@ public class ComparisonNode implements ExpressionNode {
      * @return The evaluation result.
      */
     private Result evaluateNumber(Object lhs, Object rhs) {
-    	double a = getAsNumber(lhs);
-    	double b = getAsNumber(rhs);
-    	if (Double.isNaN(a) || Double.isNaN(b)) {
-    		return Result.INVALID;
-    	}
+        double a = getAsNumber(lhs);
+        double b = getAsNumber(rhs);
+        if (Double.isNaN(a) || Double.isNaN(b)) {
+            return Result.INVALID;
+        }
         if (operator.equals("<")) {
             return Result.toResult(a < b);
         } else if (operator.equals("<=")) {
@@ -350,25 +354,25 @@ public class ComparisonNode implements ExpressionNode {
      */
     private String globToRegex(char glob) {
         switch (glob) {
-            case'*':
-                return ".*";
-            case'?':
-                return ".";
-            case'^':
-            case'$':
-            case'|':
-            case'{':
-            case'}':
-            case'(':
-            case')':
-            case'[':
-            case']':
-            case'\\':
-            case'+':
-            case'.':
-                return "\\" + glob;
-            default:
-                return "" + glob;
+        case'*':
+            return ".*";
+        case'?':
+            return ".";
+        case'^':
+        case'$':
+        case'|':
+        case'{':
+        case'}':
+        case'(':
+        case')':
+        case'[':
+        case']':
+        case'\\':
+        case'+':
+        case'.':
+            return "\\" + glob;
+        default:
+            return "" + glob;
         }
     }
 

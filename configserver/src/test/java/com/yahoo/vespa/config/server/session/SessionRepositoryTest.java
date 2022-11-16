@@ -52,13 +52,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.LongPredicate;
 
-import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * @author Ulf Lilleengen
@@ -79,11 +78,12 @@ public class SessionRepositoryTest {
     @Rule
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
+    @SuppressWarnings("deprecation")
     @Rule
     public ExpectedException expectedException = ExpectedException.none();
 
     public void setup() throws Exception {
-        setup(new ModelFactoryRegistry(List.of(new VespaModelFactory(new NullConfigModelRegistry()))));
+        setup(new ModelFactoryRegistry(List.of(VespaModelFactory.createTestFactory())));
     }
 
     private void setup(ModelFactoryRegistry modelFactoryRegistry) throws Exception {
@@ -193,10 +193,10 @@ public class SessionRepositoryTest {
         expectedException.expectMessage("Could not load remote session " + sessionIdString);
         expectedException.expect(RuntimeException.class);
         sessionRepository.loadSessions(new InThreadExecutorService());
-        assertThat(sessionRepository.getRemoteSessionsFromZooKeeper().size(), is(0));
+        assertTrue(sessionRepository.getRemoteSessionsFromZooKeeper().isEmpty());
     }
 
-    @Test(expected = InvalidApplicationException.class)
+    @Test
     public void require_that_new_invalid_application_throws_exception() throws Exception {
         MockModelFactory failingFactory = new MockModelFactory();
         failingFactory.vespaVersion = new Version(1, 2, 0);
@@ -208,7 +208,13 @@ public class SessionRepositoryTest {
 
         setup(new ModelFactoryRegistry(List.of(okFactory, failingFactory)));
 
-        deploy();
+        Collection<LocalSession> sessions = sessionRepository.getLocalSessions();
+        try {
+            deploy();
+            fail("deployment should have failed");
+        } catch (InvalidApplicationException e) {
+            assertEquals(sessions, sessionRepository.getLocalSessions());
+        }
     }
 
     @Test
@@ -230,37 +236,19 @@ public class SessionRepositoryTest {
     @Test
     public void require_that_an_application_package_can_limit_to_one_major_version() throws Exception {
         MockModelFactory failingFactory = new MockModelFactory();
-        failingFactory.vespaVersion = new Version(3, 0, 0);
+        failingFactory.vespaVersion = new Version(8, 0, 0);
         failingFactory.throwErrorOnLoad = true;
 
         MockModelFactory okFactory = new MockModelFactory();
-        okFactory.vespaVersion = new Version(2, 0, 0);
+        okFactory.vespaVersion = new Version(7, 0, 0);
         okFactory.throwErrorOnLoad = false;
 
         setup(new ModelFactoryRegistry(List.of(okFactory, failingFactory)));
 
-        File testApp = new File("src/test/apps/app-major-version-2");
-        deploy(applicationId, testApp);
+        File testApp = new File("src/test/apps/app-major-version-7");
+        deploy(new PrepareParams.Builder().applicationId(applicationId).vespaVersion(okFactory.vespaVersion).build(), testApp);
 
-        // Does not cause an error because model version 3 is skipped
-    }
-
-    @Test
-    public void require_that_an_application_package_can_limit_to_one_higher_major_version() throws Exception {
-        MockModelFactory failingFactory = new MockModelFactory();
-        failingFactory.vespaVersion = new Version(3, 0, 0);
-        failingFactory.throwErrorOnLoad = true;
-
-        MockModelFactory okFactory = new MockModelFactory();
-        okFactory.vespaVersion = new Version(1, 0, 0);
-        okFactory.throwErrorOnLoad = false;
-
-        setup(new ModelFactoryRegistry(List.of(okFactory, failingFactory)));
-
-        File testApp = new File("src/test/apps/app-major-version-2");
-        deploy(applicationId, testApp);
-
-        // Does not cause an error because model version 3 is skipped
+        // Does not cause an error because model version 8 is skipped
     }
 
     @Test
@@ -302,11 +290,6 @@ public class SessionRepositoryTest {
         assertRemoteSessionStatus(sessionId, status);
     }
 
-    private void assertSessionRemoved(long sessionId) {
-        waitFor(p -> sessionRepository.getRemoteSession(sessionId) == null, sessionId);
-        assertNull(sessionRepository.getRemoteSession(sessionId));
-    }
-
     private void assertRemoteSessionExists(long sessionId) {
         assertRemoteSessionStatus(sessionId, Session.Status.NEW);
     }
@@ -315,7 +298,7 @@ public class SessionRepositoryTest {
         waitFor(p -> sessionRepository.getRemoteSession(sessionId) != null &&
                      sessionRepository.getRemoteSession(sessionId).getStatus() == status, sessionId);
         assertNotNull(sessionRepository.getRemoteSession(sessionId));
-        assertThat(sessionRepository.getRemoteSession(sessionId).getStatus(), is(status));
+        assertEquals(status, sessionRepository.getRemoteSession(sessionId).getStatus());
     }
 
     private void waitFor(LongPredicate predicate, long sessionId) {
@@ -340,8 +323,12 @@ public class SessionRepositoryTest {
     }
 
     private long deploy(ApplicationId applicationId, File testApp) {
-        applicationRepository.deploy(testApp, new PrepareParams.Builder().applicationId(applicationId).build());
-        return applicationRepository.getActiveSession(applicationId).getSessionId();
+        return deploy(new PrepareParams.Builder().applicationId(applicationId).build(), testApp);
+    }
+
+    private long deploy(PrepareParams params, File testApp) {
+        applicationRepository.deploy(testApp, params);
+        return applicationRepository.getActiveSession(params.getApplicationId()).get().getSessionId();
     }
 
     private static class MockModelFactory implements ModelFactory {

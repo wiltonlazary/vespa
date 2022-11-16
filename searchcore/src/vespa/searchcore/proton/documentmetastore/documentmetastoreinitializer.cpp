@@ -4,8 +4,8 @@
 #include "documentmetastore.h"
 #include <vespa/searchlib/common/indexmetainfo.h>
 #include <vespa/searchcore/proton/common/eventlogger.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/exceptions.h>
+#include <filesystem>
 
 using search::GrowStrategy;
 using search::IndexMetaInfo;
@@ -19,7 +19,7 @@ DocumentMetaStoreInitializer::
 DocumentMetaStoreInitializer(const vespalib::string baseDir,
                              const vespalib::string &subDbName,
                              const vespalib::string &docTypeName,
-                             DocumentMetaStore::SP dms)
+                             std::shared_ptr<DocumentMetaStore> dms)
     : _baseDir(baseDir),
       _subDbName(subDbName),
       _docTypeName(docTypeName),
@@ -54,7 +54,7 @@ DocumentMetaStoreInitializer::run()
             EventLogger::loadDocumentMetaStoreComplete(_subDbName, stopWatch.elapsed());
         }
     } else {
-        vespalib::mkdir(_baseDir, false);
+        std::filesystem::create_directory(std::filesystem::path(_baseDir));
         info.save();
     }
 }

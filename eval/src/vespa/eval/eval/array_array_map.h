@@ -4,6 +4,7 @@
 
 #include <vespa/vespalib/util/arrayref.h>
 #include <vespa/vespalib/stllike/hash_set.h>
+#include <vespa/vespalib/stllike/allocator.h>
 #include <vespa/vespalib/stllike/hash_set.hpp>
 #include <vector>
 #include <cassert>
@@ -27,8 +28,8 @@ class ArrayArrayMap
 private:
     size_t _keys_per_entry;
     size_t _values_per_entry;
-    std::vector<K> _keys;
-    std::vector<V> _values;
+    std::vector<K, vespalib::allocator_large<K>> _keys;
+    std::vector<V, vespalib::allocator_large<V>> _values;
 
 public:
     size_t keys_per_entry() const { return _keys_per_entry; }
@@ -41,7 +42,7 @@ public:
         bool valid() const { return (id != npos()); }
     };
 
-    ConstArrayRef<K> get_keys(Tag tag) const { return {&_keys[tag.id * _keys_per_entry], _keys_per_entry}; }
+    ConstArrayRef<K> get_keys(Tag tag) const { return {_keys.data() + (tag.id * _keys_per_entry), _keys_per_entry}; }
     ArrayRef<V> get_values(Tag tag) { return {&_values[tag.id * _values_per_entry], _values_per_entry}; }
     ConstArrayRef<V> get_values(Tag tag) const { return {&_values[tag.id * _values_per_entry], _values_per_entry}; }
 
@@ -123,14 +124,9 @@ private:
     }
 
 public:
-    ArrayArrayMap(size_t keys_per_entry_in, size_t values_per_entry_in, size_t expected_entries)
-        : _keys_per_entry(keys_per_entry_in), _values_per_entry(values_per_entry_in), _keys(), _values(),
-          _map(expected_entries * 2, Hash(), Equal(*this)), _hasher()
-    {
-        _keys.reserve(_keys_per_entry * expected_entries);
-        _values.reserve(_values_per_entry * expected_entries);
-        static_assert(!std::is_pointer_v<K>, "keys cannot be pointers due to auto-deref of alt keys");
-    }
+    ArrayArrayMap(size_t keys_per_entry_in, size_t values_per_entry_in, size_t expected_entries);
+    ArrayArrayMap(const ArrayArrayMap &) = delete;
+    ArrayArrayMap & operator = (const ArrayArrayMap &) = delete;
     ~ArrayArrayMap();
 
     size_t size() const { return _map.size(); }
@@ -166,6 +162,16 @@ public:
         }
     }
 };
+
+template <typename K, typename V, typename H, typename EQ>
+ArrayArrayMap<K,V,H,EQ>::ArrayArrayMap(size_t keys_per_entry_in, size_t values_per_entry_in, size_t expected_entries)
+    : _keys_per_entry(keys_per_entry_in), _values_per_entry(values_per_entry_in), _keys(), _values(),
+      _map(expected_entries * 2, Hash(), Equal(*this)), _hasher()
+{
+    _keys.reserve(_keys_per_entry * expected_entries);
+    _values.reserve(_values_per_entry * expected_entries);
+    static_assert(!std::is_pointer_v<K>, "keys cannot be pointers due to auto-deref of alt keys");
+}
 
 template <typename K, typename V, typename H, typename EQ>
 ArrayArrayMap<K,V,H,EQ>::~ArrayArrayMap() = default;

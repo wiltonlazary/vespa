@@ -4,10 +4,12 @@
 #include "bucket.h"
 #include "bucketinfo.h"
 #include "context.h"
+#include "id_and_timestamp.h"
 #include "result.h"
 #include "selection.h"
 #include "clusterstate.h"
 #include "operationcomplete.h"
+#include <vespa/document/base/documentid.h>
 
 namespace document { class FieldSet; }
 namespace vespalib { class IDestructorCallback; }
@@ -54,8 +56,18 @@ struct PersistenceProvider
 {
     using BucketSpace = document::BucketSpace;
     using FieldSetSP = std::shared_ptr<document::FieldSet>;
+    using TimeStampAndDocumentId = std::pair<Timestamp, DocumentId>;
 
     virtual ~PersistenceProvider();
+
+    // TODO Move to utility class for use in tests only
+    Result createBucket(const Bucket&);
+    Result deleteBucket(const Bucket&);
+    Result put(const Bucket&, Timestamp, DocumentSP);
+    Result setActiveState(const Bucket&, BucketInfo::ActiveState);
+    RemoveResult remove(const Bucket&, Timestamp timestamp, const DocumentId& id);
+    RemoveResult removeIfFound(const Bucket&, Timestamp timestamp, const DocumentId& id);
+    UpdateResult update(const Bucket&, Timestamp timestamp, DocumentUpdateSP update);
 
     /**
      * Initializes the persistence provider. This function is called exactly
@@ -86,7 +98,7 @@ struct PersistenceProvider
      * other buckets may be deactivated, so the node must be able to serve
      * the data from its secondary index or get reduced coverage.
      */
-    virtual Result setActiveState(const Bucket&, BucketInfo::ActiveState) = 0;
+    virtual void setActiveStateAsync(const Bucket &, BucketInfo::ActiveState, OperationComplete::UP ) = 0;
 
     /**
      * Retrieve metadata for a bucket, previously returned in listBuckets(),
@@ -97,11 +109,8 @@ struct PersistenceProvider
 
     /**
      * Store the given document at the given microsecond time.
-     * An implementation must always implement atleast put or putAsync.
-     * If not an eternal recursion will occur.
      */
-    virtual Result put(const Bucket&, Timestamp, DocumentSP, Context&);
-    virtual void putAsync(const Bucket &, Timestamp , DocumentSP , Context &, OperationComplete::UP );
+    virtual void putAsync(const Bucket &, Timestamp , DocumentSP, OperationComplete::UP ) = 0;
 
     /**
      * This remove function assumes that there exist something to be removed.
@@ -162,8 +171,7 @@ struct PersistenceProvider
      * @param timestamp The timestamp for the new bucket entry.
      * @param id The ID to remove
      */
-    virtual RemoveResult remove(const Bucket&, Timestamp timestamp, const DocumentId& id, Context&);
-    virtual void removeAsync(const Bucket&, Timestamp timestamp, const DocumentId& id, Context&, OperationComplete::UP);
+    virtual void removeAsync(const Bucket&, std::vector<IdAndTimestamp> ids, OperationComplete::UP) = 0;
 
     /**
      * @see remove()
@@ -181,8 +189,7 @@ struct PersistenceProvider
      * @param timestamp The timestamp for the new bucket entry.
      * @param id The ID to remove
      */
-    virtual RemoveResult removeIfFound(const Bucket&, Timestamp timestamp, const DocumentId& id, Context&);
-    virtual void removeIfFoundAsync(const Bucket&, Timestamp timestamp, const DocumentId& id, Context&, OperationComplete::UP);
+    virtual void removeIfFoundAsync(const Bucket&, Timestamp timestamp, const DocumentId& id, OperationComplete::UP) = 0;
 
     /**
      * Remove any trace of the entry with the given timestamp. (Be it a document
@@ -191,7 +198,7 @@ struct PersistenceProvider
      * failed to insert. This operation should be successful even if there
      * doesn't exist such an entry.
      */
-    virtual Result removeEntry(const Bucket&, Timestamp, Context&) = 0;
+    virtual Result removeEntry(const Bucket&, Timestamp) = 0;
 
     /**
      * Partially modifies a document referenced by the document update.
@@ -201,8 +208,7 @@ struct PersistenceProvider
      * @param timestamp The timestamp to use for the new update entry.
      * @param update The document update to apply to the stored document.
      */
-    virtual UpdateResult update(const Bucket&, Timestamp timestamp, DocumentUpdateSP update, Context&);
-    virtual void updateAsync(const Bucket&, Timestamp timestamp, DocumentUpdateSP update, Context&, OperationComplete::UP);
+    virtual void updateAsync(const Bucket&, Timestamp timestamp, DocumentUpdateSP update, OperationComplete::UP) = 0;
 
     /**
      * Retrieves the latest version of the document specified by the
@@ -310,7 +316,7 @@ struct PersistenceProvider
      * @param maxByteSize An indication of the maximum number of bytes that
      * should be returned.
      */
-    virtual IterateResult iterate(IteratorId id, uint64_t maxByteSize, Context&) const = 0;
+    virtual IterateResult iterate(IteratorId id, uint64_t maxByteSize) const = 0;
 
     /**
      * Destroys the iterator specified by the given id.
@@ -328,20 +334,20 @@ struct PersistenceProvider
      * <p/>
      * @param id The iterator id previously returned by createIterator.
      */
-    virtual Result destroyIterator(IteratorId id, Context&) = 0;
+    virtual Result destroyIterator(IteratorId id) = 0;
 
     /**
      * Tells the provider that the given bucket has been created in the
      * service layer. There is no requirement to do anything here.
      */
-    virtual Result createBucket(const Bucket&, Context&) = 0;
+    virtual void createBucketAsync(const Bucket&, OperationComplete::UP) noexcept = 0;
 
     /**
      * Deletes the given bucket and all entries contained in that bucket.
      * After this operation has succeeded, a restart of the provider should
      * not yield the bucket in getBucketList().
      */
-    virtual Result deleteBucket(const Bucket&, Context&) = 0;
+    virtual void deleteBucketAsync(const Bucket&, OperationComplete::UP) noexcept = 0;
 
     /**
      * This function is called continuously by the service layer. It allows the
@@ -369,13 +375,13 @@ struct PersistenceProvider
      * don't want to split far enough to split content in two. In these cases
      * target2 will specify invalid bucket 0 (with 0 used bits).
      */
-    virtual Result split(const Bucket& source, const Bucket& target1, const Bucket& target2, Context&) = 0;
+    virtual Result split(const Bucket& source, const Bucket& target1, const Bucket& target2) = 0;
 
     /**
      * Joins two buckets into one. After the join, all documents from
      * source1 and source2 should be stored in the target bucket.
      */
-    virtual Result join(const Bucket& source1, const Bucket& source2, const Bucket& target, Context&) = 0;
+    virtual Result join(const Bucket& source1, const Bucket& source2, const Bucket& target) = 0;
 
     /*
      * Register a listener for updates to resource usage.

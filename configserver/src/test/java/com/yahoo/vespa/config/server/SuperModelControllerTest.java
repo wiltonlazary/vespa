@@ -13,9 +13,9 @@ import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
-import com.yahoo.vespa.config.PayloadChecksums;
 import com.yahoo.jrt.Request;
 import com.yahoo.vespa.config.ConfigKey;
+import com.yahoo.vespa.config.PayloadChecksums;
 import com.yahoo.vespa.config.protocol.CompressionType;
 import com.yahoo.vespa.config.protocol.DefContent;
 import com.yahoo.vespa.config.protocol.JRTServerConfigRequestV3;
@@ -35,11 +35,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.yahoo.config.model.api.container.ContainerServiceType.QRSERVER;
 import static com.yahoo.vespa.config.protocol.JRTClientConfigRequestV3.createWithParams;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 
 /**
  * @author Ulf Lilleengen
@@ -65,12 +63,11 @@ public class SuperModelControllerTest {
         LbServicesConfig.Builder lb = new LbServicesConfig.Builder();
         handler.getSuperModel().getConfig(lb);
         LbServicesConfig lbc = new LbServicesConfig(lb);
-        assertThat(lbc.tenants().size(), is(1));
-        assertThat(lbc.tenants("a").applications().size(), is(1));
+        assertEquals(1, lbc.tenants().size());
+        assertEquals(1, lbc.tenants("a").applications().size());
         Applications app = lbc.tenants("a").applications("foo:prod:default:default");
-        assertTrue(app.hosts().size() > 0);
+        assertNotNull(app);
     }
-
 
     @Test(expected = UnknownConfigDefinitionException.class)
     public void test_unknown_config_definition() {
@@ -105,32 +102,13 @@ public class SuperModelControllerTest {
         LbServicesConfig.Builder lb = new LbServicesConfig.Builder();
         han.getSuperModel().getConfig(lb);
         LbServicesConfig lbc = new LbServicesConfig(lb);
-        assertThat(lbc.tenants().size(), is(2));
-        assertThat(lbc.tenants("t1").applications().size(), is(2));
-        assertThat(lbc.tenants("t2").applications().size(), is(1));
-        assertThat(lbc.tenants("t2").applications("minetooadvancedapp:prod:default:default").hosts().size(), is(1));
-        assertQrServer(lbc.tenants("t2").applications("minetooadvancedapp:prod:default:default"));
+        assertEquals(2, lbc.tenants().size());
+        assertEquals(2, lbc.tenants("t1").applications().size());
+        assertEquals(1, lbc.tenants("t2").applications().size());
     }
 
     private ApplicationId applicationId(String applicationName, TenantName tenantName) {
         return ApplicationId.from(tenantName, ApplicationName.from(applicationName), InstanceName.defaultName());
-    }
-
-    private void assertQrServer(Applications app) {
-        String host = app.hosts().keySet().iterator().next();
-        Applications.Hosts hosts = app.hosts(host);
-        assertThat(hosts.hostname(), is(host));
-        for (Map.Entry<String, Applications.Hosts.Services> e : app.hosts(host).services().entrySet()) {
-            if (QRSERVER.serviceName.equals(e.getKey())) {
-                Applications.Hosts.Services s = e.getValue();
-                assertThat(s.type(), is("qrserver"));
-                assertThat(s.ports().size(), is(4));
-                assertThat(s.ports().get(0).number(), is(8000));
-                assertThat(s.index(), is(0));
-                return;
-            }
-        }
-        org.junit.Assert.fail("No container service in config");
     }
 
     private DeployState createDeployState(File applicationPackage, ApplicationId applicationId) {

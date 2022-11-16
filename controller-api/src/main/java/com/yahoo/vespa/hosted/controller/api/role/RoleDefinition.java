@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.role;
 
 import java.util.EnumSet;
@@ -28,7 +28,8 @@ public enum RoleDefinition {
     everyone(Policy.classifiedRead,
              Policy.publicRead,
              Policy.user,
-             Policy.tenantCreate),
+             Policy.tenantCreate,
+             Policy.emailVerification),
 
     /** Build service which may submit new applications for continuous deployment. */
     buildService(everyone,
@@ -60,6 +61,9 @@ public enum RoleDefinition {
               Policy.billingInformationRead,
               Policy.secretStoreOperations),
 
+    /** Developer for manual deployments for a tenant */
+    hostedDeveloper(Policy.developmentDeployment),
+
     /** Admin — the administrative function for user management etc. */
     administrator(Policy.tenantUpdate,
                   Policy.tenantManager,
@@ -68,11 +72,9 @@ public enum RoleDefinition {
                   Policy.applicationManager,
                   Policy.keyRevokal,
                   Policy.paymentInstrumentRead,
-                  Policy.paymentInstrumentUpdate,
-                  Policy.paymentInstrumentDelete,
-                  Policy.paymentInstrumentCreate,
-                  Policy.planUpdate,
-                  Policy.billingInformationRead),
+                  Policy.billingInformationRead,
+                  Policy.accessRequests
+            ),
 
     /** Headless — the application specific role identified by deployment keys for production */
     headless(Policy.submission),
@@ -97,7 +99,8 @@ public enum RoleDefinition {
 
     hostedAccountant(Policy.hostedAccountant,
                      Policy.collectionMethodUpdate,
-                     Policy.planUpdate);
+                     Policy.planUpdate,
+                     Policy.tenantUpdate);
 
     private final Set<RoleDefinition> parents;
     private final Set<Policy> policies;

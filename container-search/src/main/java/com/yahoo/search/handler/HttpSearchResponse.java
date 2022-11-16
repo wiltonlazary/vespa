@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.handler;
 
-import com.google.common.util.concurrent.ListenableFuture;
 import com.yahoo.collections.ListMap;
 import com.yahoo.container.handler.Coverage;
 import com.yahoo.container.handler.Timing;
@@ -25,6 +24,7 @@ import java.io.OutputStream;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Wrap the result of a query as an HTTP response.
@@ -75,19 +75,19 @@ public class HttpSearchResponse extends ExtendedResponse {
         }
     }
 
-    public ListenableFuture<Boolean> waitableRender(OutputStream stream) throws IOException {
-        return waitableRender(result, query, rendererCopy, stream);
+    public CompletableFuture<Boolean> asyncRender(OutputStream stream) {
+        return asyncRender(result, query, rendererCopy, stream);
     }
 
-    public static ListenableFuture<Boolean> waitableRender(Result result,
-                                                           Query query,
-                                                           Renderer<Result> renderer,
-                                                           OutputStream stream) throws IOException {
+    public static CompletableFuture<Boolean> asyncRender(Result result,
+                                                         Query query,
+                                                         Renderer<Result> renderer,
+                                                         OutputStream stream) {
         SearchResponse.trimHits(result);
         SearchResponse.removeEmptySummaryFeatureFields(result);
-        return renderer.render(stream, result, query.getModel().getExecution(), query);
-
+        return renderer.renderResponse(stream, result, query.getModel().getExecution(), query);
     }
+
 
     @Override
     public void render(OutputStream output, ContentChannel networkChannel, CompletionHandler handler) throws IOException {
@@ -98,9 +98,9 @@ public class HttpSearchResponse extends ExtendedResponse {
         try {
             try {
                 long nanoStart = System.nanoTime();
-                ListenableFuture<Boolean> promise = waitableRender(output);
+                CompletableFuture<Boolean> promise = asyncRender(output);
                 if (metric != null) {
-                    promise.addListener(new RendererLatencyReporter(nanoStart), Runnable::run);
+                    promise.whenComplete((__, ___) -> new RendererLatencyReporter(nanoStart).run());
                 }
             } finally {
                 if (!(rendererCopy instanceof AsynchronousSectionedRenderer)) {

@@ -65,7 +65,7 @@ SharedRpcResources::SharedRpcResources(const config::ConfigUri& config_uri,
                                        size_t rpc_thread_pool_size,
                                        size_t rpc_events_before_wakeup)
     : _thread_pool(std::make_unique<FastOS_ThreadPool>(1024*60)),
-      _transport(std::make_unique<FNET_Transport>(TransportConfig(rpc_thread_pool_size).
+      _transport(std::make_unique<FNET_Transport>(fnet::TransportConfig(rpc_thread_pool_size).
               events_before_wakeup(rpc_events_before_wakeup))),
       _orb(std::make_unique<FRT_Supervisor>(_transport.get())),
       _slobrok_register(std::make_unique<slobrok::api::RegisterAPI>(*_orb, slobrok::ConfiguratorFactory(config_uri))),
@@ -110,6 +110,10 @@ void SharedRpcResources::shutdown() {
     assert(!_shutdown);
     if (listen_port() > 0) {
         _slobrok_register->unregisterName(_handle);
+        // Give slobrok some time to dispatch unregister RPC
+        while (_slobrok_register->busy()) {
+            std::this_thread::sleep_for(10ms);
+        }
     }
     _transport->ShutDown(true);
     // FIXME need to reset to break weak_ptrs? But ShutDown should already sync pending resolves...!

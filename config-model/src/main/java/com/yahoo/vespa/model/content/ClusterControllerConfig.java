@@ -2,9 +2,9 @@
 package com.yahoo.vespa.model.content;
 
 import com.yahoo.config.model.deploy.DeployState;
-import com.yahoo.vespa.config.content.FleetcontrollerConfig;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.config.model.producer.AbstractConfigProducerRoot;
+import com.yahoo.vespa.config.content.FleetcontrollerConfig;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.builder.xml.dom.ModelElement;
 import com.yahoo.vespa.model.builder.xml.dom.VespaDomBuilder;
@@ -41,7 +41,6 @@ public class ClusterControllerConfig extends AbstractConfigProducer<ClusterContr
                 minNodeRatioPerGroup = clusterTuning.childAsDouble("min-node-ratio-per-group");
                 bucketSplittingMinimumBits = clusterTuning.childAsInteger("bucket-splitting.minimum-bits");
             }
-            boolean enableClusterFeedBlock = deployState.getProperties().featureFlags().enableFeedBlockInDistributor();
 
             if (tuning != null) {
                 return new ClusterControllerConfig(ancestor, clusterName,
@@ -53,14 +52,13 @@ public class ClusterControllerConfig extends AbstractConfigProducer<ClusterContr
                         tuning.childAsDouble("min-storage-up-ratio"),
                         bucketSplittingMinimumBits,
                         minNodeRatioPerGroup,
-                        enableClusterFeedBlock,
                         resourceLimits);
             } else {
                 return new ClusterControllerConfig(ancestor, clusterName,
                         null, null, null, null, null, null,
                         bucketSplittingMinimumBits,
                         minNodeRatioPerGroup,
-                        enableClusterFeedBlock, resourceLimits);
+                        resourceLimits);
             }
         }
     }
@@ -74,11 +72,10 @@ public class ClusterControllerConfig extends AbstractConfigProducer<ClusterContr
     private final Double minStorageUpRatio;
     private final Integer minSplitBits;
     private final Double minNodeRatioPerGroup;
-    private final boolean enableClusterFeedBlock;
     private final ResourceLimits resourceLimits;
 
     // TODO refactor; too many args
-    private ClusterControllerConfig(AbstractConfigProducer parent,
+    private ClusterControllerConfig(AbstractConfigProducer<?> parent,
                                     String clusterName,
                                     Duration initProgressTime,
                                     Duration transitionTime,
@@ -88,7 +85,6 @@ public class ClusterControllerConfig extends AbstractConfigProducer<ClusterContr
                                     Double minStorageUpRatio,
                                     Integer minSplitBits,
                                     Double minNodeRatioPerGroup,
-                                    boolean enableClusterFeedBlock,
                                     ResourceLimits resourceLimits) {
         super(parent, "fleetcontroller");
 
@@ -101,7 +97,6 @@ public class ClusterControllerConfig extends AbstractConfigProducer<ClusterContr
         this.minStorageUpRatio = minStorageUpRatio;
         this.minSplitBits = minSplitBits;
         this.minNodeRatioPerGroup = minNodeRatioPerGroup;
-        this.enableClusterFeedBlock = enableClusterFeedBlock;
         this.resourceLimits = resourceLimits;
     }
 
@@ -144,7 +139,6 @@ public class ClusterControllerConfig extends AbstractConfigProducer<ClusterContr
         if (minNodeRatioPerGroup != null) {
             builder.min_node_ratio_per_group(minNodeRatioPerGroup);
         }
-        builder.enable_cluster_feed_block(enableClusterFeedBlock);
         resourceLimits.getConfig(builder);
     }
 

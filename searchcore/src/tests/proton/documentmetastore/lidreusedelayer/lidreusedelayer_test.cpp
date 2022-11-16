@@ -3,10 +3,13 @@
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/searchcore/proton/documentmetastore/i_store.h>
 #include <vespa/searchcore/proton/documentmetastore/lidreusedelayer.h>
-#include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcore/proton/test/thread_utils.h>
 #include <vespa/searchcore/proton/test/threading_service_observer.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/gate.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("lidreusedelayer_test");
@@ -44,15 +47,13 @@ class MyMetaStore : public documentmetastore::IStore
 {
 public:
     bool     _freeListActive;
-    uint32_t _removeCompleteCount;
-    uint32_t _removeBatchCompleteCount;
-    uint32_t _removeCompleteLids;
+    uint32_t _removes_complete_count;
+    uint32_t _removes_complete_lids;
 
     MyMetaStore()
         : _freeListActive(false),
-          _removeCompleteCount(0),
-          _removeBatchCompleteCount(0),
-          _removeCompleteLids(0)
+          _removes_complete_count(0),
+          _removes_complete_lids(0)
     {
     }
 
@@ -66,11 +67,11 @@ public:
         return Result();
     }
 
-    Result put(const GlobalId &, const BucketId &, const Timestamp &, uint32_t, DocId, uint64_t) override {
+    Result put(const GlobalId &, const BucketId &, Timestamp , uint32_t, DocId, uint64_t) override {
         return Result();
     }
 
-    bool updateMetaData(DocId, const BucketId &, const Timestamp &) override {
+    bool updateMetaData(DocId, const BucketId &, Timestamp ) override {
         return true;
     }
 
@@ -78,9 +79,9 @@ public:
         return true;
     }
 
-    void removeComplete(DocId) override {
-        ++_removeCompleteCount;
-        ++_removeCompleteLids;
+    void removes_complete(const std::vector<DocId>& lids) override{
+        ++_removes_complete_count;
+        _removes_complete_lids += lids.size();
     }
 
     void move(DocId, DocId, uint64_t) override {
@@ -92,11 +93,6 @@ public:
 
     void removeBatch(const std::vector<DocId> &, const DocId) override {}
 
-    void removeBatchComplete(const std::vector<DocId> &lidsToRemove) override{
-        ++_removeBatchCompleteCount;
-        _removeCompleteLids += lidsToRemove.size();
-    }
-
     const RawDocumentMetaData &getRawMetaData(DocId) const override {
         LOG_ABORT("should not be reached");
     }
@@ -106,17 +102,13 @@ public:
     }
 
     bool
-    assertWork(uint32_t expRemoveCompleteCount,
-               uint32_t expRemoveBatchCompleteCount,
-               uint32_t expRemoveCompleteLids) const
+    assertWork(uint32_t exp_removes_complete_count,
+               uint32_t exp_removes_complete_lids) const
     {
-        if (!EXPECT_EQUAL(expRemoveCompleteCount, _removeCompleteCount)) {
+        if (!EXPECT_EQUAL(exp_removes_complete_count, _removes_complete_count)) {
             return false;
         }
-        if (!EXPECT_EQUAL(expRemoveBatchCompleteCount, _removeBatchCompleteCount)) {
-            return false;
-        }
-        if (!EXPECT_EQUAL(expRemoveCompleteLids, _removeCompleteLids)) {
+        if (!EXPECT_EQUAL(exp_removes_complete_lids, _removes_complete_lids)) {
             return false;
         }
         return true;
@@ -127,101 +119,92 @@ class Fixture
 {
 public:
     using LidReuseDelayer = documentmetastore::LidReuseDelayer;
-    vespalib::ThreadStackExecutor _sharedExecutor;
-    ExecutorThreadingService _writeServiceReal;
+    TransportAndExecutorService _service;
     test::ThreadingServiceObserver _writeService;
     MyMetaStore _store;
     std::unique_ptr<LidReuseDelayer> _lidReuseDelayer;
 
     Fixture()
-        : _sharedExecutor(1, 0x10000),
-          _writeServiceReal(_sharedExecutor),
-          _writeService(_writeServiceReal),
+        : _service(1),
+          _writeService(_service.write()),
           _store(),
           _lidReuseDelayer(std::make_unique<LidReuseDelayer>(_writeService, _store))
-    {
-    }
+    { }
 
     ~Fixture() {
         commit();
     }
 
     template <typename FunctionType>
-    void runInMaster(FunctionType func) {
-        test::runInMaster(_writeService, func);
+    void runInMasterAndSync(FunctionType func) {
+        test::runInMasterAndSync(_writeService, func);
     }
 
     void cycledLids(const std::vector<uint32_t> &lids) {
-        if (lids.size() == 1) {
-            _store.removeComplete(lids[0]);
-        } else {
-            _store.removeBatchComplete(lids);
-        }
+        _store.removes_complete(lids);
     }
 
-    void performCycleLids(const std::vector<uint32_t> &lids) {
-        _writeService.master().execute(makeLambdaTask([this, lids]() { cycledLids(lids);}));
+    void performCycleLids(const std::vector<uint32_t> &lids, vespalib::IDestructorCallback::SP onDone);
+
+    void cycleLids(const std::vector<uint32_t> &lids, vespalib::IDestructorCallback::SP onDone);
+
+    void delayReuse(uint32_t lid) {
+        runInMasterAndSync([&]() { _lidReuseDelayer->delayReuse(lid); });
     }
 
-    void cycleLids(const std::vector<uint32_t> &lids) {
-        if (lids.empty())
-            return;
-        _writeService.index().execute(makeLambdaTask([this, lids]() { performCycleLids(lids);}));
-    }
-
-    bool delayReuse(uint32_t lid) {
-        bool res = false;
-        runInMaster([&] () { res = _lidReuseDelayer->delayReuse(lid); } );
-        return res;
-    }
-
-    bool delayReuse(const std::vector<uint32_t> &lids) {
-        bool res = false;
-        runInMaster([&] () { res = _lidReuseDelayer->delayReuse(lids); });
-        return res;
+    void delayReuse(const std::vector<uint32_t> &lids) {
+        runInMasterAndSync([&]() { _lidReuseDelayer->delayReuse(lids); });
     }
 
     void commit() {
-        runInMaster([&] () { cycleLids(_lidReuseDelayer->getReuseLids()); });
+        vespalib::Gate gate;
+        test::runInMaster(_writeService, [this, onDone=std::make_shared<vespalib::GateCallback>(gate)]() {
+            cycleLids(_lidReuseDelayer->getReuseLids(), std::move(onDone));
+        });
+        gate.await();
     }
-
-    void sync() { _writeService.sync(); }
-
 };
+
+void
+Fixture::cycleLids(const std::vector<uint32_t> &lids, vespalib::IDestructorCallback::SP onDone) {
+    if (lids.empty())
+        return;
+    _writeService.index().execute(makeLambdaTask([this, lids, onDone]() {
+        (void) onDone;
+        performCycleLids(lids, onDone);
+    }));
+}
+
+void
+Fixture::performCycleLids(const std::vector<uint32_t> &lids, vespalib::IDestructorCallback::SP onDone) {
+    _writeService.master().execute(makeLambdaTask([this, lids, onDone]() {
+        (void) onDone;
+        cycledLids(lids);
+    }));
+}
 
 TEST_F("require that nothing happens before free list is active", Fixture)
 {
-    EXPECT_FALSE(f.delayReuse(4));
-    EXPECT_FALSE(f.delayReuse({ 5, 6}));
-    EXPECT_TRUE(f._store.assertWork(0, 0, 0));
+    f.delayReuse(4);
+    f.delayReuse({ 5, 6});
+    EXPECT_TRUE(f._store.assertWork(0, 0));
     EXPECT_TRUE(assertThreadObserver(2, 0, 0, f._writeService));
 }
 
 TEST_F("require that reuse can be batched", Fixture)
 {
     f._store._freeListActive = true;
-    EXPECT_FALSE(f.delayReuse(4));
-    EXPECT_FALSE(f.delayReuse({ 5, 6, 7}));
-    EXPECT_TRUE(f._store.assertWork(0, 0, 0));
+    f.delayReuse(4);
+    f.delayReuse({ 5, 6, 7});
+    EXPECT_TRUE(f._store.assertWork(0, 0));
     EXPECT_TRUE(assertThreadObserver(2, 0, 0, f._writeService));
     f.commit();
-    EXPECT_TRUE(f._store.assertWork(0, 1, 4));
+    EXPECT_TRUE(f._store.assertWork(1, 4));
     EXPECT_TRUE(assertThreadObserver(4, 1, 0, f._writeService));
-    EXPECT_FALSE(f.delayReuse(8));
-    EXPECT_FALSE(f.delayReuse({ 9, 10}));
-    EXPECT_TRUE(f._store.assertWork(0, 1, 4));
+    f.delayReuse(8);
+    f.delayReuse({ 9, 10});
+    EXPECT_TRUE(f._store.assertWork(1, 4));
     EXPECT_TRUE(assertThreadObserver(6, 1, 0, f._writeService));
-}
-
-TEST_F("require that single element array is optimized", Fixture)
-{
-    f._store._freeListActive = true;
-    EXPECT_FALSE(f.delayReuse({ 4}));
-    EXPECT_TRUE(f._store.assertWork(0, 0, 0));
-    EXPECT_TRUE(assertThreadObserver(1, 0, 0, f._writeService));
-    f.commit();
-    EXPECT_TRUE(f._store.assertWork(1, 0, 1));
-    EXPECT_TRUE(assertThreadObserver(3, 1, 0, f._writeService));
 }
 
 }

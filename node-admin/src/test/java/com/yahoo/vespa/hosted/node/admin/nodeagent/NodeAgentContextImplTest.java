@@ -1,17 +1,16 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.nodeagent;
 
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.test.file.TestFileSystem;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.file.FileSystem;
+import java.nio.file.Path;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author freva
@@ -22,61 +21,71 @@ public class NodeAgentContextImplTest {
             .fileSystem(fileSystem).build();
 
     @Test
-    public void path_on_host_from_path_in_node_test() {
+    void path_on_host_from_path_in_node_test() {
         assertEquals(
                 "/data/vespa/storage/container-1",
-                context.pathOnHostFromPathInNode("/").toString());
+                context.paths().of("/").pathOnHost().toString());
 
         assertEquals(
                 "/data/vespa/storage/container-1/dev/null",
-                context.pathOnHostFromPathInNode("/dev/null").toString());
-    }
-
-    @Test(expected=IllegalArgumentException.class)
-    public void path_in_container_must_be_absolute() {
-        context.pathOnHostFromPathInNode("some/relative/path");
+                context.paths().of("/dev/null").pathOnHost().toString());
     }
 
     @Test
-    public void path_in_node_from_path_on_host_test() {
+    void path_in_container_must_be_absolute() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            context.paths().of("some/relative/path");
+        });
+    }
+
+    @Test
+    void path_in_node_from_path_on_host_test() {
         assertEquals(
                 "/dev/null",
-                context.pathInNodeFromPathOnHost(fileSystem.getPath("/data/vespa/storage/container-1/dev/null")).toString());
-    }
-
-    @Test(expected=IllegalArgumentException.class)
-    public void path_on_host_must_be_absolute() {
-        context.pathInNodeFromPathOnHost("some/relative/path");
-    }
-
-    @Test(expected=IllegalArgumentException.class)
-    public void path_on_host_must_be_inside_container_storage_of_context() {
-        context.pathInNodeFromPathOnHost(fileSystem.getPath("/data/vespa/storage/container-2/dev/null"));
-    }
-
-    @Test(expected=IllegalArgumentException.class)
-    public void path_on_host_must_be_inside_container_storage() {
-        context.pathInNodeFromPathOnHost(fileSystem.getPath("/home"));
+                context.paths().fromPathOnHost(fileSystem.getPath("/data/vespa/storage/container-1/dev/null")).pathInContainer());
     }
 
     @Test
-    public void path_under_vespa_host_in_container_test() {
+    void path_on_host_must_be_absolute() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            context.paths().fromPathOnHost(Path.of("some/relative/path"));
+        });
+    }
+
+    @Test
+    void path_on_host_must_be_inside_container_storage_of_context() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            context.paths().fromPathOnHost(fileSystem.getPath("/data/vespa/storage/container-2/dev/null"));
+        });
+    }
+
+    @Test
+    void path_on_host_must_be_inside_container_storage() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            context.paths().fromPathOnHost(fileSystem.getPath("/home"));
+        });
+    }
+
+    @Test
+    void path_under_vespa_host_in_container_test() {
         assertEquals(
                 "/opt/vespa",
-                context.pathInNodeUnderVespaHome("").toString());
+                context.paths().underVespaHome("").pathInContainer());
 
         assertEquals(
                 "/opt/vespa/logs/vespa/vespa.log",
-                context.pathInNodeUnderVespaHome("logs/vespa/vespa.log").toString());
-    }
-
-    @Test(expected=IllegalArgumentException.class)
-    public void path_under_vespa_home_must_be_relative() {
-        context.pathInNodeUnderVespaHome("/home");
+                context.paths().underVespaHome("logs/vespa/vespa.log").pathInContainer());
     }
 
     @Test
-    public void disabledTasksTest() {
+    void path_under_vespa_home_must_be_relative() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            context.paths().underVespaHome("/home");
+        });
+    }
+
+    @Test
+    void disabledTasksTest() {
         NodeAgentContext context1 = createContextWithDisabledTasks();
         assertFalse(context1.isDisabled(NodeAgentTask.DiskCleanup));
         assertFalse(context1.isDisabled(NodeAgentTask.CoreDumps));
@@ -86,9 +95,9 @@ public class NodeAgentContextImplTest {
         assertTrue(context2.isDisabled(NodeAgentTask.CoreDumps));
     }
 
-    private static NodeAgentContext createContextWithDisabledTasks(String... tasks) {
+    private NodeAgentContext createContextWithDisabledTasks(String... tasks) {
         InMemoryFlagSource flagSource = new InMemoryFlagSource();
         flagSource.withListFlag(PermanentFlags.DISABLED_HOST_ADMIN_TASKS.id(), List.of(tasks), String.class);
-        return NodeAgentContextImpl.builder("node123").flagSource(flagSource).build();
+        return NodeAgentContextImpl.builder("node123").fileSystem(fileSystem).flagSource(flagSource).build();
     }
 }

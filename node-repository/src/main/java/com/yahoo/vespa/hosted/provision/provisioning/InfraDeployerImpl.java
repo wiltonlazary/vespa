@@ -1,7 +1,7 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.provisioning;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
@@ -89,7 +89,7 @@ public class InfraDeployerImpl implements InfraDeployer {
         public void prepare() {
             if (prepared) return;
 
-            try (Mutex lock = nodeRepository.nodes().lock(application.getApplicationId())) {
+            try (Mutex lock = nodeRepository.applications().lock(application.getApplicationId())) {
                 NodeType nodeType = application.getCapacity().type();
                 Version targetVersion = infrastructureVersions.getTargetVersionFor(nodeType);
                 hostSpecs = provisioner.prepare(application.getApplicationId(),
@@ -116,7 +116,7 @@ public class InfraDeployerImpl implements InfraDeployer {
 
                     duperModel.infraApplicationActivated(
                             application.getApplicationId(),
-                            hostSpecs.stream().map(HostSpec::hostname).map(HostName::from).collect(Collectors.toList()));
+                            hostSpecs.stream().map(HostSpec::hostname).map(HostName::of).collect(Collectors.toList()));
 
                     logger.log(Level.FINE, () -> generateActivationLogMessage(hostSpecs, application.getApplicationId()));
                 }

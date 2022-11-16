@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
+#include "capability_set.h"
 #include <vespa/vespalib/stllike/string.h>
 #include <memory>
 #include <vector>
@@ -10,9 +11,10 @@ namespace vespalib::net::tls {
 
 struct CredentialMatchPattern {
     virtual ~CredentialMatchPattern() = default;
-    [[nodiscard]] virtual bool matches(vespalib::stringref str) const = 0;
+    [[nodiscard]] virtual bool matches(vespalib::stringref str) const noexcept = 0;
 
-    static std::shared_ptr<const CredentialMatchPattern> create_from_glob(vespalib::stringref pattern);
+    static std::shared_ptr<const CredentialMatchPattern> create_from_dns_glob(vespalib::stringref glob_pattern);
+    static std::shared_ptr<const CredentialMatchPattern> create_from_uri_glob(vespalib::stringref glob_pattern);
     static std::shared_ptr<const CredentialMatchPattern> create_exact_match(vespalib::stringref pattern);
 };
 
@@ -37,7 +39,7 @@ public:
                 && (_original_pattern == rhs._original_pattern));
     }
 
-    [[nodiscard]] bool matches(vespalib::stringref str) const {
+    [[nodiscard]] bool matches(vespalib::stringref str) const noexcept {
         return (_match_pattern && _match_pattern->matches(str));
     }
 
@@ -48,17 +50,26 @@ public:
 class PeerPolicy {
     // _All_ credentials must match for the policy itself to match.
     std::vector<RequiredPeerCredential> _required_peer_credentials;
+    CapabilitySet                       _granted_capabilities;
 public:
-    PeerPolicy() = default;
-    explicit PeerPolicy(std::vector<RequiredPeerCredential> required_peer_credentials_)
-        : _required_peer_credentials(std::move(required_peer_credentials_))
-    {}
+    PeerPolicy();
+    // This policy is created with a full capability set, i.e. unrestricted access.
+    explicit PeerPolicy(std::vector<RequiredPeerCredential> required_peer_credentials);
 
-    bool operator==(const PeerPolicy& rhs) const {
-        return (_required_peer_credentials == rhs._required_peer_credentials);
+    PeerPolicy(std::vector<RequiredPeerCredential> required_peer_credentials,
+               CapabilitySet granted_capabilities);
+
+    ~PeerPolicy();
+
+    bool operator==(const PeerPolicy& rhs) const noexcept {
+        return ((_required_peer_credentials == rhs._required_peer_credentials) &&
+                (_granted_capabilities == rhs._granted_capabilities));
     }
-    const std::vector<RequiredPeerCredential>& required_peer_credentials() const noexcept {
+    [[nodiscard]] const std::vector<RequiredPeerCredential>& required_peer_credentials() const noexcept {
         return _required_peer_credentials;
+    }
+    [[nodiscard]] const CapabilitySet& granted_capabilities() const noexcept {
+        return _granted_capabilities;
     }
 };
 

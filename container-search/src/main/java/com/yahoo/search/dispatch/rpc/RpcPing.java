@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.dispatch.rpc;
 
 import ai.vespa.searchlib.searchprotocol.protobuf.SearchProtocol;
@@ -67,7 +67,7 @@ public class RpcPing implements Pinger, Client.ResponseReceiver {
         var ping = SearchProtocol.MonitorRequest.newBuilder().build().toByteArray();
         double timeoutSeconds = ((double) clusterMonitor.getConfiguration().getRequestTimeout()) / 1000.0;
         Compressor.Compression compressionResult = resourcePool.compressor().compress(PING_COMPRESSION, ping);
-        connection.request(RPC_METHOD, compressionResult.type(), ping.length, compressionResult.data(),this, timeoutSeconds);
+        connection.request(RPC_METHOD, compressionResult.type(), ping.length, compressionResult.data(), this, timeoutSeconds);
     }
 
     private Pong decodeReply(ProtobufResponse response) throws InvalidProtocolBufferException {
@@ -81,7 +81,7 @@ public class RpcPing implements Pinger, Client.ResponseReceiver {
         } else if (!reply.getOnline()) {
             return new Pong(ErrorMessage.createBackendCommunicationError("Node id " + node.key() + " reports being offline"));
         } else {
-            return new Pong(reply.getActiveDocs(), reply.getIsBlockingWrites());
+            return new Pong(reply.getActiveDocs(), reply.getTargetActiveDocs(), reply.getIsBlockingWrites());
         }
     }
 
@@ -91,7 +91,7 @@ public class RpcPing implements Pinger, Client.ResponseReceiver {
         if (node.isLastReceivedPong(pingSequenceId)) {
             pongHandler.handle(toPong(response));
         } else {
-            //TODO Reduce to debug or remove once we have enumerated what happens here.
+            // TODO: Reduce to debug or remove once we have enumerated what happens here.
             log.info("Pong " + pingSequenceId + " from node " + node.key() + " in group " + node.group() +
                      " with hostname " + node.hostname() + " received too late, latest is " + node.getLastReceivedPongId());
         }

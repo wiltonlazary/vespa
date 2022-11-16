@@ -1,10 +1,11 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.concurrent.maintenance.JobControl;
 import com.yahoo.config.provision.ApplicationTransaction;
+import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.NodeFlavors;
 import com.yahoo.config.provision.Zone;
@@ -29,11 +30,11 @@ import com.yahoo.vespa.hosted.provision.provisioning.ContainerImages;
 import com.yahoo.vespa.hosted.provision.provisioning.FirmwareChecks;
 import com.yahoo.vespa.hosted.provision.provisioning.HostResourcesCalculator;
 import com.yahoo.vespa.hosted.provision.provisioning.ProvisionServiceProvider;
+import com.yahoo.vespa.orchestrator.Orchestrator;
 
 import java.time.Clock;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 /**
  * The top level singleton in the node repo, providing access to all its state as child objects.
@@ -59,6 +60,7 @@ public class NodeRepository extends AbstractComponent {
     private final LoadBalancers loadBalancers;
     private final FlagSource flagSource;
     private final MetricsDb metricsDb;
+    private final Orchestrator orchestrator;
     private final int spareCount;
 
     /**
@@ -72,7 +74,8 @@ public class NodeRepository extends AbstractComponent {
                           Curator curator,
                           Zone zone,
                           FlagSource flagSource,
-                          MetricsDb metricsDb) {
+                          MetricsDb metricsDb,
+                          Orchestrator orchestrator) {
         this(flavors,
              provisionServiceProvider,
              curator,
@@ -83,8 +86,9 @@ public class NodeRepository extends AbstractComponent {
              Optional.of(config.tenantContainerImage()).filter(s -> !s.isEmpty()).map(DockerImage::fromString),
              flagSource,
              metricsDb,
+             orchestrator,
              config.useCuratorClientCache(),
-             zone.environment().isProduction() && !zone.getCloud().dynamicProvisioning() && !zone.system().isCd() ? 1 : 0,
+             zone.environment().isProduction() && !zone.cloud().dynamicProvisioning() && !zone.system().isCd() ? 1 : 0,
              config.nodeCacheSize());
     }
 
@@ -102,18 +106,21 @@ public class NodeRepository extends AbstractComponent {
                           Optional<DockerImage> tenantContainerImage,
                           FlagSource flagSource,
                           MetricsDb metricsDb,
+                          Orchestrator orchestrator,
                           boolean useCuratorClientCache,
                           int spareCount,
                           long nodeCacheSize) {
-        if (provisionServiceProvider.getHostProvisioner().isPresent() != zone.getCloud().dynamicProvisioning())
+        if (provisionServiceProvider.getHostProvisioner().isPresent() != zone.cloud().dynamicProvisioning())
             throw new IllegalArgumentException(String.format(
                     "dynamicProvisioning property must be 1-to-1 with availability of HostProvisioner, was: dynamicProvisioning=%s, hostProvisioner=%s",
-                    zone.getCloud().dynamicProvisioning(), provisionServiceProvider.getHostProvisioner().map(__ -> "present").orElse("empty")));
+                    zone.cloud().dynamicProvisioning(), provisionServiceProvider.getHostProvisioner().map(__ -> "present").orElse("empty")));
 
+        this.flagSource = flagSource;
         this.db = new CuratorDatabaseClient(flavors, curator, clock, useCuratorClientCache, nodeCacheSize);
         this.zone = zone;
         this.clock = clock;
-        this.nodes = new Nodes(db, zone, clock);
+        this.applications = new Applications(db);
+        this.nodes = new Nodes(db, zone, clock, orchestrator, applications);
         this.flavors = flavors;
         this.resourcesCalculator = provisionServiceProvider.getHostResourcesCalculator();
         this.nameResolver = nameResolver;
@@ -123,10 +130,9 @@ public class NodeRepository extends AbstractComponent {
         this.containerImages = new ContainerImages(containerImage, tenantContainerImage);
         this.archiveUris = new ArchiveUris(db);
         this.jobControl = new JobControl(new JobControlFlags(db, flagSource));
-        this.applications = new Applications(db);
         this.loadBalancers = new LoadBalancers(db);
-        this.flagSource = flagSource;
         this.metricsDb = metricsDb;
+        this.orchestrator = orchestrator;
         this.spareCount = spareCount;
         nodes.rewrite();
     }
@@ -172,16 +178,27 @@ public class NodeRepository extends AbstractComponent {
 
     public MetricsDb metricsDb() { return metricsDb; }
 
+    public Orchestrator orchestrator() { return orchestrator; }
+
     public NodeRepoStats computeStats() { return NodeRepoStats.computeOver(this); }
 
-    /** Returns the time keeper of this system */
+    /** Returns the time-keeper of this */
     public Clock clock() { return clock; }
 
-    /** Returns the zone of this system */
+    /** Returns the zone of this */
     public Zone zone() { return zone; }
 
     /** The number of nodes we should ensure has free capacity for node failures whenever possible */
     public int spareCount() { return spareCount; }
+
+    /**
+     * Returns whether nodes are allocated exclusively in this instance given this cluster spec.
+     * Exclusive allocation requires that the wanted node resources matches the advertised resources of the node
+     * perfectly.
+     */
+    public boolean exclusiveAllocation(ClusterSpec clusterSpec) {
+        return clusterSpec.isExclusive() || ! zone().cloud().allowHostSharing();
+    }
 
     /**
      * Returns ACLs for the children of the given host.
@@ -192,9 +209,8 @@ public class NodeRepository extends AbstractComponent {
     public List<NodeAcl> getChildAcls(Node host) {
         if ( ! host.type().isHost()) throw new IllegalArgumentException("Only hosts have children");
         NodeList allNodes = nodes().list();
-        return nodes().list().childrenOf(host).asList().stream()
-                             .map(childNode -> childNode.acl(allNodes, loadBalancers))
-                             .collect(Collectors.toUnmodifiableList());
+        return allNodes.childrenOf(host)
+                       .mapToList(childNode -> childNode.acl(allNodes, loadBalancers));
     }
 
     /** Removes this application: all nodes are set dirty. */

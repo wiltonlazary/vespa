@@ -1,10 +1,11 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.slime;
 
 /**
  * @author hakonhall
  */
 public final class ObjectInserter implements Inserter {
+
     private Cursor target;
     private String key;
 

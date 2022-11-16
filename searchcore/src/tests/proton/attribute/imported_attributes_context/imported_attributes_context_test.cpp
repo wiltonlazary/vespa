@@ -12,6 +12,7 @@
 #include <vespa/searchlib/attribute/imported_attribute_vector_factory.h>
 #include <vespa/searchlib/attribute/reference_attribute.h>
 #include <vespa/searchlib/test/mock_gid_to_lid_mapping.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <future>
 
 #include <vespa/log/log.h>
@@ -30,7 +31,7 @@ using generation_t = AttributeVector::generation_t;
 std::shared_ptr<ReferenceAttribute>
 createReferenceAttribute(const vespalib::string &name)
 {
-    auto refAttr = std::make_shared<ReferenceAttribute>(name, Config(BasicType::REFERENCE));
+    auto refAttr = std::make_shared<ReferenceAttribute>(name);
     refAttr->setGidToLidMapperFactory(std::make_shared<MockGidToLidMapperFactory>());
     return refAttr;
 }
@@ -55,10 +56,11 @@ hasActiveEnumGuards(AttributeVector &attr)
 }
 
 void
-assertGuards(AttributeVector &attr, generation_t expCurrentGeneration, generation_t expFirstUsedGeneration, bool expHasActiveEnumGuards)
+assertGuards(AttributeVector &attr, generation_t expCurrentGeneration, generation_t exp_oldest_used_generation,
+             bool expHasActiveEnumGuards)
 {
     EXPECT_EQUAL(expCurrentGeneration, attr.getCurrentGeneration());
-    EXPECT_EQUAL(expFirstUsedGeneration, attr.getFirstUsedGeneration());
+    EXPECT_EQUAL(exp_oldest_used_generation, attr.get_oldest_used_generation());
     EXPECT_EQUAL(expHasActiveEnumGuards, hasActiveEnumGuards(attr));
 }
 

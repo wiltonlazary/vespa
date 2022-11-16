@@ -13,7 +13,6 @@ LidStateVector::LidStateVector(unsigned int newSize, unsigned int newCapacity,
     : _bv(newSize, newCapacity, generationHolder),
       _lowest(trackLowest ? newSize : 0u),
       _highest(0),
-      _count(0u),
       _trackLowest(trackLowest),
       _trackHighest(trackHighest)
 {
@@ -24,131 +23,142 @@ LidStateVector::~LidStateVector() = default;
 void
 LidStateVector::resizeVector(uint32_t newSize, uint32_t newCapacity)
 {
-    assert(!_trackLowest || _lowest <= _bv.size());
-    assert(!_trackHighest || _bv.size() == 0 || _highest < _bv.size());
-    bool nolowest(_lowest == _bv.size());
-    if (_bv.size() > newSize) {
+    uint32_t lowest = getLowest();
+    uint32_t highest = getHighest();
+    assert(!_trackLowest || lowest <= _bv.writer().size());
+    assert(!_trackHighest || _bv.writer().size() == 0 || highest < _bv.writer().size());
+    bool nolowest(lowest == _bv.writer().size());
+    if (_bv.writer().size() > newSize) {
         _bv.shrink(newSize);
-        assert(_count >= internalCount());
-        _count = internalCount();
     }
-    if (_bv.capacity() < newCapacity) {
+    if (_bv.writer().capacity() < newCapacity) {
         _bv.reserve(newCapacity);
-        assert(_count == internalCount());
     }
-    if (_bv.size() < newSize) {
+    if (_bv.writer().size() < newSize) {
         _bv.extend(newSize);
-        assert(_count == internalCount());
     }
     if (_trackLowest) {
-        if (nolowest) {
-            _lowest = _bv.size();
-        }
-        if (_lowest > _bv.size()) {
-            _lowest = _bv.size();
+        if (nolowest || lowest > _bv.writer().size()) {
+            lowest = _bv.writer().size();
+            _lowest.store(lowest, std::memory_order_relaxed);
         }
     }
     if (_trackHighest) {
-        if (_highest >= _bv.size()) {
-            _highest = _bv.size() > 0 ? _bv.getPrevTrueBit(_bv.size() - 1) : 0;
+        if (highest >= _bv.writer().size()) {
+            highest = _bv.writer().size() > 0 ? _bv.writer().getPrevTrueBit(_bv.writer().size() - 1) : 0;
+            _highest.store(highest, std::memory_order_relaxed);
         }
     }
-    maybeUpdateLowest();
-    maybeUpdateHighest();
 }
-
 
 void
-LidStateVector::updateLowest()
+LidStateVector::updateLowest(uint32_t lowest)
 {
-    if (_lowest >= _bv.size())
-        return;
-    if (_bv.testBit(_lowest))
-        return;
-    uint32_t lowest = _bv.getNextTrueBit(_lowest);
-    assert(lowest <= _bv.size());
-    _lowest = lowest;
+    lowest = _bv.writer().getNextTrueBit(lowest);
+    assert(lowest <= _bv.writer().size());
+    _lowest.store(lowest, std::memory_order_relaxed);
 }
-
 
 void
-LidStateVector::updateHighest()
+LidStateVector::updateHighest(uint32_t highest)
 {
-    if (_highest == 0)
-        return;
-    if (_bv.testBit(_highest))
-        return;
-    uint32_t highest = _bv.getPrevTrueBit(_highest);
-    assert(_bv.size() == 0 || highest < _bv.size());
-    _highest = highest;
+    highest = _bv.writer().getPrevTrueBit(highest);
+    assert(_bv.writer().size() == 0 || highest < _bv.writer().size());
+    _highest.store(highest, std::memory_order_relaxed);
 }
-
 
 void
 LidStateVector::setBit(unsigned int idx)
 {
-    assert(idx < _bv.size());
-    if (_trackLowest && idx < _lowest) {
-        _lowest = idx;
+    assert(idx < _bv.writer().size());
+    if (_trackLowest && idx < getLowest()) {
+        _lowest.store(idx, std::memory_order_relaxed);
     }
-    if (_trackHighest && idx > _highest) {
-        _highest = idx;
+    if (_trackHighest && idx > getHighest()) {
+        _highest.store(idx, std::memory_order_relaxed);
     }
-    assert(!_bv.testBit(idx));
-    _bv.setBitAndMaintainCount(idx);
-    ++_count;
-    assert(_count == internalCount());
+    assert(!_bv.writer().testBit(idx));
+    _bv.writer().setBitAndMaintainCount(idx);
+}
+
+template <bool do_set>
+uint32_t
+LidStateVector::assert_is_not_set_then_set_bits_helper(const std::vector<uint32_t>& idxs)
+{
+    uint32_t size = _bv.writer().size();
+    uint32_t high = 0;
+    uint32_t low = size;
+    for (auto idx : idxs) {
+        assert(idx < size);
+        if (idx > high) {
+            high = idx;
+        }
+        assert(!_bv.writer().testBit(idx));
+        if (do_set) {
+            if (idx < low) {
+                low = idx;
+            }
+            _bv.writer().setBitAndMaintainCount(idx);
+        }
+    }
+    if (do_set) {
+        if (_trackLowest && low < getLowest()) {
+            _lowest.store(low, std::memory_order_relaxed);
+        }
+        if (_trackHighest && high > getHighest()) {
+            _highest.store(high, std::memory_order_relaxed);
+        }
+    }
+    return high;
+}
+
+uint32_t
+LidStateVector::assert_not_set_bits(const std::vector<uint32_t>& idxs)
+{
+    return assert_is_not_set_then_set_bits_helper<false>(idxs);
+}
+
+uint32_t 
+LidStateVector::set_bits(const std::vector<uint32_t>& idxs)
+{
+    return assert_is_not_set_then_set_bits_helper<true>(idxs);
 }
 
 
 void
 LidStateVector::clearBit(unsigned int idx)
 {
-    assert(idx < _bv.size());
-    assert(_bv.testBit(idx));
-    _bv.clearBitAndMaintainCount(idx);
-    --_count;
-    assert(_count == internalCount());
+    assert(idx < _bv.writer().size());
+    assert(_bv.writer().testBit(idx));
+    _bv.writer().clearBitAndMaintainCount(idx);
     maybeUpdateLowest();
     maybeUpdateHighest();
 }
 
-
-bool
-LidStateVector::empty() const
+template <bool do_assert>
+void
+LidStateVector::assert_is_set_then_clear_bits_helper(const std::vector<uint32_t>& idxs)
 {
-    return _count == 0u;
+    for (auto idx : idxs) {
+        if (do_assert) {
+            assert(_bv.writer().testBit(idx));
+        }
+        _bv.writer().clearBitAndMaintainCount(idx);
+    }
+    maybeUpdateLowest();
+    maybeUpdateHighest();
 }
 
-
-unsigned int
-LidStateVector::getLowest() const
+void 
+LidStateVector::consider_clear_bits(const std::vector<uint32_t>& idxs)
 {
-    return _lowest;
+    assert_is_set_then_clear_bits_helper<false>(idxs);
 }
 
-
-unsigned int
-LidStateVector::getHighest() const
+void 
+LidStateVector::clear_bits(const std::vector<uint32_t>& idxs)
 {
-    return _highest;
+    assert_is_set_then_clear_bits_helper<true>(idxs);
 }
-
-
-uint32_t
-LidStateVector::internalCount()
-{
-    // Called by document db executor thread.
-    return _bv.countTrueBits();
-}
-
-
-uint32_t
-LidStateVector::count() const
-{
-    // Called by document db executor thread or metrics related threads
-    return _count;
-}
-
 
 }  // namespace proton

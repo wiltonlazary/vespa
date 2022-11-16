@@ -1,24 +1,35 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.fs;
 
+import com.yahoo.vespa.hosted.node.admin.nodeagent.UserScope;
+
 import java.io.IOException;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.WatchService;
-import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.Set;
 
 /**
- * @author valerijf
+ * @author freva
  */
 public class ContainerFileSystem extends FileSystem {
 
     private final ContainerFileSystemProvider containerFsProvider;
+    private final Path containerRootOnHost;
 
-    ContainerFileSystem(ContainerFileSystemProvider containerFsProvider) {
+    ContainerFileSystem(ContainerFileSystemProvider containerFsProvider, Path containerRootOnHost) {
         this.containerFsProvider = containerFsProvider;
+        this.containerRootOnHost = containerRootOnHost;
+    }
+
+    public Path containerRootOnHost() {
+        return containerRootOnHost;
+    }
+
+    public void createRoot() {
+        provider().createFileSystemRoot();
     }
 
     @Override
@@ -47,17 +58,17 @@ public class ContainerFileSystem extends FileSystem {
     }
 
     @Override
-    public UserPrincipalLookupService getUserPrincipalLookupService() {
+    public ContainerUserPrincipalLookupService getUserPrincipalLookupService() {
         return containerFsProvider.userPrincipalLookupService();
     }
 
     @Override
     public ContainerPath getPath(String first, String... more) {
-        return ContainerPath.fromPathInContainer(this, Path.of(first, more));
+        return ContainerPath.fromPathInContainer(this, Path.of(first, more), getUserPrincipalLookupService().userScope().root());
     }
 
     @Override
-    public void close() throws IOException {
+    public void close() {
         throw new UnsupportedOperationException();
     }
 
@@ -81,7 +92,7 @@ public class ContainerFileSystem extends FileSystem {
         throw new UnsupportedOperationException();
     }
 
-    public static ContainerFileSystem create(Path containerStorageRoot, int uidOffset, int gidOffset) {
-        return new ContainerFileSystemProvider(containerStorageRoot, uidOffset, gidOffset).getFileSystem(null);
+    public static ContainerFileSystem create(Path containerStorageRoot, UserScope userScope) {
+        return new ContainerFileSystemProvider(containerStorageRoot, userScope).getFileSystem(null);
     }
 }

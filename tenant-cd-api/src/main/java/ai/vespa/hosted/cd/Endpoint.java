@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.hosted.cd;
 
 import java.net.URI;
@@ -17,6 +17,9 @@ public interface Endpoint {
 
     /** Returns the URI of the endpoint, with scheme, host and port. */
     URI uri();
+
+    /** Returns the authenticator for HTTP requests against this particular endpoint. */
+    EndpointAuthenticator authenticator();
 
     /** Sends the given request with required authentication. */
     <T> HttpResponse<T> send(HttpRequest.Builder request, HttpResponse.BodyHandler<T> handler);

@@ -1,34 +1,31 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.yql;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-
+import com.yahoo.search.schema.DocumentSummary;
+import com.yahoo.search.schema.Schema;
+import com.yahoo.search.schema.SchemaInfo;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import com.yahoo.component.chain.Chain;
-import com.yahoo.prelude.fastsearch.DocumentdbInfoConfig;
-import com.yahoo.prelude.fastsearch.DocumentdbInfoConfig.Documentdb;
-import com.yahoo.prelude.fastsearch.DocumentdbInfoConfig.Documentdb.Summaryclass;
-import com.yahoo.prelude.fastsearch.DocumentdbInfoConfig.Documentdb.Summaryclass.Fields;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.search.Searcher;
 import com.yahoo.search.result.Hit;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.searchchain.testutil.DocumentSourceSearcher;
-import static com.yahoo.search.searchchain.testutil.DocumentSourceSearcher.DEFAULT_SUMMARY_CLASS;;
+import static com.yahoo.search.searchchain.testutil.DocumentSourceSearcher.DEFAULT_SUMMARY_CLASS;
+import static com.yahoo.prelude.fastsearch.VespaBackEndSearcher.SORTABLE_ATTRIBUTES_SUMMARY_CLASS;
+
 
 /**
- * Test translation of fields and sources in YQL+ to the associated concepts in
- * Vespa.
+ * Test translation of fields and sources in YQL to the associated concepts in Vespa.
  */
 public class YqlFieldAndSourceTestCase {
 
@@ -41,8 +38,7 @@ public class YqlFieldAndSourceTestCase {
     private Execution.Context context;
     private Execution execution;
 
-
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         Query query = new Query("?query=test");
 
@@ -54,13 +50,10 @@ public class YqlFieldAndSourceTestCase {
         mockBackend.addResult(query, result);
 
         mockBackend.addSummaryClassByCopy(DEFAULT_SUMMARY_CLASS, Arrays.asList(FIELD1, FIELD2));
-        mockBackend.addSummaryClassByCopy(Execution.ATTRIBUTEPREFETCH, Arrays.asList(FIELD2));
+        mockBackend.addSummaryClassByCopy(SORTABLE_ATTRIBUTES_SUMMARY_CLASS, Arrays.asList(FIELD2));
         mockBackend.addSummaryClassByCopy(THIRD_OPTION, Arrays.asList(FIELD3));
 
-        DocumentdbInfoConfig config = new DocumentdbInfoConfig(new DocumentdbInfoConfig.Builder()
-                                                               .documentdb(buildDocumentdbArray()));
-
-        searchChain = new Chain<>(new FieldFiller(config), mockBackend);
+        searchChain = new Chain<>(new FieldFiller(schemaInfo()), mockBackend);
         context = Execution.Context.createContextStub();
         execution = new Execution(searchChain, context);
     }
@@ -75,32 +68,16 @@ public class YqlFieldAndSourceTestCase {
         return h;
     }
 
-    private List<Documentdb.Builder> buildDocumentdbArray() {
-        List<Documentdb.Builder> configArray = new ArrayList<>(1);
-        configArray.add(new Documentdb.Builder().summaryclass(
-                buildSummaryclassArray()).name("defaultsearchdefinition"));
-
-        return configArray;
+    private SchemaInfo schemaInfo() {
+        var schema = new Schema.Builder("defaultsearchdefinition");
+        schema.add(new DocumentSummary.Builder(DEFAULT_SUMMARY_CLASS).addField(FIELD1, "string")
+                                                                     .addField(FIELD2, "string").build())
+              .add((new DocumentSummary.Builder(SORTABLE_ATTRIBUTES_SUMMARY_CLASS).addField(FIELD2, "string").build()))
+              .add((new DocumentSummary.Builder(THIRD_OPTION).addField(FIELD3, "string").build()));
+        return new SchemaInfo(List.of(schema.build()), Map.of());
     }
 
-    private List<Summaryclass.Builder> buildSummaryclassArray() {
-        return Arrays.asList(
-                new Summaryclass.Builder()
-                        .id(0)
-                        .name(DEFAULT_SUMMARY_CLASS)
-                        .fields(Arrays.asList(new Fields.Builder().name(FIELD1).type("string"),
-                                              new Fields.Builder().name(FIELD2).type("string"))),
-                new Summaryclass.Builder()
-                        .id(1)
-                        .name(Execution.ATTRIBUTEPREFETCH)
-                        .fields(Arrays.asList(new Fields.Builder().name(FIELD2).type("string"))),
-                new Summaryclass.Builder()
-                        .id(2)
-                        .name(THIRD_OPTION)
-                        .fields(Arrays.asList(new Fields.Builder().name(FIELD3).type("string"))));
-    }
-
-    @After
+    @AfterEach
     public void tearDown() throws Exception {
         searchChain = null;
         context = null;
@@ -108,45 +85,68 @@ public class YqlFieldAndSourceTestCase {
     }
 
     @Test
-    public final void testTrivial() {
+    final void testTrivial() {
         final Query query = new Query("?query=test&presentation.summaryFields=" + FIELD1);
         Result result = execution.search(query);
         execution.fill(result);
         assertEquals(1, result.getConcreteHitCount());
         assertTrue(result.hits().get(0).isFilled(DEFAULT_SUMMARY_CLASS));
-        assertFalse(result.hits().get(0).isFilled(Execution.ATTRIBUTEPREFETCH));
+        assertFalse(result.hits().get(0).isFilled(SORTABLE_ATTRIBUTES_SUMMARY_CLASS));
     }
 
     @Test
-    public final void testWithOnlyAttribute() {
+    final void testWithOnlyAttribute() {
         final Query query = new Query("?query=test&presentation.summaryFields=" + FIELD2);
         Result result = execution.search(query);
         execution.fill(result, THIRD_OPTION);
         assertEquals(1, result.getConcreteHitCount());
         assertTrue(result.hits().get(0).isFilled(THIRD_OPTION));
         assertFalse(result.hits().get(0).isFilled(DEFAULT_SUMMARY_CLASS));
-        assertTrue(result.hits().get(0).isFilled(Execution.ATTRIBUTEPREFETCH));
+        assertTrue(result.hits().get(0).isFilled(SORTABLE_ATTRIBUTES_SUMMARY_CLASS));
     }
 
     @Test
-    public final void testWithOnlyDiskfieldCorrectClassRequested() {
+    final void testWithOnlyAttributeNoClassRequested() {
+        final Query query = new Query("?query=test&presentation.summaryFields=" + FIELD2);
+        Result result = execution.search(query);
+        execution.fill(result, null);
+        assertEquals(1, result.getConcreteHitCount());
+        assertFalse(result.hits().get(0).isFilled(THIRD_OPTION));
+        assertFalse(result.hits().get(0).isFilled(DEFAULT_SUMMARY_CLASS));
+        assertTrue(result.hits().get(0).isFilled(SORTABLE_ATTRIBUTES_SUMMARY_CLASS));
+    }
+
+    @Test
+    final void testWithOnlyDiskfieldNoClassRequested() {
+        final Query query = new Query("?query=test&presentation.summaryFields=" + FIELD3);
+        Result result = execution.search(query);
+        execution.fill(result, null);
+        assertEquals(1, result.getConcreteHitCount());
+        assertFalse(result.hits().get(0).isFilled(THIRD_OPTION));
+        assertTrue(result.hits().get(0).isFilled(DEFAULT_SUMMARY_CLASS));
+        assertFalse(result.hits().get(0).isFilled(SORTABLE_ATTRIBUTES_SUMMARY_CLASS));
+    }
+
+    @Test
+    final void testWithOnlyDiskfieldCorrectClassRequested() {
         final Query query = new Query("?query=test&presentation.summaryFields=" + FIELD3);
         Result result = execution.search(query);
         execution.fill(result, THIRD_OPTION);
         assertEquals(1, result.getConcreteHitCount());
         assertTrue(result.hits().get(0).isFilled(THIRD_OPTION));
         assertFalse(result.hits().get(0).isFilled(DEFAULT_SUMMARY_CLASS));
-        assertFalse(result.hits().get(0).isFilled(Execution.ATTRIBUTEPREFETCH));
+        assertFalse(result.hits().get(0).isFilled(SORTABLE_ATTRIBUTES_SUMMARY_CLASS));
     }
+
     @Test
-    public final void testTrivialCaseWithOnlyDiskfieldWrongClassRequested() {
+    final void testTrivialCaseWithOnlyDiskfieldWrongClassRequested() {
         final Query query = new Query("?query=test&presentation.summaryFields=" + FIELD1);
         Result result = execution.search(query);
         execution.fill(result, THIRD_OPTION);
         assertEquals(1, result.getConcreteHitCount());
         assertTrue(result.hits().get(0).isFilled(THIRD_OPTION));
         assertTrue(result.hits().get(0).isFilled(DEFAULT_SUMMARY_CLASS));
-        assertFalse(result.hits().get(0).isFilled(Execution.ATTRIBUTEPREFETCH));
+        assertFalse(result.hits().get(0).isFilled(SORTABLE_ATTRIBUTES_SUMMARY_CLASS));
     }
 
 }

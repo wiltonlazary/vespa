@@ -4,15 +4,18 @@ package com.yahoo.vespa.model.container.search;
 import com.yahoo.container.QrSearchersConfig;
 import com.yahoo.prelude.semantics.SemanticRulesConfig;
 import com.yahoo.search.config.IndexInfoConfig;
+import com.yahoo.search.config.SchemaInfoConfig;
+import com.yahoo.search.handler.observability.SearchStatusExtension;
 import com.yahoo.search.pagetemplates.PageTemplatesConfig;
 import com.yahoo.search.query.profile.compiled.CompiledQueryProfileRegistry;
 import com.yahoo.search.query.profile.config.QueryProfilesConfig;
+import com.yahoo.schema.derived.SchemaInfo;
 import com.yahoo.vespa.configdefinition.IlscriptsConfig;
 import com.yahoo.vespa.model.container.ApplicationContainerCluster;
 import com.yahoo.vespa.model.container.component.Component;
 import com.yahoo.vespa.model.container.component.ContainerSubsystem;
 import com.yahoo.vespa.model.container.search.searchchain.SearchChains;
-import com.yahoo.vespa.model.search.AbstractSearchCluster;
+import com.yahoo.vespa.model.search.SearchCluster;
 import com.yahoo.vespa.model.search.IndexedSearchCluster;
 import com.yahoo.vespa.model.search.StreamingSearchCluster;
 
@@ -22,7 +25,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
-import static com.yahoo.vespa.model.container.PlatformBundles.searchAndDocprocBundle;
+import static com.yahoo.vespa.model.container.PlatformBundles.SEARCH_AND_DOCPROC_BUNDLE;
 
 /**
  * @author gjoranv
@@ -35,12 +38,13 @@ public class ContainerSearch extends ContainerSubsystem<SearchChains>
     	QrSearchersConfig.Producer,
     	QueryProfilesConfig.Producer,
         SemanticRulesConfig.Producer,
-    	PageTemplatesConfig.Producer {
+    	PageTemplatesConfig.Producer,
+        SchemaInfoConfig.Producer {
 
     public static final String QUERY_PROFILE_REGISTRY_CLASS = CompiledQueryProfileRegistry.class.getName();
 
-    private ApplicationContainerCluster owningCluster;
-    private final List<AbstractSearchCluster> searchClusters = new LinkedList<>();
+    private final ApplicationContainerCluster owningCluster;
+    private final List<SearchCluster> searchClusters = new LinkedList<>();
     private final Options options;
 
     private QueryProfiles queryProfiles;
@@ -52,18 +56,21 @@ public class ContainerSearch extends ContainerSubsystem<SearchChains>
         this.owningCluster = cluster;
         this.options = options;
 
-        owningCluster.addComponent(Component.fromClassAndBundle(QUERY_PROFILE_REGISTRY_CLASS, searchAndDocprocBundle));
+        owningCluster.addComponent(Component.fromClassAndBundle(QUERY_PROFILE_REGISTRY_CLASS, SEARCH_AND_DOCPROC_BUNDLE));
+        owningCluster.addComponent(Component.fromClassAndBundle(com.yahoo.search.schema.SchemaInfo.class.getName(), SEARCH_AND_DOCPROC_BUNDLE));
+        owningCluster.addComponent(Component.fromClassAndBundle(SearchStatusExtension.class.getName(), SEARCH_AND_DOCPROC_BUNDLE));
+        cluster.addSearchAndDocprocBundles();
     }
 
-    public void connectSearchClusters(Map<String, AbstractSearchCluster> searchClusters) {
+    public void connectSearchClusters(Map<String, SearchCluster> searchClusters) {
         this.searchClusters.addAll(searchClusters.values());
         initializeDispatchers(searchClusters.values());
         initializeSearchChains(searchClusters);
     }
 
     /** Adds a Dispatcher component to the owning container cluster for each search cluster */
-    private void initializeDispatchers(Collection<AbstractSearchCluster> searchClusters) {
-        for (AbstractSearchCluster searchCluster : searchClusters) {
+    private void initializeDispatchers(Collection<SearchCluster> searchClusters) {
+        for (SearchCluster searchCluster : searchClusters) {
             if ( ! ( searchCluster instanceof IndexedSearchCluster)) continue;
             var dispatcher = new DispatcherComponent((IndexedSearchCluster)searchCluster);
             owningCluster.addComponent(dispatcher);
@@ -71,7 +78,7 @@ public class ContainerSearch extends ContainerSubsystem<SearchChains>
     }
 
     // public for testing
-    public void initializeSearchChains(Map<String, ? extends AbstractSearchCluster> searchClusters) {
+    public void initializeSearchChains(Map<String, ? extends SearchCluster> searchClusters) {
         getChains().initialize(searchClusters);
     }
 
@@ -106,14 +113,21 @@ public class ContainerSearch extends ContainerSubsystem<SearchChains>
 
     @Override
     public void getConfig(IndexInfoConfig.Builder builder) {
-        for (AbstractSearchCluster sc : searchClusters) {
+        for (SearchCluster sc : searchClusters) {
             sc.getConfig(builder);
         }
     }
 
     @Override
     public void getConfig(IlscriptsConfig.Builder builder) {
-        for (AbstractSearchCluster sc : searchClusters) {
+        for (SearchCluster sc : searchClusters) {
+            sc.getConfig(builder);
+        }
+    }
+
+    @Override
+    public void getConfig(SchemaInfoConfig.Builder builder) {
+        for (SearchCluster sc : searchClusters) {
             sc.getConfig(builder);
         }
     }
@@ -121,11 +135,11 @@ public class ContainerSearch extends ContainerSubsystem<SearchChains>
     @Override
     public void getConfig(QrSearchersConfig.Builder builder) {
         for (int i = 0; i < searchClusters.size(); i++) {
-    	    AbstractSearchCluster sys = findClusterWithId(searchClusters, i);
+    	    SearchCluster sys = findClusterWithId(searchClusters, i);
     		QrSearchersConfig.Searchcluster.Builder scB = new QrSearchersConfig.Searchcluster.Builder().
     				name(sys.getClusterName());
-    		for (AbstractSearchCluster.SchemaSpec spec : sys.getLocalSDS()) {
-    			scB.searchdef(spec.getSearchDefinition().getName());
+    		for (SchemaInfo spec : sys.schemas().values()) {
+    			scB.searchdef(spec.fullSchema().getName());
     		}
     		scB.rankprofiles(new QrSearchersConfig.Searchcluster.Rankprofiles.Builder().configid(sys.getConfigId()));
     		scB.indexingmode(QrSearchersConfig.Searchcluster.Indexingmode.Enum.valueOf(sys.getIndexingModeName()));
@@ -137,8 +151,8 @@ public class ContainerSearch extends ContainerSubsystem<SearchChains>
     	}
     }
 
-    private static AbstractSearchCluster findClusterWithId(List<AbstractSearchCluster> clusters, int index) {
-        for (AbstractSearchCluster sys : clusters) {
+    private static SearchCluster findClusterWithId(List<SearchCluster> clusters, int index) {
+        for (SearchCluster sys : clusters) {
             if (sys.getClusterIndex() == index)
                 return sys;
         }

@@ -2,10 +2,10 @@
 
 #include "mock_attribute_manager.h"
 #include <vespa/searchlib/attribute/attributefactory.h>
-#include <vespa/searchlib/attribute/attributevector.h>
 #include <vespa/searchlib/attribute/floatbase.h>
 #include <vespa/searchlib/attribute/integerbase.h>
 #include <vespa/searchlib/attribute/stringbase.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <cassert>
 
 using search::attribute::BasicType;
@@ -17,7 +17,7 @@ namespace search::docsummary::test {
 template <typename AttributeType, typename ValueType>
 void
 MockAttributeManager::build_attribute(const vespalib::string& name, BasicType type,
-                                      search::attribute::CollectionType col_type,
+                                      CollectionType col_type,
                                       const std::vector<std::vector<ValueType>>& values)
 {
     Config cfg(type, col_type);

@@ -1,16 +1,17 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "logdatastore.h"
 #include "storebybucket.h"
 #include "compacter.h"
-#include "logdatastore.h"
-#include <vespa/vespalib/stllike/asciistream.h>
-#include <vespa/vespalib/util/benchmark_timer.h>
 #include <vespa/vespalib/data/fileheader.h>
+#include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
+#include <vespa/vespalib/util/benchmark_timer.h>
+#include <vespa/vespalib/util/cpu_usage.h>
 #include <vespa/vespalib/util/exceptions.h>
-#include <vespa/vespalib/util/rcuvector.hpp>
 #include <vespa/vespalib/util/size_literals.h>
 #include <thread>
+#include <cassert>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.docstore.logdatastore");
@@ -22,21 +23,23 @@ namespace {
     constexpr uint32_t DEFAULT_MAX_LIDS_PER_FILE = 32_Mi;
 }
 
-using vespalib::getLastErrorString;
-using vespalib::getErrorString;
-using vespalib::GenerationHandler;
-using vespalib::make_string;
-using vespalib::IllegalStateException;
 using common::FileHeaderContext;
-using std::runtime_error;
-using document::BucketId;
-using docstore::StoreByBucket;
 using docstore::BucketCompacter;
+using docstore::StoreByBucket;
+using document::BucketId;
 using namespace std::literals;
+using std::runtime_error;
+using vespalib::CpuUsage;
+using vespalib::GenerationHandler;
+using vespalib::IllegalStateException;
+using vespalib::getErrorString;
+using vespalib::getLastErrorString;
+using vespalib::make_string;
+
+using CpuCategory = CpuUsage::Category;
 
 LogDataStore::Config::Config()
     : _maxFileSize(DEFAULT_MAX_FILESIZE),
-      _maxDiskBloatFactor(0.2),
       _maxBucketSpread(2.5),
       _minFileSizeFactor(0.2),
       _maxNumLids(DEFAULT_MAX_LIDS_PER_FILE),
@@ -48,7 +51,6 @@ LogDataStore::Config::Config()
 bool
 LogDataStore::Config::operator == (const Config & rhs) const {
     return (_maxBucketSpread == rhs._maxBucketSpread) &&
-            (_maxDiskBloatFactor == rhs._maxDiskBloatFactor) &&
             (_maxFileSize == rhs._maxFileSize) &&
             (_minFileSizeFactor == rhs._minFileSizeFactor) &&
             (_skipCrcOnRead == rhs._skipCrcOnRead) &&
@@ -56,7 +58,7 @@ LogDataStore::Config::operator == (const Config & rhs) const {
             (_fileConfig == rhs._fileConfig);
 }
 
-LogDataStore::LogDataStore(vespalib::ThreadExecutor &executor, const vespalib::string &dirName, const Config &config,
+LogDataStore::LogDataStore(vespalib::Executor &executor, const vespalib::string &dirName, const Config &config,
                            const GrowStrategy &growStrategy, const TuneFileSummary &tune,
                            const FileHeaderContext &fileHeaderContext, transactionlog::SyncProxy &tlSyncer,
                            IBucketizer::SP bucketizer, bool readOnly)
@@ -65,9 +67,7 @@ LogDataStore::LogDataStore(vespalib::ThreadExecutor &executor, const vespalib::s
       _tune(tune),
       _fileHeaderContext(fileHeaderContext),
       _genHandler(),
-      _lidInfo(growStrategy.getDocsInitialCapacity(),
-               growStrategy.getDocsGrowPercent(),
-               growStrategy.getDocsGrowDelta()),
+      _lidInfo(growStrategy),
       _fileChunks(),
       _holdFileChunks(),
       _active(0),
@@ -109,8 +109,8 @@ LogDataStore::~LogDataStore()
 {
     // Must be called before ending threads as there are sanity checks.
     _fileChunks.clear();
-    _genHandler.updateFirstUsedGeneration();
-    _lidInfo.removeOldGenerations(_genHandler.getFirstUsedGeneration());
+    _genHandler.update_oldest_used_generation();
+    _lidInfo.reclaim_memory(_genHandler.get_oldest_used_generation());
 }
 
 void
@@ -134,7 +134,7 @@ LogDataStore::read(const LidVector & lids, IBufferVisitor & visitor) const
     GenerationHandler::Guard guard(_genHandler.takeGuard());
     for (uint32_t lid : lids) {
         if (lid < getDocIdLimit()) {
-            LidInfo li = _lidInfo[lid];
+            LidInfo li = vespalib::atomic::load_ref_acquire(_lidInfo.acquire_elem_ref(lid));
             if (!li.empty() && li.valid()) {
                 orderedLids.emplace_back(li, lid);
             }
@@ -166,7 +166,7 @@ LogDataStore::read(uint32_t lid, vespalib::DataBuffer& buffer) const
         LidInfo li(0);
         {
             GenerationHandler::Guard guard(_genHandler.takeGuard());
-            li = _lidInfo[lid];
+            li = vespalib::atomic::load_ref_acquire(_lidInfo.acquire_elem_ref(lid));
         }
         if (!li.empty() && li.valid()) {
             const FileChunk & fc(*_fileChunks[li.getFileId()]);
@@ -182,29 +182,30 @@ LogDataStore::write(uint64_t serialNum, uint32_t lid, const void * buffer, size_
 {
     std::unique_lock guard(_updateLock);
     WriteableFileChunk & active = getActive(guard);
-    write(std::move(guard), active, serialNum,  lid, buffer, len);
+    write(std::move(guard), active, serialNum,  lid, buffer, len, CpuCategory::WRITE);
 }
 
 void
 LogDataStore::write(MonitorGuard guard, FileId destinationFileId, uint32_t lid, const void * buffer, size_t len)
 {
     auto & destination = static_cast<WriteableFileChunk &>(*_fileChunks[destinationFileId.getId()]);
-    write(std::move(guard), destination, destination.getSerialNum(), lid, buffer, len);
+    write(std::move(guard), destination, destination.getSerialNum(), lid, buffer, len, CpuCategory::COMPACT);
 }
 
 void
 LogDataStore::write(MonitorGuard guard, WriteableFileChunk & destination,
-                    uint64_t serialNum, uint32_t lid, const void * buffer, size_t len)
+                    uint64_t serialNum, uint32_t lid, const void * buffer, size_t len,
+                    CpuUsage::Category cpu_category)
 {
-    LidInfo lm = destination.append(serialNum, lid, buffer, len);
+    LidInfo lm = destination.append(serialNum, lid, buffer, len, cpu_category);
     setLid(guard, lid, lm);
     if (destination.getFileId() == getActiveFileId(guard)) {
-        requireSpace(std::move(guard), destination);
+        requireSpace(std::move(guard), destination, cpu_category);
     }
 }
 
 void
-LogDataStore::requireSpace(MonitorGuard guard, WriteableFileChunk & active)
+LogDataStore::requireSpace(MonitorGuard guard, WriteableFileChunk & active, CpuUsage::Category cpu_category)
 {
     assert(active.getFileId() == getActiveFileId(guard));
     size_t oldSz(active.getDiskFootprint());
@@ -218,13 +219,13 @@ LogDataStore::requireSpace(MonitorGuard guard, WriteableFileChunk & active)
         guard.unlock();
         // Write chunks to old .dat file 
         // Note: Feed latency spike
-        active.flush(true, active.getSerialNum());
+        active.flush(true, active.getSerialNum(), cpu_category);
         // Sync transaction log
         _tlSyncer.sync(active.getSerialNum());
         // sync old active .dat file, write pending chunks to old .idx file
         // and sync old .idx file to disk.
         active.flushPendingChunks(active.getSerialNum());
-        active.freeze();
+        active.freeze(cpu_category);
         // TODO: Delay create of new file
         LOG(debug, "Closed file %s of size %ld and %u lids due to maxsize of %ld or maxlids %u reached. Bloat is %ld",
                    active.getName().c_str(), active.getDiskFootprint(), active.getNumLids(),
@@ -276,13 +277,13 @@ LogDataStore::remove(uint64_t serialNum, uint32_t lid)
 {
     MonitorGuard guard(_updateLock);
     if (lid < getDocIdLimit()) {
-        LidInfo lm = _lidInfo[lid];
+        LidInfo lm = vespalib::atomic::load_ref_relaxed(_lidInfo[lid]);
         if (lm.valid()) {
             _fileChunks[lm.getFileId()]->remove(lid, lm.size());
         }
-        lm = getActive(guard).append(serialNum, lid, nullptr, 0);
+        lm = getActive(guard).append(serialNum, lid, nullptr, 0, CpuCategory::WRITE);
         assert( lm.empty() );
-        _lidInfo[lid] = lm;
+        vespalib::atomic::store_ref_release(_lidInfo[lid], lm);
     }
 }
 
@@ -294,46 +295,14 @@ vespalib::string bloatMsg(size_t bloat, size_t usage) {
 
 }
 
-void
-LogDataStore::compact(uint64_t syncToken)
-{
-    uint64_t usage = getDiskFootprint();
-    uint64_t bloat = getDiskBloat();
-    LOG(debug, "%s", bloatMsg(bloat, usage).c_str());
-    const bool doCompact = (_fileChunks.size() > 1);
-    if (doCompact) {
-        LOG(info, "%s. Will compact", bloatMsg(bloat, usage).c_str());
-        compactWorst(_config.getMaxDiskBloatFactor(), _config.getMaxBucketSpread(), isTotalDiskBloatExceeded(usage, bloat));
-    }
-    flushActiveAndWait(syncToken);
-    if (doCompact) {
-        usage = getDiskFootprint();
-        bloat = getDiskBloat();
-        LOG(info, "Done compacting. %s", bloatMsg(bloat, usage).c_str());
-    }
-}
-
-bool
-LogDataStore::isTotalDiskBloatExceeded(size_t diskFootPrint, size_t bloat) const {
-    const size_t maxConfiguredDiskBloat = diskFootPrint * _config.getMaxDiskBloatFactor();
-    return bloat > maxConfiguredDiskBloat;
-}
-
 size_t
-LogDataStore::getMaxCompactGain() const
+LogDataStore::getMaxSpreadAsBloat() const
 {
-    size_t bloat = getDiskBloat();
     const size_t diskFootPrint = getDiskFootprint();
-    if ( ! isTotalDiskBloatExceeded(diskFootPrint, bloat) ) {
-        bloat = 0;
-    }
-
     const double maxSpread = getMaxBucketSpread();
-    size_t spreadAsBloat = diskFootPrint * (1.0 - 1.0/maxSpread);
-    if ( maxSpread < _config.getMaxBucketSpread()) {
-        spreadAsBloat = 0;
-    }
-    return (bloat + spreadAsBloat);
+    return (maxSpread > _config.getMaxBucketSpread())
+        ? diskFootPrint * (1.0 - 1.0/maxSpread)
+        : 0;
 }
 
 void
@@ -345,7 +314,9 @@ LogDataStore::flush(uint64_t syncToken)
     {
         MonitorGuard guard(_updateLock);
         // Note: Feed latency spike
-        getActive(guard).flush(true, syncToken);
+        // This is executed by an IFlushTarget,
+        // but is a fundamental part of the WRITE pipeline of the data store.
+        getActive(guard).flush(true, syncToken, CpuCategory::WRITE);
         active = &getActive(guard);
         activeHolder = holdFileChunk(active->getFileId());
     }
@@ -364,56 +335,35 @@ LogDataStore::initFlush(uint64_t syncToken)
     return syncToken;
 }
 
-double
-LogDataStore::getMaxBucketSpread() const
-{
-    double maxSpread(1.0);
-    MonitorGuard guard(_updateLock);
-    for (const auto & fc : _fileChunks) {
-        if (fc) {
-            if (_bucketizer && fc->frozen()) {
-                maxSpread = std::max(maxSpread, fc->getBucketSpread());
-            }
-        }
-    }
-    return maxSpread;
-}
-
 std::pair<bool, LogDataStore::FileId>
-LogDataStore::findNextToCompact(double bloatLimit, double spreadLimit, bool prioritizeDiskBloat)
+LogDataStore::findNextToCompact(bool dueToBloat)
 {
     typedef std::multimap<double, FileId, std::greater<double>> CostMap;
-    CostMap worstBloat;
-    CostMap worstSpread;
+    CostMap worst;
     MonitorGuard guard(_updateLock);
     for (size_t i(0); i < _fileChunks.size(); i++) {
         const auto & fc(_fileChunks[i]);
         if (fc && fc->frozen() && (_currentlyCompacting.find(fc->getNameId()) == _currentlyCompacting.end())) {
             uint64_t usage = fc->getDiskFootprint();
-            uint64_t bloat = fc->getDiskBloat();
-            if (_bucketizer) {
-                worstSpread.emplace(fc->getBucketSpread(), FileId(i));
-            }
-            if (usage > 0) {
-                double tmp(double(bloat)/usage);
-                worstBloat.emplace(tmp, FileId(i));
+            if ( ! dueToBloat && _bucketizer) {
+                worst.emplace(fc->getBucketSpread(), FileId(i));
+            } else if (dueToBloat && usage > 0) {
+                double tmp(double(fc->getDiskBloat())/usage);
+                worst.emplace(tmp, FileId(i));
             }
         }
     }
     if (LOG_WOULD_LOG(debug)) {
-        for (const auto & it : worstBloat) {
+        for (const auto & it : worst) {
             const FileChunk & fc = *_fileChunks[it.second.getId()];
             LOG(debug, "File '%s' has bloat '%2.2f' and bucket-spread '%1.4f numChunks=%d , numBuckets=%ld, numUniqueBuckets=%ld",
                        fc.getName().c_str(), it.first * 100, fc.getBucketSpread(), fc.getNumChunks(), fc.getNumBuckets(), fc.getNumUniqueBuckets());
         }
     }
     std::pair<bool, FileId> retval(false, FileId(-1));
-    if ( ! worstBloat.empty() && (worstBloat.begin()->first > bloatLimit) && prioritizeDiskBloat) {
+    if ( ! worst.empty()) {
         retval.first = true;
-        retval.second = worstBloat.begin()->second;
-    } else if ( ! worstSpread.empty() && (worstSpread.begin()->first > spreadLimit)) {
-        retval.first = true;
-        retval.second = worstSpread.begin()->second;
+        retval.second = worst.begin()->second;
     }
     if (retval.first) {
         _currentlyCompacting.insert(_fileChunks[retval.second.getId()]->getNameId());
@@ -422,25 +372,42 @@ LogDataStore::findNextToCompact(double bloatLimit, double spreadLimit, bool prio
 }
 
 void
-LogDataStore::compactWorst(double bloatLimit, double spreadLimit, bool prioritizeDiskBloat) {
-    auto worst = findNextToCompact(bloatLimit, spreadLimit, prioritizeDiskBloat);
-    if (worst.first) {
-        compactFile(worst.second);
+LogDataStore::compactWorst(uint64_t syncToken, bool compactDiskBloat) {
+    uint64_t usage = getDiskFootprint();
+    uint64_t bloat = getDiskBloat();
+    const char * reason = compactDiskBloat ? "bloat" : "spread";
+    LOG(debug, "%s", bloatMsg(bloat, usage).c_str());
+    const bool doCompact = (_fileChunks.size() > 1);
+    if (doCompact) {
+        LOG(debug, "Will compact due to %s: %s", reason, bloatMsg(bloat, usage).c_str());
+        auto worst = findNextToCompact(compactDiskBloat);
+        if (worst.first) {
+            compactFile(worst.second);
+        }
+        flushActiveAndWait(syncToken);
+        usage = getDiskFootprint();
+        bloat = getDiskBloat();
+        LOG(info, "Done compacting due to %s: %s", reason, bloatMsg(bloat, usage).c_str());
+    } else {
+        flushActiveAndWait(syncToken);
     }
 }
 
-SerialNum LogDataStore::flushFile(MonitorGuard guard, WriteableFileChunk & file, SerialNum syncToken) {
+SerialNum LogDataStore::flushFile(MonitorGuard guard, WriteableFileChunk & file, SerialNum syncToken,
+                                  CpuUsage::Category cpu_category)
+{
     (void) guard;
     uint64_t lastSerial(file.getSerialNum());
     if (lastSerial > syncToken) {
         syncToken = lastSerial;
     }
-    file.flush(false, syncToken);
+    file.flush(false, syncToken, cpu_category);
     return syncToken;
 }
 
 void LogDataStore::flushFileAndWait(MonitorGuard guard, WriteableFileChunk & file, SerialNum syncToken) {
-    syncToken = flushFile(std::move(guard), file, syncToken);
+    // This function is always called in the context of compaction.
+    syncToken = flushFile(std::move(guard), file, syncToken, CpuCategory::COMPACT);
     file.waitForDiskToCatchUpToNow();
     _tlSyncer.sync(syncToken);
     file.flushPendingChunks(syncToken);
@@ -449,7 +416,9 @@ void LogDataStore::flushFileAndWait(MonitorGuard guard, WriteableFileChunk & fil
 SerialNum LogDataStore::flushActive(SerialNum syncToken) {
     MonitorGuard guard(_updateLock);
     WriteableFileChunk &active = getActive(guard);
-    return flushFile(std::move(guard), active, syncToken);
+    // This is executed by an IFlushTarget (via initFlush),
+    // but is a fundamental part of the WRITE pipeline of the data store.
+    return flushFile(std::move(guard), active, syncToken, CpuCategory::WRITE);
 }
 
 void LogDataStore::flushActiveAndWait(SerialNum syncToken) {
@@ -479,7 +448,10 @@ void LogDataStore::compactFile(FileId fileId)
     IWriteData::UP compacter;
     FileId destinationFileId = FileId::active();
     if (_bucketizer) {
-        if ( ! shouldCompactToActiveFile(fc->getDiskFootprint() - fc->getDiskBloat())) {
+        size_t disk_footprint = fc->getDiskFootprint();
+        size_t disk_bloat = fc->getDiskBloat();
+        size_t compacted_size = (disk_footprint <= disk_bloat) ? 0u : (disk_footprint - disk_bloat);
+        if ( ! shouldCompactToActiveFile(compacted_size)) {
             MonitorGuard guard(_updateLock);
             destinationFileId = allocateFileId(guard);
             setNewFileChunk(guard, createWritableFile(destinationFileId, fc->getLastPersistedSerialNum(), fc->getNameId().next()));
@@ -491,15 +463,14 @@ void LogDataStore::compactFile(FileId fileId)
         compacter = std::make_unique<docstore::Compacter>(*this);
     }
 
-    fc->appendTo(_executor, *this, *compacter, fc->getNumChunks(), nullptr);
+    fc->appendTo(_executor, *this, *compacter, fc->getNumChunks(), nullptr, CpuCategory::COMPACT);
 
-    if (destinationFileId.isActive()) {
-        flushActiveAndWait(0);
-    } else {
+    flushActiveAndWait(0);
+    if (!destinationFileId.isActive()) {
         MonitorGuard guard(_updateLock);
         auto & compactTo = dynamic_cast<WriteableFileChunk &>(*_fileChunks[destinationFileId.getId()]);
         flushFileAndWait(std::move(guard), compactTo, 0);
-        compactTo.freeze();
+        compactTo.freeze(CpuCategory::COMPACT);
     }
     compacter.reset();
 
@@ -514,8 +485,8 @@ void LogDataStore::compactFile(FileId fileId)
     FileChunk::UP toDie;
     for (;;) {
         MonitorGuard guard(_updateLock);
-        _genHandler.updateFirstUsedGeneration();
-        if (currentGeneration < _genHandler.getFirstUsedGeneration()) {
+        _genHandler.update_oldest_used_generation();
+        if (currentGeneration < _genHandler.get_oldest_used_generation()) {
             if (_holdFileChunks[fc->getFileId().getId()] == 0u) {
                 toDie = std::move(fc);
                 break;
@@ -605,6 +576,22 @@ LogDataStore::getDiskHeaderFootprint() const
     return sz;
 }
 
+double
+LogDataStore::getMaxBucketSpread() const
+{
+    double maxSpread(1.0);
+    MonitorGuard guard(_updateLock);
+    for (FileId i(0); i < FileId(_fileChunks.size()); i = i.next()) {
+        /// Ignore the the active file as it is never considered for reordering until completed and frozen.
+        if (i != _active) {
+            const auto & fc = _fileChunks[i.getId()];
+            if (fc && _bucketizer && fc->frozen()) {
+                maxSpread = std::max(maxSpread, fc->getBucketSpread());
+            }
+        }
+    }
+    return maxSpread;
+}
 
 size_t
 LogDataStore::getDiskBloat() const
@@ -612,7 +599,8 @@ LogDataStore::getDiskBloat() const
     MonitorGuard guard(_updateLock);
     size_t sz(0);
     for (FileId i(0); i < FileId(_fileChunks.size()); i = i.next()) {
-        /// Do not count the holes in the last file as bloat
+        /// Do not count the holes in the last file as bloat as it is
+        /// never considered for compaction until completed and frozen.
         if (i != _active) {
             const auto & chunk = _fileChunks[i.getId()];
             if (chunk) {
@@ -951,9 +939,9 @@ LogDataStore::setLid(const MonitorGuard &guard, uint32_t lid, const LidInfo &met
 {
     (void) guard;
     if (lid < _lidInfo.size()) {
-        _genHandler.updateFirstUsedGeneration();
-        _lidInfo.removeOldGenerations(_genHandler.getFirstUsedGeneration());
-        const LidInfo &prev = _lidInfo[lid];
+        _genHandler.update_oldest_used_generation();
+        _lidInfo.reclaim_memory(_genHandler.get_oldest_used_generation());
+        const LidInfo prev = vespalib::atomic::load_ref_relaxed(_lidInfo[lid]);
         if (prev.valid()) {
             _fileChunks[prev.getFileId()]->remove(lid, prev.size());
         }
@@ -962,7 +950,7 @@ LogDataStore::setLid(const MonitorGuard &guard, uint32_t lid, const LidInfo &met
         incGeneration();
     }
     updateDocIdLimit(lid + 1);
-    _lidInfo[lid] = meta;
+    vespalib::atomic::store_ref_release(_lidInfo[lid], meta);
 }
 
 void
@@ -970,8 +958,7 @@ LogDataStore::incGeneration()
 {
     _lidInfo.setGeneration(_genHandler.getNextGeneration());
     _genHandler.incGeneration();
-    _genHandler.updateFirstUsedGeneration();
-    _lidInfo.removeOldGenerations(_genHandler.getFirstUsedGeneration());
+    _lidInfo.reclaim_memory(_genHandler.get_oldest_used_generation());
 }
 
 size_t
@@ -984,7 +971,7 @@ LogDataStore::computeNumberOfSignificantBucketIdBits(const IBucketizer & bucketi
     auto bucketizerGuard = bucketizer.getGuard();
     GenerationHandler::Guard lidGuard(_genHandler.takeGuard());
     for (size_t i(0), m(getDocIdLimit()); i < m; i++) {
-        LidInfo lid(_lidInfo[i]);
+        LidInfo lid(vespalib::atomic::load_ref_acquire(_lidInfo.acquire_elem_ref(i)));
         if (lid.valid() && (lid.getFileId() == fileId.getId())) {
             BucketId bucketId = bucketizer.getBucketOf(bucketizerGuard, i);
             size_t msbCount = vespalib::Optimized::msbIdx(bucketId.toKey());
@@ -1001,7 +988,7 @@ LogDataStore::computeNumberOfSignificantBucketIdBits(const IBucketizer & bucketi
     while ((msb > 0) && (msbHistogram[msb - 1] == 0)) {
         msb--;
     }
-    LOG(info, "computeNumberOfSignificantBucketIdBits(file=%d) = %ld = %ld took %1.3f", fileId.getId(), msb, msbHistogram[msb-1], timer.min_time());
+    LOG(debug, "computeNumberOfSignificantBucketIdBits(file=%d) = %ld = %ld took %1.3f", fileId.getId(), msb, msbHistogram[msb-1], timer.min_time());
     return msb;
 }
 
@@ -1095,7 +1082,9 @@ LogDataStore::accept(IDataStoreVisitor &visitor,
     WrapVisitorProgress wrapProgress(visitorProgress, totalChunks);
     for (FileId fcId : fileChunks) {
         FileChunk & fc = *_fileChunks[fcId.getId()];
-        fc.appendTo(_executor, *this, wrap, fc.getNumChunks(), &wrapProgress);
+        // accept() is used when reprocessing all documents stored (e.g. when adding attribute to a field).
+        // We tag this work as WRITE, as the alternative to reprocessing would be to re-feed the data.
+        fc.appendTo(_executor, *this, wrap, fc.getNumChunks(), &wrapProgress, CpuCategory::WRITE);
         if (prune) {
             internalFlushAll();
             FileChunk::UP toDie;
@@ -1106,7 +1095,7 @@ LogDataStore::accept(IDataStoreVisitor &visitor,
             toDie->erase();
         }
     }
-    lfc.appendTo(_executor, *this, wrap, lastChunks, &wrapProgress);
+    lfc.appendTo(_executor, *this, wrap, lastChunks, &wrapProgress, CpuCategory::WRITE);
     if (prune) {
         internalFlushAll();
     }
@@ -1204,7 +1193,7 @@ LogDataStore::compactLidSpace(uint32_t wantedDocLidLimit)
     MonitorGuard guard(_updateLock);
     assert(wantedDocLidLimit <= getDocIdLimit());
     for (size_t i = wantedDocLidLimit; i < _lidInfo.size(); ++i) {
-        _lidInfo[i] = LidInfo();
+        vespalib::atomic::store_ref_release(_lidInfo[i], LidInfo());
     }
     setDocIdLimit(wantedDocLidLimit);
     _compactLidSpaceGeneration = _genHandler.getCurrentGeneration();
@@ -1221,8 +1210,9 @@ LogDataStore::canShrinkLidSpace() const
 bool
 LogDataStore::canShrinkLidSpace(const MonitorGuard &) const
 {
-    return getDocIdLimit() < _lidInfo.size() &&
-           _compactLidSpaceGeneration < _genHandler.getFirstUsedGeneration();
+    // Update lock is held, allowing call to _lidInfo.get_size()
+    return getDocIdLimit() < _lidInfo.get_size() &&
+           _compactLidSpaceGeneration < _genHandler.get_oldest_used_generation();
 }
 
 size_t
@@ -1232,7 +1222,8 @@ LogDataStore::getEstimatedShrinkLidSpaceGain() const
     if (!canShrinkLidSpace(guard)) {
         return 0;
     }
-    return (_lidInfo.size() - getDocIdLimit()) * sizeof(uint64_t);
+    // Update lock is held, allowing call to _lidInfo.get_size()
+    return (_lidInfo.get_size() - getDocIdLimit()) * sizeof(uint64_t);
 }
 
 void

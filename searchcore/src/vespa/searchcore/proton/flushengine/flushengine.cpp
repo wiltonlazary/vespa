@@ -1,23 +1,24 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "flushengine.h"
 #include "cachedflushtarget.h"
 #include "flush_all_strategy.h"
-#include "flushengine.h"
 #include "flushtask.h"
-#include "tls_stats_map.h"
 #include "tls_stats_factory.h"
+#include "tls_stats_map.h"
 #include <vespa/searchcore/proton/common/eventlogger.h>
 #include <vespa/searchlib/common/flush_token.h>
-#include <vespa/vespalib/util/jsonwriter.h>
+#include <vespa/vespalib/util/cpu_usage.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <thread>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.flushengine.flushengine");
 
-typedef vespalib::Executor::Task Task;
-using searchcorespi::IFlushTarget;
+using Task = vespalib::Executor::Task;
 using searchcorespi::FlushStats;
+using searchcorespi::IFlushTarget;
+using vespalib::CpuUsage;
 using namespace std::chrono_literals;
 
 namespace proton {
@@ -86,7 +87,7 @@ FlushEngine::FlushEngine(std::shared_ptr<flushengine::ITlsStatsFactory> tlsStats
       _threadPool(128_Ki),
       _strategy(std::move(strategy)),
       _priorityStrategy(),
-      _executor(numThreads, 128_Ki, flush_engine_executor),
+      _executor(numThreads, 128_Ki, CpuUsage::wrap(flush_engine_executor, CpuUsage::Category::COMPACT)),
       _lock(),
       _cond(),
       _handlers(),
@@ -366,7 +367,7 @@ FlushEngine::initFlush(const FlushContext &ctx)
 void
 FlushEngine::flushDone(const FlushContext &ctx, uint32_t taskId)
 {
-    vespalib::duration duration = vespalib::duration::zero();
+    vespalib::duration duration;
     {
         std::lock_guard<std::mutex> guard(_lock);
         duration = _flushing[taskId].elapsed();
@@ -421,7 +422,7 @@ FlushEngine::getCurrentlyFlushingSet() const
 uint32_t
 FlushEngine::initFlush(const IFlushHandler::SP &handler, const IFlushTarget::SP &target)
 {
-    uint32_t taskId(0);
+    uint32_t taskId;
     {
         std::lock_guard<std::mutex> guard(_lock);
         taskId = _taskId++;

@@ -14,14 +14,7 @@ namespace {
     bool documentTypeEqualsName(const DocumentType& type,
                                 vespalib::stringref name)
     {
-        if (type.getName() == name) return true;
-        for (std::vector<const DocumentType *>::const_iterator it
-                = type.getInheritedTypes().begin();
-             it != type.getInheritedTypes().end(); ++it)
-        {
-            if (documentTypeEqualsName(**it, name)) return true;
-        }
-        return false;
+        return (type.getName() == name);
     }
 }
 

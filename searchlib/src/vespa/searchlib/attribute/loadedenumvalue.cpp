@@ -3,8 +3,7 @@
 #include "loadedenumvalue.h"
 #include <vespa/searchlib/common/sort.h>
 
-namespace search {
-namespace attribute {
+namespace search::attribute {
 
 void
 sortLoadedByEnum(LoadedEnumAttributeVector &loaded)
@@ -14,9 +13,8 @@ sortLoadedByEnum(LoadedEnumAttributeVector &loaded)
         LoadedEnumAttribute::EnumCompare, 56>::
         radix_sort(LoadedEnumAttribute::EnumRadix(),
                    LoadedEnumAttribute::EnumCompare(),
-                   &loaded[0], loaded.size(), 16);
+                   loaded.data(), loaded.size(), 16);
 }
 
-} // namespace attribute
-} // namespace search
+}
 

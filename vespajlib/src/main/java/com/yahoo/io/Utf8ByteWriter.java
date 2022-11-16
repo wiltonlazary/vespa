@@ -1,3 +1,4 @@
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.io;
 
 import com.yahoo.text.Utf8;
@@ -6,11 +7,13 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 public class Utf8ByteWriter extends AbstractByteWriter {
+
     private ByteBuffer myBuf;
     public Utf8ByteWriter(int initialBuffer) {
         super(Utf8.getNewEncoder());
         myBuf = ByteBuffer.allocate(initialBuffer);
     }
+
     @Override
     public void send(ByteBuffer src) throws IOException {
         if (myBuf.remaining() < src.remaining()) {
@@ -35,6 +38,7 @@ public class Utf8ByteWriter extends AbstractByteWriter {
 
     /**
      * Return a buffer ready for read. Must only be called after writer has been closed.
+     *
      * @return A flipped ByteBuffer
      */
     public ByteBuffer getBuf() {

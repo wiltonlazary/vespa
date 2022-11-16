@@ -8,6 +8,8 @@ using namespace vespalib::fixed_thread_bundle;
 
 namespace vespalib {
 
+VESPA_THREAD_STACK_TAG(simple_thread_bundle_executor);
+
 namespace {
 
 struct SignalHook : Runnable {
@@ -43,7 +45,7 @@ Runnable::UP wrap(Runnable *runnable) {
 }
 
 Runnable::UP chain(Runnable::UP first, Runnable::UP second) {
-    return Runnable::UP(new HookPair(std::move(first), std::move(second)));
+    return std::make_unique<HookPair>(std::move(first), std::move(second));
 }
 
 } // namespace vespalib::<unnamed>
@@ -58,9 +60,10 @@ Signal::Signal() noexcept
 {}
 Signal::~Signal() = default;
 
-SimpleThreadBundle::Pool::Pool(size_t bundleSize)
+SimpleThreadBundle::Pool::Pool(size_t bundleSize, init_fun_t init_fun)
     : _lock(),
       _bundleSize(bundleSize),
+      _init_fun(init_fun),
       _bundles()
 {
 }
@@ -84,7 +87,7 @@ SimpleThreadBundle::Pool::obtain()
             return ret;
         }
     }
-    return std::make_unique<SimpleThreadBundle>(_bundleSize);
+    return std::make_unique<SimpleThreadBundle>(_bundleSize, _init_fun);
 }
 
 void
@@ -97,7 +100,7 @@ SimpleThreadBundle::Pool::release(SimpleThreadBundle::UP bundle)
 
 //-----------------------------------------------------------------------------
 
-SimpleThreadBundle::SimpleThreadBundle(size_t size_in, Strategy strategy)
+SimpleThreadBundle::SimpleThreadBundle(size_t size_in, Runnable::init_fun_t init_fun, Strategy strategy)
     : _work(),
       _signals(),
       _workers(),
@@ -132,7 +135,7 @@ SimpleThreadBundle::SimpleThreadBundle(size_t size_in, Strategy strategy)
             _hook = std::move(hook);
         } else {
             size_t signal_idx = (strategy == USE_BROADCAST) ? 0 : (i - 1);
-            _workers.push_back(std::make_unique<Worker>(_signals[signal_idx], std::move(hook)));
+            _workers.push_back(std::make_unique<Worker>(_signals[signal_idx], init_fun, std::move(hook)));
         }
     }
 }
@@ -154,23 +157,39 @@ SimpleThreadBundle::size() const
 }
 
 void
-SimpleThreadBundle::run(const std::vector<Runnable*> &targets)
+SimpleThreadBundle::run(Runnable* const* targets, size_t cnt)
 {
-    if (targets.size() > size()) {
+    if (cnt > size()) {
         throw IllegalArgumentException("too many targets");
     }
-    if (targets.empty()) {
+    if (cnt == 0) {
         return;
     }
-    if (targets.size() == 1) {
+    if (cnt == 1) {
         targets[0]->run();
         return;
     }
     CountDownLatch latch(size());
-    _work.targets = &targets;
+    _work.targets = targets;
+    _work.cnt = cnt;
     _work.latch = &latch;
     _hook->run();
     latch.await();
+}
+
+SimpleThreadBundle::Worker::Worker(Signal &s, Runnable::init_fun_t init_fun, Runnable::UP h)
+  : thread(*this, std::move(init_fun)),
+    signal(s),
+    hook(std::move(h))
+{
+    thread.start();
+}
+
+void
+SimpleThreadBundle::Worker::run() {
+    for (size_t gen = 0; signal.wait(gen) > 0; ) {
+        hook->run();
+    }
 }
 
 } // namespace vespalib

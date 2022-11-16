@@ -7,6 +7,7 @@ import com.yahoo.config.provision.NodeType;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeSpec;
 import com.yahoo.vespa.hosted.node.admin.configserver.orchestrator.Orchestrator;
+import com.yahoo.vespa.hosted.node.admin.container.CGroupV2;
 import com.yahoo.vespa.hosted.node.admin.container.ContainerEngineMock;
 import com.yahoo.vespa.hosted.node.admin.container.ContainerName;
 import com.yahoo.vespa.hosted.node.admin.container.ContainerOperations;
@@ -16,6 +17,8 @@ import com.yahoo.vespa.hosted.node.admin.maintenance.StorageMaintainer;
 import com.yahoo.vespa.hosted.node.admin.maintenance.servicedump.VespaServiceDumper;
 import com.yahoo.vespa.hosted.node.admin.nodeadmin.NodeAdminImpl;
 import com.yahoo.vespa.hosted.node.admin.nodeadmin.NodeAdminStateUpdater;
+import com.yahoo.vespa.hosted.node.admin.nodeadmin.ProcMeminfo;
+import com.yahoo.vespa.hosted.node.admin.nodeadmin.ProcMeminfoReader;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContextFactory;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContextImpl;
@@ -32,13 +35,15 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.Phaser;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Logger;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.when;
 
 /**
@@ -48,13 +53,14 @@ import static org.mockito.Mockito.when;
 public class ContainerTester implements AutoCloseable {
 
     private static final Logger log = Logger.getLogger(ContainerTester.class.getName());
-    private static final Duration INTERVAL = Duration.ofMillis(10);
-    static final HostName HOST_HOSTNAME = HostName.from("host.test.yahoo.com");
+    static final HostName HOST_HOSTNAME = HostName.of("host.test.yahoo.com");
 
     private final Thread loopThread;
+    private final Phaser phaser = new Phaser(1);
 
     private final ContainerEngineMock containerEngine = new ContainerEngineMock();
-    final ContainerOperations containerOperations = spy(new ContainerOperations(containerEngine, TestFileSystem.create()));
+    private final FileSystem fileSystem = TestFileSystem.create();
+    final ContainerOperations containerOperations = spy(new ContainerOperations(containerEngine, new CGroupV2(fileSystem), fileSystem));
     final NodeRepoMock nodeRepository = spy(new NodeRepoMock());
     final Orchestrator orchestrator = mock(Orchestrator.class);
     final StorageMaintainer storageMaintainer = mock(StorageMaintainer.class);
@@ -64,7 +70,6 @@ public class ContainerTester implements AutoCloseable {
     final NodeAdminStateUpdater nodeAdminStateUpdater;
     final NodeAdminImpl nodeAdmin;
 
-    private boolean terminated = false;
     private volatile NodeAdminStateUpdater.State wantedState = NodeAdminStateUpdater.State.RESUMED;
 
 
@@ -83,33 +88,43 @@ public class ContainerTester implements AutoCloseable {
         Clock clock = Clock.systemUTC();
         Metrics metrics = new Metrics();
         FileSystem fileSystem = TestFileSystem.create();
+        ProcMeminfoReader procMeminfoReader = mock(ProcMeminfoReader.class);
+        when(procMeminfoReader.read()).thenReturn(new ProcMeminfo(1, 2));
 
-        NodeAgentFactory nodeAgentFactory = (contextSupplier, nodeContext) -> new NodeAgentImpl(
-                contextSupplier, nodeRepository, orchestrator, containerOperations, () -> RegistryCredentials.none,
-                storageMaintainer, flagSource,
-                Collections.emptyList(), Optional.empty(), Optional.empty(), clock, Duration.ofSeconds(-1),
-                VespaServiceDumper.DUMMY_INSTANCE);
-        nodeAdmin = new NodeAdminImpl(nodeAgentFactory, metrics, clock, Duration.ofMillis(10), Duration.ZERO);
+        NodeAgentFactory nodeAgentFactory = (contextSupplier, nodeContext) ->
+                new NodeAgentImpl(contextSupplier, nodeRepository, orchestrator, containerOperations, () -> RegistryCredentials.none,
+                                  storageMaintainer, flagSource,
+                                  Collections.emptyList(), Optional.empty(), Optional.empty(), clock, Duration.ofSeconds(-1),
+                                  VespaServiceDumper.DUMMY_INSTANCE, Optional.empty()) {
+                    @Override public void converge(NodeAgentContext context) {
+                        super.converge(context);
+                        phaser.arriveAndAwaitAdvance();
+                    }
+                    @Override public void stopForHostSuspension(NodeAgentContext context) {
+                        super.stopForHostSuspension(context);
+                        phaser.arriveAndAwaitAdvance();
+                    }
+                    @Override public void stopForRemoval(NodeAgentContext context) {
+                        super.stopForRemoval(context);
+                        phaser.arriveAndDeregister();
+                    }
+             };
+        nodeAdmin = new NodeAdminImpl(nodeAgentFactory, metrics, clock, Duration.ofMillis(10), Duration.ZERO, procMeminfoReader);
         NodeAgentContextFactory nodeAgentContextFactory = (nodeSpec, acl) ->
                 NodeAgentContextImpl.builder(nodeSpec).acl(acl).fileSystem(fileSystem).build();
         nodeAdminStateUpdater = new NodeAdminStateUpdater(nodeAgentContextFactory, nodeRepository, orchestrator,
-                nodeAdmin, HOST_HOSTNAME, clock, flagSource);
+                nodeAdmin, HOST_HOSTNAME);
 
         loopThread = new Thread(() -> {
             nodeAdminStateUpdater.start();
-
-            while (! terminated) {
+            while ( ! phaser.isTerminated()) {
                 try {
                     nodeAdminStateUpdater.converge(wantedState);
                 } catch (RuntimeException e) {
                     log.info(e.getMessage());
                 }
-                try {
-                    Thread.sleep(INTERVAL.toMillis());
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
             }
+            nodeAdminStateUpdater.stop();
         });
         loopThread.start();
     }
@@ -122,6 +137,10 @@ public class ContainerTester implements AutoCloseable {
                                                    ", but that image does not exist in the container engine");
             }
         }
+
+        if (nodeRepository.getOptionalNode(nodeSpec.hostname()).isEmpty())
+            phaser.register();
+
         nodeRepository.updateNodeSpec(new NodeSpec.Builder(nodeSpec)
                 .parentHostname(HOST_HOSTNAME.value())
                 .build());
@@ -132,7 +151,19 @@ public class ContainerTester implements AutoCloseable {
     }
 
     <T> T inOrder(T t) {
-        return inOrder.verify(t, timeout(10000));
+        waitSomeTicks();
+        return inOrder.verify(t);
+    }
+
+    void waitSomeTicks() {
+        try {
+            // 3 is enough for everyone! (Well, maybe not for all eternity ...)
+            for (int i = 0; i < 3; i++)
+                phaser.awaitAdvanceInterruptibly(phaser.arrive(), 1000, TimeUnit.MILLISECONDS);
+        }
+        catch (InterruptedException | TimeoutException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public static NodeAgentContext containerMatcher(ContainerName containerName) {
@@ -141,17 +172,12 @@ public class ContainerTester implements AutoCloseable {
 
     @Override
     public void close() {
-        // First, stop NodeAdmin and all the NodeAgents
-        nodeAdminStateUpdater.stop();
-
-        terminated = true;
-        do {
-            try {
-                loopThread.join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        } while (loopThread.isAlive());
+        phaser.forceTermination();
+        try {
+            loopThread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
 }

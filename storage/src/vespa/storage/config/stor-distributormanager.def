@@ -5,9 +5,9 @@ namespace=vespa.config.content.core
 maxpendingidealstateoperations int default=100
 
 ## The total size of unique documents in a bucket before we split it due to
-## being too big. By default this is now 32 MB.
-splitsize int default=33544432
-        
+## being too big. By default this is now 16 MB. Should be kept in sync with stor-filestor.def:bucket_merge_chunk_size.
+splitsize int default=16772216
+
 ## The maximum amount of entries in a file before we should attempt to split it.
 ## A meta data entry in a slotfile currently uses 40 bytes. It is probably
 ## good to have the split size, such that all meta data entries are normally
@@ -103,7 +103,7 @@ priority_activate_no_existing_active int default=100
 priority_activate_with_existing_active int default=100
 
 ## Deletion of bucket copy.
-priority_delete_bucket_copy int default=100
+priority_delete_bucket_copy int default=120
 
 ## Joining caused by bucket siblings getting sufficiently small to fit into a
 ## single bucket.
@@ -189,7 +189,7 @@ sequence_mutating_operations bool default=true
 ## Number of seconds that scheduling of new merge operations should be inhibited
 ## towards a node if it has indicated that its merge queues are full or it is
 ## suffering from resource exhaustion.
-inhibit_merge_sending_on_busy_node_duration_sec int default=10
+inhibit_merge_sending_on_busy_node_duration_sec int default=1
 
 ## If set, enables potentially stale reads during cluster state transitions where
 ## buckets change ownership. This also implicitly enables support for two-phase
@@ -242,7 +242,7 @@ use_weak_internal_read_consistency_for_client_gets bool default=false
 ## Setting this option to true always implicitly enables the fast update restart
 ## feature, so it's not required to set that config to true, nor will setting it
 ## to false actually disable the feature.
-enable_metadata_only_fetch_phase_for_inconsistent_updates bool default=false
+enable_metadata_only_fetch_phase_for_inconsistent_updates bool default=true
 
 ## If a distributor main thread tick is constantly processing requests or responses
 ## originating from other nodes, setting this value above zero will prevent implicit
@@ -285,4 +285,25 @@ num_distributor_stripes int default=0 restart
 ## bucket maintenance priority database even when no operation can be started for the
 ## bucket due to being blocked by concurrent operations. This avoids potential head-of-line
 ## blocking of later buckets in the priority database.
-implicitly_clear_bucket_priority_on_schedule bool default=false
+implicitly_clear_bucket_priority_on_schedule bool default=true
+
+## Enables sending merges that are forwarded between content nodes in ideal state node key
+## order, instead of strictly increasing node key order (which is the default).
+## Even if this config is set to true, unordered merges will only be sent if _all_ nodes
+## involved in a given merge have previously reported (as part of bucket info fetching)
+## that they support the unordered merge feature.
+use_unordered_merge_chaining bool default=true
+
+## If true, inhibits _all_ merges to buckets in the default bucket space if the current
+## cluster state bundle indicates that global merges are pending in the cluster, i.e.
+## one or more nodes is in maintenance mode in the default bucket space but marked up in
+## the global bucket space.
+inhibit_default_merges_when_global_merges_pending bool default=true
+
+## If true, garbage collection is performed in two phases (metadata gathering and deletion)
+## instead of just a single phase. Two-phase GC allows for ensuring the same set of documents
+## is deleted across all nodes and explicitly takes write locks on the distributor to prevent
+## concurrent feed ops to GC'd documents from potentially creating inconsistencies.
+## Two-phase GC is only used iff all replica content nodes support the feature AND it's enabled
+## by this config.
+enable_two_phase_garbage_collection bool default=false

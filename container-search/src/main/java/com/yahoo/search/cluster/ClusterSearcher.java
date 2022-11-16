@@ -51,7 +51,7 @@ public abstract class ClusterSearcher<T> extends PingableSearcher implements Nod
      * @param internal whether or not this cluster is internal (part of the same installation)
      */
     public ClusterSearcher(ComponentId id, List<T> connections, boolean internal) {
-        this(id, connections, new Hasher<T>(), internal);
+        this(id, connections, new Hasher<>(), internal);
     }
 
     public ClusterSearcher(ComponentId id, List<T> connections, Hasher<T> hasher, boolean internal) {
@@ -67,6 +67,9 @@ public abstract class ClusterSearcher<T> extends PingableSearcher implements Nod
             hasher.add(connection);
         }
     }
+
+    @Override
+    public String name() { return getIdString(); }
 
     /** Pinging a node, called from ClusterMonitor */
     @Override
@@ -87,8 +90,8 @@ public abstract class ClusterSearcher<T> extends PingableSearcher implements Nod
         } catch (ExecutionException e) {
             pong = new Pong(ErrorMessage.createUnspecifiedError("Execution was interrupted: " + p));
             logThrowable = e;
-        } catch (LinkageError e) { // Typically Osgi woes
-            pong = new Pong(ErrorMessage.createErrorInPluginSearcher("Class loading problem",e));
+        } catch (LinkageError e) { // Typically, Osgi woes
+            pong = new Pong(ErrorMessage.createErrorInPluginSearcher("Class loading problem", e));
             logThrowable = e;
         } catch (TimeoutException e) {
             pong = new Pong(ErrorMessage.createNoAnswerWhenPingingNode("Ping thread timed out."));
@@ -112,7 +115,7 @@ public abstract class ClusterSearcher<T> extends PingableSearcher implements Nod
                     if (k == null) {
                         b.append("null\n");
                     } else {
-                        b.append(k.toString()).append('\n');
+                        b.append(k).append('\n');
                     }
                 }
                 traceAsString = b.toString();
@@ -159,7 +162,7 @@ public abstract class ClusterSearcher<T> extends PingableSearcher implements Nod
             if (timedOut(query))
                 return new Result(query, ErrorMessage.createTimeout("No time left for searching"));
 
-            if (query.getTraceLevel() >= 8)
+            if (query.getTrace().getLevel() >= 8)
                 query.trace("Trying " + connection, false, 8);
 
             result = robustSearch(query, execution, connection);
@@ -167,7 +170,7 @@ public abstract class ClusterSearcher<T> extends PingableSearcher implements Nod
             if ( ! shouldRetry(query, result))
                 return result;
 
-            if (query.getTraceLevel() >= 6)
+            if (query.getTrace().getLevel() >= 6)
                 query.trace("Error from connection " + connection + " : " + result.hits().getError(), false, 6);
 
             if (result.hits().getError().getCode() == Error.TIMEOUT.code)
@@ -303,7 +306,7 @@ public abstract class ClusterSearcher<T> extends PingableSearcher implements Nod
 
     private class Pinger implements Callable<Pong> {
 
-        private T connection;
+        private final T connection;
 
         public Pinger(T connection) {
             this.connection = connection;

@@ -1,11 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 // Unit tests for diskindexcleaner.
 
-#include <vespa/searchcorespi/index/activediskindexes.h>
+#include <vespa/searchcorespi/index/disk_indexes.h>
 #include <vespa/searchcorespi/index/diskindexcleaner.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/fastos/file.h>
 #include <algorithm>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP("diskindexcleaner_test");
@@ -30,7 +31,7 @@ public:
 const string index_dir = "diskindexcleaner_test_data";
 
 void removeTestData() {
-    FastOS_FileInterface::EmptyAndRemoveDirectory(index_dir.c_str());
+    std::filesystem::remove_all(std::filesystem::path(index_dir));
 }
 
 int
@@ -52,9 +53,9 @@ Test::Main()
 }
 
 void createIndex(const string &name) {
-    FastOS_FileInterface::MakeDirIfNotPresentOrExit(index_dir.c_str());
+    std::filesystem::create_directory(std::filesystem::path(index_dir));
     const string dir_name = index_dir + "/" + name;
-    FastOS_FileInterface::MakeDirIfNotPresentOrExit(dir_name.c_str());
+    std::filesystem::create_directory(std::filesystem::path(dir_name));
     const string serial_file = dir_name + "/serial.dat";
     FastOS_File file(serial_file.c_str());
     file.OpenWriteOnlyTruncate();
@@ -90,8 +91,8 @@ void createIndexes() {
 
 void Test::requireThatAllIndexesOlderThanLastFusionIsRemoved() {
     createIndexes();
-    ActiveDiskIndexes active_indexes;
-    DiskIndexCleaner::clean(index_dir, active_indexes);
+    DiskIndexes disk_indexes;
+    DiskIndexCleaner::clean(index_dir, disk_indexes);
     vector<string> indexes = readIndexes();
     EXPECT_EQUAL(3u, indexes.size());
     EXPECT_TRUE(contains(indexes, "index.fusion.2"));
@@ -101,17 +102,17 @@ void Test::requireThatAllIndexesOlderThanLastFusionIsRemoved() {
 
 void Test::requireThatIndexesInUseAreNotRemoved() {
     createIndexes();
-    ActiveDiskIndexes active_indexes;
-    active_indexes.setActive(index_dir + "/index.fusion.1");
-    active_indexes.setActive(index_dir + "/index.flush.2");
-    DiskIndexCleaner::clean(index_dir, active_indexes);
+    DiskIndexes disk_indexes;
+    disk_indexes.setActive(index_dir + "/index.fusion.1", 0);
+    disk_indexes.setActive(index_dir + "/index.flush.2", 0);
+    DiskIndexCleaner::clean(index_dir, disk_indexes);
     vector<string> indexes = readIndexes();
     EXPECT_TRUE(contains(indexes, "index.fusion.1"));
     EXPECT_TRUE(contains(indexes, "index.flush.2"));
 
-    active_indexes.notActive(index_dir + "/index.fusion.1");
-    active_indexes.notActive(index_dir + "/index.flush.2");
-    DiskIndexCleaner::clean(index_dir, active_indexes);
+    disk_indexes.notActive(index_dir + "/index.fusion.1");
+    disk_indexes.notActive(index_dir + "/index.flush.2");
+    DiskIndexCleaner::clean(index_dir, disk_indexes);
     indexes = readIndexes();
     EXPECT_TRUE(!contains(indexes, "index.fusion.1"));
     EXPECT_TRUE(!contains(indexes, "index.flush.2"));
@@ -120,8 +121,8 @@ void Test::requireThatIndexesInUseAreNotRemoved() {
 void Test::requireThatInvalidFlushIndexesAreRemoved() {
     createIndexes();
     FastOS_File((index_dir + "/index.flush.4/serial.dat").c_str()).Delete();
-    ActiveDiskIndexes active_indexes;
-    DiskIndexCleaner::clean(index_dir, active_indexes);
+    DiskIndexes disk_indexes;
+    DiskIndexCleaner::clean(index_dir, disk_indexes);
     vector<string> indexes = readIndexes();
     EXPECT_EQUAL(2u, indexes.size());
     EXPECT_TRUE(contains(indexes, "index.fusion.2"));
@@ -131,8 +132,8 @@ void Test::requireThatInvalidFlushIndexesAreRemoved() {
 void Test::requireThatInvalidFusionIndexesAreRemoved() {
     createIndexes();
     FastOS_File((index_dir + "/index.fusion.2/serial.dat").c_str()).Delete();
-    ActiveDiskIndexes active_indexes;
-    DiskIndexCleaner::clean(index_dir, active_indexes);
+    DiskIndexes disk_indexes;
+    DiskIndexCleaner::clean(index_dir, disk_indexes);
     vector<string> indexes = readIndexes();
     EXPECT_EQUAL(4u, indexes.size());
     EXPECT_TRUE(contains(indexes, "index.fusion.1"));
@@ -144,8 +145,8 @@ void Test::requireThatInvalidFusionIndexesAreRemoved() {
 void Test::requireThatRemoveDontTouchNewIndexes() {
     createIndexes();
     FastOS_File((index_dir + "/index.flush.4/serial.dat").c_str()).Delete();
-    ActiveDiskIndexes active_indexes;
-    DiskIndexCleaner::removeOldIndexes(index_dir, active_indexes);
+    DiskIndexes disk_indexes;
+    DiskIndexCleaner::removeOldIndexes(index_dir, disk_indexes);
     vector<string> indexes = readIndexes();
     EXPECT_EQUAL(3u, indexes.size());
     EXPECT_TRUE(contains(indexes, "index.fusion.2"));

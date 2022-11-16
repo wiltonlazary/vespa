@@ -2,15 +2,12 @@
 package com.yahoo.slime;
 
 import com.yahoo.text.Utf8;
-import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
@@ -108,7 +105,7 @@ public class JsonFormatTestCase {
         Slime slime = new Slime();
         String str = null;
         slime.setString(str);
-        assertThat(slime.get().type(), is(Type.NIX));
+        assertEquals(Type.NIX, slime.get().type());
         verifyEncoding(slime, "null");
     }
 
@@ -117,7 +114,7 @@ public class JsonFormatTestCase {
         Slime slime = new Slime();
         byte[] utf8 = null;
         slime.setString(utf8);
-        assertThat(slime.get().type(), is(Type.NIX));
+        assertEquals(Type.NIX, slime.get().type());
         verifyEncoding(slime, "null");
     }
 
@@ -125,7 +122,7 @@ public class JsonFormatTestCase {
     public void testNullDataNixFallback() {
         Slime slime = new Slime();
         slime.setData(null);
-        assertThat(slime.get().type(), is(Type.NIX));
+        assertEquals(Type.NIX, slime.get().type());
         verifyEncoding(slime, "null");
     }
 
@@ -159,13 +156,13 @@ public class JsonFormatTestCase {
         c.setData("f", data);
         verifyEncoding(slime, "{\"a\":null,\"b\":true,\"c\":42,\"d\":3.5,\"e\":\"string\",\"f\":\"0x64617461\"}");
         String expected = "{\n"
-                        + " \"a\": null,\n"
-                        + " \"b\": true,\n"
-                        + " \"c\": 42,\n"
-                        + " \"d\": 3.5,\n"
-                        + " \"e\": \"string\",\n"
-                        + " \"f\": \"0x64617461\"\n"
-                        + "}\n";
+                          + "  \"a\": null,\n"
+                          + "  \"b\": true,\n"
+                          + "  \"c\": 42,\n"
+                          + "  \"d\": 3.5,\n"
+                          + "  \"e\": \"string\",\n"
+                          + "  \"f\": \"0x64617461\"\n"
+                          + "}\n";
         verifyEncoding(slime, expected, false);
     }
 
@@ -187,13 +184,13 @@ public class JsonFormatTestCase {
         System.out.println("test decoding and encoding a json string yields the same string");
         verifyEncodeDecode("{\"bar\":10,\"foo\":[20,{\"answer\":42}]}", true);
         String expected = "{\n"
-                + " \"a\": null,\n"
-                + " \"b\": true,\n"
-                + " \"c\": 42,\n"
-                + " \"d\": 3.5,\n"
-                + " \"e\": \"string\",\n"
-                + " \"f\": \"0x64617461\"\n"
-                + "}\n";
+                          + "  \"a\": null,\n"
+                          + "  \"b\": true,\n"
+                          + "  \"c\": 42,\n"
+                          + "  \"d\": 3.5,\n"
+                          + "  \"e\": \"string\",\n"
+                          + "  \"f\": \"0x64617461\"\n"
+                          + "}\n";
         verifyEncodeDecode(expected, false);
     }
 
@@ -203,13 +200,13 @@ public class JsonFormatTestCase {
         Slime slime = new Slime();
         new JsonDecoder().decode(slime, Utf8.toBytesStd(json));
         Cursor a = slime.get().field("body");
-        assertThat(a.asString(), is("some text&more text"));
+        assertEquals("some text&more text", a.asString());
     }
 
     @Test
     public void testDecodeEncodeUtf8() {
         final String json = "{\n" +
-                " \"rules\": \"# Use unicode equivalents in java source:\\n" +
+                "  \"rules\": \"# Use unicode equivalents in java source:\\n" +
                 "        #\\n" +
                 "        #   佳:\u4f73\"\n" +
                 "}\n";
@@ -226,12 +223,7 @@ public class JsonFormatTestCase {
         Slime slime = new Slime();
         slime = new JsonDecoder().decode(slime, Utf8.toBytesStd(json));
         Cursor a = slime.get().field("rules");
-        assertThat(a.asString(), is(str));
-    }
-
-    @Test(expected = UnsupportedOperationException.class)
-    public void testThatDecodeIsNotImplemented() throws IOException {
-        new JsonFormat(true).decode(null, null);
+        assertEquals(str, a.asString());
     }
 
     private void verifyEncoding(Slime slime, String expected) {
@@ -244,7 +236,7 @@ public class JsonFormatTestCase {
         slime.setString("M\u00E6L");
         ByteArrayOutputStream a = new ByteArrayOutputStream();
         new JsonFormat(true).encode(a, slime);
-        String val = new String(a.toByteArray(), "UTF-8");
+        String val = a.toString(StandardCharsets.UTF_8);
         assertEquals("\"M\u00E6L\"", val);
     }
 
@@ -252,7 +244,7 @@ public class JsonFormatTestCase {
         try {
             ByteArrayOutputStream a = new ByteArrayOutputStream();
             new JsonFormat(compact).encode(a, slime);
-            assertEquals(expected, new String(a.toByteArray(), StandardCharsets.UTF_8));
+            assertEquals(expected, a.toString(StandardCharsets.UTF_8));
         } catch (Exception e) {
             fail("Exception thrown when encoding slime: " + e.getMessage());
         }
@@ -276,7 +268,7 @@ public class JsonFormatTestCase {
             slime.setDouble(value);
             ByteArrayOutputStream a = new ByteArrayOutputStream();
             new JsonFormat(true).encode(a, slime);
-            return new String(a.toByteArray(), StandardCharsets.UTF_8);
+            return a.toString(StandardCharsets.UTF_8);
         } catch (Exception e) {
             return "";
         }

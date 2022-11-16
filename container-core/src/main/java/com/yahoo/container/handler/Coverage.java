@@ -1,9 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.handler;
 
-
-import com.google.common.annotations.Beta;
-
 /**
  * The coverage report for a result set.
  *
@@ -14,7 +11,7 @@ public class Coverage {
 
     protected long docs;
     protected long active;
-    protected long soonActive;
+    protected long targetActive;
     protected int degradedReason;
     protected int nodes;
     private   int nodesTried;
@@ -32,11 +29,6 @@ public class Coverage {
     public final static int DEGRADED_BY_TIMEOUT = 2;
     public final static int DEGRADED_BY_ADAPTIVE_TIMEOUT = 4;
 
-    /**
-     * Build an invalid instance to initiate manually.
-     */
-    protected Coverage() { }
-
     protected Coverage(long docs, long active, int nodes, int resultSets) {
         this(docs, active, nodes, resultSets, FullCoverageDefinition.DOCUMENT_COUNT);
     }
@@ -47,7 +39,7 @@ public class Coverage {
 
     protected Coverage(long docs, int nodes, boolean full, int resultSets) {
         this(docs, docs, nodes, resultSets, full ? FullCoverageDefinition.EXPLICITLY_FULL
-                : FullCoverageDefinition.EXPLICITLY_INCOMPLETE);
+                                                 : FullCoverageDefinition.EXPLICITLY_INCOMPLETE);
     }
 
     private Coverage(long docs, long active, int nodes, int resultSets, FullCoverageDefinition fullReason) {
@@ -55,7 +47,7 @@ public class Coverage {
         this.nodes = nodes;
         this.nodesTried = nodes;
         this.active = active;
-        this.soonActive = active;
+        this.targetActive = active;
         this.degradedReason = 0;
         this.resultSets = resultSets;
         this.fullReason = fullReason;
@@ -63,31 +55,30 @@ public class Coverage {
     }
 
     public void merge(Coverage other) {
-        if (other == null) {
-            return;
-        }
+        if (other == null) return;
+
         docs += other.getDocs();
         nodes += other.getNodes();
         nodesTried += other.nodesTried;
         active += other.getActive();
-        soonActive += other.getSoonActive();
+        targetActive += other.getTargetActive();
         degradedReason |= other.degradedReason;
         resultSets += other.getResultSets();
         fullResultSets += other.getFullResultSets();
 
         // explicitly incomplete beats doc count beats explicitly full
         switch (other.fullReason) {
-        case EXPLICITLY_FULL:
-            // do nothing
-            break;
-        case EXPLICITLY_INCOMPLETE:
-            fullReason = FullCoverageDefinition.EXPLICITLY_INCOMPLETE;
-            break;
-        case DOCUMENT_COUNT:
-            if (fullReason == FullCoverageDefinition.EXPLICITLY_FULL) {
-                fullReason = FullCoverageDefinition.DOCUMENT_COUNT;
-            }
-            break;
+            case EXPLICITLY_FULL:
+                // do nothing
+                break;
+            case EXPLICITLY_INCOMPLETE:
+                fullReason = FullCoverageDefinition.EXPLICITLY_INCOMPLETE;
+                break;
+            case DOCUMENT_COUNT:
+                if (fullReason == FullCoverageDefinition.EXPLICITLY_FULL) {
+                    fullReason = FullCoverageDefinition.DOCUMENT_COUNT;
+                }
+                break;
         }
     }
 
@@ -105,10 +96,8 @@ public class Coverage {
 
     /**
      * Returns the total number of documents that will be searchable once redistribution has settled.
-     * Still in beta, semantics not finalized yet.
      */
-    @Beta
-    public long getSoonActive() { return soonActive; }
+    public long getTargetActive() { return targetActive; }
 
     public boolean isDegraded() { return (degradedReason != 0) || isDegradedByNonIdealState(); }
     public boolean isDegradedByMatchPhase() { return (degradedReason & DEGRADED_BY_MATCH_PHASE) != 0; }
@@ -118,16 +107,11 @@ public class Coverage {
 
     /** Returns whether the search had full coverage or not */
     public boolean getFull() {
-        switch (fullReason) {
-            case EXPLICITLY_FULL:
-                return true;
-            case EXPLICITLY_INCOMPLETE:
-                return false;
-            case DOCUMENT_COUNT:
-                return docs == active;
-            default:
-                throw new IllegalStateException("Implementation out of sync. Please report this as a bug.");
-        }
+        return switch (fullReason) {
+            case EXPLICITLY_FULL: yield true;
+            case EXPLICITLY_INCOMPLETE: yield false;
+            case DOCUMENT_COUNT: yield docs == active;
+        };
     }
 
     /** Returns the number of search instances which participated successfully in the search. */
@@ -168,16 +152,16 @@ public class Coverage {
     }
 
     /**
-     * An int between 0 (inclusive) and 100 (inclusive) representing how many
-     * percent coverage the result sets this Coverage instance contains information
-     * about had.
+     * An int between 0 (inclusive) and 100 (inclusive) representing the
+     * percent coverage of the result sets this instance contains information about.
      */
     public int getResultPercentage() {
         if (getResultSets() == 0) {
             return 0;
         }
-        if (docs < active) {
-            return (int) Math.round(docs * 100.0d / active);
+        long total = targetActive;
+        if (docs < total) {
+            return (int) Math.round(docs * 100.0d / total);
         }
         return getFullResultSets() * 100 / getResultSets();
     }
@@ -186,7 +170,7 @@ public class Coverage {
         int degradation = com.yahoo.container.logging.Coverage.toDegradation(isDegradedByMatchPhase(),
                 isDegradedByTimeout(),
                 isDegradedByAdapativeTimeout());
-        return new com.yahoo.container.logging.Coverage(getDocs(), getActive(), getSoonActive(), degradation);
+        return new com.yahoo.container.logging.Coverage(getDocs(), getActive(), getTargetActive(), degradation);
     }
 
 }

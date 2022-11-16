@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.prelude.query;
 
-
 import com.yahoo.collections.CopyOnWriteHashMap;
 import com.yahoo.compress.IntegerCompressor;
 import com.yahoo.language.Language;
@@ -11,30 +10,23 @@ import com.yahoo.text.Utf8;
 
 import java.nio.ByteBuffer;
 import java.util.Objects;
-import java.util.Optional;
 
 
 /**
- * <p>A term of the query language. As "term" is also the common term (sorry)
- * for a literal to be found (or not) in a search index, the term <i>item</i>
- * is used for <i>query language</i> terms.</p>
- *
- * <p>The query is represented as a composite tree of
- * Item subclasses. This allow arbitrary complex combinations of ands,
- * nots, phrases and so on.</p>
- *
- * <p>Items are in general mutable and not thread safe.</p>
+ * An item in the tree which defines which documents will match a query.
+ * Item subclasses can be composed freely to create arbitrary complex matching trees.
+ * Items are in general mutable and not thread safe.
+ * They can be deeply cloned by calling clone().
+ * Their identity is defined by their content
+ * (i.e. the field value of two items decide if they are equal).
  *
  * @author bratseth
  * @author havardpe
  */
 public abstract class Item implements Cloneable {
 
-    /**
-     * The definitions in Item.ItemType must match the ones in
-     * searchlib/src/vespa/searchlib/parsequery/parse.h
-     */
-    public static enum ItemType {
+    // These must match the types in searchlib/src/vespa/searchlib/parsequery/parse.h
+    public enum ItemType {
         OR(0),
         AND(1),
         NOT(2),
@@ -42,7 +34,7 @@ public abstract class Item implements Cloneable {
         WORD(4),
         INT(5),
         PHRASE(6),
-        PAREN(7), // TODO not used - remove on Vespa 8
+        MULTI_TERM(7),
         PREFIX(8),
         SUBSTRING(9),
         NEAR(11),
@@ -61,7 +53,10 @@ public abstract class Item implements Cloneable {
         REGEXP(24),
         WORD_ALTERNATIVES(25),
         NEAREST_NEIGHBOR(26),
-        GEO_LOCATION_TERM(27);
+        GEO_LOCATION_TERM(27),
+        TRUE(28),
+        FALSE(29),
+        FUZZY(30);
 
         public final int code;
 
@@ -71,15 +66,7 @@ public abstract class Item implements Cloneable {
 
     }
 
-    public static final int DEFAULT_WEIGHT = 100;
-
-    /** The relative importance of this term in the query. Default is 100 */
-    private int weight = DEFAULT_WEIGHT;
-
-    /**
-     * The definitions in Item.ItemCreator must match the ones in
-     * searchlib/src/searchlib/parsequery/parse.h
-     */
+    // These must match the definitions in searchlib/src/vespa/searchlib/parsequery/item_creator.h
     public enum ItemCreator {
 
         ORIG(0),
@@ -93,6 +80,11 @@ public abstract class Item implements Cloneable {
 
     }
 
+    public static final int DEFAULT_WEIGHT = 100;
+
+    /** The relative importance of this term in the query. Default is 100 */
+    private int weight = DEFAULT_WEIGHT;
+
     private boolean fromSpecialToken = false;
 
     private ItemCreator creator = ItemCreator.ORIG;
@@ -103,10 +95,10 @@ public abstract class Item implements Cloneable {
     /** The annotations made on this item */
     private CopyOnWriteHashMap<String, Object> annotations;
 
-    /** Whether or not this item should affect ranking. */
+    /** Whether this item should affect ranking. */
     private boolean isRanked = true;
 
-    /** Whether or not position data should be used when ranking this item */
+    /** Whether position data should be used when ranking this item */
     private boolean usePositionData = true;
 
     /** Whether the item should encode a unique ID */
@@ -123,10 +115,10 @@ public abstract class Item implements Cloneable {
     // Move this to an object which can take care of being a weighted bidirectional reference more elegantly and safely.
     protected Item connectedItem;
     protected Item connectedBacklink;
-    protected double connectivity;
+    protected double connectivity = 0;
 
     /** Explicit term significance */
-    protected double significance;
+    protected double significance = 0;
     protected boolean explicitSignificance = false;
 
     /** Whether this item is eligible for change by query rewriters (false) or should be kept as-is (true) */
@@ -198,9 +190,7 @@ public abstract class Item implements Cloneable {
         annotations.put(key, value);
     }
 
-    /**
-     * Returns an annotation on this item, or null if the annotation is not set
-     */
+    /** Returns an annotation on this item, or null if the annotation is not set */
     public Object getAnnotation(String annotation) {
         if (annotations == null) {
             return null;
@@ -236,46 +226,44 @@ public abstract class Item implements Cloneable {
     public abstract int encode(ByteBuffer buffer);
 
     protected void encodeThis(ByteBuffer buffer) {
-        int FEAT_SHIFT = 5;
-        int CODE_MASK = 0x1f;
-        int FEAT_MASK = 0xe0;
-        int FEAT_WEIGHT = 0x01;
-        int FEAT_UNIQUEID = 0x02;
-        int FEAT_FLAGS = 0x04;
+        byte CODE_MASK =     0b00011111;
+        byte FEAT_WEIGHT =   0b00100000;
+        byte FEAT_UNIQUEID = 0b01000000;
+        byte FEAT_FLAGS =   -0b10000000;
 
-        int features = 0;
+        byte type = (byte) (getCode() & CODE_MASK);
+        if (type != getCode())
+            throw new IllegalStateException("must increase number of bytes in serialization format for queries");
 
         if (weight != DEFAULT_WEIGHT) {
-            features |= FEAT_WEIGHT;
+            type |= FEAT_WEIGHT;
         }
         if (hasUniqueID()) {
-            features |= FEAT_UNIQUEID;
+            type |= FEAT_UNIQUEID;
         }
         byte flags = getFlagsFeature();
         if (flags != 0) {
-            features |= FEAT_FLAGS;
+            type |= FEAT_FLAGS;
         }
-        byte type = (byte)(((getCode() & CODE_MASK)
-                       | ((features << FEAT_SHIFT) & FEAT_MASK)) & 0xff);
 
         buffer.put(type);
-        if ((features & FEAT_WEIGHT) != 0) {
+        if ((type & FEAT_WEIGHT) != 0) {
             IntegerCompressor.putCompressedNumber(weight, buffer);
         }
-        if ((features & FEAT_UNIQUEID) != 0) {
+        if ((type & FEAT_UNIQUEID) != 0) {
             IntegerCompressor.putCompressedPositiveNumber(uniqueID, buffer);
         }
-        if (flags != 0) {
+        if ((type & FEAT_FLAGS) != 0) {
             buffer.put(flags);
         }
     }
 
     /**
-     * Returns an integer that contains all feature flags for this item. This must be kept in sync with the flags
-     * defined in searchlib/parsequery/parse.h.
+     * Returns an integer that contains all feature flags for this item.
      *
-     * @return The feature flags.
+     * @return the feature flags
      */
+    // This must be kept in sync with the flags in searchlib/parsequery/parse.h.
     private byte getFlagsFeature() {
         byte FLAGS_NORANK = 0x01;
         byte FLAGS_SPECIALTOKEN = 0x02;
@@ -300,7 +288,7 @@ public abstract class Item implements Cloneable {
 
 
     /** Utility method for turning a string into utf-8 bytes */
-    protected static final byte[] getBytes(String string) {
+    protected static byte[] getBytes(String string) {
         return Utf8.toBytes(string);
     }
     public static void putString(String s, ByteBuffer buffer) {
@@ -314,23 +302,18 @@ public abstract class Item implements Cloneable {
     public abstract int getTermCount();
 
     /**
-     * <p>Returns the canonical query language string of this item.</p>
-     *
-     * <p>The canonical language represent an item by the string
+     * Returns the canonical query language string of this item.
+     * The canonical language represent an item by the string
      * <pre>
      * ([itemName] [body])
      * </pre>
      * where the body may recursively be other items.
-     *
-     * <p>
-     * TODO: Change the output query language into a canonical form of the input
-     *       query language
      */
     @Override
     public String toString() {
         StringBuilder buffer = new StringBuilder();
 
-        if (shouldParenthize()) {
+        if (shouldParenthesize()) {
             buffer.append("(");
         }
         if (isFilter()) {
@@ -338,7 +321,7 @@ public abstract class Item implements Cloneable {
         }
         appendHeadingString(buffer);
         appendBodyString(buffer);
-        if (shouldParenthize()) {
+        if (shouldParenthesize()) {
             buffer.append(")");
         }
 
@@ -351,10 +334,10 @@ public abstract class Item implements Cloneable {
     }
 
     /**
-     * Returns whether or not this item should be parethized when printed.
+     * Returns whether this item should be parenthesized when printed.
      * Default is false - no parentheses
      */
-    protected boolean shouldParenthize() {
+    protected boolean shouldParenthesize() {
         return false;
     }
 
@@ -384,38 +367,36 @@ public abstract class Item implements Cloneable {
             // note: connectedItem and connectedBacklink references are corrected in CompositeItem.clone()
             return clone;
         } catch (CloneNotSupportedException e) {
-            throw new RuntimeException("Someone made Item unclonable");
+            throw new RuntimeException("Someone made Item uncloneable");
         }
     }
 
-    /**
-     * Returns whether this item is of the same class and
-     * contains the same state as the given item
-     */
+    /** Returns whether this item is of the same class and contains the same state as the given item. */
     @Override
-    public boolean equals(Object object) {
-        if (object == null) {
-            return false;
-        }
-        if (object.getClass() != this.getClass()) {
-            return false;
-        } // Fails on different c.l.'s
-
-        Item other = (Item) object;
-
-        if (this.creator != other.creator) {
-            return false;
-        }
-        if (this.weight != other.weight) {
-            return false;
-        }
-
+    public boolean equals(Object o) {
+        if (o == null) return false;
+        if (o == this) return true;
+        if (o.getClass() != this.getClass()) return false;
+        Item other = (Item)o;
+        if (this.weight != other.weight) return false;
+        if (this.fromSpecialToken != other.fromSpecialToken) return false;
+        if (this.creator != other.creator) return false;
+        if ( ! Objects.equals(this.annotations, other.annotations)) return false;
+        if (this.isRanked != other.isRanked) return false;
+        if (this.usePositionData != other.usePositionData) return false;
+        if ( ! Objects.equals(this.label, other.label)) return false;
+        if (this.uniqueID != other.uniqueID) return false;
+        if ( ! Objects.equals(this.connectedItem, other.connectedItem)) return false;
+        if (this.connectivity != other.connectivity) return false;
+        if (this.significance != other.significance) return false;
+        if (this.language != other.language) return false;
         return true;
     }
 
     @Override
     public int hashCode() {
-        return weight * 29 + creator.code;
+        return Objects.hash(weight, fromSpecialToken, creator, annotations, isRanked, usePositionData, label,
+                            uniqueID, connectedItem, connectivity, significance, language);
     }
 
     protected boolean hasUniqueID() {
@@ -431,7 +412,7 @@ public abstract class Item implements Cloneable {
      * the back-end to identify specific items for ranking purposes.
      *
      * @param label label for this item
-     **/
+     */
     public void setLabel(String label) {
         setHasUniqueID(true);
         this.label = label;
@@ -443,20 +424,20 @@ public abstract class Item implements Cloneable {
     }
 
     /**
-     * Sets whether or not this term item should affect ranking.
+     * Sets whether this term item should affect ranking.
      * If set to false this term is not exposed to the ranking framework in the search backend.
      */
     public void setRanked(boolean isRanked) {
         this.isRanked = isRanked;
     }
 
-    /** Returns whether or not this item should affect ranking. */
+    /** Returns whether this item should affect ranking. */
     public boolean isRanked() {
         return isRanked;
     }
 
     /**
-     * Sets whether or not position data should be used when ranking this term item.
+     * Sets whether position data should be used when ranking this term item.
      * If set to false the search backend uses fast bit vector data structures when matching on this term
      * and only a few simple ranking features will be available when ranking this term.
      * Note that setting this to false also saves a lot of CPU during matching as bit vector data structures are used.
@@ -465,28 +446,30 @@ public abstract class Item implements Cloneable {
         this.usePositionData = usePositionData;
     }
 
-    /** Returns whether or not position data should be used when ranking this item */
+    /** Returns whether position data should be used when ranking this item */
     public boolean usePositionData() {
         return usePositionData;
     }
 
     public void disclose(Discloser discloser) {
-        discloser.addProperty("connectivity", connectivity);
-        discloser.addProperty("connectedItem", connectedItem); //reference
-
-        discloser.addProperty("creator", creator);
-        discloser.addProperty("explicitSignificance", explicitSignificance);
-        discloser.addProperty("isRanked", isRanked);
-        discloser.addProperty("usePositionData", usePositionData);
-        discloser.addProperty("significance", significance);
-        discloser.addProperty("weight", weight);
-
-        if (label != null) {
+        if (connectivity != 0)
+            discloser.addProperty("connectivity", connectivity);
+        if (connectedItem != null)
+            discloser.addProperty("connectedItem", connectedItem); // reference
+        if (creator != ItemCreator.ORIG)
+            discloser.addProperty("creator", creator);
+        if ( ! isRanked)
+            discloser.addProperty("isRanked", isRanked);
+        if ( ! usePositionData)
+            discloser.addProperty("usePositionData", usePositionData);
+        if (explicitSignificance)
+            discloser.addProperty("significance", significance);
+        if (weight != 100)
+            discloser.addProperty("weight", weight);
+        if (label != null)
             discloser.addProperty("label", label);
-        }
-        if (hasUniqueID) {
+        if (hasUniqueID)
             discloser.addProperty("uniqueID", uniqueID);
-        }
     }
 
     public boolean isFromSpecialToken() {

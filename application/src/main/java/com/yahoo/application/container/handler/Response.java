@@ -1,10 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.application.container.handler;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.jdisc.http.HttpHeaders;
 import com.yahoo.text.Utf8;
-import net.jcip.annotations.Immutable;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -20,7 +19,6 @@ import java.util.regex.Pattern;
  * @author Einar M R Rosenvinge
  * @see Request
  */
-@Immutable
 @Beta
 public class Response {
 

@@ -2,14 +2,15 @@
 
 #include "visitor.h"
 #include "visitormetrics.h"
-#include <vespa/storageframework/generic/clock/timer.h>
-#include <vespa/storageapi/message/datagram.h>
-#include <vespa/storage/persistence/messages.h>
-#include <vespa/documentapi/messagebus/messages/visitor.h>
 #include <vespa/document/select/node.h>
 #include <vespa/document/fieldset/fieldsets.h>
-#include <vespa/vespalib/stllike/hash_map.hpp>
+#include <vespa/documentapi/messagebus/messages/visitor.h>
+#include <vespa/persistence/spi/docentry.h>
+#include <vespa/storageapi/message/datagram.h>
+#include <vespa/storageframework/generic/clock/timer.h>
+#include <vespa/storage/persistence/messages.h>
 #include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/vespalib/util/string_escape.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <unordered_map>
 #include <sstream>
@@ -23,35 +24,23 @@ using document::BucketSpace;
 namespace storage {
 
 Visitor::HitCounter::HitCounter()
-    : _firstPassHits(0),
-      _firstPassBytes(0),
-      _secondPassHits(0),
-      _secondPassBytes(0)
+    : _doc_hits(0),
+      _doc_bytes(0)
 {
 }
 
 void
 Visitor::HitCounter::addHit(const document::DocumentId& , uint32_t size)
 {
-    bool firstPass = false;
-
-    if (firstPass) {
-        _firstPassHits++;
-        _firstPassBytes += size;
-    } else {
-        _secondPassHits++;
-        _secondPassBytes += size;
-    }
-
+    _doc_hits++;
+    _doc_bytes += size;
 }
 
 void
-Visitor::HitCounter::updateVisitorStatistics(vdslib::VisitorStatistics& statistics)
+Visitor::HitCounter::updateVisitorStatistics(vdslib::VisitorStatistics& statistics) const
 {
-    statistics.setDocumentsReturned(statistics.getDocumentsReturned() + _firstPassHits);
-    statistics.setBytesReturned(statistics.getBytesReturned() + _firstPassBytes);
-    statistics.setSecondPassDocumentsReturned(statistics.getSecondPassDocumentsReturned() + _secondPassHits);
-    statistics.setSecondPassBytesReturned(statistics.getSecondPassBytesReturned() + _secondPassBytes);
+    statistics.setDocumentsReturned(statistics.getDocumentsReturned() + _doc_hits);
+    statistics.setBytesReturned(statistics.getBytesReturned() + _doc_bytes);
 }
 
 Visitor::VisitorTarget::MessageMeta::MessageMeta(
@@ -814,12 +803,11 @@ Visitor::onGetIterReply(const std::shared_ptr<GetIterReply>& reply,
 
                 uint64_t size = 0;
                 for (const auto& entry : reply->getEntries()) {
-                    size += entry->getPersistedDocumentSize();
+                    size += entry->getSize();
                 }
 
                 _visitorStatistics.setDocumentsVisited(
-                        _visitorStatistics.getDocumentsVisited()
-                        + reply->getEntries().size());
+                        _visitorStatistics.getDocumentsVisited() + reply->getEntries().size());
                 _visitorStatistics.setBytesVisited(_visitorStatistics.getBytesVisited() + size);
             } catch (std::exception& e) {
                 LOG(warning, "handleDocuments threw exception %s", e.what());
@@ -944,10 +932,12 @@ Visitor::continueVisitor()
 void
 Visitor::getStatus(std::ostream& out, bool verbose) const
 {
+    using vespalib::xml_content_escaped;
+
     out << "<table border=\"1\"><tr><td>Property</td><td>Value</td></tr>\n";
 
     out << "<tr><td>Visitor id</td><td>" << _visitorId << "</td></tr>\n";
-    out << "<tr><td>Visitor name</td><td>" << _id << "</td></tr>\n";
+    out << "<tr><td>Visitor name</td><td>" << xml_content_escaped(_id) << "</td></tr>\n";
 
     out << "<tr><td>Number of buckets to visit</td><td>" << _buckets.size()
         << "</td></tr>\n";
@@ -965,7 +955,7 @@ Visitor::getStatus(std::ostream& out, bool verbose) const
         << "</td></tr>\n";
 
     out << "<tr><td>Current status</td><td>"
-        << _result << "</td></tr>\n";
+        << xml_content_escaped(_result.toString()) << "</td></tr>\n";
 
     out << "<tr><td>Failed</td><td>" << (failed() ? "true" : "false")
         << "</td></tr>\n";
@@ -985,28 +975,28 @@ Visitor::getStatus(std::ostream& out, bool verbose) const
         out << "<tr><td>Called completed visitor</td><td>"
             << (_calledCompletedVisitor ? "true" : "false") << "</td></tr>\n";
         out << "<tr><td>Visiting fields</td><td>"
-            << _visitorOptions._fieldSet
+            << xml_content_escaped(_visitorOptions._fieldSet)
             << "</td></tr>\n";
         out << "<tr><td>Visiting removes</td><td>"
             << (_visitorOptions._visitRemoves ? "true" : "false")
             << "</td></tr>\n";
         out << "<tr><td>Control destination</td><td>";
         if (_controlDestination.get()) {
-            out << _controlDestination->toString();
+            out << xml_content_escaped(_controlDestination->toString());
         } else {
             out << "nil";
         }
         out << "</td></tr>\n";
         out << "<tr><td>Data destination</td><td>";
         if (_dataDestination.get()) {
-            out << _dataDestination->toString();
+            out << xml_content_escaped(_dataDestination->toString());
         } else {
             out << "nil";
         }
         out << "</td></tr>\n";
         out << "<tr><td>Document selection</td><td>";
         if (_documentSelection.get()) {
-            out << *_documentSelection;
+            out << xml_content_escaped(_documentSelection->toString());
         } else {
             out << "nil";
         }
@@ -1064,7 +1054,7 @@ Visitor::getStatus(std::ostream& out, bool verbose) const
     for (auto& idAndMeta : _visitorTarget._messageMeta) {
         const VisitorTarget::MessageMeta& meta(idAndMeta.second);
         out << "Message #" << idAndMeta.first << " <b>"
-            << meta.messageText << "</b> ";
+            << xml_content_escaped(meta.messageText) << "</b> ";
         if (meta.retryCount > 0) {
             out << "Retried " << meta.retryCount << " times. ";
         }

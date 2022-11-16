@@ -1,11 +1,10 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.dispatch.rpc;
 
 import com.yahoo.compress.CompressionType;
 import com.yahoo.prelude.fastsearch.FastHit;
 import com.yahoo.search.dispatch.rpc.Client.NodeConnection;
 import com.yahoo.search.dispatch.rpc.Client.ResponseReceiver;
-import com.yahoo.search.dispatch.rpc.RpcFillInvoker.GetDocsumsResponseReceiver;
 
 import java.util.HashMap;
 import java.util.List;
@@ -32,12 +31,6 @@ public class MockRpcResourcePoolBuilder {
 
         public MockNodeConnection(int key) {
             this.key = key;
-        }
-
-        @Override
-        public void getDocsums(List<FastHit> hits, CompressionType compression, int uncompressedLength, byte[] compressedSlime,
-                GetDocsumsResponseReceiver responseReceiver, double timeoutSeconds) {
-            responseReceiver.receive(Client.ResponseOrError.fromError("getDocsums(..) attempted for node " + key));
         }
 
         @Override

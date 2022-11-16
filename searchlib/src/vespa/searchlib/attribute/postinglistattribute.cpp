@@ -3,6 +3,7 @@
 #include "postinglistattribute.h"
 #include "loadednumericvalue.h"
 #include "enumcomparator.h"
+#include "enum_store_loaders.h"
 #include <vespa/vespalib/util/array.hpp>
 
 namespace search {
@@ -68,13 +69,13 @@ PostingListAttributeBase<P>::handle_load_posting_lists_and_update_enum_store(enu
                 postings.removeDups();
                 newIndex = EntryRef();
                 _postingList.apply(newIndex,
-                                   &postings._additions[0],
-                                   &postings._additions[0] +
+                                   postings._additions.data(),
+                                   postings._additions.data() +
                                    postings._additions.size(),
-                                   &postings._removals[0],
-                                   &postings._removals[0] +
+                                   postings._removals.data(),
+                                   postings._removals.data() +
                                    postings._removals.size());
-                posting_indexes[posting_enum] = newIndex.ref();
+                posting_indexes[posting_enum] = newIndex;
                 postings.clear();
                 posting_enum = elem.getEnum();
             }
@@ -90,11 +91,11 @@ PostingListAttributeBase<P>::handle_load_posting_lists_and_update_enum_store(enu
     postings.removeDups();
     newIndex = EntryRef();
     _postingList.apply(newIndex,
-                       &postings._additions[0],
-                       &postings._additions[0] + postings._additions.size(),
-                       &postings._removals[0],
-                       &postings._removals[0] + postings._removals.size());
-    posting_indexes[posting_enum] = newIndex.ref();
+                       postings._additions.data(),
+                       postings._additions.data() + postings._additions.size(),
+                       postings._removals.data(),
+                       postings._removals.data() + postings._removals.size());
+    posting_indexes[posting_enum] = newIndex;
     loader.build_dictionary();
     loader.free_unused_values();
 }
@@ -111,10 +112,10 @@ PostingListAttributeBase<P>::updatePostings(PostingMap &changePost,
         auto updater= [this, &change](EntryRef posting_idx) -> EntryRef
                       {
                           _postingList.apply(posting_idx,
-                                             &change._additions[0],
-                                             &change._additions[0] + change._additions.size(),
-                                             &change._removals[0],
-                                             &change._removals[0] + change._removals.size());
+                                             change._additions.data(),
+                                             change._additions.data() + change._additions.size(),
+                                             change._removals.data(),
+                                             change._removals.data() + change._removals.size());
                           return posting_idx;
                       };
         _dictionary.update_posting_list(idx, cmp, updater);
@@ -127,9 +128,6 @@ PostingListAttributeBase<P>::forwardedOnAddDoc(DocId doc,
                                                size_t wantSize,
                                                size_t wantCapacity)
 {
-    if (!_postingList._enableBitVectors) {
-        return false;
-    }
     if (doc >= wantSize) {
         wantSize = doc + 1;
     }
@@ -157,10 +155,10 @@ clearPostings(attribute::IAttributeVector::EnumHandle eidx,
     auto updater = [this, &postings](EntryRef posting_idx) -> EntryRef
                    {
                        _postingList.apply(posting_idx,
-                                          &postings._additions[0],
-                                          &postings._additions[0] + postings._additions.size(),
-                                          &postings._removals[0],
-                                          &postings._removals[0] + postings._removals.size());
+                                          postings._additions.data(),
+                                          postings._additions.data() + postings._additions.size(),
+                                          postings._removals.data(),
+                                          postings._removals.data() + postings._removals.size());
                        return posting_idx;
                    };
     _dictionary.update_posting_list(er, cmp, updater);
@@ -239,11 +237,11 @@ handle_load_posting_lists(LoadedVector& loaded)
                     postings.removeDups();
                     newIndex = EntryRef();
                     _postingList.apply(newIndex,
-                                       &postings._additions[0],
-                                       &postings._additions[0] +
+                                       postings._additions.data(),
+                                       postings._additions.data() +
                                        postings._additions.size(),
-                                       &postings._removals[0],
-                                       &postings._removals[0] +
+                                       postings._removals.data(),
+                                       postings._removals.data() +
                                        postings._removals.size());
                     postings.clear();
                     if (value._docId < docIdLimit) {
@@ -261,11 +259,11 @@ handle_load_posting_lists(LoadedVector& loaded)
             postings.removeDups();
             newIndex = EntryRef();
             _postingList.apply(newIndex,
-                               &postings._additions[0],
-                               &postings._additions[0] +
+                               postings._additions.data(),
+                               postings._additions.data() +
                                postings._additions.size(),
-                               &postings._removals[0],
-                               &postings._removals[0] + postings._removals.size());
+                               postings._removals.data(),
+                               postings._removals.data() + postings._removals.size());
             similarValues[0]._pidx = newIndex;
             for (size_t i(0), m(similarValues.size()); i < m; i++) {
                 loaded.write(similarValues[i]);

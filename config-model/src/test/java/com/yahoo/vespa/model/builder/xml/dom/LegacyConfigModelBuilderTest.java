@@ -8,13 +8,11 @@ import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.config.model.test.MockRoot;
 import com.yahoo.text.XML;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.w3c.dom.Element;
-
 import java.util.List;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author Ulf Lilleengen
@@ -22,12 +20,12 @@ import static org.junit.Assert.assertThat;
 public class LegacyConfigModelBuilderTest {
 
     @Test
-    public void testThatProducerIsInserted() {
+    void testThatProducerIsInserted() {
         String services = "<foo><config name=\"bar.foo\"><key>value</key></config></foo>";
         ModelBuilder builder = new ModelBuilder();
         Model model = builder.build(DeployState.createTestState(new MockApplicationPackage.Builder().withServices(services).build()),
-                                    null, null, new MockRoot(), XML.getDocument(services).getDocumentElement());
-        assertThat(model.getContext().getParentProducer().getUserConfigs().size(), is(1));
+                null, null, new MockRoot(), XML.getDocument(services).getDocumentElement());
+        assertEquals(1, model.getContext().getParentProducer().getUserConfigs().size());
     }
 
     public static class Model extends ConfigModel {

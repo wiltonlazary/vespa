@@ -185,6 +185,18 @@ struct DistributorStripeTest : Test, DistributorStripeTestUtil {
         configure_stripe(builder);
     }
 
+    void configure_use_unordered_merge_chaining(bool use_unordered) {
+        ConfigBuilder builder;
+        builder.useUnorderedMergeChaining = use_unordered;
+        configure_stripe(builder);
+    }
+
+    void configure_enable_two_phase_garbage_collection(bool use_two_phase) {
+        ConfigBuilder builder;
+        builder.enableTwoPhaseGarbageCollection = use_two_phase;
+        configure_stripe(builder);
+    }
+
     bool scheduler_has_implicitly_clear_priority_on_schedule_set() const noexcept {
         return _stripe->_scheduler->implicitly_clear_priority_on_schedule();
     }
@@ -623,6 +635,19 @@ TEST_F(DistributorStripeTest, max_clock_skew_config_is_propagated_to_distributor
     EXPECT_EQ(getConfig().getMaxClusterClockSkew(), std::chrono::seconds(5));
 }
 
+TEST_F(DistributorStripeTest, inhibit_default_merge_if_global_merges_pending_config_is_propagated)
+{
+    setup_stripe(Redundancy(2), NodeCount(2), "storage:2 distributor:1");
+    ConfigBuilder builder;
+    builder.inhibitDefaultMergesWhenGlobalMergesPending = true;
+    configure_stripe(builder);
+    EXPECT_TRUE(getConfig().inhibit_default_merges_when_global_merges_pending());
+
+    builder.inhibitDefaultMergesWhenGlobalMergesPending = false;
+    configure_stripe(builder);
+    EXPECT_FALSE(getConfig().inhibit_default_merges_when_global_merges_pending());
+}
+
 namespace {
 
 auto makeDummyRemoveCommand() {
@@ -980,6 +1005,31 @@ TEST_F(DistributorStripeTest, closing_aborts_gets_started_outside_stripe_thread)
     _stripe->flush_and_close();
     ASSERT_EQ(1, _sender.replies().size());
     EXPECT_EQ(api::ReturnCode::ABORTED, _sender.reply(0)->getResult().getResult());
+}
+
+TEST_F(DistributorStripeTest, use_unordered_merge_chaining_config_is_propagated_to_internal_config)
+{
+    setup_stripe(Redundancy(1), NodeCount(1), "distributor:1 storage:1");
+
+    configure_use_unordered_merge_chaining(true);
+    EXPECT_TRUE(getConfig().use_unordered_merge_chaining());
+
+    configure_use_unordered_merge_chaining(false);
+    EXPECT_FALSE(getConfig().use_unordered_merge_chaining());
+}
+
+TEST_F(DistributorStripeTest, enable_two_phase_gc_config_is_propagated_to_internal_config)
+{
+    setup_stripe(Redundancy(1), NodeCount(1), "distributor:1 storage:1");
+
+    // Feature is currently disabled by default. TODO change once we roll it out.
+    EXPECT_FALSE(getConfig().enable_two_phase_garbage_collection());
+
+    configure_enable_two_phase_garbage_collection(true);
+    EXPECT_TRUE(getConfig().enable_two_phase_garbage_collection());
+
+    configure_enable_two_phase_garbage_collection(false);
+    EXPECT_FALSE(getConfig().enable_two_phase_garbage_collection());
 }
 
 }

@@ -9,19 +9,20 @@ import com.yahoo.vespa.model.AbstractService;
 import com.yahoo.vespa.model.Host;
 import com.yahoo.vespa.model.HostResource;
 import com.yahoo.vespa.model.PortAllocBridge;
-import com.yahoo.vespa.model.application.validation.change.StartupCommandChangeValidator;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class StartupCommandChangeValidatorTest {
 
     @Test
-    public void requireThatDifferentStartupCommandIsDetected() {
+    void requireThatDifferentStartupCommandIsDetected() {
         MockRoot oldRoot = createRootWithChildren(new ServiceStub("evilservice", "rm -rf /"));
         MockRoot newRoot = createRootWithChildren(new ServiceStub("evilservice", "rm -rf *"));
         List<ConfigChangeAction> changes = getStartupCommandChanges(oldRoot, newRoot);
@@ -30,7 +31,7 @@ public class StartupCommandChangeValidatorTest {
     }
 
     @Test
-    public void requireEmptyResultForEqualStartupCommand() {
+    void requireEmptyResultForEqualStartupCommand() {
         MockRoot oldRoot = createRootWithChildren(new ServiceStub("evilservice", "./hax.sh"));
         MockRoot newRoot = createRootWithChildren(new ServiceStub("evilservice", "./hax.sh"));
         List<ConfigChangeAction> changes = getStartupCommandChanges(oldRoot, newRoot);
@@ -38,7 +39,7 @@ public class StartupCommandChangeValidatorTest {
     }
 
     @Test
-    public void requireEmptyResultForDifferentServices() {
+    void requireEmptyResultForDifferentServices() {
         MockRoot oldRoot = createRootWithChildren(new ServiceStub("evilservice", "./hax.sh"));
         MockRoot newRoot = createRootWithChildren(new ServiceStub("goodservice", "./hax.sh"));
         List<ConfigChangeAction> changes = getStartupCommandChanges(oldRoot, newRoot);
@@ -48,7 +49,7 @@ public class StartupCommandChangeValidatorTest {
     private static List<ConfigChangeAction> getStartupCommandChanges(
             AbstractConfigProducerRoot currentModel, AbstractConfigProducerRoot nextModel) {
         StartupCommandChangeValidator validator = new StartupCommandChangeValidator();
-        return validator.findServicesWithChangedStartupCommmand(currentModel, nextModel).collect(Collectors.toList());
+        return validator.findServicesWithChangedStartupCommand(currentModel, nextModel).collect(Collectors.toList());
     }
 
     private static MockRoot createRootWithChildren(AbstractConfigProducer<?>... children) {
@@ -68,8 +69,8 @@ public class StartupCommandChangeValidatorTest {
         }
 
         @Override
-        public String getStartupCommand() {
-            return startupCommand;
+        public Optional<String> getStartupCommand() {
+            return Optional.ofNullable(startupCommand);
         }
 
         @Override

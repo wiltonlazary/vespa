@@ -2,6 +2,8 @@
 package com.yahoo.messagebus;
 
 import com.yahoo.concurrent.SystemTimer;
+
+import java.time.Duration;
 import java.util.logging.Level;
 import com.yahoo.messagebus.network.Network;
 import com.yahoo.messagebus.network.NetworkMultiplexer;
@@ -12,8 +14,10 @@ import com.yahoo.messagebus.routing.RoutingPolicy;
 import com.yahoo.messagebus.routing.RoutingSpec;
 import com.yahoo.messagebus.routing.RoutingTable;
 import com.yahoo.messagebus.routing.RoutingTableSpec;
+import com.yahoo.protect.Process;
 import com.yahoo.text.Utf8Array;
 import com.yahoo.text.Utf8String;
+import com.yahoo.vespa.defaults.Defaults;
 
 import java.util.HashMap;
 import java.util.List;
@@ -59,7 +63,7 @@ import java.util.logging.Logger;
  */
 public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, ReplyHandler {
 
-    private static Logger log = Logger.getLogger(MessageBus.class.getName());
+    private final static Logger log = Logger.getLogger(MessageBus.class.getName());
     private final AtomicBoolean destroyed = new AtomicBoolean(false);
     private final ProtocolRepository protocolRepository = new ProtocolRepository();
     private final AtomicReference<Map<String, RoutingTable>> tablesRef = new AtomicReference<>(null);
@@ -88,6 +92,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
     }
 
     private void sendBlockedMessages() {
+        long timeout = SystemTimer.adjustTimeoutByDetectedHz(Duration.ofMillis(10)).toMillis();
         while (! destroyed.get()) {
             for (SendBlockedMessages sender : blockedSenders.keySet()) {
                 if (!sender.trySend()) {
@@ -95,8 +100,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
                 }
             }
             try {
-
-                Thread.sleep(10);
+                Thread.sleep(timeout);
             } catch (InterruptedException e) {
                 return;
             }
@@ -146,8 +150,20 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
         // Attach and start network.
         this.net = net;
         net.attach(this);
-        if ( ! net.net().waitUntilReady(120))
+        if ( ! net.net().waitUntilReady(180)) {
+            try {
+                var tmp = net.net().getMirror();
+                var mirror = (com.yahoo.jrt.slobrok.api.Mirror) tmp;
+                if (mirror.getIterations() < 2) {
+                    Process.dumpThreads();
+                    String fn = "var/crash/java_pid." + ProcessHandle.current().pid() + ".hprof";
+                    Process.dumpHeap(Defaults.getDefaults().underVespaHome(fn), true);
+                }
+            } catch (Exception e) {
+                // ignore
+            }
             throw new IllegalStateException("Network failed to become ready in time.");
+        }
 
         // Start messenger.
         msn = new Messenger();
@@ -465,6 +481,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
      *
      * @return The resender.
      */
+    @Deprecated // Remove on 9
     public Resender getResender() {
         return resender;
     }
@@ -475,6 +492,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
      *
      * @return The pending count.
      */
+    @Deprecated // Package private on 9
     public synchronized int getPendingCount() {
         return pendingCount;
     }
@@ -485,6 +503,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
      *
      * @return The pending size.
      */
+    @Deprecated // Package private on 9
     public synchronized int getPendingSize() {
         return pendingSize;
     }
@@ -495,6 +514,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
      *
      * @param maxCount The max count.
      */
+    @Deprecated // Remove on 9
     public void setMaxPendingCount(int maxCount) {
         maxPendingCount = maxCount;
     }
@@ -503,6 +523,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
      * Gets maximum number of messages that can be received without being
      * replied to yet.
      */
+    @Deprecated // Remove on 9
     public int getMaxPendingCount() {
         return maxPendingCount;
     }
@@ -513,6 +534,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
      *
      * @param maxSize The max size.
      */
+    @Deprecated // Remove on 9
     public void setMaxPendingSize(int maxSize) {
         maxPendingSize = maxSize;
     }
@@ -521,6 +543,7 @@ public class MessageBus implements ConfigHandler, NetworkOwner, MessageHandler, 
      * Gets maximum combined size of messages that can be received without
      * being replied to yet.
      */
+    @Deprecated // Remove on 9
     public int getMaxPendingSize() {
         return maxPendingSize;
     }

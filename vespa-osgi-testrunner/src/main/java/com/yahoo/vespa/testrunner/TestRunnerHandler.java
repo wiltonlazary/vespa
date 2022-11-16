@@ -1,56 +1,59 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.testrunner;
 
-import ai.vespa.hosted.api.TestDescriptor;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.inject.Inject;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.yahoo.component.annotation.Inject;
+import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.container.jdisc.EmptyResponse;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
-import com.yahoo.slime.Cursor;
-import com.yahoo.slime.JsonFormat;
-import com.yahoo.slime.Slime;
-import com.yahoo.slime.SlimeUtils;
-import com.yahoo.vespa.testrunner.legacy.LegacyTestRunner;
-import com.yahoo.vespa.testrunner.legacy.TestProfile;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
+import com.yahoo.exception.ExceptionUtils;
+import com.yahoo.restapi.MessageResponse;
+import com.yahoo.vespa.testrunner.TestReport.FailureNode;
+import com.yahoo.vespa.testrunner.TestReport.NamedNode;
+import com.yahoo.vespa.testrunner.TestReport.Node;
+import com.yahoo.vespa.testrunner.TestReport.OutputNode;
+import com.yahoo.vespa.testrunner.TestReport.TestNode;
 import com.yahoo.yolean.Exceptions;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
-import java.util.stream.Collectors;
 
 import static com.yahoo.jdisc.Response.Status;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * @author valerijf
- * @author jvenstad
+ * @author jonmv
  * @author mortent
  */
-public class TestRunnerHandler extends LoggingRequestHandler {
+public class TestRunnerHandler extends ThreadedHttpRequestHandler {
 
-    private static final String CONTENT_TYPE_APPLICATION_JSON = "application/json";
+    private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+    private static final JsonFactory factory = new JsonFactory();
 
-    private final TestRunner junitRunner;
-    private final LegacyTestRunner testRunner;
-    private final boolean useOsgiMode;
+    private final TestRunner testRunner;
 
     @Inject
-    public TestRunnerHandler(Executor executor, TestRunner junitRunner, LegacyTestRunner testRunner) {
+    public TestRunnerHandler(Executor executor, ComponentRegistry<TestRunner> testRunners) {
+        this(executor, AggregateTestRunner.of(testRunners.allComponents()));
+    }
+
+    TestRunnerHandler(Executor executor, TestRunner testRunner) {
         super(executor);
-        this.junitRunner = junitRunner;
         this.testRunner = testRunner;
-        this.useOsgiMode = junitRunner.isSupported();
     }
 
     @Override
@@ -60,81 +63,45 @@ public class TestRunnerHandler extends LoggingRequestHandler {
                 case GET: return handleGET(request);
                 case POST: return handlePOST(request);
 
-                default: return new Response(Status.METHOD_NOT_ALLOWED, "Method '" + request.getMethod() + "' is not supported");
+                default: return new MessageResponse(Status.METHOD_NOT_ALLOWED, "Method '" + request.getMethod() + "' is not supported");
             }
         } catch (IllegalArgumentException e) {
-            return new Response(Status.BAD_REQUEST, Exceptions.toMessageString(e));
+            return new MessageResponse(Status.BAD_REQUEST, Exceptions.toMessageString(e));
         } catch (Exception e) {
             log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
-            return new Response(Status.INTERNAL_SERVER_ERROR, Exceptions.toMessageString(e));
+            return new MessageResponse(Status.INTERNAL_SERVER_ERROR, Exceptions.toMessageString(e));
         }
     }
 
     private HttpResponse handleGET(HttpRequest request) {
         String path = request.getUri().getPath();
-        if (path.equals("/tester/v1/log")) {
-            if (useOsgiMode) {
+        switch (path) {
+            case "/tester/v1/log":
                 long fetchRecordsAfter = Optional.ofNullable(request.getProperty("after"))
-                        .map(Long::parseLong)
-                        .orElse(-1L);
-
-                List<LogRecord> logRecords = Optional.ofNullable(junitRunner.getReport())
-                        .map(TestReport::logLines)
-                        .orElse(Collections.emptyList()).stream()
-                        .filter(record -> record.getSequenceNumber()>fetchRecordsAfter)
-                        .collect(Collectors.toList());
-                return new SlimeJsonResponse(logToSlime(logRecords));
-            } else {
-                return new SlimeJsonResponse(logToSlime(testRunner.getLog(request.hasProperty("after")
-                        ? Long.parseLong(request.getProperty("after"))
-                        : -1)));
-            }
-        } else if (path.equals("/tester/v1/status")) {
-            if (useOsgiMode) {
-                log.info("Responding with status " + junitRunner.getStatus());
-                return new Response(junitRunner.getStatus().name());
-            } else {
-                log.info("Responding with status " + testRunner.getStatus());
-                return new Response(testRunner.getStatus().name());
-            }
-        } else if (path.equals("/tester/v1/report")) {
-            if (useOsgiMode) {
-                String report = junitRunner.getReportAsJson();
-                return new SlimeJsonResponse(SlimeUtils.jsonToSlime(report));
-            } else {
-                return new EmptyResponse(200);
-            }
+                                                 .map(Long::parseLong)
+                                                 .orElse(-1L);
+                return new CustomJsonResponse(out -> render(out, testRunner.getLog(fetchRecordsAfter)));
+            case "/tester/v1/status":
+                return new MessageResponse(testRunner.getStatus().name());
+            case "/tester/v1/report":
+                TestReport report = testRunner.getReport();
+                if (report == null) return new EmptyResponse(204);
+                else return new CustomJsonResponse(out -> render(out, report));
         }
-        return new Response(Status.NOT_FOUND, "Not found: " + request.getUri().getPath());
+        return new MessageResponse(Status.NOT_FOUND, "Not found: " + request.getUri().getPath());
     }
 
     private HttpResponse handlePOST(HttpRequest request) throws IOException {
         final String path = request.getUri().getPath();
         if (path.startsWith("/tester/v1/run/")) {
             String type = lastElement(path);
-            TestProfile testProfile = TestProfile.valueOf(type.toUpperCase() + "_TEST");
+            TestRunner.Suite testSuite = TestRunner.Suite.valueOf(type.toUpperCase() + "_TEST");
             byte[] config = request.getData().readAllBytes();
-            if (useOsgiMode) {
-                junitRunner.executeTests(categoryFromProfile(testProfile), config);
-                log.info("Started tests of type " + type + " and status is " + junitRunner.getStatus());
-                return new Response("Successfully started " + type + " tests");
-            } else {
-                testRunner.test(testProfile, config);
-                log.info("Started tests of type " + type + " and status is " + testRunner.getStatus());
-                return new Response("Successfully started " + type + " tests");
-            }
+            testRunner.test(testSuite, config);
+            log.info("Started tests of type " + type + " and status is " + testRunner.getStatus());
+            return new MessageResponse("Successfully started " + type + " tests");
         }
-        return new Response(Status.NOT_FOUND, "Not found: " + request.getUri().getPath());
-    }
-
-    TestDescriptor.TestCategory categoryFromProfile(TestProfile testProfile) {
-        switch(testProfile) {
-            case SYSTEM_TEST: return TestDescriptor.TestCategory.systemtest;
-            case STAGING_SETUP_TEST: return TestDescriptor.TestCategory.stagingsetuptest;
-            case STAGING_TEST: return TestDescriptor.TestCategory.stagingtest;
-            case PRODUCTION_TEST: return TestDescriptor.TestCategory.productiontest;
-            default: throw new RuntimeException("Unknown test profile: " + testProfile.name());
-        }
+        return new MessageResponse(Status.NOT_FOUND, "Not found: " + request.getUri().getPath());
     }
 
     private static String lastElement(String path) {
@@ -145,31 +112,30 @@ public class TestRunnerHandler extends LoggingRequestHandler {
         return path.substring(lastSlash + 1);
     }
 
-    static Slime logToSlime(Collection<LogRecord> log) {
-        Slime slime = new Slime();
-        Cursor root = slime.setObject();
-        Cursor recordArray = root.setArray("logRecords");
-        logArrayToSlime(recordArray, log);
-        return slime;
-    }
-
-    static void logArrayToSlime(Cursor recordArray, Collection<LogRecord> log) {
-        log.forEach(record -> {
-            Cursor recordObject = recordArray.addObject();
-            recordObject.setLong("id", record.getSequenceNumber());
-            recordObject.setLong("at", record.getMillis());
-            recordObject.setString("type", typeOf(record.getLevel()));
-            String message = record.getMessage();
+    private static void render(OutputStream out, Collection<LogRecord> log) throws IOException {
+        var json = factory.createGenerator(out);
+        json.writeStartObject();
+        json.writeArrayFieldStart("logRecords");
+        for (LogRecord record : log) {
+            String message = record.getMessage() == null ? "" : record.getMessage();
             if (record.getThrown() != null) {
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream();
                 record.getThrown().printStackTrace(new PrintStream(buffer));
-                message += "\n" + buffer;
+                message += (message.isEmpty() ? "" : "\n") + buffer;
             }
-            recordObject.setString("message", message);
-        });
+            json.writeStartObject();
+            json.writeNumberField("id", record.getSequenceNumber());
+            json.writeNumberField("at", record.getMillis());
+            json.writeStringField("type", typeOf(record.getLevel()));
+            json.writeStringField("message", message);
+            json.writeEndObject();
+        }
+        json.writeEndArray();
+        json.writeEndObject();
+        json.close();
     }
 
-    public static String typeOf(Level level) {
+    private static String typeOf(Level level) {
         return    level.getName().equals("html") ? "html"
                 : level.intValue() < Level.INFO.intValue() ? "debug"
                 : level.intValue() < Level.WARNING.intValue() ? "info"
@@ -177,48 +143,92 @@ public class TestRunnerHandler extends LoggingRequestHandler {
                 : "error";
     }
 
-    private static class SlimeJsonResponse extends HttpResponse {
-        private final Slime slime;
+    private static void render(OutputStream out, TestReport report) throws IOException {
+        JsonGenerator json = factory.createGenerator(out);
+        json.writeStartObject();
 
-        private SlimeJsonResponse(Slime slime) {
+        json.writeFieldName("report");
+        render(json, (Node) report.root());
+
+        json.writeEndObject();
+        json.close();
+    }
+
+    private static void render(JsonGenerator json, Node node) throws IOException {
+        json.writeStartObject();
+        if (node instanceof NamedNode) render(json, (NamedNode) node);
+        if (node instanceof OutputNode) render(json, (OutputNode) node);
+
+        if ( ! node.children().isEmpty()) {
+            json.writeArrayFieldStart("children");
+            for (Node child : node.children) {
+                render(json, child);
+            }
+            json.writeEndArray();
+        }
+        json.writeEndObject();
+    }
+
+    private static void render(JsonGenerator json, NamedNode node) throws IOException {
+        String type = node instanceof FailureNode ? "failure" : node instanceof TestNode ? "test" : "container";
+        json.writeStringField("type", type);
+        json.writeStringField("name", node.name());
+        json.writeStringField("status", node.status().name());
+        json.writeNumberField("start", node.start().toEpochMilli());
+        json.writeNumberField("duration", node.duration().toMillis());
+    }
+
+    private static void render(JsonGenerator json, OutputNode node) throws IOException {
+        json.writeStringField("type", "output");
+        json.writeArrayFieldStart("children");
+        for (LogRecord record : node.log()) {
+            json.writeStartObject();
+            json.writeStringField("message", (record.getLoggerName() == null ? "" : record.getLoggerName() + ": ") +
+                                             (record.getMessage() != null ? record.getMessage() : "") +
+                                             (record.getThrown() != null ? (record.getMessage() != null ? "\n" : "") + traceToString(record.getThrown()) : ""));
+            json.writeNumberField("at", record.getInstant().toEpochMilli());
+            json.writeStringField("level", typeOf(record.getLevel()));
+            json.writeEndObject();
+        }
+        json.writeEndArray();
+    }
+
+    private static String traceToString(Throwable thrown) {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        thrown.printStackTrace(new PrintStream(buffer));
+        return buffer.toString(UTF_8);
+    }
+
+    private interface Renderer {
+
+        void render(OutputStream out) throws IOException;
+
+    }
+
+    private static class CustomJsonResponse extends HttpResponse {
+
+        private final Renderer renderer;
+
+        private CustomJsonResponse(Renderer renderer) {
             super(200);
-            this.slime = slime;
+            this.renderer = renderer;
         }
 
         @Override
         public void render(OutputStream outputStream) throws IOException {
-            new JsonFormat(true).encode(outputStream, slime);
+            renderer.render(outputStream);
         }
 
         @Override
         public String getContentType() {
-            return CONTENT_TYPE_APPLICATION_JSON;
-        }
-    }
-
-    private static class Response extends HttpResponse {
-        private static final ObjectMapper objectMapper = new ObjectMapper();
-        private final String message;
-
-        private Response(String response) {
-            this(200, response);
-        }
-
-        private Response(int statusCode, String message) {
-            super(statusCode);
-            this.message = message;
+            return "application/json";
         }
 
         @Override
-        public void render(OutputStream outputStream) throws IOException {
-            ObjectNode objectNode = objectMapper.createObjectNode();
-            objectNode.put("message", message);
-            objectMapper.writeValue(outputStream, objectNode);
+        public long maxPendingBytes() {
+            return 1 << 25; // 32MB
         }
 
-        @Override
-        public String getContentType() {
-            return CONTENT_TYPE_APPLICATION_JSON;
-        }
     }
+
 }

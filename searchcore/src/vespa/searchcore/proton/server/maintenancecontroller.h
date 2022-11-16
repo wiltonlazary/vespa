@@ -5,22 +5,28 @@
 #include "maintenancedocumentsubdb.h"
 #include "i_maintenance_job.h"
 #include <vespa/searchcore/proton/common/doctypename.h>
-#include <vespa/searchcore/proton/common/monitored_refcount.h>
-#include <vespa/vespalib/util/scheduledexecutor.h>
+#include <vespa/vespalib/util/retain_guard.h>
 #include <mutex>
 
+class FNET_Transport;
 
 namespace vespalib {
-    class Timer;
-    class Executor;
+
+class Executor;
+class MonitoredRefCount;
+class Timer;
+
 }
-namespace searchcorespi::index { struct IThreadService; }
+namespace searchcorespi::index {
+    struct IThreadService;
+    struct ISyncableThreadService;
+}
 
 namespace proton {
 
 class MaintenanceJobRunner;
 class DocumentDBMaintenanceConfig;
-class MonitoredRefCount;
+class ScheduledExecutor;
 
 /**
  * Class that controls the bucket moving between ready and notready sub databases
@@ -31,16 +37,18 @@ class MaintenanceController
 {
 public:
     using IThreadService = searchcorespi::index::IThreadService;
+    using ISyncableThreadService = searchcorespi::index::ISyncableThreadService;
     using DocumentDBMaintenanceConfigSP = std::shared_ptr<DocumentDBMaintenanceConfig>;
     using JobList = std::vector<std::shared_ptr<MaintenanceJobRunner>>;
     using UP = std::unique_ptr<MaintenanceController>;
     enum class State {INITIALIZING, STARTED, PAUSED, STOPPING};
 
-    MaintenanceController(IThreadService &masterThread, vespalib::Executor & defaultExecutor, MonitoredRefCount & refCount, const DocTypeName &docTypeName);
+    MaintenanceController(FNET_Transport & transport, ISyncableThreadService& masterThread, vespalib::Executor& shared_executor,
+                          vespalib::MonitoredRefCount& refCount, const DocTypeName& docTypeName);
 
     ~MaintenanceController();
     void registerJobInMasterThread(IMaintenanceJob::UP job);
-    void registerJobInDefaultPool(IMaintenanceJob::UP job);
+    void registerJobInSharedExecutor(IMaintenanceJob::UP job);
 
     void killJobs();
 
@@ -68,20 +76,20 @@ public:
     const MaintenanceDocumentSubDB &    getReadySubDB() const { return _readySubDB; }
     const MaintenanceDocumentSubDB &      getRemSubDB() const { return _remSubDB; }
     const MaintenanceDocumentSubDB & getNotReadySubDB() const { return _notReadySubDB; }
-    IThreadService & masterThread() { return _masterThread; }
+    IThreadService & masterThread();
     const DocTypeName & getDocTypeName() const { return _docTypeName; }
-    RetainGuard retainDB() { return RetainGuard(_refCount); }
+    vespalib::RetainGuard retainDB() { return vespalib::RetainGuard(_refCount); }
 private:
     using Mutex = std::mutex;
     using Guard = std::lock_guard<Mutex>;
 
-    IThreadService                   &_masterThread;
-    vespalib::Executor               &_defaultExecutor;
-    MonitoredRefCount                &_refCount;
+    ISyncableThreadService           &_masterThread;
+    vespalib::Executor               &_shared_executor;
+    vespalib::MonitoredRefCount      &_refCount;
     MaintenanceDocumentSubDB          _readySubDB;
     MaintenanceDocumentSubDB          _remSubDB;
     MaintenanceDocumentSubDB          _notReadySubDB;
-    std::unique_ptr<vespalib::ScheduledExecutor>  _periodicTimer;
+    std::unique_ptr<ScheduledExecutor>  _periodicTimer;
     DocumentDBMaintenanceConfigSP     _config;
     State                             _state;
     const DocTypeName                &_docTypeName;

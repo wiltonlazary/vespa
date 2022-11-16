@@ -7,6 +7,8 @@
 #include "ipostinglistattributebase.h"
 #include "singleenumattributesaver.h"
 #include "load_utils.h"
+#include "enum_store_loaders.h"
+#include "valuemodifier.h"
 #include <vespa/vespalib/datastore/unique_store_remapper.h>
 
 namespace search {
@@ -16,14 +18,14 @@ SingleValueEnumAttribute<B>::
 SingleValueEnumAttribute(const vespalib::string &baseFileName,
                          const AttributeVector::Config &cfg)
     : B(baseFileName, cfg),
-      SingleValueEnumAttributeBase(cfg, getGenerationHolder())
+      SingleValueEnumAttributeBase(cfg, getGenerationHolder(), this->get_initial_alloc())
 {
 }
 
 template <typename B>
 SingleValueEnumAttribute<B>::~SingleValueEnumAttribute()
 {
-    getGenerationHolder().clearHoldLists();
+    getGenerationHolder().reclaim_all();
 }
 
 template <typename B>
@@ -53,9 +55,9 @@ SingleValueEnumAttribute<B>::addDoc(DocId & doc)
     if (doc > 0u) {
         // Make sure that a valid value(magic default) is referenced,
         // even between addDoc and commit().
-        if (_enumIndices[0].valid()) {
+        if (_enumIndices[0].load_relaxed().valid()) {
             _enumIndices[doc] = _enumIndices[0];
-            this->_enumStore.inc_ref_count(_enumIndices[0]);
+            this->_enumStore.inc_ref_count(_enumIndices[0].load_relaxed());
         }
     }
     this->incNumDocs();
@@ -64,7 +66,7 @@ SingleValueEnumAttribute<B>::addDoc(DocId & doc)
     if (incGen) {
         this->incGeneration();
     } else
-        this->removeAllOldGenerations();
+        this->reclaim_unused_memory();
     return true;
 }
 
@@ -93,7 +95,7 @@ SingleValueEnumAttribute<B>::onCommit()
     updater.commit();
     freezeEnumDictionary();
     std::atomic_thread_fence(std::memory_order_release);
-    this->removeAllOldGenerations();
+    this->reclaim_unused_memory();
     auto remapper = this->_enumStore.consider_compact_values(this->getConfig().getCompactionStrategy());
     if (remapper) {
         remap_enum_store_refs(*remapper, *this);
@@ -125,8 +127,9 @@ SingleValueEnumAttribute<B>::onUpdateStat()
 {
     // update statistics
     vespalib::MemoryUsage total = _enumIndices.getMemoryUsage();
-    total.mergeGenerationHeldBytes(getGenerationHolder().getHeldBytes());
-    total.merge(this->_enumStore.update_stat());
+    auto& compaction_strategy = this->getConfig().getCompactionStrategy();
+    total.mergeGenerationHeldBytes(getGenerationHolder().get_held_bytes());
+    total.merge(this->_enumStore.update_stat(compaction_strategy));
     total.merge(this->getChangeVectorMemoryUsage());
     mergeMemoryStats(total);
     this->updateStatistics(_enumIndices.size(), this->_enumStore.get_num_uniques(), total.allocatedBytes(),
@@ -139,9 +142,9 @@ SingleValueEnumAttribute<B>::considerUpdateAttributeChange(const Change & c, Enu
 {
     EnumIndex idx;
     if (!this->_enumStore.find_index(c._data.raw(), idx)) {
-        c.setEnum(inserter.insert(c._data.raw()).ref());
+        c.set_entry_ref(inserter.insert(c._data.raw()).ref());
     } else {
-        c.setEnum(idx.ref());
+        c.set_entry_ref(idx.ref());
     }
     considerUpdateAttributeChange(c); // for numeric
 }
@@ -155,8 +158,9 @@ SingleValueEnumAttribute<B>::considerAttributeChange(const Change & c, EnumStore
     } else if (c._type >= ChangeBase::ADD && c._type <= ChangeBase::DIV) {
         considerArithmeticAttributeChange(c, inserter); // for numeric
     } else if (c._type == ChangeBase::CLEARDOC) {
-        this->_defaultValue._doc = c._doc;
-        considerUpdateAttributeChange(this->_defaultValue, inserter);
+        Change clearDoc(this->_defaultValue);
+        clearDoc._doc = c._doc;
+        considerUpdateAttributeChange(clearDoc, inserter);
     }
 }
 
@@ -164,10 +168,10 @@ template <typename B>
 void
 SingleValueEnumAttribute<B>::applyUpdateValueChange(const Change& c, EnumStoreBatchUpdater& updater)
 {
-    EnumIndex oldIdx = _enumIndices[c._doc];
+    EnumIndex oldIdx = _enumIndices[c._doc].load_relaxed();
     EnumIndex newIdx;
-    if (c.isEnumValid()) {
-        newIdx = EnumIndex(vespalib::datastore::EntryRef(c.getEnum()));
+    if (c.has_entry_ref()) {
+        newIdx = EnumIndex(vespalib::datastore::EntryRef(c.get_entry_ref()));
     } else {
         this->_enumStore.find_index(c._data.raw(), newIdx);
     }
@@ -179,16 +183,21 @@ void
 SingleValueEnumAttribute<B>::applyValueChanges(EnumStoreBatchUpdater& updater)
 {
     ValueModifier valueGuard(this->getValueModifier());
+    // This avoids searching for the defaultValue in the enum store for each CLEARDOC in the change vector.
+    this->cache_change_data_entry_ref(this->_defaultValue);
     for (const auto& change : this->_changes.getInsertOrder()) {
         if (change._type == ChangeBase::UPDATE) {
             applyUpdateValueChange(change, updater);
         } else if (change._type >= ChangeBase::ADD && change._type <= ChangeBase::DIV) {
             applyArithmeticValueChange(change, updater);
         } else if (change._type == ChangeBase::CLEARDOC) {
-            this->_defaultValue._doc = change._doc;
-            applyUpdateValueChange(this->_defaultValue, updater);
+            Change clearDoc(this->_defaultValue);
+            clearDoc._doc = change._doc;
+            applyUpdateValueChange(clearDoc, updater);
         }
     }
+    // We must clear the cached entry ref as the defaultValue might be located in another data buffer on later invocations.
+    this->_defaultValue.clear_entry_ref();
 }
 
 template <typename B>
@@ -197,7 +206,7 @@ SingleValueEnumAttribute<B>::updateEnumRefCounts(const Change& c, EnumIndex newI
                                                  EnumStoreBatchUpdater& updater)
 {
     updater.inc_ref_count(newIdx);
-    _enumIndices[c._doc] = newIdx;
+    _enumIndices[c._doc].store_release(newIdx);
     if (oldIdx.valid()) {
         updater.dec_ref_count(oldIdx);
     }
@@ -209,11 +218,11 @@ SingleValueEnumAttribute<B>::fillValues(LoadedVector & loaded)
 {
     if constexpr (!std::is_same_v<LoadedVector, NoLoadedVector>) {
         uint32_t numDocs = this->getNumDocs();
-        getGenerationHolder().clearHoldLists();
+        getGenerationHolder().reclaim_all();
         _enumIndices.reset();
         _enumIndices.unsafe_reserve(numDocs);
         for (DocId doc = 0; doc < numDocs; ++doc, loaded.next()) {
-            _enumIndices.push_back(loaded.read().getEidx());
+            _enumIndices.push_back(AtomicEntryRef(loaded.read().getEidx()));
         }
     }
 }
@@ -255,15 +264,15 @@ SingleValueEnumAttribute<B>::load_enumerated_data(ReaderBase& attrReader,
 
 template <typename B>
 void
-SingleValueEnumAttribute<B>::removeOldGenerations(generation_t firstUsed)
+SingleValueEnumAttribute<B>::reclaim_memory(generation_t oldest_used_gen)
 {
-    this->_enumStore.trim_hold_lists(firstUsed);
-    getGenerationHolder().trimHoldLists(firstUsed);
+    this->_enumStore.reclaim_memory(oldest_used_gen);
+    getGenerationHolder().reclaim(oldest_used_gen);
 }
 
 template <typename B>
 void
-SingleValueEnumAttribute<B>::onGenerationChange(generation_t generation)
+SingleValueEnumAttribute<B>::before_inc_generation(generation_t current_gen)
 {
     /*
      * Freeze tree before generation is increased in attribute vector
@@ -272,14 +281,14 @@ SingleValueEnumAttribute<B>::onGenerationChange(generation_t generation)
      * sufficiently new frozen tree.
      */
     freezeEnumDictionary();
-    getGenerationHolder().transferHoldLists(generation - 1);
-    this->_enumStore.transfer_hold_lists(generation - 1);
+    getGenerationHolder().assign_generation(current_gen);
+    this->_enumStore.assign_generation(current_gen);
 }
 
 
 template <typename B>
 void
-SingleValueEnumAttribute<B>::clearDocs(DocId lidLow, DocId lidLimit)
+SingleValueEnumAttribute<B>::clearDocs(DocId lidLow, DocId lidLimit, bool)
 {
     EnumHandle e(0);
     bool findDefaultEnumRes(this->findEnum(this->getDefaultEnumTypeValue(), e));
@@ -289,7 +298,7 @@ SingleValueEnumAttribute<B>::clearDocs(DocId lidLow, DocId lidLimit)
     assert(lidLow <= lidLimit);
     assert(lidLimit <= this->getNumDocs());
     for (DocId lid = lidLow; lid < lidLimit; ++lid) {
-        if (_enumIndices[lid] != vespalib::datastore::EntryRef(e)) {
+        if (_enumIndices[lid].load_relaxed() != vespalib::datastore::EntryRef(e)) {
             this->clearDoc(lid);
         }
     }

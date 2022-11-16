@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/vespalib/btree/btree.h>
 #include "i_unique_store_dictionary.h"
@@ -74,24 +74,24 @@ public:
     UniqueStoreDictionary(std::unique_ptr<EntryComparator> compare);
     ~UniqueStoreDictionary() override;
     void freeze() override;
-    void transfer_hold_lists(generation_t generation) override;
-    void trim_hold_lists(generation_t firstUsed) override;
+    void assign_generation(generation_t current_gen) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
     UniqueStoreAddResult add(const EntryComparator& comp, std::function<EntryRef(void)> insertEntry) override;
     EntryRef find(const EntryComparator& comp) override;
     void remove(const EntryComparator& comp, EntryRef ref) override;
-    void move_entries(ICompactable& compactable) override;
+    void move_keys_on_compact(ICompactable& compactable, const EntryRefFilter& compacting_buffers) override;
     uint32_t get_num_uniques() const override;
     vespalib::MemoryUsage get_memory_usage() const override;
     void build(vespalib::ConstArrayRef<EntryRef>, vespalib::ConstArrayRef<uint32_t> ref_counts, std::function<void(EntryRef)> hold) override;
     void build(vespalib::ConstArrayRef<EntryRef> refs) override;
-    void build_with_payload(vespalib::ConstArrayRef<EntryRef>, vespalib::ConstArrayRef<uint32_t> payloads) override;
+    void build_with_payload(vespalib::ConstArrayRef<EntryRef>, vespalib::ConstArrayRef<EntryRef> payloads) override;
     std::unique_ptr<IUniqueStoreDictionaryReadSnapshot> get_read_snapshot() const override;
     bool get_has_btree_dictionary() const override;
     bool get_has_hash_dictionary() const override;
     vespalib::MemoryUsage get_btree_memory_usage() const override;
     vespalib::MemoryUsage get_hash_memory_usage() const override;
     bool has_held_buffers() const override;
-    void compact_worst(bool compact_btree_dictionary, bool compact_hash_dictionary) override;
+    void compact_worst(bool compact_btree_dictionary, bool compact_hash_dictionary, const CompactionStrategy& compaction_strategy) override;
 };
 
 }

@@ -5,12 +5,12 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>vespajlib</artifactId>
   <packaging>container-plugin</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <description>
     Library for use in Java components of Vespa. Shared code which do
     not fit anywhere else.
@@ -36,6 +36,11 @@
       <artifactId>aircompressor</artifactId>
       <scope>compile</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+      <scope>compile</scope>
+    </dependency>
 
     <!-- provided scope -->
     <dependency>
@@ -48,34 +53,6 @@
       <artifactId>annotations</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.yahoo.vespa</groupId>
-      <artifactId>security-utils</artifactId>
-      <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.yahoo.vespa</groupId>
-      <artifactId>yolean</artifactId>
-      <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.httpcomponents</groupId>
-      <artifactId>httpclient</artifactId>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.httpcomponents.client5</groupId>
-      <artifactId>httpclient5</artifactId>
-      <scope>provided</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>org.slf4j</groupId>
-          <artifactId>slf4j-api</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
 
     <!-- test scope -->
@@ -127,20 +104,22 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Xlint:all</arg>
-            <arg>-Xlint:-try</arg>
-            <arg>-Xlint:-serial</arg>
-            <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-install-plugin</artifactId>
         <configuration>
           <updateReleaseInfo>true</updateReleaseInfo>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Illegal reflective access by com.yahoo.io.NativeIO -->
+          <argLine>
+            --add-opens=java.base/java.io=ALL-UNNAMED
+          </argLine>
         </configuration>
       </plugin>
       <plugin>

@@ -4,12 +4,15 @@
 #include <vespa/searchlib/transactionlog/translogserver.h>
 #include <vespa/searchlib/transactionlog/translogclient.h>
 #include <vespa/vespalib/util/rand48.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/searchlib/util/runnable.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
-#include <vespa/fastos/app.h>
+#include <vespa/fnet/transport.h>
+#include <vespa/vespalib/util/signalhandler.h>
 #include <iostream>
 #include <sstream>
 #include <thread>
+#include <unistd.h>
 
 #include <vespa/log/log.h>
 #include <vespa/vespalib/util/time.h>
@@ -205,16 +208,16 @@ private:
     bool addEntry(const Packet::Entry & e);
 
 public:
-    FeederThread(const std::string & tlsSpec, const std::string & domain,
+    FeederThread(FNET_Transport & transport, const std::string & tlsSpec, const std::string & domain,
                  const EntryGenerator & generator, uint32_t feedRate, size_t packetSize);
     ~FeederThread() override;
     void doRun() override;
     SerialNumRange getRange() const { return SerialNumRange(1, _lastCommited); }
 };
 
-FeederThread::FeederThread(const std::string & tlsSpec, const std::string & domain,
+FeederThread::FeederThread(FNET_Transport & transport, const std::string & tlsSpec, const std::string & domain,
                            const EntryGenerator & generator, uint32_t feedRate, size_t packetSize)
-    : _tlsSpec(tlsSpec), _domain(domain), _client(tlsSpec), _session(),
+    : _tlsSpec(tlsSpec), _domain(domain), _client(transport, tlsSpec), _session(),
       _generator(generator), _feedRate(feedRate), _packet(packetSize), _current(1), _lastCommited(1), _timer()
 {}
 FeederThread::~FeederThread() = default;
@@ -299,10 +302,10 @@ protected:
     bool _validate;
 
 public:
-    Agent(const std::string & tlsSpec, const std::string & domain,
+    Agent(FNET_Transport & transport, const std::string & tlsSpec, const std::string & domain,
           const EntryGenerator & generator, const std::string & name, uint32_t id, bool validate) :
         client::Callback(),
-        _tlsSpec(tlsSpec), _domain(domain), _client(tlsSpec),
+        _tlsSpec(tlsSpec), _domain(domain), _client(transport, tlsSpec),
         _generator(generator), _name(name), _id(id), _validate(validate)
     {}
     ~Agent() override {}
@@ -337,9 +340,9 @@ private:
     SerialNum getNext();
 
 public:
-    VisitorAgent(const std::string & tlsSpec, const std::string & domain,
+    VisitorAgent(FNET_Transport & transport, const std::string & tlsSpec, const std::string & domain,
                  const EntryGenerator & generator, uint32_t id, bool validate) :
-        Agent(tlsSpec, domain, generator, "VisitorAgent", id, validate),
+        Agent(transport, tlsSpec, domain, generator, "VisitorAgent", id, validate),
         _visitor(), _from(0), _to(0), _next(0), _state(IDLE) {}
     ~VisitorAgent() override = default;
     void start(SerialNum from, SerialNum to);
@@ -468,24 +471,23 @@ private:
     void makeRandomVisitorVector();
 
 public:
-    ControllerThread(const std::string & tlsSpec, const std::string & domain, const EntryGenerator & generator,
+    ControllerThread(FNET_Transport & transport, const std::string & tlsSpec, const std::string & domain, const EntryGenerator & generator,
                      uint32_t numVisitors, vespalib::duration visitorInterval, vespalib::duration pruneInterval);
     ~ControllerThread();
-    uint32_t runningVisitors();
     std::vector<std::shared_ptr<VisitorAgent> > & getVisitors() { return _visitors; }
     virtual void doRun() override;
 
 };
 
-ControllerThread::ControllerThread(const std::string & tlsSpec, const std::string & domain,
+ControllerThread::ControllerThread(FNET_Transport & transport, const std::string & tlsSpec, const std::string & domain,
                                    const EntryGenerator & generator, uint32_t numVisitors,
                                    vespalib::duration visitorInterval, vespalib::duration pruneInterval)
-    : _tlsSpec(tlsSpec), _domain(domain), _client(tlsSpec.c_str()), _session(),
+    : _tlsSpec(tlsSpec), _domain(domain), _client(transport, tlsSpec.c_str()), _session(),
       _generator(generator), _visitors(), _rndVisitors(), _visitorInterval(visitorInterval),
       _pruneInterval(pruneInterval), _pruneTimer(), _begin(0), _end(0), _count(0)
 {
     for (uint32_t i = 0; i < numVisitors; ++i) {
-        _visitors.push_back(std::make_shared<VisitorAgent>(tlsSpec, domain, generator, i, true));
+        _visitors.push_back(std::make_shared<VisitorAgent>(transport, tlsSpec, domain, generator, i, true));
     }
 }
 ControllerThread::~ControllerThread() = default;
@@ -561,7 +563,7 @@ ControllerThread::doRun()
 //-----------------------------------------------------------------------------
 // TransLogStress
 //-----------------------------------------------------------------------------
-class TransLogStress : public FastOS_Application
+class TransLogStress
 {
 private:
     class Config {
@@ -591,7 +593,7 @@ private:
     void usage();
 
 public:
-    int Main() override;
+    int main(int argc, char **argv);
 };
 
 void
@@ -621,7 +623,7 @@ TransLogStress::usage()
 }
 
 int
-TransLogStress::Main()
+TransLogStress::main(int argc, char **argv)
 {
     std::string tlsSpec("tcp/localhost:17897");
     std::string domain("translogstress");
@@ -641,44 +643,42 @@ TransLogStress::Main()
 
     vespalib::duration sleepTime = 4s;
 
-    int idx = 1;
     int opt;
-    const char * arg;
     bool optError = false;
-    while ((opt = GetOpt("d:p:t:f:s:v:c:e:g:i:a:b:h", arg, idx)) != -1) {
+    while ((opt = getopt(argc, argv, "d:p:t:f:s:v:c:e:g:i:a:b:h")) != -1) {
         switch (opt) {
         case 'd':
-            _cfg.domainPartSize = atol(arg);
+            _cfg.domainPartSize = atol(optarg);
             break;
         case 'p':
-            _cfg.packetSize = atol(arg);
+            _cfg.packetSize = atol(optarg);
             break;
         case 't':
-            _cfg.stressTime = std::chrono::milliseconds(1000 * atol(arg));
+            _cfg.stressTime = std::chrono::milliseconds(1000 * atol(optarg));
             break;
         case 'f':
-            _cfg.feedRate = atoi(arg);
+            _cfg.feedRate = atoi(optarg);
             break;
         case 'v':
-            _cfg.numVisitors = atoi(arg);
+            _cfg.numVisitors = atoi(optarg);
             break;
         case 'c':
-            _cfg.visitorInterval = std::chrono::milliseconds(atol(arg));
+            _cfg.visitorInterval = std::chrono::milliseconds(atol(optarg));
             break;
         case 'e':
-            _cfg.pruneInterval = vespalib::from_s(atol(arg));
+            _cfg.pruneInterval = vespalib::from_s(atol(optarg));
             break;
         case 'g':
-            _cfg.numPreGeneratedBuffers = atoi(arg);
+            _cfg.numPreGeneratedBuffers = atoi(optarg);
             break;
         case 'i':
-            _cfg.minStrLen = atoi(arg);
+            _cfg.minStrLen = atoi(optarg);
             break;
         case 'a':
-            _cfg.maxStrLen = atoi(arg);
+            _cfg.maxStrLen = atoi(optarg);
             break;
         case 'b':
-            _cfg.baseSeed = atol(arg);
+            _cfg.baseSeed = atol(optarg);
             break;
         case 'h':
             usage();
@@ -692,18 +692,18 @@ TransLogStress::Main()
     printConfig();
     std::this_thread::sleep_for(sleepTime);
 
-    if (_argc != idx || optError) {
+    if (argc != optind || optError) {
         usage();
         return -1;
     }
 
     // start transaction log server
+    FastOS_ThreadPool threadPool(256_Ki);
+    FNET_Transport transport;
     DummyFileHeaderContext fileHeaderContext;
-    TransLogServer tls("server", 17897, ".", fileHeaderContext, DomainConfig().setPartSizeLimit(_cfg.domainPartSize));
-    TransLogClient client(tlsSpec);
+    TransLogServer tls(transport, "server", 17897, ".", fileHeaderContext, DomainConfig().setPartSizeLimit(_cfg.domainPartSize));
+    TransLogClient client(transport, tlsSpec);
     client.create(domain);
-
-    FastOS_ThreadPool threadPool(256000);
 
     BufferGenerator bufferGenerator(_cfg.minStrLen, _cfg.maxStrLen);
     bufferGenerator.setSeed(_cfg.baseSeed);
@@ -718,12 +718,12 @@ TransLogStress::Main()
 
 
     // start feeder and controller
-    FeederThread feeder(tlsSpec, domain, generator, _cfg.feedRate, _cfg.packetSize);
+    FeederThread feeder(transport, tlsSpec, domain, generator, _cfg.feedRate, _cfg.packetSize);
     threadPool.NewThread(&feeder);
 
     std::this_thread::sleep_for(sleepTime);
 
-    ControllerThread controller(tlsSpec, domain, generator, _cfg.numVisitors, _cfg.visitorInterval, _cfg.pruneInterval);
+    ControllerThread controller(transport, tlsSpec, domain, generator, _cfg.numVisitors, _cfg.visitorInterval, _cfg.pruneInterval);
     threadPool.NewThread(&controller);
 
     // stop feeder and controller
@@ -758,8 +758,8 @@ TransLogStress::Main()
 
 }
 
-int main(int argc, char ** argv)
-{
+int main(int argc, char **argv) {
+    vespalib::SignalHandler::PIPE.ignore();
     search::transactionlog::TransLogStress myApp;
-    return myApp.Entry(argc, argv);
+    return myApp.main(argc, argv);
 }

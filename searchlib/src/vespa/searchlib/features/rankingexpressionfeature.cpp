@@ -7,6 +7,7 @@
 #include <vespa/searchlib/features/rankingexpression/feature_name_extractor.h>
 #include <vespa/eval/eval/param_usage.h>
 #include <vespa/eval/eval/fast_value.h>
+#include <vespa/vespalib/util/stringfmt.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".features.rankingexpression");
@@ -127,6 +128,24 @@ public:
     void execute(uint32_t docId) override;
 };
 
+/**
+ * Implements the executor for interpreted ranking expressions (with
+ * tensor support) that will unbox the result.
+ **/
+class UnboxingInterpretedRankingExpressionExecutor : public fef::FeatureExecutor
+{
+private:
+    const InterpretedFunction   &_function;
+    InterpretedFunction::Context _context;
+    MyLazyParams                 _params;
+
+public:
+    UnboxingInterpretedRankingExpressionExecutor(const InterpretedFunction &function,
+                                                 ConstArrayRef<char> input_is_object);
+    bool isPure() override { return true; }
+    void execute(uint32_t docId) override;
+};
+
 //-----------------------------------------------------------------------------
 
 FastForestExecutor::FastForestExecutor(ArrayRef<float> param_space, const FastForest &forest)
@@ -173,7 +192,7 @@ CompiledRankingExpressionExecutor::execute(uint32_t)
     for (; i < _params.size(); ++i) {
         _params[i] = inputs().get_number(i);
     }
-    outputs().set_number(0, _ranking_function(&_params[0]));
+    outputs().set_number(0, _ranking_function(_params.data()));
 }
 
 //-----------------------------------------------------------------------------
@@ -215,6 +234,22 @@ InterpretedRankingExpressionExecutor::execute(uint32_t)
 
 //-----------------------------------------------------------------------------
 
+UnboxingInterpretedRankingExpressionExecutor::UnboxingInterpretedRankingExpressionExecutor(const InterpretedFunction &function,
+                                                                                           ConstArrayRef<char> input_is_object)
+    : _function(function),
+      _context(function),
+      _params(inputs(), input_is_object)
+{
+}
+
+void
+UnboxingInterpretedRankingExpressionExecutor::execute(uint32_t)
+{
+    outputs().set_number(0, _function.eval(_context, _params).as_double());
+}
+
+//-----------------------------------------------------------------------------
+
 RankingExpressionBlueprint::RankingExpressionBlueprint()
     : RankingExpressionBlueprint(std::make_shared<rankingexpression::NullExpressionReplacer>()) {}
 
@@ -225,7 +260,8 @@ RankingExpressionBlueprint::RankingExpressionBlueprint(rankingexpression::Expres
       _fast_forest(),
       _interpreted_function(),
       _compile_token(),
-      _input_is_object()
+      _input_is_object(),
+      _should_unbox(false)
 {
 }
 
@@ -296,18 +332,18 @@ RankingExpressionBlueprint::setup(const fef::IIndexEnvironment &env,
         for (const auto &type_error: node_types.errors()) {
             LOG(warning, "type error: %s", type_error.c_str());
         }
-        return fail("rank expression contains type errors: %s", script.c_str());
+        return fail("ranking expression contains type errors: %s", script.c_str());
     }
     auto compile_issues = CompiledFunction::detect_issues(*rank_function);
     auto interpret_issues = InterpretedFunction::detect_issues(*rank_function);
     if (do_compile && compile_issues && !interpret_issues) {
-        LOG(warning, "rank expression compilation disabled: %s\n%s",
+        LOG(warning, "ranking expression compilation disabled: %s\n%s",
             script.c_str(), list_issues(compile_issues.list).c_str());
         do_compile = false;
     }
     const auto &issues = do_compile ? compile_issues : interpret_issues;
     if (issues) {
-        return fail("rank expression cannot be evaluated: %s\n%s",
+        return fail("ranking expression cannot be evaluated: %s\n%s",
                     script.c_str(), list_issues(issues.list).c_str());
     }
     // avoid costly compilation when only verifying setup
@@ -328,9 +364,10 @@ RankingExpressionBlueprint::setup(const fef::IIndexEnvironment &env,
         } else {
             _interpreted_function.reset(new InterpretedFunction(FastValueBuilderFactory::get(),
                                                                 *rank_function, node_types));
+            _should_unbox = root_type.is_double();
         }
     }
-    FeatureType output_type = do_compile
+    FeatureType output_type = (do_compile || _should_unbox)
                               ? FeatureType::number()
                               : FeatureType::object(root_type);
     describeOutput("out", "The result of running the contained ranking expression.", output_type);
@@ -359,7 +396,11 @@ RankingExpressionBlueprint::createExecutor(const fef::IQueryEnvironment &env, ve
     }
     if (_interpreted_function) {
         ConstArrayRef<char> input_is_object = stash.copy_array<char>(_input_is_object);
-        return stash.create<InterpretedRankingExpressionExecutor>(*_interpreted_function, input_is_object);
+        if (_should_unbox) {
+            return stash.create<UnboxingInterpretedRankingExpressionExecutor>(*_interpreted_function, input_is_object);
+        } else {
+            return stash.create<InterpretedRankingExpressionExecutor>(*_interpreted_function, input_is_object);
+        }
     }
     if (_fast_forest) {
         ArrayRef<float> param_space = stash.create_array<float>(_input_is_object.size(), 0.0);

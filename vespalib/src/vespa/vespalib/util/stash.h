@@ -6,6 +6,7 @@
 #include "arrayref.h"
 #include "memoryusage.h"
 #include <cstdlib>
+#include <memory>
 
 namespace vespalib {
 namespace stash {
@@ -48,9 +49,9 @@ struct Chunk {
     Chunk  *next;
     size_t  used;
     Chunk(const Chunk &) = delete;
-    explicit Chunk(Chunk *next_in) : next(next_in), used(sizeof(Chunk)) {}
-    void clear() { used = sizeof(Chunk); }
-    char *alloc(size_t size, size_t chunk_size) {
+    explicit Chunk(Chunk *next_in) noexcept : next(next_in), used(sizeof(Chunk)) {}
+    void clear() noexcept { used = sizeof(Chunk); }
+    char *alloc(size_t size, size_t chunk_size) noexcept {
         size_t aligned_size = ((size + (sizeof(char *) - 1))
                               & ~(sizeof(char *) - 1));
         if (used + aligned_size > chunk_size) {
@@ -69,9 +70,9 @@ struct Chunk {
  * memory.
  *
  * When a stash is destructed, destruction of internal objects will be
- * performed in reverse creation order. Objects for which the
- * vespalib::can_skip_destruction trait is true are not
- * destructed. This will save both time and space.
+ * performed in reverse creation order. Objects that satisfy the
+ * vespalib::can_skip_destruction concept are not destructed. This
+ * will save both time and space.
  *
  * The minimal chunk size of a stash is 4k. Any object larger than 1/4
  * of the chunk size will be allocated separately.
@@ -84,7 +85,7 @@ private:
     size_t          _chunk_size;
 
     char *do_alloc(size_t size);
-    bool is_small(size_t size) const { return (size < (_chunk_size / 4)); }
+    bool is_small(size_t size) const noexcept { return (size < (_chunk_size / 4)); }
 
     template <typename T, typename ... Args>
     T *init_array(char *mem, size_t size, Args && ... args) {
@@ -119,10 +120,10 @@ public:
         stash::Cleanup *_cleanup;
         stash::Chunk   *_chunk;
         size_t          _used;
-        Mark(stash::Cleanup *cleanup, stash::Chunk *chunk)
+        Mark(stash::Cleanup *cleanup, stash::Chunk *chunk) noexcept
             : _cleanup(cleanup), _chunk(chunk), _used(chunk ? chunk->used : 0u) {}
     public:
-        Mark() : Mark(nullptr, nullptr) {}
+        Mark() noexcept : Mark(nullptr, nullptr) {}
     };
 
     typedef std::unique_ptr<Stash> UP;
@@ -137,7 +138,7 @@ public:
 
     void clear();
 
-    Mark mark() const { return Mark(_cleanup, _chunks); }
+    Mark mark() const noexcept { return Mark(_cleanup, _chunks); }
     void revert(const Mark &mark);
 
     size_t count_used() const;
@@ -152,7 +153,7 @@ public:
 
     template <typename T, typename ... Args>
     T &create(Args && ... args) {
-        if (can_skip_destruction<T>::value) {
+        if (can_skip_destruction<T>) {
             return *(new (alloc(sizeof(T))) T(std::forward<Args>(args)...));
         }
         using DeleteHook = stash::DestructObject<T>;
@@ -164,7 +165,7 @@ public:
 
     template <typename T, typename ... Args>
     ArrayRef<T> create_array(size_t size, Args && ... args) {
-        if (can_skip_destruction<T>::value) {
+        if (can_skip_destruction<T>) {
             return ArrayRef<T>(init_array<T, Args...>(alloc(size * sizeof(T)), size, std::forward<Args>(args)...), size);
         }
         using DeleteHook = stash::DestructArray<T>;
@@ -177,13 +178,13 @@ public:
     template <typename T>
     ArrayRef<T> create_uninitialized_array(size_t size) {
         static_assert(std::is_trivially_copyable_v<T>);
-        static_assert(can_skip_destruction<T>::value);
+        static_assert(can_skip_destruction<T>);
         return ArrayRef<T>(reinterpret_cast<T*>(alloc(size * sizeof(T))), size);
     }
 
     template <typename T>
     ArrayRef<T> copy_array(ConstArrayRef<T> src) {
-        if (can_skip_destruction<T>::value) {
+        if (can_skip_destruction<T>) {
             return ArrayRef<T>(copy_elements<T>(alloc(src.size() * sizeof(T)), src), src.size());
         }
         using DeleteHook = stash::DestructArray<T>;

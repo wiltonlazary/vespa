@@ -8,12 +8,15 @@
 #include <vespa/vespalib/util/programoptions.h>
 #include <vespa/vespalib/util/xmlstream.h>
 #include <vespa/vespalib/util/time.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/config/config-documenttypes.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/document/update/documentupdate.h>
 #include <vespa/config/helper/configgetter.hpp>
-#include <vespa/fastos/app.h>
+#include <vespa/fnet/transport.h>
+#include <vespa/vespalib/util/signalhandler.h>
 #include <iostream>
 #include <thread>
 
@@ -25,7 +28,6 @@ using namespace search;
 using namespace search::common;
 using namespace search::transactionlog;
 
-using document::DocumenttypesConfig;
 using document::DocumentTypeRepo;
 
 typedef std::shared_ptr<DocumenttypesConfig> DocumenttypesConfigSP;
@@ -230,14 +232,19 @@ private:
         toPrint.printXml(out);
         std::cout << std::endl;
     }
+    void printXml(const document::DocumentUpdate &toPrint) {
+        vespalib::xml::XmlOutputStream out(std::cout);
+        toPrint.printXml(out);
+        std::cout << std::endl;
+    }
 
-    void printText(const document::Printable &toPrint) {
-        toPrint.print(std::cout, _verbose);
+    void printText(const document::DocumentUpdate &toPrint) {
+        toPrint.print(std::cout, _verbose, "");
         std::cout << std::endl;
     }
 
     void printText(const document::FieldValue &toPrint) {
-        toPrint.print(std::cout, _verbose);
+        toPrint.print(std::cout, _verbose, "");
         std::cout << std::endl;
     }
 
@@ -248,9 +255,9 @@ public:
           _verbose(verbose)
     {
     }
-    virtual void replay(const PutOperation &op) override {
+    void replay(const PutOperation &op) override {
         print(op);
-        if (op.getDocument().get() != NULL) {
+        if (op.getDocument()) {
             if (_printXml) {
                 printXml(*op.getDocument());
             } else {
@@ -258,12 +265,12 @@ public:
             }
         }
     }
-    virtual void replay(const RemoveOperation &op) override {
+    void replay(const RemoveOperation &op) override {
         print(op);
     }
-    virtual void replay(const UpdateOperation &op) override {
+    void replay(const UpdateOperation &op) override {
         print(op);
-        if (op.getUpdate().get() != NULL) {
+        if (op.getUpdate()) {
             if (_printXml) {
                 printXml(*op.getUpdate());
             } else {
@@ -271,14 +278,14 @@ public:
             }
         }
     }
-    virtual void replay(const NoopOperation &) override { }
-    virtual void replay(const NewConfigOperation &) override { }
-    virtual void replay(const DeleteBucketOperation &) override { }
-    virtual void replay(const SplitBucketOperation &) override { }
-    virtual void replay(const JoinBucketsOperation &) override { }
-    virtual void replay(const PruneRemovedDocumentsOperation &) override { }
-    virtual void replay(const MoveOperation &) override { }
-    virtual void replay(const CreateBucketOperation &) override { }
+    void replay(const NoopOperation &) override { }
+    void replay(const NewConfigOperation &) override { }
+    void replay(const DeleteBucketOperation &) override { }
+    void replay(const SplitBucketOperation &) override { }
+    void replay(const JoinBucketsOperation &) override { }
+    void replay(const PruneRemovedDocumentsOperation &) override { }
+    void replay(const MoveOperation &) override { }
+    void replay(const CreateBucketOperation &) override { }
 };
 
 
@@ -324,7 +331,7 @@ public:
  */
 struct Utility
 {
-    virtual ~Utility() {}
+    virtual ~Utility() = default;
     typedef std::unique_ptr<Utility> UP;
     virtual int run() = 0;
 };
@@ -371,6 +378,8 @@ class BaseUtility : public Utility
 protected:
     const BaseOptions     &_bopts;
     DummyFileHeaderContext _fileHeader;
+    FastOS_ThreadPool      _threadPool;
+    FNET_Transport         _transport;
     TransLogServer         _server;
     client::TransLogClient _client;
 
@@ -378,9 +387,15 @@ public:
     BaseUtility(const BaseOptions &bopts)
         : _bopts(bopts),
           _fileHeader(),
-          _server(_bopts.tlsName, _bopts.listenPort, _bopts.tlsDir, _fileHeader),
-          _client(vespalib::make_string("tcp/localhost:%d", _bopts.listenPort))
+          _threadPool(64_Ki),
+          _transport(),
+          _server(_transport, _bopts.tlsName, _bopts.listenPort, _bopts.tlsDir, _fileHeader),
+          _client(_transport, vespalib::make_string("tcp/localhost:%d", _bopts.listenPort))
     {
+        _transport.Start(&_threadPool);
+    }
+    ~BaseUtility() override {
+        _transport.ShutDown(true);
     }
     virtual int run() override = 0;
 };
@@ -584,59 +599,59 @@ DumpDocumentsOptions::createUtility() const
 /**
  * Main application.
  */
-class App : public FastOS_Application
+class App
 {
 private:
     std::string _programName;
     std::string _tmpArg;
 
-    void combineFirstArgs() {
-        _tmpArg = vespalib::make_string("%s %s", _argv[0], _argv[1]).c_str();
-        _argv[1] = &_tmpArg[0];
+    void combineFirstArgs(char **argv) {
+        _tmpArg = vespalib::make_string("%s %s", argv[0], argv[1]).c_str();
+        argv[1] = &_tmpArg[0];
     }
-    void replaceFirstArg(const std::string &replace) {
+    void replaceFirstArg(char **argv, const std::string &replace) {
         _tmpArg = vespalib::make_string("%s %s", _programName.c_str(), replace.c_str()).c_str();
-        _argv[0] = &_tmpArg[0];
+        argv[0] = &_tmpArg[0];
     }
     void usageHeader() {
         std::cout << _programName << " version 0.0\n";
     }
-    void usage() {
+    void usage(int argc, char **argv) {
         usageHeader();
-        replaceFirstArg(ListDomainsOptions::command());
-        ListDomainsOptions(_argc, _argv).usage();
-        replaceFirstArg(DumpOperationsOptions::command());
-        DumpOperationsOptions(_argc, _argv).usage();
-        replaceFirstArg(DumpDocumentsOptions::command());
-        DumpDocumentsOptions(_argc, _argv).usage();
+        replaceFirstArg(argv, ListDomainsOptions::command());
+        ListDomainsOptions(argc, argv).usage();
+        replaceFirstArg(argv, DumpOperationsOptions::command());
+        DumpOperationsOptions(argc, argv).usage();
+        replaceFirstArg(argv, DumpDocumentsOptions::command());
+        DumpDocumentsOptions(argc, argv).usage();
     }
 
 public:
     App();
     ~App();
-    int Main() override;
+    int main(int argc, char **argv);
 };
 
 App::App() {}
 App::~App() {}
 
 int
-App::Main() {
-    _programName = _argv[0];
-    if (_argc < 2) {
-        usage();
+App::main(int argc, char **argv) {
+    _programName = argv[0];
+    if (argc < 2) {
+        usage(argc, argv);
         return 1;
     }
     BaseOptions::UP opts;
-    if (strcmp(_argv[1], ListDomainsOptions::command().c_str()) == 0) {
-        combineFirstArgs();
-        opts.reset(new ListDomainsOptions(_argc-1, _argv+1));
-    } else if (strcmp(_argv[1], DumpOperationsOptions::command().c_str()) == 0) {
-        combineFirstArgs();
-        opts.reset(new DumpOperationsOptions(_argc-1, _argv+1));
-    } else if (strcmp(_argv[1], DumpDocumentsOptions::command().c_str()) == 0) {
-        combineFirstArgs();
-        opts.reset(new DumpDocumentsOptions(_argc-1, _argv+1));
+    if (strcmp(argv[1], ListDomainsOptions::command().c_str()) == 0) {
+        combineFirstArgs(argv);
+        opts.reset(new ListDomainsOptions(argc-1, argv+1));
+    } else if (strcmp(argv[1], DumpOperationsOptions::command().c_str()) == 0) {
+        combineFirstArgs(argv);
+        opts.reset(new DumpOperationsOptions(argc-1, argv+1));
+    } else if (strcmp(argv[1], DumpDocumentsOptions::command().c_str()) == 0) {
+        combineFirstArgs(argv);
+        opts.reset(new DumpDocumentsOptions(argc-1, argv+1));
     }
     if (opts.get() != NULL) {
         try {
@@ -649,13 +664,12 @@ App::Main() {
         }
         return opts->createUtility()->run();
     }
-    usage();
+    usage(argc, argv);
     return 1;
 }
 
-int
-main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
+    vespalib::SignalHandler::PIPE.ignore();
     App app;
-    return app.Entry(argc, argv);
+    return app.main(argc, argv);
 }

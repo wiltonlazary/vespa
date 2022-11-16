@@ -1,12 +1,15 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
 #include "datastore.h"
 #include "entryref.h"
 #include "unique_store_add_result.h"
+#include "unique_store_buffer_type.h"
 #include "unique_store_entry.h"
 #include "i_compactable.h"
+
+namespace vespalib::alloc { class MemoryAllocator; }
 
 namespace vespalib::datastore {
 
@@ -23,17 +26,16 @@ public:
     using EntryConstRefType = const EntryType &;
     using WrappedEntryType = UniqueStoreEntry<EntryType>;
     using RefType = RefT;
-    using UniqueStoreBufferType = BufferType<WrappedEntryType>;
 private:
     DataStoreType _store;
-    UniqueStoreBufferType _typeHandler;
+    UniqueStoreBufferType<WrappedEntryType> _typeHandler;
 
 public:
-    UniqueStoreAllocator();
+    UniqueStoreAllocator(std::shared_ptr<alloc::MemoryAllocator> memory_allocator);
     ~UniqueStoreAllocator() override;
     EntryRef allocate(const EntryType& value);
     void hold(EntryRef ref);
-    EntryRef move(EntryRef ref) override;
+    EntryRef move_on_compact(EntryRef ref) override;
     const WrappedEntryType& get_wrapped(EntryRef ref) const {
         RefType iRef(ref);
         return *_store.template getEntry<WrappedEntryType>(iRef);
@@ -41,8 +43,8 @@ public:
     const EntryType& get(EntryRef ref) const {
         return get_wrapped(ref).value();
     }
-    DataStoreType& get_data_store() { return _store; }
-    const DataStoreType& get_data_store() const { return _store; }
+    DataStoreType& get_data_store() noexcept { return _store; }
+    const DataStoreType& get_data_store() const noexcept { return _store; }
 };
 
 }

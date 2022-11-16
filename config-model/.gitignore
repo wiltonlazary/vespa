@@ -4,3 +4,5 @@
 /target
 /src/test/integration/*/copy/
 /src/test/integration/*/models.generated/
+*.cfg.actual
+/var/

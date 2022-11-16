@@ -1,20 +1,32 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.application.api;
 
-import com.yahoo.config.provision.AthenzDomain;
 import com.yahoo.config.provision.AthenzService;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.RegionName;
+import com.yahoo.config.provision.Tags;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
+import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import static ai.vespa.validation.Validation.require;
+import static ai.vespa.validation.Validation.requireAtLeast;
+import static ai.vespa.validation.Validation.requireInRange;
+import static com.yahoo.config.application.api.DeploymentSpec.RevisionChange.whenClear;
+import static com.yahoo.config.application.api.DeploymentSpec.RevisionTarget.next;
+import static com.yahoo.config.provision.Environment.prod;
+import static java.util.stream.Collectors.toList;
 
 /**
  * The deployment spec for an application instance
@@ -23,40 +35,70 @@ import java.util.stream.Collectors;
  */
 public class DeploymentInstanceSpec extends DeploymentSpec.Steps {
 
+    /** The maximum number of consecutive days Vespa upgrades are allowed to be blocked */
+    private static final int maxUpgradeBlockingDays = 21;
+
     /** The name of the instance this step deploys */
     private final InstanceName name;
 
+    private final Tags tags;
     private final DeploymentSpec.UpgradePolicy upgradePolicy;
+    private final DeploymentSpec.RevisionTarget revisionTarget;
+    private final DeploymentSpec.RevisionChange revisionChange;
     private final DeploymentSpec.UpgradeRollout upgradeRollout;
+    private final int minRisk;
+    private final int maxRisk;
+    private final int maxIdleHours;
     private final List<DeploymentSpec.ChangeBlocker> changeBlockers;
     private final Optional<String> globalServiceId;
     private final Optional<AthenzService> athenzService;
+    private final Optional<CloudAccount> cloudAccount;
     private final Notifications notifications;
     private final List<Endpoint> endpoints;
 
     public DeploymentInstanceSpec(InstanceName name,
+                                  Tags tags,
                                   List<DeploymentSpec.Step> steps,
                                   DeploymentSpec.UpgradePolicy upgradePolicy,
+                                  DeploymentSpec.RevisionTarget revisionTarget,
+                                  DeploymentSpec.RevisionChange revisionChange,
                                   DeploymentSpec.UpgradeRollout upgradeRollout,
+                                  int minRisk, int maxRisk, int maxIdleHours,
                                   List<DeploymentSpec.ChangeBlocker> changeBlockers,
                                   Optional<String> globalServiceId,
                                   Optional<AthenzService> athenzService,
+                                  Optional<CloudAccount> cloudAccount,
                                   Notifications notifications,
-                                  List<Endpoint> endpoints) {
+                                  List<Endpoint> endpoints,
+                                  Instant now) {
         super(steps);
-        this.name = name;
-        this.upgradePolicy = upgradePolicy;
-        this.upgradeRollout = upgradeRollout;
-        this.changeBlockers = changeBlockers;
-        this.globalServiceId = globalServiceId;
-        this.athenzService = athenzService;
-        this.notifications = notifications;
-        this.endpoints = List.copyOf(validateEndpoints(endpoints, steps()));
+        this.name = Objects.requireNonNull(name);
+        this.tags = Objects.requireNonNull(tags);
+        this.upgradePolicy = Objects.requireNonNull(upgradePolicy);
+        Objects.requireNonNull(revisionTarget);
+        Objects.requireNonNull(revisionChange);
+        this.revisionTarget = require(maxRisk == 0 || revisionTarget == next, revisionTarget,
+                                      "revision-target must be 'next' when max-risk is specified");
+        this.revisionChange = require(maxRisk == 0 || revisionChange == whenClear, revisionChange,
+                                      "revision-change must be 'when-clear' when max-risk is specified");
+        this.upgradeRollout = Objects.requireNonNull(upgradeRollout);
+        this.minRisk = requireAtLeast(minRisk, "minimum risk score", 0);
+        this.maxRisk = require(maxRisk >= minRisk, maxRisk, "maximum risk cannot be less than minimum risk score");
+        this.maxIdleHours = requireInRange(maxIdleHours, "maximum idle hours", 0, 168);
+        this.changeBlockers = Objects.requireNonNull(changeBlockers);
+        this.globalServiceId = Objects.requireNonNull(globalServiceId);
+        this.athenzService = Objects.requireNonNull(athenzService);
+        this.cloudAccount = Objects.requireNonNull(cloudAccount);
+        this.notifications = Objects.requireNonNull(notifications);
+        this.endpoints = List.copyOf(Objects.requireNonNull(endpoints));
         validateZones(new HashSet<>(), new HashSet<>(), this);
         validateEndpoints(steps(), globalServiceId, this.endpoints);
+        validateChangeBlockers(changeBlockers, now);
     }
 
     public InstanceName name() { return name; }
+
+    public Tags tags() { return tags; }
 
     /**
      * Throws an IllegalArgumentException if any production deployment or test is declared multiple times,
@@ -91,31 +133,6 @@ public class DeploymentInstanceSpec extends DeploymentSpec.Steps {
         }
     }
 
-    /** Validates the endpoints and makes sure default values are respected */
-    private List<Endpoint> validateEndpoints(List<Endpoint> endpoints, List<DeploymentSpec.Step> steps) {
-        Objects.requireNonNull(endpoints, "Missing endpoints parameter");
-
-        var productionRegions = steps.stream()
-                                     .filter(step -> step.concerns(Environment.prod))
-                                     .flatMap(step -> step.zones().stream())
-                                     .flatMap(zone -> zone.region().stream())
-                                     .map(RegionName::value)
-                                     .collect(Collectors.toSet());
-
-        var rebuiltEndpointsList = new ArrayList<Endpoint>();
-
-        for (var endpoint : endpoints) {
-            if (endpoint.regions().isEmpty()) {
-                var rebuiltEndpoint = endpoint.withRegions(productionRegions);
-                rebuiltEndpointsList.add(rebuiltEndpoint);
-            } else {
-                rebuiltEndpointsList.add(endpoint);
-            }
-        }
-
-        return List.copyOf(rebuiltEndpointsList);
-    }
-
     /** Throw an IllegalArgumentException if an endpoint refers to a region that is not declared in 'prod' */
     private void validateEndpoints(List<DeploymentSpec.Step> steps, Optional<String> globalServiceId, List<Endpoint> endpoints) {
         if (globalServiceId.isPresent() && ! endpoints.isEmpty()) {
@@ -136,11 +153,56 @@ public class DeploymentInstanceSpec extends DeploymentSpec.Steps {
         }
     }
 
-    /** Returns the upgrade policy of this, which is defaultPolicy if none is specified */
+    private void validateChangeBlockers(List<DeploymentSpec.ChangeBlocker> changeBlockers, Instant now) {
+        // Find all possible dates an upgrade block window can start
+        Stream<Instant> blockingFrom = changeBlockers.stream()
+                                                     .filter(blocker -> blocker.blocksVersions())
+                                                     .map(blocker -> blocker.window())
+                                                     .map(window -> window.dateRange().start()
+                                                                          .map(date -> date.atStartOfDay(window.zone())
+                                                                                           .toInstant())
+                                                                          .orElse(now))
+                                                     .distinct();
+        if (!blockingFrom.allMatch(this::canUpgradeWithinDeadline)) {
+            throw new IllegalArgumentException("Cannot block Vespa upgrades for longer than " +
+                                               maxUpgradeBlockingDays + " consecutive days");
+        }
+    }
+
+    /** Returns whether this allows upgrade within deadline, relative to given instant */
+    private boolean canUpgradeWithinDeadline(Instant instant) {
+        instant = instant.truncatedTo(ChronoUnit.HOURS);
+        Duration step = Duration.ofHours(1);
+        Duration max = Duration.ofDays(maxUpgradeBlockingDays);
+        for (Instant current = instant; ! canUpgradeAt(current); current = current.plus(step)) {
+            Duration blocked = Duration.between(instant, current);
+            if (blocked.compareTo(max) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Returns the upgrade policy of this, which is {@link DeploymentSpec.UpgradePolicy#defaultPolicy} by default */
     public DeploymentSpec.UpgradePolicy upgradePolicy() { return upgradePolicy; }
 
-    /** Returns the upgrade rollout strategy of this, which is separate if none is specified */
+    /** Returns the revision target choice of this, which is {@link DeploymentSpec.RevisionTarget#latest} by default */
+    public DeploymentSpec.RevisionTarget revisionTarget() { return revisionTarget; }
+
+    /** Returns the revision change strategy of this, which is {@link DeploymentSpec.RevisionChange#whenFailing} by default */
+    public DeploymentSpec.RevisionChange revisionChange() { return revisionChange; }
+
+    /** Returns the upgrade rollout strategy of this, which is {@link DeploymentSpec.UpgradeRollout#separate} by default */
     public DeploymentSpec.UpgradeRollout upgradeRollout() { return upgradeRollout; }
+
+    /** Minimum cumulative, enqueued risk required for a new revision to roll out to this instance. 0 by default. */
+    public int minRisk() { return minRisk; }
+
+    /** Maximum cumulative risk that will automatically roll out to this instance, as long as this is possible. 0 by default. */
+    public int maxRisk() { return maxRisk; }
+
+    /* Maximum number of hours to wait for enqueued risk to reach the minimum, before rolling out whatever revisions are enqueued. 8 by default. */
+    public int maxIdleHours() { return maxIdleHours; }
 
     /** Returns time windows where upgrades are disallowed for these instances */
     public List<DeploymentSpec.ChangeBlocker> changeBlocker() { return changeBlockers; }
@@ -169,6 +231,15 @@ public class DeploymentInstanceSpec extends DeploymentSpec.Steps {
                       .or(() -> this.athenzService);
     }
 
+    /** Returns the cloud account to use for given environment and region, if any */
+    public Optional<CloudAccount> cloudAccount(Environment environment, Optional<RegionName> region) {
+        return zones().stream()
+                      .filter(zone -> zone.concerns(environment, region))
+                      .findFirst()
+                      .flatMap(DeploymentSpec.DeclaredZone::cloudAccount)
+                      .or(() -> cloudAccount);
+    }
+
     /** Returns the notification configuration of these instances */
     public Notifications notifications() { return notifications; }
 
@@ -187,6 +258,7 @@ public class DeploymentInstanceSpec extends DeploymentSpec.Steps {
         DeploymentInstanceSpec other = (DeploymentInstanceSpec) o;
         return globalServiceId.equals(other.globalServiceId) &&
                upgradePolicy == other.upgradePolicy &&
+               revisionTarget == other.revisionTarget &&
                upgradeRollout == other.upgradeRollout &&
                changeBlockers.equals(other.changeBlockers) &&
                steps().equals(other.steps()) &&
@@ -197,7 +269,21 @@ public class DeploymentInstanceSpec extends DeploymentSpec.Steps {
 
     @Override
     public int hashCode() {
-        return Objects.hash(globalServiceId, upgradePolicy, upgradeRollout, changeBlockers, steps(), athenzService, notifications, endpoints);
+        return Objects.hash(globalServiceId, upgradePolicy, revisionTarget, upgradeRollout, changeBlockers, steps(), athenzService, notifications, endpoints);
+    }
+
+    int deployableHashCode() {
+        List<DeploymentSpec.DeclaredZone> zones = zones().stream().filter(zone -> zone.concerns(prod)).toList();
+        Object[] toHash = new Object[zones.size() + 4];
+        int i = 0;
+        toHash[i++] = name;
+        toHash[i++] = endpoints;
+        toHash[i++] = globalServiceId;
+        toHash[i++] = tags;
+        for (DeploymentSpec.DeclaredZone zone : zones)
+            toHash[i++] = Objects.hash(zone, zone.athenzService());
+
+        return Arrays.hashCode(toHash);
     }
 
     @Override

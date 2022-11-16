@@ -1,4 +1,4 @@
-<!-- Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root. -->
+<!-- Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root. -->
 
 # A map to the Vespa code base
 
@@ -61,7 +61,7 @@ Document operation modules:
 - [indexinglanguage](https://github.com/vespa-engine/vespa/tree/master/indexinglanguage) - implementation of the "indexing" language which is used to express the statements prefixed by "indexing:" in the search definition. 
 - [docprocs](https://github.com/vespa-engine/vespa/tree/master/docprocs) - document processor components bundled with Vespa. Notably the Indexingprocessor - a document processor invoking the indexing language statements configured for the document type in question on document operations.
 - [vespaclient-container-plugin](https://github.com/vespa-engine/vespa/tree/master/vespaclient-container-plugin) - implements the document/v1 API and internal API used by the Java HTTP client on top of the jDisc container, forwarding to the Document API.
-- [vespa-http-client](https://github.com/vespa-engine/vespa/tree/master/vespa-http-client) - client for fast writing to the internal API implemented by vespaclient-container-plugin.
+- [vespa-feed-client](https://github.com/vespa-engine/vespa/tree/master/vespa-feed-client) - client for fast writing to the internal API implemented by vespaclient-container-plugin.
 
 ## Content nodes
 
@@ -93,9 +93,7 @@ It is implemented in Java.
 Libraries used throughput the code.
 
 - [vespalib](https://github.com/vespa-engine/vespa/tree/master/vespalib) - general utility library for C++
-- [staging_vespalib](https://github.com/vespa-engine/vespa/tree/master/staging_vespalib) - general (less stable) utility library for C++
 - [vespajlib](https://github.com/vespa-engine/vespa/tree/master/vespajlib) - general utility library for Java. Includes the Java implementation of the tensor library.
-- [yolean](https://github.com/vespa-engine/vespa/tree/master/yolean) - another (more stable) general Java utility library 
 
 
 

@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.dispatch;
 
 import com.yahoo.prelude.fastsearch.FastHit;
@@ -45,6 +45,9 @@ public class InvokerResult {
             FastHit fh = new FastHit(hit.getGid(), hit.getRelevance(), hit.getPartId(), hit.getDistributionKey());
             if (hit.hasSortData()) {
                 fh.setSortData(hit.getSortData(), sorting);
+            }
+            if (hit.hasMatchFeatures()) {
+                fh.setField("matchfeatures", hit.getMatchFeatures());
             }
             fh.setQuery(query);
             fh.setFillable();

@@ -8,6 +8,7 @@
 #include "load_utils.h"
 #include "enum_store_loaders.h"
 #include "ipostinglistattributebase.h"
+#include "valuemodifier.h"
 #include <vespa/vespalib/stllike/hashtable.hpp>
 #include <vespa/vespalib/datastore/unique_store_remapper.h>
 
@@ -25,10 +26,10 @@ template <typename B, typename M>
 bool
 MultiValueEnumAttribute<B, M>::extractChangeData(const Change & c, EnumIndex & idx)
 {
-    if ( ! c.isEnumValid() ) {
+    if ( ! c.has_entry_ref() ) {
         return this->_enumStore.find_index(c._data.raw(), idx);
     }
-    idx = EnumIndex(vespalib::datastore::EntryRef(c.getEnum()));
+    idx = EnumIndex(vespalib::datastore::EntryRef(c.get_entry_ref()));
     return true;
 }
 
@@ -42,9 +43,9 @@ MultiValueEnumAttribute<B, M>::considerAttributeChange(const Change & c, EnumSto
     {
         EnumIndex idx;
         if (!this->_enumStore.find_index(c._data.raw(), idx)) {
-            c.setEnum(inserter.insert(c._data.raw()).ref());
+            c.set_entry_ref(inserter.insert(c._data.raw()).ref());
         } else {
-            c.setEnum(idx.ref());
+            c.set_entry_ref(idx.ref());
         }
     }
 }
@@ -60,10 +61,10 @@ MultiValueEnumAttribute<B, M>::applyValueChanges(const DocIndices& docIndices, E
         uint32_t valueCount = oldIndices.size();
         this->_mvMapping.set(doc_values.first, doc_values.second);
         for (uint32_t i = 0; i < doc_values.second.size(); ++i) {
-            updater.inc_ref_count(doc_values.second[i]);
+            updater.inc_ref_count(multivalue::get_value_ref(doc_values.second[i]).load_relaxed());
         }
         for (uint32_t i = 0; i < valueCount; ++i) {
-            updater.dec_ref_count(oldIndices[i]);
+            updater.dec_ref_count(multivalue::get_value_ref(oldIndices[i]).load_relaxed());
         }
     }
 }
@@ -80,7 +81,7 @@ MultiValueEnumAttribute<B, M>::fillValues(LoadedVector & loaded)
         this->_mvMapping.prepareLoadFromMultiValue();
         for (DocId doc = 0; doc < numDocs; ++doc) {
             for(const auto* v = & loaded.read();(count < numValues) && (v->_docId == doc); count++, loaded.next(), v = & loaded.read()) {
-                indices.push_back(WeightedIndex(v->getEidx(), v->getWeight()));
+                indices.push_back(multivalue::ValueBuilder<WeightedIndex>::build(AtomicEntryRef(v->getEidx()), v->getWeight()));
             }
             this->checkSetMaxValueCount(indices.size());
             this->_mvMapping.set(doc, indices);
@@ -132,31 +133,6 @@ MultiValueEnumAttribute(const vespalib::string &baseFileName,
 {
 }
 
-namespace {
-
-template<typename T>
-const IWeightedIndexVector::WeightedIndex *
-extract(const T *) {
-    throw std::runtime_error("IWeightedIndexVector::getEnumHandles not implemented");
-}
-
-template <>
-inline const IWeightedIndexVector::WeightedIndex *
-extract(const IWeightedIndexVector::WeightedIndex * values) {
-    return values;
-}
-
-}
-
-template <typename B, typename M>
-uint32_t
-MultiValueEnumAttribute<B, M>::getEnumHandles(DocId doc, const IWeightedIndexVector::WeightedIndex * & values) const
-{
-    WeightedIndexArrayRef indices(this->_mvMapping.get(doc));
-    values = extract(&indices[0]);
-    return indices.size();
-}
-
 template <typename B, typename M>
 void
 MultiValueEnumAttribute<B, M>::onCommit()
@@ -171,7 +147,7 @@ MultiValueEnumAttribute<B, M>::onCommit()
     updater.commit();
     this->freezeEnumDictionary();
     std::atomic_thread_fence(std::memory_order_release);
-    this->removeAllOldGenerations();
+    this->reclaim_unused_memory();
     if (this->_mvMapping.considerCompact(this->getConfig().getCompactionStrategy())) {
         this->incGeneration();
         this->updateStat(true);
@@ -207,8 +183,9 @@ MultiValueEnumAttribute<B, M>::onUpdateStat()
 {
     // update statistics
     vespalib::MemoryUsage total;
-    total.merge(this->_enumStore.update_stat());
-    total.merge(this->_mvMapping.updateStat());
+    auto& compaction_strategy = this->getConfig().getCompactionStrategy();
+    total.merge(this->_enumStore.update_stat(compaction_strategy));
+    total.merge(this->_mvMapping.updateStat(compaction_strategy));
     total.merge(this->getChangeVectorMemoryUsage());
     mergeMemoryStats(total);
     this->updateStatistics(this->_mvMapping.getTotalValueCnt(), this->_enumStore.get_num_uniques(), total.allocatedBytes(),
@@ -217,15 +194,15 @@ MultiValueEnumAttribute<B, M>::onUpdateStat()
 
 template <typename B, typename M>
 void
-MultiValueEnumAttribute<B, M>::removeOldGenerations(generation_t firstUsed)
+MultiValueEnumAttribute<B, M>::reclaim_memory(generation_t oldest_used_gen)
 {
-    this->_enumStore.trim_hold_lists(firstUsed);
-    this->_mvMapping.trimHoldLists(firstUsed);
+    this->_enumStore.reclaim_memory(oldest_used_gen);
+    this->_mvMapping.reclaim_memory(oldest_used_gen);
 }
 
 template <typename B, typename M>
 void
-MultiValueEnumAttribute<B, M>::onGenerationChange(generation_t generation)
+MultiValueEnumAttribute<B, M>::before_inc_generation(generation_t current_gen)
 {
     /*
      * Freeze tree before generation is increased in attribute vector
@@ -234,8 +211,8 @@ MultiValueEnumAttribute<B, M>::onGenerationChange(generation_t generation)
      * sufficiently new frozen tree.
      */
     freezeEnumDictionary();
-    this->_mvMapping.transferHoldLists(generation - 1);
-    this->_enumStore.transfer_hold_lists(generation - 1);
+    this->_mvMapping.assign_generation(current_gen);
+    this->_enumStore.assign_generation(current_gen);
 }
 
 template <typename B, typename M>

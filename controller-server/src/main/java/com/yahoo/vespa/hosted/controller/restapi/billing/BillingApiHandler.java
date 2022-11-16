@@ -4,7 +4,7 @@ package com.yahoo.vespa.hosted.controller.restapi.billing;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.JacksonJsonResponse;
 import com.yahoo.restapi.MessageResponse;
@@ -18,18 +18,19 @@ import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.hosted.controller.ApplicationController;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.TenantController;
-import com.yahoo.vespa.hosted.controller.api.integration.billing.CollectionMethod;
-import com.yahoo.vespa.hosted.controller.api.integration.billing.PaymentInstrument;
-import com.yahoo.vespa.hosted.controller.api.integration.billing.Invoice;
-import com.yahoo.vespa.hosted.controller.api.integration.billing.InstrumentOwner;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.Bill;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.BillingController;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.CollectionMethod;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.InstrumentOwner;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.PaymentInstrument;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.PlanId;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.PlanRegistry;
+import com.yahoo.vespa.hosted.controller.api.role.Role;
+import com.yahoo.vespa.hosted.controller.api.role.SecurityContext;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 import com.yahoo.vespa.hosted.controller.tenant.Tenant;
 import com.yahoo.yolean.Exceptions;
 
-import javax.ws.rs.BadRequestException;
-import javax.ws.rs.ForbiddenException;
-import javax.ws.rs.NotFoundException;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.security.Principal;
@@ -41,26 +42,28 @@ import java.time.format.DateTimeParseException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Executor;
-import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 /**
  * @author andreer
  * @author olaa
  */
-public class BillingApiHandler extends LoggingRequestHandler {
+public class BillingApiHandler extends ThreadedHttpRequestHandler {
 
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     private final BillingController billingController;
     private final ApplicationController applicationController;
     private final TenantController tenantController;
+    private final PlanRegistry planRegistry;
 
     public BillingApiHandler(Executor executor,
                              Controller controller) {
         super(executor);
         this.billingController = controller.serviceRegistry().billingController();
+        this.planRegistry = controller.serviceRegistry().planRegistry();
         this.applicationController = controller.applications();
         this.tenantController = controller.tenants();
     }
@@ -68,28 +71,23 @@ public class BillingApiHandler extends LoggingRequestHandler {
     @Override
     public HttpResponse handle(HttpRequest request) {
         try {
+            Optional<String> userId = Optional.ofNullable(request.getJDiscRequest().getUserPrincipal()).map(Principal::getName);
+            if (userId.isEmpty())
+                return ErrorResponse.unauthorized("Must be authenticated to use this API");
+
             Path path = new Path(request.getUri());
-            String userId = userIdOrThrow(request);
-            switch (request.getMethod()) {
-                case GET:
-                    return handleGET(request, path, userId);
-                case PATCH:
-                    return handlePATCH(request, path, userId);
-                case DELETE:
-                    return handleDELETE(path, userId);
-                case POST:
-                    return handlePOST(path, request, userId);
-                default:
-                    return ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is not supported");
-            }
-        } catch (NotFoundException e) {
-            return ErrorResponse.notFoundError(Exceptions.toMessageString(e));
-        } catch (IllegalArgumentException e) {
+            return switch (request.getMethod()) {
+                case GET -> handleGET(request, path, userId.get());
+                case PATCH -> handlePATCH(request, path, userId.get());
+                case DELETE -> handleDELETE(path, userId.get());
+                case POST -> handlePOST(path, request, userId.get());
+                default -> ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is not supported");
+            };
+        }
+        catch (IllegalArgumentException e) {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
         } catch (Exception e) {
-            log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
-            // Don't expose internal billing details in error message to user
-            return ErrorResponse.internalServerError("Internal problem while handling billing API request");
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
 
@@ -99,23 +97,24 @@ public class BillingApiHandler extends LoggingRequestHandler {
         if (path.matches("/billing/v1/tenant/{tenant}/billing")) return getBilling(path.get("tenant"), request.getProperty("until"));
         if (path.matches("/billing/v1/tenant/{tenant}/plan")) return getPlan(path.get("tenant"));
         if (path.matches("/billing/v1/billing")) return getBillingAllTenants(request.getProperty("until"));
-        if (path.matches("/billing/v1/invoice/export")) return getAllInvoices();
+        if (path.matches("/billing/v1/invoice/export")) return getAllBills();
         if (path.matches("/billing/v1/invoice/tenant/{tenant}/line-item")) return getLineItems(path.get("tenant"));
+        if (path.matches("/billing/v1/plans")) return getPlans();
         return ErrorResponse.notFoundError("Nothing at " + path);
     }
 
-    private HttpResponse getAllInvoices() {
-        var invoices = billingController.getInvoices();
+    private HttpResponse getAllBills() {
+        var bills = billingController.getBills();
         var headers = new String[]{ "ID", "Tenant", "From", "To", "CpuHours", "MemoryHours", "DiskHours", "Cpu", "Memory", "Disk", "Additional" };
-        var rows = invoices.stream()
-                .map(invoice -> {
+        var rows = bills.stream()
+                .map(bill -> {
                     return new Object[] {
-                            invoice.id().value(), invoice.tenant().value(),
-                            invoice.getStartTime().format(DateTimeFormatter.ISO_LOCAL_DATE),
-                            invoice.getEndTime().format(DateTimeFormatter.ISO_LOCAL_DATE),
-                            invoice.sumCpuHours(), invoice.sumMemoryHours(), invoice.sumDiskHours(),
-                            invoice.sumCpuCost(), invoice.sumMemoryCost(), invoice.sumDiskCost(),
-                            invoice.sumAdditionalCost()
+                            bill.id().value(), bill.tenant().value(),
+                            bill.getStartDate().format(DateTimeFormatter.ISO_LOCAL_DATE),
+                            bill.getEndDate().format(DateTimeFormatter.ISO_LOCAL_DATE),
+                            bill.sumCpuHours(), bill.sumMemoryHours(), bill.sumDiskHours(),
+                            bill.sumCpuCost(), bill.sumMemoryCost(), bill.sumDiskCost(),
+                            bill.sumAdditionalCost()
                     };
                 })
                 .collect(Collectors.toList());
@@ -138,9 +137,9 @@ public class BillingApiHandler extends LoggingRequestHandler {
     }
 
     private HttpResponse handlePOST(Path path, HttpRequest request, String userId) {
-        if (path.matches("/billing/v1/invoice")) return createInvoice(request, userId);
-        if (path.matches("/billing/v1/invoice/{invoice-id}/status")) return setInvoiceStatus(request, path.get("invoice-id"));
-        if (path.matches("/billing/v1/invoice/tenant/{tenant}/line-item")) return addLineItem(request, path.get("tenant"));
+        if (path.matches("/billing/v1/invoice")) return createBill(request, userId);
+        if (path.matches("/billing/v1/invoice/{invoice-id}/status")) return setBillStatus(request, path.get("invoice-id"), userId);
+        if (path.matches("/billing/v1/invoice/tenant/{tenant}/line-item")) return addLineItem(request, path.get("tenant"), userId);
         return ErrorResponse.notFoundError("Nothing at " + path);
 
     }
@@ -158,9 +157,11 @@ public class BillingApiHandler extends LoggingRequestHandler {
         var tenantName = TenantName.from(tenant);
         var slime = inspectorOrThrow(request);
         var planId = PlanId.from(slime.field("plan").asString());
+        var roles = requestRoles(request);
+        var isAccountant = roles.contains(Role.hostedAccountant());
 
         var hasDeployments = hasDeployments(tenantName);
-        var result = billingController.setPlan(tenantName, planId, hasDeployments);
+        var result = billingController.setPlan(tenantName, planId, hasDeployments, isAccountant);
 
         if (result.isSuccess())
             return new StringResponse("Plan: " + planId.value());
@@ -190,7 +191,7 @@ public class BillingApiHandler extends LoggingRequestHandler {
     private HttpResponse getBillingAllTenants(String until) {
         try {
             var untilDate = untilParameter(until);
-            var uncommittedInvoices = billingController.createUncommittedInvoices(untilDate);
+            var uncommittedBills = billingController.createUncommittedBills(untilDate);
 
             var slime = new Slime();
             var root = slime.setObject();
@@ -198,12 +199,12 @@ public class BillingApiHandler extends LoggingRequestHandler {
             var tenants = root.setArray("tenants");
 
             tenantController.asList().stream().sorted(Comparator.comparing(Tenant::name)).forEach(tenant -> {
-                var invoice = uncommittedInvoices.get(tenant.name());
+                var bill = uncommittedBills.get(tenant.name());
                 var tc = tenants.addObject();
                 tc.setString("tenant", tenant.name().value());
                 getPlanForTenant(tc, tenant.name());
                 getCollectionForTenant(tc, tenant.name());
-                renderCurrentUsage(tc.setObject("current"), invoice);
+                renderCurrentUsage(tc.setObject("current"), bill);
                 renderAdditionalItems(tc.setObject("additional").setArray("items"), billingController.getUnusedLineItems(tenant.name()));
 
                 billingController.getDefaultInstrument(tenant.name()).ifPresent(card ->
@@ -222,38 +223,38 @@ public class BillingApiHandler extends LoggingRequestHandler {
         tc.setString("collection", collection.name());
     }
 
-    private HttpResponse addLineItem(HttpRequest request, String tenant) {
+    private HttpResponse addLineItem(HttpRequest request, String tenant, String userId) {
         Inspector inspector = inspectorOrThrow(request);
         billingController.addLineItem(
                 TenantName.from(tenant),
                 getInspectorFieldOrThrow(inspector, "description"),
                 new BigDecimal(getInspectorFieldOrThrow(inspector, "amount")),
-                userIdOrThrow(request));
+                userId);
         return new MessageResponse("Added line item for tenant " + tenant);
     }
 
-    private HttpResponse setInvoiceStatus(HttpRequest request, String invoiceId) {
+    private HttpResponse setBillStatus(HttpRequest request, String billId, String userId) {
         Inspector inspector = inspectorOrThrow(request);
         String status = getInspectorFieldOrThrow(inspector, "status");
-        billingController.updateInvoiceStatus(Invoice.Id.of(invoiceId), userIdOrThrow(request), status);
-        return new MessageResponse("Updated status of invoice " + invoiceId);
+        billingController.updateBillStatus(Bill.Id.of(billId), userId, status);
+        return new MessageResponse("Updated status of invoice " + billId);
     }
 
-    private HttpResponse createInvoice(HttpRequest request, String userId) {
+    private HttpResponse createBill(HttpRequest request, String userId) {
         Inspector inspector = inspectorOrThrow(request);
         TenantName tenantName = TenantName.from(getInspectorFieldOrThrow(inspector, "tenant"));
 
         LocalDate startDate = LocalDate.parse(getInspectorFieldOrThrow(inspector, "startTime"));
         LocalDate endDate = LocalDate.parse(getInspectorFieldOrThrow(inspector, "endTime"));
         ZonedDateTime startTime = startDate.atStartOfDay(ZoneId.of("UTC"));
-        ZonedDateTime endTime = endDate.atStartOfDay(ZoneId.of("UTC"));
+        ZonedDateTime endTime = endDate.plusDays(1).atStartOfDay(ZoneId.of("UTC"));
 
-        var invoiceId = billingController.createInvoiceForPeriod(tenantName, startTime, endTime, userId);
+        var billId = billingController.createBillForPeriod(tenantName, startTime, endTime, userId);
 
         Slime slime = new Slime();
         Cursor root = slime.setObject();
-        root.setString("message", "Created invoice with ID " + invoiceId.value());
-        root.setString("id", invoiceId.value());
+        root.setString("message", "Created invoice with ID " + billId.value());
+        root.setString("id", billId.value());
         return new SlimeJsonResponse(slime);
     }
 
@@ -278,7 +279,7 @@ public class BillingApiHandler extends LoggingRequestHandler {
             getPlanForTenant(root, tenantId);
             renderCurrentUsage(root.setObject("current"), getCurrentUsageForTenant(tenantId, untilDate));
             renderAdditionalItems(root.setObject("additional").setArray("items"), billingController.getUnusedLineItems(tenantId));
-            renderInvoices(root.setArray("bills"), getInvoicesForTenant(tenantId));
+            renderBills(root.setArray("bills"), getBillsForTenant(tenantId));
 
             billingController.getDefaultInstrument(tenantId).ifPresent( card ->
                 renderInstrument(root.setObject("payment"), card)
@@ -289,6 +290,18 @@ public class BillingApiHandler extends LoggingRequestHandler {
         } catch (DateTimeParseException e) {
             return ErrorResponse.badRequest("Could not parse date: " + until);
         }
+    }
+
+    private HttpResponse getPlans() {
+        var slime = new Slime();
+        var root = slime.setObject();
+        var plans = root.setArray("plans");
+        for (var plan : planRegistry.all()) {
+            var p = plans.addObject();
+            p.setString("id", plan.id().value());
+            p.setString("name", plan.displayName());
+        }
+        return new SlimeJsonResponse(slime);
     }
 
     private HttpResponse getLineItems(String tenant) {
@@ -328,11 +341,11 @@ public class BillingApiHandler extends LoggingRequestHandler {
 
     }
 
-    private void renderCurrentUsage(Cursor cursor, Invoice currentUsage) {
+    private void renderCurrentUsage(Cursor cursor, Bill currentUsage) {
         if (currentUsage == null) return;
         cursor.setString("amount", currentUsage.sum().toPlainString());
         cursor.setString("status", "accrued");
-        cursor.setString("from", currentUsage.getStartTime().format(DATE_TIME_FORMATTER));
+        cursor.setString("from", currentUsage.getStartDate().format(DATE_TIME_FORMATTER));
         var itemsCursor = cursor.setArray("items");
         currentUsage.lineItems().forEach(lineItem -> {
             var itemCursor = itemsCursor.addObject();
@@ -340,46 +353,46 @@ public class BillingApiHandler extends LoggingRequestHandler {
         });
     }
 
-    private void renderAdditionalItems(Cursor cursor, List<Invoice.LineItem> items) {
+    private void renderAdditionalItems(Cursor cursor, List<Bill.LineItem> items) {
         items.forEach(item -> {
             renderLineItemToCursor(cursor.addObject(), item);
         });
     }
 
-    private Invoice getCurrentUsageForTenant(TenantName tenant, LocalDate until) {
-        return billingController.createUncommittedInvoice(tenant, until);
+    private Bill getCurrentUsageForTenant(TenantName tenant, LocalDate until) {
+        return billingController.createUncommittedBill(tenant, until);
     }
 
-    private List<Invoice> getInvoicesForTenant(TenantName tenant) {
-        return billingController.getInvoicesForTenant(tenant);
+    private List<Bill> getBillsForTenant(TenantName tenant) {
+        return billingController.getBillsForTenant(tenant);
     }
 
-    private void renderInvoices(Cursor cursor, List<Invoice> invoices) {
-        invoices.forEach(invoice -> {
-            var invoiceCursor = cursor.addObject();
-            renderInvoiceToCursor(invoiceCursor, invoice);
+    private void renderBills(Cursor cursor, List<Bill> bills) {
+        bills.forEach(bill -> {
+            var billCursor = cursor.addObject();
+            renderBillToCursor(billCursor, bill);
         });
     }
 
-    private void renderInvoiceToCursor(Cursor invoiceCursor, Invoice invoice) {
-        invoiceCursor.setString("id", invoice.id().value());
-        invoiceCursor.setString("from", invoice.getStartTime().format(DATE_TIME_FORMATTER));
-        invoiceCursor.setString("to", invoice.getEndTime().format(DATE_TIME_FORMATTER));
+    private void renderBillToCursor(Cursor billCursor, Bill bill) {
+        billCursor.setString("id", bill.id().value());
+        billCursor.setString("from", bill.getStartDate().format(DATE_TIME_FORMATTER));
+        billCursor.setString("to", bill.getEndDate().format(DATE_TIME_FORMATTER));
 
-        invoiceCursor.setString("amount", invoice.sum().toString());
-        invoiceCursor.setString("status", invoice.status());
-        var statusCursor = invoiceCursor.setArray("statusHistory");
-        renderStatusHistory(statusCursor, invoice.statusHistory());
+        billCursor.setString("amount", bill.sum().toString());
+        billCursor.setString("status", bill.status());
+        var statusCursor = billCursor.setArray("statusHistory");
+        renderStatusHistory(statusCursor, bill.statusHistory());
 
 
-        var lineItemsCursor = invoiceCursor.setArray("items");
-        invoice.lineItems().forEach(lineItem -> {
+        var lineItemsCursor = billCursor.setArray("items");
+        bill.lineItems().forEach(lineItem -> {
             var itemCursor = lineItemsCursor.addObject();
             renderLineItemToCursor(itemCursor, lineItem);
         });
     }
 
-    private void renderStatusHistory(Cursor cursor, Invoice.StatusHistory statusHistory) {
+    private void renderStatusHistory(Cursor cursor, Bill.StatusHistory statusHistory) {
         statusHistory.getHistory()
                 .entrySet()
                 .stream()
@@ -390,7 +403,7 @@ public class BillingApiHandler extends LoggingRequestHandler {
                 });
     }
 
-    private void renderLineItemToCursor(Cursor cursor, Invoice.LineItem lineItem) {
+    private void renderLineItemToCursor(Cursor cursor, Bill.LineItem lineItem) {
         cursor.setString("id", lineItem.id());
         cursor.setString("description", lineItem.description());
         cursor.setString("amount", lineItem.amount().toString());
@@ -451,19 +464,13 @@ public class BillingApiHandler extends LoggingRequestHandler {
         try {
             return SlimeUtils.jsonToSlime(request.getData().readAllBytes()).get();
         } catch (IOException e) {
-            throw new BadRequestException("Failed to parse request body");
+            throw new IllegalArgumentException("Failed to parse request body");
         }
-    }
-
-    private static String userIdOrThrow(HttpRequest request) {
-        return Optional.ofNullable(request.getJDiscRequest().getUserPrincipal())
-                .map(Principal::getName)
-                .orElseThrow(() -> new ForbiddenException("Must be authenticated to use this API"));
     }
 
     private static String getInspectorFieldOrThrow(Inspector inspector, String field) {
         if (!inspector.field(field).valid())
-            throw new BadRequestException("Field " + field + " cannot be null");
+            throw new IllegalArgumentException("Field " + field + " cannot be null");
         return inspector.field(field).asString();
     }
 
@@ -481,6 +488,14 @@ public class BillingApiHandler extends LoggingRequestHandler {
                         .flatMap(instance -> instance.deployments().values().stream())
                 )
                 .count() > 0;
+    }
+
+    private static Set<Role> requestRoles(HttpRequest request) {
+        return Optional.ofNullable(request.getJDiscRequest().context().get(SecurityContext.ATTRIBUTE_NAME))
+                .filter(SecurityContext.class::isInstance)
+                .map(SecurityContext.class::cast)
+                .map(SecurityContext::roles)
+                .orElseThrow(() -> new IllegalArgumentException("Attribute '" + SecurityContext.ATTRIBUTE_NAME + "' was not set on request"));
     }
 
 }

@@ -45,7 +45,7 @@ public class FederationSearcher extends Searcher<FederationSearcherModel> implem
             this.documentTypes = documentTypes;
         }
 
-        public FederationConfig.Target.SearchChain.Builder getSearchChainConfig() {
+        FederationConfig.Target.SearchChain.Builder getSearchChainConfig() {
             FederationConfig.Target.SearchChain.Builder sB = new FederationConfig.Target.SearchChain.Builder();
             FederationOptions resolvedOptions = targetOptions.inherit(searchChain.federationOptions());
             sB.
@@ -70,12 +70,12 @@ public class FederationSearcher extends Searcher<FederationSearcherModel> implem
         final ComponentId id;
         final FederationOptions targetOptions;
 
-        public Target(ComponentId id, FederationOptions targetOptions) {
+        Target(ComponentId id, FederationOptions targetOptions) {
             this.id = id;
             this.targetOptions = targetOptions;
         }
 
-        public FederationConfig.Target.Builder getTargetConfig() {
+        FederationConfig.Target.Builder getTargetConfig() {
             FederationConfig.Target.Builder tb = new FederationConfig.Target.Builder();
             tb.
                 id(id.stringValue()).
@@ -92,7 +92,7 @@ public class FederationSearcher extends Searcher<FederationSearcherModel> implem
 
         private final SearchChainConfig searchChainConfig;
 
-        public SearchChainTarget(SearchChain searchChain, FederationOptions targetOptions) {
+        SearchChainTarget(SearchChain searchChain, FederationOptions targetOptions) {
             super(searchChain.getComponentId(), targetOptions);
             searchChainConfig = new SearchChainConfig(searchChain, null, targetOptions, searchChain.getDocumentTypes());
         }
@@ -208,14 +208,14 @@ public class FederationSearcher extends Searcher<FederationSearcherModel> implem
 
             Target target = targetResolver.resolve(targetSpec);
             if (target == null) {
-                throw new RuntimeException("Can't find source " + targetSpec.sourceSpec +
-                                           " used as a source for federation '" + getComponentId() + "'");
+                throw new IllegalArgumentException("Can't find source " + targetSpec.sourceSpec +
+                                                   " used as a source for federation '" + getComponentId() + "'");
             }
 
             Target duplicate = resolvedTargets.put(target.id, target);
             if (duplicate != null && !duplicate.targetOptions.equals(target.targetOptions)) {
-                throw new RuntimeException("Search chain " + target.id + " added twice with different federation options" +
-                                           " to the federation searcher " + getComponentId());
+                throw new IllegalArgumentException("Search chain " + target.id + " added twice with different federation options" +
+                                                   " to the federation searcher " + getComponentId());
             }
         }
     }

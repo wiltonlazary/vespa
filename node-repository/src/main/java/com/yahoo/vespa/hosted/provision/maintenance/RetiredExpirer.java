@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.maintenance;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Deployer;
 import com.yahoo.jdisc.Metric;
@@ -11,13 +11,10 @@ import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.node.History;
 import com.yahoo.vespa.orchestrator.OrchestrationException;
-import com.yahoo.vespa.orchestrator.Orchestrator;
 import com.yahoo.yolean.Exceptions;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * Maintenance job which deactivates retired nodes, if given permission by orchestrator, or
@@ -31,11 +28,9 @@ public class RetiredExpirer extends NodeRepositoryMaintainer {
 
     private final Deployer deployer;
     private final Metric metric;
-    private final Orchestrator orchestrator;
     private final Duration retiredExpiry;
 
     public RetiredExpirer(NodeRepository nodeRepository,
-                          Orchestrator orchestrator,
                           Deployer deployer,
                           Metric metric,
                           Duration maintenanceInterval,
@@ -43,7 +38,6 @@ public class RetiredExpirer extends NodeRepositoryMaintainer {
         super(nodeRepository, maintenanceInterval, metric);
         this.deployer = deployer;
         this.metric = metric;
-        this.orchestrator = orchestrator;
         this.retiredExpiry = retiredExpiry;
     }
 
@@ -57,42 +51,48 @@ public class RetiredExpirer extends NodeRepositoryMaintainer {
         for (Map.Entry<ApplicationId, NodeList> entry : retiredNodesByApplication.entrySet()) {
             ApplicationId application = entry.getKey();
             NodeList retiredNodes = entry.getValue();
-            List<Node> nodesToRemove = retiredNodes.stream().filter(n -> canRemove(n, activeNodes)).collect(Collectors.toList());
-            if (nodesToRemove.isEmpty()) continue;
+            Map<Removal, NodeList> nodesByRemovalReason = retiredNodes.groupingBy(node -> removalOf(node, activeNodes));
+            if (nodesByRemovalReason.isEmpty()) continue;
 
-            attempts++;
-            try (MaintenanceDeployment deployment = new MaintenanceDeployment(application, deployer, metric, nodeRepository())) {
-                if ( ! deployment.isValid()) continue;
+            for (var kv : nodesByRemovalReason.entrySet()) {
+                Removal removal = kv.getKey();
+                if (removal.equals(Removal.none())) continue;
 
-                nodeRepository().nodes().setRemovable(application, nodesToRemove);
-                boolean success = deployment.activate().isPresent();
-                if ( ! success) continue;
-                String nodeList = nodesToRemove.stream().map(Node::hostname).collect(Collectors.joining(", "));
-                log.info("Redeployed " + application + " to deactivate retired nodes: " +  nodeList);
-                successes++;
+                NodeList nodes = kv.getValue();
+                attempts++;
+                try (MaintenanceDeployment deployment = new MaintenanceDeployment(application, deployer, metric, nodeRepository())) {
+                    if (!deployment.isValid()) continue;
+
+                    nodeRepository().nodes().setRemovable(application, nodes.asList(), removal.isReusable());
+                    boolean success = deployment.activate().isPresent();
+                    if (!success) continue;
+                    String nodeList = String.join(", ", nodes.mapToList(Node::hostname));
+                    log.info("Redeployed " + application + " to deactivate retired nodes: " + nodeList);
+                    successes++;
+                }
             }
         }
         return attempts == 0 ? 1.0 : ((double)successes / attempts);
     }
 
     /**
-     * Checks if the node can be removed:
-     * if the node is a host, it will only be removed if it has no children,
-     * or all its children are parked or failed.
+     * Returns the removal action for given node.
+     *
+     * If the node is a host, it will only be removed if it has no children, or all its children are parked or failed.
+     *
      * Otherwise, a removal is allowed if either of these are true:
      * - The node has been in state {@link History.Event.Type#retired} for longer than {@link #retiredExpiry}
      * - Orchestrator allows it
      */
-    private boolean canRemove(Node node, NodeList activeNodes) {
+    private Removal removalOf(Node node, NodeList activeNodes) {
         if (node.type().isHost()) {
             if (nodeRepository().nodes().list().childrenOf(node).asList().stream()
                                 .allMatch(child -> child.state() == Node.State.parked ||
                                                    child.state() == Node.State.failed)) {
-                log.info("Host " + node + " has no non-parked/failed children");
-                return true;
+                log.info("Allowing removal of " + node + ": host has no non-parked/failed children");
+                return Removal.reusable(); // Hosts have no state that needs to be recoverable
             }
-
-            return false;
+            return Removal.none();
         }
 
         if (node.type().isConfigServerLike()) {
@@ -118,24 +118,32 @@ public class RetiredExpirer extends NodeRepositoryMaintainer {
                 // with node states across all config servers.  As this would require some work,
                 // we will instead verify here that there are 3 active config servers before
                 // allowing the removal of any config server.
-                return false;
+                return Removal.none();
             }
         } else if (node.history().hasEventBefore(History.Event.Type.retired, clock().instant().minus(retiredExpiry))) {
             log.warning("Node " + node + " has been retired longer than " + retiredExpiry + ": Allowing removal. This may cause data loss");
-            return true;
+            return Removal.recoverable();
         }
 
         try {
-            orchestrator.acquirePermissionToRemove(new HostName(node.hostname()));
+            nodeRepository().orchestrator().acquirePermissionToRemove(new HostName(node.hostname()));
             log.info("Node " + node + " has been granted permission to be removed");
-            return true;
+            return Removal.reusable(); // Node is fully retired
         } catch (UncheckedTimeoutException e) {
             log.warning("Timed out trying to acquire permission to remove " + node.hostname() + ": " + Exceptions.toMessageString(e));
-            return false;
+            return Removal.none();
         } catch (OrchestrationException e) {
             log.info("Did not get permission to remove retired " + node + ": " + Exceptions.toMessageString(e));
-            return false;
+            return Removal.none();
         }
+    }
+
+    private record Removal(boolean isRemovable, boolean isReusable) {
+
+        private static Removal recoverable() { return new Removal(true, false); }
+        private static Removal reusable() { return new Removal(true, true); }
+        private static Removal none() { return new Removal(false, false); }
+
     }
 
 }

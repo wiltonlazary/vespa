@@ -6,6 +6,7 @@
 #include "distributor_stripe.h"
 #include "distributormetricsset.h"
 #include "idealstatemetricsset.h"
+#include "node_supported_features_repo.h"
 #include "operation_sequencer.h"
 #include "ownership_transfer_safe_time_point_calculator.h"
 #include "storage_node_up_states.h"
@@ -13,7 +14,6 @@
 #include "throttlingoperationstarter.h"
 #include <vespa/document/bucket/fixed_bucket_spaces.h>
 #include <vespa/storage/common/global_bucket_space_distribution_converter.h>
-#include <vespa/storage/common/hostreporter/hostinfo.h>
 #include <vespa/storage/common/node_identity.h>
 #include <vespa/storage/common/nodestateupdater.h>
 #include <vespa/storage/distributor/maintenance/simplebucketprioritydatabase.h>
@@ -68,6 +68,7 @@ DistributorStripe::DistributorStripe(DistributorComponentRegister& compReg,
       _recoveryTimeStarted(_component.getClock()),
       _tickResult(framework::ThreadWaitInfo::NO_MORE_CRITICAL_WORK_KNOWN),
       _bucketIdHasher(std::make_unique<BucketGcTimeCalculator::BucketIdIdentityHasher>()),
+      _node_supported_features_repo(std::make_shared<const NodeSupportedFeaturesRepo>()),
       _metricLock(),
       _maintenanceStats(),
       _bucketSpacesStats(),
@@ -82,7 +83,7 @@ DistributorStripe::DistributorStripe(DistributorComponentRegister& compReg,
 {
     propagateDefaultDistribution(_component.getDistribution());
     propagateClusterStates();
-};
+}
 
 DistributorStripe::~DistributorStripe() = default;
 
@@ -107,7 +108,7 @@ void
 DistributorStripe::sendCommand(const std::shared_ptr<api::StorageCommand>& cmd)
 {
     if (cmd->getType() == api::MessageType::MERGEBUCKET) {
-        api::MergeBucketCommand& merge(static_cast<api::MergeBucketCommand&>(*cmd));
+        auto & merge(static_cast<api::MergeBucketCommand&>(*cmd));
         _idealStateManager.getMetrics().nodesPerMerge.addValue(merge.getNodes().size());
     }
     send_up_with_tracking(cmd);
@@ -180,7 +181,7 @@ DistributorStripe::handleCompletedMerge(
 }
 
 bool
-DistributorStripe::isMaintenanceReply(const api::StorageReply& reply) const
+DistributorStripe::isMaintenanceReply(const api::StorageReply& reply)
 {
     switch (reply.getType().getId()) {
     case api::MessageType::CREATEBUCKET_REPLY_ID:
@@ -288,8 +289,8 @@ DistributorStripe::enableClusterStateBundle(const lib::ClusterStateBundle& state
             std::vector<uint64_t> msgIds = _pendingMessageTracker.clearMessagesForNode(i);
             LOG(debug, "Node %u is down, clearing %zu pending maintenance operations", i, msgIds.size());
 
-            for (uint32_t j = 0; j < msgIds.size(); ++j) {
-                _maintenanceOperationOwner.erase(msgIds[j]);
+            for (const auto & msgId : msgIds) {
+                _maintenanceOperationOwner.erase(msgId);
             }
         }
     }
@@ -314,9 +315,12 @@ DistributorStripe::enterRecoveryMode()
     LOG(debug, "Entering recovery mode");
     _schedulingMode = MaintenanceScheduler::RECOVERY_SCHEDULING_MODE;
     _scanner->reset();
-    _bucketDBMetricUpdater.reset();
-    // TODO reset _bucketDbStats?
-    invalidate_bucket_spaces_stats();
+    // We enter recovery mode due to cluster state or distribution config changes.
+    // Until we have completed a new DB scan round, we don't know the state of our
+    // newly owned buckets and must not report stats for these out to the cluster
+    // controller as they will be stale (valid only for the _previous_ state/config).
+    // As a consequence, we must explicitly invalidate all such statistics in this edge.
+    invalidate_internal_db_dependent_stats();
 
     _recoveryTimeStarted = framework::MilliSecTimer(_component.getClock());
 }
@@ -333,6 +337,17 @@ DistributorStripe::leaveRecoveryMode()
         }
     }
     _schedulingMode = MaintenanceScheduler::NORMAL_SCHEDULING_MODE;
+}
+
+void
+DistributorStripe::invalidate_internal_db_dependent_stats()
+{
+    _bucketDBMetricUpdater.reset();
+    {
+        std::lock_guard guard(_metricLock);
+        invalidate_bucket_spaces_stats(guard);
+        invalidate_min_replica_stats(guard);
+    }
 }
 
 template <typename NodeFunctor>
@@ -355,14 +370,26 @@ BucketSpacesStatsProvider::BucketSpacesStats DistributorStripe::make_invalid_sta
     return invalid_space_stats;
 }
 
-void DistributorStripe::invalidate_bucket_spaces_stats() {
-    std::lock_guard guard(_metricLock);
+void
+DistributorStripe::invalidate_bucket_spaces_stats([[maybe_unused]] std::lock_guard<std::mutex>& held_metric_lock)
+{
     _bucketSpacesStats = BucketSpacesStatsProvider::PerNodeBucketSpacesStats();
     auto invalid_space_stats = make_invalid_stats_per_configured_space();
 
     const auto& baseline = *_clusterStateBundle.getBaselineClusterState();
     for_each_available_content_node_in(baseline, [this, &invalid_space_stats](const lib::Node& node) {
         _bucketSpacesStats[node.getIndex()] = invalid_space_stats;
+    });
+}
+
+void
+DistributorStripe::invalidate_min_replica_stats([[maybe_unused]] std::lock_guard<std::mutex>& held_metric_lock)
+{
+    _bucketDbStats._minBucketReplica.clear();
+    // Insert an explicit zero value for all nodes that are up in the pending/current cluster state
+    const auto& baseline = *_clusterStateBundle.getBaselineClusterState();
+    for_each_available_content_node_in(baseline, [this](const lib::Node& node) {
+        _bucketDbStats._minBucketReplica[node.getIndex()] = 0;
     });
 }
 
@@ -379,7 +406,7 @@ public:
     bool found;
     uint8_t maxPri;
 
-    SplitChecker(uint8_t maxP) : found(false), maxPri(maxP) {};
+    explicit SplitChecker(uint8_t maxP) : found(false), maxPri(maxP) {};
 
     bool check(uint32_t msgType, uint16_t node, uint8_t pri) override {
         (void) node;
@@ -453,9 +480,7 @@ void
 DistributorStripe::propagateClusterStates()
 {
     for (auto* repo : {_bucketSpaceRepo.get(), _readOnlyBucketSpaceRepo.get()}) {
-        for (auto& iter : *repo) {
-            iter.second->setClusterState(_clusterStateBundle.getDerivedClusterState(iter.first));
-        }
+        repo->enable_cluster_state_bundle(_clusterStateBundle);
     }
 }
 
@@ -577,7 +602,7 @@ namespace {
 BucketSpaceStats
 toBucketSpaceStats(const NodeMaintenanceStats &stats)
 {
-    return BucketSpaceStats(stats.total, stats.syncing + stats.copyingIn);
+    return {stats.total, stats.syncing + stats.copyingIn};
 }
 
 using PerNodeBucketSpacesStats = BucketSpacesStatsProvider::PerNodeBucketSpacesStats;
@@ -872,6 +897,12 @@ DistributorStripe::clear_read_only_bucket_repo_databases()
 }
 
 void
+DistributorStripe::update_node_supported_features_repo(std::shared_ptr<const NodeSupportedFeaturesRepo> features_repo)
+{
+    _node_supported_features_repo = std::move(features_repo);
+}
+
+void
 DistributorStripe::report_bucket_db_status(document::BucketSpace bucket_space, std::ostream& out) const
 {
     ideal_state_manager().dump_bucket_space_db_status(bucket_space, out);
@@ -887,6 +918,12 @@ void
 DistributorStripe::report_delayed_single_bucket_requests(vespalib::xml::XmlOutputStream& xos) const
 {
     bucket_db_updater().report_delayed_single_bucket_requests(xos);
+}
+
+const NodeSupportedFeaturesRepo&
+DistributorStripe::node_supported_features_repo() const noexcept
+{
+    return *_node_supported_features_repo;
 }
 
 }

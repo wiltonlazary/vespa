@@ -3,9 +3,11 @@
 #include <vespa/searchlib/attribute/multi_value_mapping.h>
 #include <vespa/searchlib/attribute/multi_value_mapping.hpp>
 #include <vespa/searchlib/attribute/not_implemented_attribute.h>
+#include <vespa/vespalib/datastore/compaction_strategy.h>
 #include <vespa/vespalib/gtest/gtest.h>
 #include <vespa/vespalib/stllike/hash_set.h>
 #include <vespa/vespalib/test/insertion_operators.h>
+#include <vespa/vespalib/test/memory_allocator_observer.h>
 #include <vespa/vespalib/util/generationhandler.h>
 #include <vespa/vespalib/util/rand48.h>
 #include <vespa/vespalib/util/size_literals.h>
@@ -14,6 +16,10 @@
 LOG_SETUP("multivaluemapping_test");
 
 using vespalib::datastore::ArrayStoreConfig;
+using vespalib::datastore::CompactionSpec;
+using vespalib::datastore::CompactionStrategy;
+using vespalib::alloc::test::MemoryAllocatorObserver;
+using AllocStats = MemoryAllocatorObserver::Stats;
 
 template <typename EntryT>
 void
@@ -35,16 +41,16 @@ class MyAttribute : public search::NotImplementedAttribute
         _mvMapping.shrink(committedDocIdLimit);
         setNumDocs(committedDocIdLimit);
     }
-    virtual void removeOldGenerations(generation_t firstUsed) override {
-        _mvMapping.trimHoldLists(firstUsed);
+    virtual void reclaim_memory(generation_t oldest_used_gen) override {
+        _mvMapping.reclaim_memory(oldest_used_gen);
     }
-    virtual void onGenerationChange(generation_t generation) override {
-        _mvMapping.transferHoldLists(generation - 1);
+    virtual void before_inc_generation(generation_t current_gen) override {
+        _mvMapping.assign_generation(current_gen);
     }
 
 public:
     MyAttribute(MvMapping &mvMapping)
-        : NotImplementedAttribute("test", AttributeVector::Config()),
+        : NotImplementedAttribute("test"),
           _mvMapping(mvMapping)
     {}
     virtual bool addDoc(DocId &doc) override {
@@ -67,6 +73,7 @@ class MappingTestBase : public ::testing::Test {
 protected:
     using MvMapping = search::attribute::MultiValueMapping<EntryT>;
     using AttributeType = MyAttribute<MvMapping>;
+    AllocStats _stats;
     std::unique_ptr<MvMapping> _mvMapping;
     std::unique_ptr<AttributeType> _attr;
     uint32_t _maxSmallArraySize;
@@ -74,9 +81,11 @@ protected:
     using generation_t = vespalib::GenerationHandler::generation_t;
 
 public:
+    using ArrayRef = vespalib::ArrayRef<EntryT>;
     using ConstArrayRef = vespalib::ConstArrayRef<EntryT>;
     MappingTestBase()
-        : _mvMapping(),
+        : _stats(),
+          _mvMapping(),
           _attr(),
           _maxSmallArraySize()
     {
@@ -85,7 +94,7 @@ public:
         ArrayStoreConfig config(maxSmallArraySize,
                                 ArrayStoreConfig::AllocSpec(0, RefType::offsetSize(), 8_Ki, ALLOC_GROW_FACTOR));
         config.enable_free_lists(enable_free_lists);
-        _mvMapping = std::make_unique<MvMapping>(config);
+        _mvMapping = std::make_unique<MvMapping>(config, vespalib::GrowStrategy(), std::make_unique<MemoryAllocatorObserver>(_stats));
         _attr = std::make_unique<AttributeType>(*_mvMapping);
         _maxSmallArraySize = maxSmallArraySize;
     }
@@ -93,21 +102,21 @@ public:
         ArrayStoreConfig config(maxSmallArraySize,
                                 ArrayStoreConfig::AllocSpec(minArrays, maxArrays, numArraysForNewBuffer, ALLOC_GROW_FACTOR));
         config.enable_free_lists(enable_free_lists);
-        _mvMapping = std::make_unique<MvMapping>(config);
+        _mvMapping = std::make_unique<MvMapping>(config, vespalib::GrowStrategy(), std::make_unique<MemoryAllocatorObserver>(_stats));
         _attr = std::make_unique<AttributeType>(*_mvMapping);
         _maxSmallArraySize = maxSmallArraySize;
     }
     ~MappingTestBase() { }
 
     void set(uint32_t docId, const std::vector<EntryT> &values) { _mvMapping->set(docId, values); }
-    void replace(uint32_t docId, const std::vector<EntryT> &values) { _mvMapping->replace(docId, values); }
     ConstArrayRef get(uint32_t docId) { return _mvMapping->get(docId); }
+    ArrayRef get_writable(uint32_t docId) { return _mvMapping->get_writable(docId); }
     void assertGet(uint32_t docId, const std::vector<EntryT> &exp) {
         ConstArrayRef act = get(docId);
         EXPECT_EQ(exp, std::vector<EntryT>(act.cbegin(), act.cend()));
     }
-    void transferHoldLists(generation_t generation) { _mvMapping->transferHoldLists(generation); }
-    void trimHoldLists(generation_t firstUsed) { _mvMapping->trimHoldLists(firstUsed); }
+    void assign_generation(generation_t current_gen) { _mvMapping->assign_generation(current_gen); }
+    void reclaim_memory(generation_t oldest_used_gen) { _mvMapping->reclaim_memory(oldest_used_gen); }
     void addDocs(uint32_t numDocs) {
         for (uint32_t i = 0; i < numDocs; ++i) {
             uint32_t doc = 0;
@@ -127,6 +136,7 @@ public:
         _mvMapping->clearDocs(lidLow, lidLimit, [this](uint32_t docId) { _attr->clearDoc(docId); });
     }
     size_t getTotalValueCnt() const { return _mvMapping->getTotalValueCnt(); }
+    const AllocStats &get_stats() const noexcept { return _stats; }
 
     uint32_t countBuffers() {
         using RefVector = typename MvMapping::RefCopyVector;
@@ -142,7 +152,9 @@ public:
     }
 
     void compactWorst() {
-        _mvMapping->compactWorst(true, false);
+        CompactionSpec compaction_spec(true, false);
+        CompactionStrategy compaction_strategy;
+        _mvMapping->compactWorst(compaction_spec, compaction_strategy);
         _attr->commit();
         _attr->incGeneration();
     }
@@ -233,12 +245,12 @@ TEST_F(IntMappingTest, test_that_old_value_is_not_overwritten_while_held)
     auto old3 = get(3);
     assertArray({5}, old3);
     set(3, {7});
-    transferHoldLists(10);
+    assign_generation(10);
     assertArray({5}, old3);
     assertGet(3, {7});
-    trimHoldLists(10);
+    reclaim_memory(10);
     assertArray({5}, old3);
-    trimHoldLists(11);
+    reclaim_memory(11);
     assertArray({0}, old3);
 }
 
@@ -297,7 +309,7 @@ TEST_F(IntMappingTest, test_that_totalValueCnt_works)
     EXPECT_EQ(5u, getTotalValueCnt());
 }
 
-TEST_F(IntMappingTest, test_that_replace_works)
+TEST_F(IntMappingTest, test_that_get_writable_works)
 {
     setup(3);
     addDocs(10);
@@ -305,7 +317,12 @@ TEST_F(IntMappingTest, test_that_replace_works)
     auto old4 = get(4);
     assertArray({10, 14, 17, 16}, old4);
     EXPECT_EQ(4u, getTotalValueCnt());
-    replace(4, {20, 24, 27, 26});
+    {
+        auto array = get_writable(4);
+        for (auto& elem : array) {
+            elem += 10;
+        }
+    }
     assertArray({20, 24, 27, 26}, old4);
     EXPECT_EQ(4u, getTotalValueCnt());
 }
@@ -320,6 +337,12 @@ TEST_F(IntMappingTest, test_that_free_lists_can_be_disabled)
 {
     setup(3, false);
     EXPECT_FALSE(_mvMapping->has_free_lists_enabled());
+}
+
+TEST_F(IntMappingTest, provided_memory_allocator_is_used)
+{
+    setup(3, 64, 512, 129, true);
+    EXPECT_EQ(AllocStats(5, 0), get_stats());
 }
 
 TEST_F(CompactionIntMappingTest, test_that_compaction_works)

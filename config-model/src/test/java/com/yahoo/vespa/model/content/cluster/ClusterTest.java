@@ -9,13 +9,12 @@ import com.yahoo.vespa.config.search.core.ProtonConfig;
 import com.yahoo.vespa.model.content.Content;
 import com.yahoo.vespa.model.search.IndexedSearchCluster;
 import com.yahoo.vespa.model.test.utils.ApplicationPackageUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static com.yahoo.config.model.test.TestUtil.joinLines;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author Simon Thoresen Hult
@@ -25,7 +24,7 @@ public class ClusterTest {
     private static final double DELTA = 1E-12;
 
     @Test
-    public void requireThatContentSearchIsApplied() {
+    void requireThatContentSearchIsApplied() {
         ContentCluster cluster = newContentCluster(joinLines("<search>",
                 "  <query-timeout>1.1</query-timeout>",
                 "  <visibility-delay>2.3</visibility-delay>",
@@ -39,7 +38,7 @@ public class ClusterTest {
     }
 
     @Test
-    public void requireThatVisibilityDelayIsZeroForGlobalDocumentType() {
+    void requireThatVisibilityDelayIsZeroForGlobalDocumentType() {
         ContentCluster cluster = newContentCluster(joinLines("<search>",
                 "  <visibility-delay>2.3</visibility-delay>",
                 "</search>"), true);
@@ -48,7 +47,7 @@ public class ClusterTest {
     }
 
     @Test
-    public void requireThatSearchCoverageIsApplied() {
+    void requireThatSearchCoverageIsApplied() {
         ContentCluster cluster = newContentCluster(joinLines("<search>",
                 "  <coverage>",
                 "    <minimum>0.11</minimum>",
@@ -63,23 +62,25 @@ public class ClusterTest {
         assertEquals(0.23, config.minWaitAfterCoverageFactor(), DELTA);
         assertEquals(0.58, config.maxWaitAfterCoverageFactor(), DELTA);
         assertEquals(2, config.searchableCopies());
+        assertEquals(3, config.redundancy());
         assertEquals(DispatchConfig.DistributionPolicy.ADAPTIVE, config.distributionPolicy());
     }
 
     @Test
-    public void requireThatDispatchTuningIsApplied() {
+    void requireThatDispatchTuningIsApplied() {
         ContentCluster cluster = newContentCluster(joinLines("<search>", "</search>"),
-                                                   "",
-                                                   joinLines(
-                                                           "<max-hits-per-partition>77</max-hits-per-partition>",
-                                                           "<dispatch-policy>round-robin</dispatch-policy>",
-                                                           "<min-active-docs-coverage>93</min-active-docs-coverage>",
-                                                           "<top-k-probability>0.777</top-k-probability>"),
-                                                   false);
+                "",
+                joinLines(
+                        "<max-hits-per-partition>77</max-hits-per-partition>",
+                        "<dispatch-policy>round-robin</dispatch-policy>",
+                        "<min-active-docs-coverage>93</min-active-docs-coverage>",
+                        "<top-k-probability>0.777</top-k-probability>"),
+                false);
         DispatchConfig.Builder builder = new DispatchConfig.Builder();
         cluster.getSearch().getConfig(builder);
         DispatchConfig config = new DispatchConfig(builder);
         assertEquals(2, config.searchableCopies());
+        assertEquals(3, config.redundancy());
         assertEquals(93.0, config.minActivedocsPercentage(), DELTA);
         assertEquals(DispatchConfig.DistributionPolicy.ROUNDROBIN, config.distributionPolicy());
         assertEquals(77, config.maxHitsPerNode());
@@ -87,13 +88,14 @@ public class ClusterTest {
     }
 
     @Test
-    public void requireThatDefaultDispatchConfigIsCorrect()  {
+    void requireThatDefaultDispatchConfigIsCorrect()  {
         ContentCluster cluster = newContentCluster(joinLines("<search>", "</search>"),
-                                                   joinLines("<tuning>", "</tuning>"));
+                joinLines("<tuning>", "</tuning>"));
         DispatchConfig.Builder builder = new DispatchConfig.Builder();
         cluster.getSearch().getConfig(builder);
         DispatchConfig config = new DispatchConfig(builder);
         assertEquals(2, config.searchableCopies());
+        assertEquals(3, config.redundancy());
         assertEquals(DispatchConfig.DistributionPolicy.ADAPTIVE, config.distributionPolicy());
         assertEquals(1.0, config.maxWaitAfterCoverageFactor(), DELTA);
         assertEquals(0, config.minWaitAfterCoverageFactor(), DELTA);
@@ -101,7 +103,6 @@ public class ClusterTest {
         assertEquals(8, config.numJrtTransportThreads());
         assertEquals(100.0, config.minSearchCoverage(), DELTA);
         assertEquals(97.0, config.minActivedocsPercentage(), DELTA);
-        assertEquals(100.0, config.minGroupCoverage(), DELTA);
         assertEquals(0.9999, config.topKProbability(), DELTA);
         assertEquals(3, config.node().size());
         assertEquals(0, config.node(0).key());

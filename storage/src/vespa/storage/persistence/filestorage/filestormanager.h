@@ -25,10 +25,12 @@
 #include <vespa/storage/common/nodestateupdater.h>
 #include <vespa/storageframework/generic/status/htmlstatusreporter.h>
 
-#include <vespa/config/subscription/configuri.h>
 #include <vespa/config/helper/ifetchercallback.h>
-#include <vespa/config/config.h>
 
+namespace config {
+    class ConfigUri;
+    class ConfigFetcher;
+}
 namespace vespalib { class IDestructorCallback; }
 
 namespace storage {
@@ -39,6 +41,7 @@ namespace api {
 }
 namespace spi { struct PersistenceProvider; }
 
+class ContentBucketSpace;
 struct FileStorManagerTest;
 class ReadBucketList;
 class BucketOwnershipNotifier;
@@ -67,7 +70,7 @@ class FileStorManager : public StorageLinkQueued,
     std::unique_ptr<BucketOwnershipNotifier>         _bucketOwnershipNotifier;
 
     std::unique_ptr<vespa::config::content::StorFilestorConfig> _config;
-    config::ConfigFetcher _configFetcher;
+    std::unique_ptr<config::ConfigFetcher> _configFetcher;
     bool                  _use_async_message_handling_on_schedule;
     std::shared_ptr<FileStorMetrics> _metrics;
     std::unique_ptr<FileStorHandler> _filestorHandler;
@@ -107,7 +110,12 @@ public:
     // By ensuring that this function is called prior to chain opening, this invariant
     // shall be upheld since no RPC/MessageBus endpoints have been made available
     // yet at that point in time.
+    // Must always be called _before_ complete_internal_initialization()
     void initialize_bucket_databases_from_provider();
+    // Tag node internally as having completed initialization. Updates reported state
+    // (although this will not be communicated out of the process until the
+    // CommunicationManager thread has been fired up).
+    void complete_internal_initialization();
 
     const FileStorMetrics& get_metrics() const { return *_metrics; }
 
@@ -170,6 +178,11 @@ private:
     void onFlush(bool downwards) override;
     void reportHtmlStatus(std::ostream&, const framework::HttpUrlPath&) const override;
     void storageDistributionChanged() override;
+    [[nodiscard]] static bool should_deactivate_buckets(const ContentBucketSpace& space,
+                                                        bool node_up_in_space,
+                                                        bool maintenance_in_all_spaces) noexcept;
+    [[nodiscard]] bool maintenance_in_all_spaces(const lib::Node& node) const noexcept;
+    void maybe_log_received_cluster_state();
     void updateState();
     void propagateClusterStates();
     void update_reported_state_after_db_init();

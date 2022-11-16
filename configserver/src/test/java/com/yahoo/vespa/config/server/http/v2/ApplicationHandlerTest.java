@@ -4,6 +4,8 @@ package com.yahoo.vespa.config.server.http.v2;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
 import com.yahoo.config.model.api.ModelFactory;
+import com.yahoo.config.model.api.PortInfo;
+import com.yahoo.config.model.api.ServiceInfo;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.InstanceName;
@@ -13,6 +15,7 @@ import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
 import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.http.HttpRequest.Method;
+import ai.vespa.http.HttpURL;
 import com.yahoo.test.ManualClock;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.MockLogRetriever;
@@ -50,14 +53,19 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import static com.yahoo.container.jdisc.HttpRequest.createTestRequest;
@@ -65,8 +73,13 @@ import static com.yahoo.jdisc.http.HttpRequest.Method.DELETE;
 import static com.yahoo.jdisc.http.HttpRequest.Method.GET;
 import static com.yahoo.jdisc.http.HttpRequest.Method.POST;
 import static com.yahoo.test.json.JsonTestHelper.assertJsonEquals;
+import static com.yahoo.vespa.config.server.application.ConfigConvergenceChecker.ServiceListResponse;
+import static com.yahoo.vespa.config.server.application.ConfigConvergenceChecker.ServiceResponse;
 import static com.yahoo.vespa.config.server.http.HandlerTest.assertHttpStatusCodeAndMessage;
 import static com.yahoo.vespa.config.server.http.SessionHandlerTest.getRenderedString;
+import static com.yahoo.vespa.config.server.http.v2.ApplicationHandler.HttpServiceListResponse;
+import static com.yahoo.vespa.config.server.http.v2.ApplicationHandler.HttpServiceResponse.createResponse;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -146,7 +159,7 @@ public class ApplicationHandlerTest {
             Tenant mytenant = applicationRepository.getTenant(applicationId);
             deleteAndAssertOKResponse(mytenant, applicationId);
         }
-        
+
         {
             applicationRepository.deploy(testApp, prepareParams(applicationId));
             deleteAndAssertOKResponseMocked(applicationId, true);
@@ -228,48 +241,37 @@ public class ApplicationHandlerTest {
 
         clock.advance(Duration.ofSeconds(1));
         reindex(applicationId, "", "{\"message\":\"Reindexing document types [bar] in 'boo', [bar, bax, baz] in 'foo' of application default.default\"}");
-        expected = expected.withReady("boo", "bar", clock.instant())
-                           .withReady("foo", "bar", clock.instant())
-                           .withReady("foo", "baz", clock.instant())
-                           .withReady("foo", "bax", clock.instant());
+        expected = expected.withReady("boo", "bar", clock.instant(), 1).withReady("foo", "bar", clock.instant(), 1).withReady("foo", "baz", clock.instant(), 1).withReady("foo", "bax", clock.instant(), 1);
         assertEquals(expected,
                      database.readReindexingStatus(applicationId).orElseThrow());
 
         clock.advance(Duration.ofSeconds(1));
         reindex(applicationId, "?indexedOnly=true", "{\"message\":\"Reindexing document types [bar] in 'foo' of application default.default\"}");
-        expected = expected.withReady("foo", "bar", clock.instant());
+        expected = expected.withReady("foo", "bar", clock.instant(), 1);
         assertEquals(expected,
                      database.readReindexingStatus(applicationId).orElseThrow());
 
         clock.advance(Duration.ofSeconds(1));
-        expected = expected.withReady("boo", "bar", clock.instant())
-                           .withReady("foo", "bar", clock.instant())
-                           .withReady("foo", "baz", clock.instant())
-                           .withReady("foo", "bax", clock.instant());
+        expected = expected.withReady("boo", "bar", clock.instant(), 1).withReady("foo", "bar", clock.instant(), 1).withReady("foo", "baz", clock.instant(), 1).withReady("foo", "bax", clock.instant(), 1);
         reindex(applicationId, "?clusterId=", "{\"message\":\"Reindexing document types [bar] in 'boo', [bar, bax, baz] in 'foo' of application default.default\"}");
         assertEquals(expected,
                      database.readReindexingStatus(applicationId).orElseThrow());
 
         clock.advance(Duration.ofSeconds(1));
-        expected = expected.withReady("boo", "bar", clock.instant())
-                           .withReady("foo", "bar", clock.instant());
+        expected = expected.withReady("boo", "bar", clock.instant(), 1).withReady("foo", "bar", clock.instant(), 1);
         reindex(applicationId, "?documentType=bar", "{\"message\":\"Reindexing document types [bar] in 'boo', [bar] in 'foo' of application default.default\"}");
         assertEquals(expected,
                      database.readReindexingStatus(applicationId).orElseThrow());
 
         clock.advance(Duration.ofSeconds(1));
         reindex(applicationId, "?clusterId=foo,boo", "{\"message\":\"Reindexing document types [bar] in 'boo', [bar, bax, baz] in 'foo' of application default.default\"}");
-        expected = expected.withReady("boo", "bar", clock.instant())
-                           .withReady("foo", "bar", clock.instant())
-                           .withReady("foo", "baz", clock.instant())
-                           .withReady("foo", "bax", clock.instant());
+        expected = expected.withReady("boo", "bar", clock.instant(), 1).withReady("foo", "bar", clock.instant(), 1).withReady("foo", "baz", clock.instant(), 1).withReady("foo", "bax", clock.instant(), 1);
         assertEquals(expected,
                      database.readReindexingStatus(applicationId).orElseThrow());
 
         clock.advance(Duration.ofSeconds(1));
-        reindex(applicationId, "?clusterId=foo&documentType=bar,baz", "{\"message\":\"Reindexing document types [bar, baz] in 'foo' of application default.default\"}");
-        expected = expected.withReady("foo", "bar", clock.instant())
-                           .withReady("foo", "baz", clock.instant());
+        reindex(applicationId, "?clusterId=foo&documentType=bar,baz&speed=0.1", "{\"message\":\"Reindexing document types [bar, baz] in 'foo' of application default.default\"}");
+        expected = expected.withReady("foo", "bar", clock.instant(), 0.1).withReady("foo", "baz", clock.instant(), 0.1);
         assertEquals(expected,
                      database.readReindexingStatus(applicationId).orElseThrow());
 
@@ -295,21 +297,25 @@ public class ApplicationHandlerTest {
                                        "      }," +
                                        "      \"ready\": {" +
                                        "        \"bar\": {" +
-                                       "          \"readyMillis\": " + (now - 1000) +
-                                       "        }," +
+                                       "          \"readyMillis\": " + (now - 1000) + ", " +
+                                       "          \"speed\": 1.0" +
+                                       "        }" +
                                        "      }" +
                                        "    }," +
                                        "    \"foo\": {" +
                                        "      \"pending\": {}," +
                                        "      \"ready\": {" +
                                        "        \"bar\": {" +
-                                       "          \"readyMillis\": " + now +
+                                       "          \"readyMillis\": " + now + ", " +
+                                       "          \"speed\": 0.1" +
                                        "        }," +
                                        "        \"bax\": {" +
-                                       "          \"readyMillis\": " + (now - 1000) +
+                                       "          \"readyMillis\": " + (now - 1000) + ", " +
+                                       "          \"speed\": 1.0" +
                                        "        }," +
                                        "        \"baz\": {" +
-                                       "          \"readyMillis\": " + now +
+                                       "          \"readyMillis\": " + now + ", " +
+                                       "          \"speed\": 0.1" +
                                        "        }" +
                                        "      }" +
                                        "    }" +
@@ -353,18 +359,29 @@ public class ApplicationHandlerTest {
                 .withHttpProxy(mockHttpProxy)
                 .build();
         ApplicationHandler mockHandler = createApplicationHandler(applicationRepository);
-        doAnswer(invoc -> new StaticResponse(200, "text/html", "<html>" +
-                "host=" + invoc.getArgument(1, String.class) + "," +
-                "service=" + invoc.getArgument(2, String.class) + "," +
-                "path=" + invoc.getArgument(3, String.class) + "</html>")).when(mockHttpProxy).get(any(), any(), any(), any());
+        doAnswer(invoc -> new StaticResponse(200,
+                                             "text/html",
+                                             "<html>" +
+                                             "host=" + invoc.getArgument(1, String.class) + "," +
+                                             "service=" + invoc.getArgument(2, String.class) + "," +
+                                             "path=" + invoc.getArgument(3, HttpURL.Path.class) + "," +
+                                             "query=" + invoc.getArgument(4, HttpURL.Query.class) +
+                                             (invoc.getArgument(5, HttpURL.class) == null ? "" : ("," +
+                                             "forwardedUrl=" + invoc.getArgument(5, HttpURL.class))) +
+                                             "</html>"))
+                .when(mockHttpProxy).get(any(), any(), any(), any(), any(), any());
 
-        HttpResponse response = mockHandler.handle(createTestRequest(toUrlPath(applicationId, Zone.defaultZone(), true) + "/service/container-clustercontroller/" + host + "/status/some/path/clusterName1", GET));
-        assertHttpStatusCodeAndMessage(response, 200, "text/html", "<html>host=foo.yahoo.com,service=container-clustercontroller,path=clustercontroller-status/v1/some/path/clusterName1</html>");
+        HttpResponse response = mockHandler.handle(createTestRequest(toUrlPath(applicationId, Zone.defaultZone(), true) + "/service/container-clustercontroller/" + host + "/status/some/path/clusterName1?foo=bar", GET));
+        assertHttpStatusCodeAndMessage(response, 200, "text/html", "<html>host=foo.yahoo.com,service=container-clustercontroller,path=path '/clustercontroller-status/v1/some/path/clusterName1',query=query 'foo=bar'</html>");
 
-        response = mockHandler.handle(createTestRequest(toUrlPath(applicationId, Zone.defaultZone(), true) + "/service/distributor/" + host + "/status/something", GET));
-        assertHttpStatusCodeAndMessage(response, 200, "text/html", "<html>host=foo.yahoo.com,service=distributor,path=something</html>");
+        String forwarded = "https://api:123/my/base/path?bar=%2E";
+        response = mockHandler.handle(createTestRequest(toUrlPath(applicationId, Zone.defaultZone(), true) + "/service/distributor/" + host + "/state/v1/something/more?foo=bar&forwarded-url=" + URLEncoder.encode(forwarded, UTF_8), GET));
+        assertHttpStatusCodeAndMessage(response, 200, "text/html", "<html>host=foo.yahoo.com,service=distributor,path=path '/state/v1/something/more',query=query 'foo=bar',forwardedUrl=https://api:123/my/base/path?bar=.</html>");
 
-        response = mockHandler.handle(createTestRequest(toUrlPath(applicationId, Zone.defaultZone(), true) + "/service/fake-service/" + host + "/status/something", GET));
+        response = mockHandler.handle(createTestRequest(toUrlPath(applicationId, Zone.defaultZone(), true) + "/service/distributor/" + host + "/status/something?foo=bar", GET));
+        assertHttpStatusCodeAndMessage(response, 200, "text/html", "<html>host=foo.yahoo.com,service=distributor,path=path '/something',query=query 'foo=bar'</html>");
+
+        response = mockHandler.handle(createTestRequest(toUrlPath(applicationId, Zone.defaultZone(), true) + "/service/fake-service/" + host + "/status/something?foo=bar", GET));
         assertHttpStatusCodeAndMessage(response, 404, "{\"error-code\":\"NOT_FOUND\",\"message\":\"No status page for service: fake-service\"}");
     }
 
@@ -410,7 +427,7 @@ public class ApplicationHandlerTest {
         var mockHandler = createApplicationHandler();
 
         var requestString = "{\"name\":\"store\",\"awsId\":\"aws-id\",\"role\":\"role\",\"region\":\"us-west-1\",\"parameterName\":\"some-parameter\"}";
-        var requestData = new ByteArrayInputStream(requestString.getBytes(StandardCharsets.UTF_8));
+        var requestData = new ByteArrayInputStream(requestString.getBytes(UTF_8));
         var response = mockHandler.handle(createTestRequest(url, POST, requestData));
         assertEquals(200, response.getStatus());
 
@@ -446,7 +463,7 @@ public class ApplicationHandlerTest {
         String url = toUrlPath(applicationId, Zone.defaultZone(), true) + "/tester/run/staging-test";
         ApplicationHandler mockHandler = createApplicationHandler();
 
-        InputStream requestData =  new ByteArrayInputStream("foo".getBytes(StandardCharsets.UTF_8));
+        InputStream requestData =  new ByteArrayInputStream("foo".getBytes(UTF_8));
         HttpRequest testRequest = createTestRequest(url, POST, requestData);
         HttpResponse response = mockHandler.handle(testRequest);
         assertEquals(200, response.getStatus());
@@ -482,8 +499,7 @@ public class ApplicationHandlerTest {
     public void testReindexingSerialization() throws IOException {
         Instant now = Instant.ofEpochMilli(123456);
         ApplicationReindexing applicationReindexing = ApplicationReindexing.empty()
-                                                                           .withPending("foo", "bar", 123L)
-                                                                           .withReady("moo", "baz", now);
+                                                                           .withPending("foo", "bar", 123L).withReady("moo", "baz", now, 1);
         ClusterReindexing clusterReindexing = new ClusterReindexing(Map.of("bax", new Status(now, null, null, null, null),
                                                                            "baz", new Status(now.plusSeconds(1),
                                                                                              now.plusSeconds(2),
@@ -524,7 +540,7 @@ public class ApplicationHandlerTest {
                          "      \"ready\": {\n" +
                          "        \"bar\": {},\n" +
                          "        \"hax\": {}\n" +
-                         "      },\n" +
+                         "      }\n" +
                          "    },\n" +
                          "    \"moo\": {\n" +
                          "      \"pending\": {},\n" +
@@ -534,6 +550,7 @@ public class ApplicationHandlerTest {
                          "        },\n" +
                          "        \"baz\": {\n" +
                          "          \"readyMillis\": 123456,\n" +
+                         "          \"speed\": 1.0,\n" +
                          "          \"startedMillis\": 124456,\n" +
                          "          \"endedMillis\": 125456,\n" +
                          "          \"state\": \"failed\",\n" +
@@ -544,6 +561,143 @@ public class ApplicationHandlerTest {
                          "    }\n" +
                          "  }\n" +
                          "}\n");
+    }
+
+    @Test
+    public void service_convergence() {
+        String hostAndPort = "localhost:1234";
+        URI uri = URI.create("https://" + hostAndPort + "/serviceconvergence/container");
+
+        { // Known service
+            HttpResponse response = createResponse(new ServiceResponse(ServiceResponse.Status.ok,
+                                                                       3,
+                                                                       3,
+                                                                       true),
+                                                   hostAndPort,
+                                                   uri);
+            assertResponse("{\n" +
+                                   "  \"url\": \"" + uri.toString() + "\",\n" +
+                                   "  \"host\": \"" + hostAndPort + "\",\n" +
+                                   "  \"wantedGeneration\": 3,\n" +
+                                   "  \"converged\": true,\n" +
+                                   "  \"currentGeneration\": 3\n" +
+                                   "}",
+                           200,
+                           response);
+        }
+
+        { // Missing service
+            HttpResponse response = createResponse(new ServiceResponse(ServiceResponse.Status.hostNotFound,
+                                                                       3L),
+                                                   hostAndPort,
+                                                   uri);
+
+            assertResponse("{\n" +
+                                   "  \"url\": \"" + uri.toString() + "\",\n" +
+                                   "  \"host\": \"" + hostAndPort + "\",\n" +
+                                   "  \"wantedGeneration\": 3,\n" +
+                                   "  \"problem\": \"Host:port (service) no longer part of application, refetch list of services.\"\n" +
+                                   "}",
+                           410,
+                           response);
+        }
+    }
+
+    @Test
+    public void service_list_convergence() {
+        URI requestUrl = URI.create("https://configserver/serviceconvergence");
+
+        String hostname = "localhost";
+        int port = 1234;
+        String hostAndPort = hostname + ":" + port;
+        URI serviceUrl = URI.create("https://configserver/serviceconvergence/" + hostAndPort);
+
+        {
+            HttpServiceListResponse response =
+                    new HttpServiceListResponse(new ServiceListResponse(Map.of(createServiceInfo(hostname, port), 3L),
+                                                                        3L,
+                                                                        3L),
+                                                requestUrl);
+            assertResponse("{\n" +
+                                   "  \"services\": [\n" +
+                                   "    {\n" +
+                                   "      \"host\": \"" + hostname + "\",\n" +
+                                   "      \"port\": " + port + ",\n" +
+                                   "      \"type\": \"container\",\n" +
+                                   "      \"url\": \"" + serviceUrl.toString() + "\",\n" +
+                                   "      \"currentGeneration\":" + 3 + "\n" +
+                                   "    }\n" +
+                                   "  ],\n" +
+                                   "  \"url\": \"" + requestUrl.toString() + "\",\n" +
+                                   "  \"currentGeneration\": 3,\n" +
+                                   "  \"wantedGeneration\": 3,\n" +
+                                   "  \"converged\": true\n" +
+                                   "}",
+                           200,
+                           response);
+        }
+
+        { // Two hosts on different generations
+            String hostname2 = "localhost2";
+            int port2 = 5678;
+            String hostAndPort2 = hostname2 + ":" + port2;
+            URI serviceUrl2 = URI.create("https://configserver/serviceconvergence/" + hostAndPort2);
+
+            Map<ServiceInfo, Long> serviceInfos = new HashMap<>();
+            serviceInfos.put(createServiceInfo(hostname, port), 4L);
+            serviceInfos.put(createServiceInfo(hostname2, port2), 3L);
+
+            HttpServiceListResponse response =
+                    new HttpServiceListResponse(new ServiceListResponse(serviceInfos,
+                                                                        4L,
+                                                                        3L),
+                                                requestUrl);
+            assertResponse("{\n" +
+                                   "  \"services\": [\n" +
+                                   "    {\n" +
+                                   "      \"host\": \"" + hostname + "\",\n" +
+                                   "      \"port\": " + port + ",\n" +
+                                   "      \"type\": \"container\",\n" +
+                                   "      \"url\": \"" + serviceUrl.toString() + "\",\n" +
+                                   "      \"currentGeneration\":" + 4 + "\n" +
+                                   "    },\n" +
+                                   "    {\n" +
+                                   "      \"host\": \"" + hostname2 + "\",\n" +
+                                   "      \"port\": " + port2 + ",\n" +
+                                   "      \"type\": \"container\",\n" +
+                                   "      \"url\": \"" + serviceUrl2.toString() + "\",\n" +
+                                   "      \"currentGeneration\":" + 3 + "\n" +
+                                   "    }\n" +
+                                   "  ],\n" +
+                                   "  \"url\": \"" + requestUrl.toString() + "\",\n" +
+                                   "  \"currentGeneration\": 3,\n" +
+                                   "  \"wantedGeneration\": 4,\n" +
+                                   "  \"converged\": false\n" +
+                                   "}",
+                           200,
+                           response);
+        }
+    }
+
+    @Test
+    public void service_convergence_timeout() {
+        String hostAndPort = "localhost:1234";
+        URI uri = URI.create("https://" + hostAndPort + "/serviceconvergence/container");
+
+        HttpResponse response = createResponse(new ServiceResponse(ServiceResponse.Status.notFound,
+                                                                   3L,
+                                                                   "some error message"),
+                                               hostAndPort,
+                                               uri);
+
+        assertResponse("{\n" +
+                               "  \"url\": \"" + uri.toString() + "\",\n" +
+                               "  \"host\": \"" + hostAndPort + "\",\n" +
+                               "  \"wantedGeneration\": 3,\n" +
+                               "  \"error\": \"some error message\"" +
+                               "}",
+                       404,
+                       response);
     }
 
     private void assertNotAllowed(Method method) throws IOException {
@@ -616,7 +770,7 @@ public class ApplicationHandlerTest {
                           "/environment/" + zone.environment().value() +
                           "/region/" + zone.region().value() +
                           "/instance/" + applicationId.instance().value() + "\"]";
-        ListApplicationsHandler listApplicationsHandler = new ListApplicationsHandler(ListApplicationsHandler.testOnlyContext(),
+        ListApplicationsHandler listApplicationsHandler = new ListApplicationsHandler(ListApplicationsHandler.testContext(),
                                                                                       tenantRepository,
                                                                                       Zone.defaultZone());
         ListApplicationsHandlerTest.assertResponse(listApplicationsHandler,
@@ -668,11 +822,36 @@ public class ApplicationHandlerTest {
     }
 
     private ApplicationHandler createApplicationHandler(ApplicationRepository applicationRepository) {
-        return new ApplicationHandler(ApplicationHandler.testOnlyContext(), Zone.defaultZone(), applicationRepository);
+        return new ApplicationHandler(ApplicationHandler.testContext(), Zone.defaultZone(), applicationRepository);
     }
 
     private PrepareParams prepareParams(ApplicationId applicationId) {
         return new PrepareParams.Builder().applicationId(applicationId).build();
+    }
+
+    private static void assertResponse(String expectedJson, int status, HttpResponse response) {
+        assertResponse((responseBody) -> assertJsonEquals(new String(responseBody
+                                                                             .getBytes()), expectedJson), status, response);
+    }
+
+    private static void assertResponse(Consumer<String> assertFunc, int status, HttpResponse response) {
+        ByteArrayOutputStream responseBody = new ByteArrayOutputStream();
+        try {
+            response.render(responseBody);
+            assertFunc.accept(responseBody.toString());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        assertEquals(status, response.getStatus());
+    }
+
+    private ServiceInfo createServiceInfo(String hostname, int port) {
+        return new ServiceInfo("container",
+                               "container",
+                               List.of(new PortInfo(port, List.of("state"))),
+                               Map.of(),
+                               "configId",
+                               hostname);
     }
 
 }

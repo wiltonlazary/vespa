@@ -10,6 +10,7 @@
 #include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/persistence/spi/test.h>
 #include <vespa/persistence/spi/persistenceprovider.h>
+#include <vespa/persistence/spi/docentry.h>
 #include <functional>
 
 using std::unique_ptr;
@@ -17,39 +18,38 @@ using std::shared_ptr;
 
 using storage::spi::test::makeSpiBucket;
 using document::test::makeDocumentBucket;
+using document::StringFieldValue;
 using namespace ::testing;
 
 namespace storage {
 
-struct TestAndSetTest : SingleDiskPersistenceTestUtils {
+struct TestAndSetTest : PersistenceTestUtils {
     static constexpr int MIN_DOCUMENT_SIZE = 0;
     static constexpr int MAX_DOCUMENT_SIZE = 128;
     static constexpr int RANDOM_SEED = 1234;
 
     const document::BucketId BUCKET_ID{16, 4};
-    const document::StringFieldValue MISMATCHING_HEADER{"Definitely nothing about loud canines"};
-    const document::StringFieldValue MATCHING_HEADER{"Some string with woofy dog as a substring"};
-    const document::StringFieldValue OLD_CONTENT{"Some old content"};
-    const document::StringFieldValue NEW_CONTENT{"Freshly pressed and squeezed content"};
+    const StringFieldValue MISMATCHING_HEADER{"Definitely nothing about loud canines"};
+    const StringFieldValue MATCHING_HEADER{"Some string with woofy dog as a substring"};
+    const StringFieldValue OLD_CONTENT{"Some old content"};
+    const StringFieldValue NEW_CONTENT{"Freshly pressed and squeezed content"};
     const document::Bucket BUCKET = makeDocumentBucket(BUCKET_ID);
 
     unique_ptr<PersistenceHandler> persistenceHandler;
     const AsyncHandler * asyncHandler;
     shared_ptr<document::Document> testDoc;
     document::DocumentId testDocId;
-    spi::Context context;
 
     TestAndSetTest()
         : persistenceHandler(),
-          asyncHandler(nullptr),
-          context(0, 0)
+          asyncHandler(nullptr)
     {}
 
     void SetUp() override {
-        SingleDiskPersistenceTestUtils::SetUp();
+        PersistenceTestUtils::SetUp();
 
         createBucket(BUCKET_ID);
-        getPersistenceProvider().createBucket(makeSpiBucket(BUCKET_ID),context);
+        getPersistenceProvider().createBucket(makeSpiBucket(BUCKET_ID));
 
         testDoc = createTestDocument();
         testDocId = testDoc->getId();
@@ -57,7 +57,7 @@ struct TestAndSetTest : SingleDiskPersistenceTestUtils {
     }
 
     void TearDown() override {
-        SingleDiskPersistenceTestUtils::TearDown();
+        PersistenceTestUtils::TearDown();
     }
 
     std::shared_ptr<api::UpdateCommand> conditional_update_test(
@@ -73,7 +73,7 @@ struct TestAndSetTest : SingleDiskPersistenceTestUtils {
     static std::string expectedDocEntryString(
         api::Timestamp timestamp,
         const document::DocumentId & testDocId,
-        spi::DocumentMetaFlags removeFlag = spi::NONE);
+        spi::DocumentMetaEnum removeFlag = spi::DocumentMetaEnum::NONE);
 };
 
 TEST_F(TestAndSetTest, conditional_put_not_executed_on_condition_mismatch) {
@@ -150,7 +150,7 @@ TEST_F(TestAndSetTest, conditional_remove_executed_on_condition_match) {
 
     ASSERT_EQ(fetchResult(asyncHandler->handleRemove(*remove, createTracker(remove, BUCKET))).getResult(), api::ReturnCode::Result::OK);
     EXPECT_EQ(expectedDocEntryString(timestampOne, testDocId) +
-              expectedDocEntryString(timestampTwo, testDocId, spi::REMOVE_ENTRY),
+              expectedDocEntryString(timestampTwo, testDocId, spi::DocumentMetaEnum::REMOVE_ENTRY),
               dumpBucket(BUCKET_ID));
 }
 
@@ -158,9 +158,7 @@ std::shared_ptr<api::UpdateCommand>
 TestAndSetTest::conditional_update_test(bool createIfMissing, api::Timestamp updateTimestamp)
 {
     auto docUpdate = std::make_shared<document::DocumentUpdate>(_env->_testDocMan.getTypeRepo(), testDoc->getType(), testDocId);
-    auto fieldUpdate = document::FieldUpdate(testDoc->getField("content"));
-    fieldUpdate.addUpdate(document::AssignValueUpdate(NEW_CONTENT));
-    docUpdate->addUpdate(fieldUpdate);
+    docUpdate->addUpdate(document::FieldUpdate(testDoc->getField("content")).addUpdate(std::make_unique<document::AssignValueUpdate>(std::make_unique<StringFieldValue>(NEW_CONTENT))));
     docUpdate->setCreateIfNonExistent(createIfMissing);
 
     auto updateUp = std::make_unique<api::UpdateCommand>(BUCKET, docUpdate, updateTimestamp);
@@ -291,12 +289,12 @@ void TestAndSetTest::assertTestDocumentFoundAndMatchesContent(const document::Fi
 std::string TestAndSetTest::expectedDocEntryString(
     api::Timestamp timestamp,
     const document::DocumentId & docId,
-    spi::DocumentMetaFlags removeFlag)
+    spi::DocumentMetaEnum removeFlag)
 {
     std::stringstream ss;
 
-    ss << "DocEntry(" << timestamp << ", " << removeFlag << ", ";
-    if (removeFlag == spi::REMOVE_ENTRY) {
+    ss << "DocEntry(" << timestamp << ", " << int(removeFlag) << ", ";
+    if (removeFlag == spi::DocumentMetaEnum::REMOVE_ENTRY) {
         ss << docId << ")\n";
     } else {
        ss << "Doc(" << docId << "))\n";

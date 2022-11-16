@@ -8,21 +8,22 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>component</artifactId>
   <packaging>container-plugin</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <dependencies>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <scope>test</scope>
-    </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>config-bundle</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.yahoo.vespa</groupId>
+      <artifactId>annotations</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
     </dependency>
@@ -33,15 +34,19 @@
       <scope>provided</scope>
     </dependency>
     <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
       <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <!-- Needed by guava, which has an optional dependency on jsr305.
-      Not optional here, to avoid the need to add it to a lot of dependent modules. -->
-      <groupId>com.google.code.findbugs</groupId>
-      <artifactId>jsr305</artifactId>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>

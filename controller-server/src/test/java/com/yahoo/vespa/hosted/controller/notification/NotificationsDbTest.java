@@ -1,20 +1,33 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.notification;
 
+import com.google.common.collect.ImmutableBiMap;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ClusterSpec;
+import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.path.Path;
 import com.yahoo.test.ManualClock;
+import com.yahoo.vespa.flags.FlagSource;
+import com.yahoo.vespa.flags.Flags;
+import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.ClusterMetrics;
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.RunId;
+import com.yahoo.vespa.hosted.controller.api.integration.stubs.MockMailer;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
+import com.yahoo.vespa.hosted.controller.deployment.DeploymentContext;
+import com.yahoo.vespa.hosted.controller.integration.ZoneRegistryMock;
 import com.yahoo.vespa.hosted.controller.persistence.MockCuratorDb;
-import org.junit.Before;
-import org.junit.Test;
+import com.yahoo.vespa.hosted.controller.tenant.ArchiveAccess;
+import com.yahoo.vespa.hosted.controller.tenant.CloudTenant;
+import com.yahoo.vespa.hosted.controller.tenant.Email;
+import com.yahoo.vespa.hosted.controller.tenant.LastLoginInfo;
+import com.yahoo.vespa.hosted.controller.tenant.TenantContacts;
+import com.yahoo.vespa.hosted.controller.tenant.TenantInfo;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -22,13 +35,14 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static com.yahoo.vespa.hosted.controller.notification.Notification.Level;
 import static com.yahoo.vespa.hosted.controller.notification.Notification.Type;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author freva
@@ -36,30 +50,46 @@ import static org.junit.Assert.assertTrue;
 public class NotificationsDbTest {
 
     private static final TenantName tenant = TenantName.from("tenant1");
+    private static final Email email = new Email("user1@example.com", true);
+    private static final CloudTenant cloudTenant = new CloudTenant(tenant,
+            Instant.now(),
+            LastLoginInfo.EMPTY,
+            Optional.empty(),
+            ImmutableBiMap.of(),
+            TenantInfo.empty()
+                    .withContacts(new TenantContacts(
+                            List.of(new TenantContacts.EmailContact(
+                                List.of(TenantContacts.Audience.NOTIFICATIONS),
+                            email)))),
+            List.of(),
+            new ArchiveAccess(),
+            Optional.empty());
     private static final List<Notification> notifications = List.of(
             notification(1001, Type.deployment, Level.error, NotificationSource.from(tenant), "tenant msg"),
             notification(1101, Type.applicationPackage, Level.warning, NotificationSource.from(TenantAndApplicationId.from(tenant.value(), "app1")), "app msg"),
             notification(1201, Type.deployment, Level.error, NotificationSource.from(ApplicationId.from(tenant.value(), "app2", "instance2")), "instance msg"),
             notification(1301, Type.deployment, Level.warning, NotificationSource.from(new DeploymentId(ApplicationId.from(tenant.value(), "app2", "instance2"), ZoneId.from("prod", "us-north-2"))), "deployment msg"),
             notification(1401, Type.feedBlock, Level.error, NotificationSource.from(new DeploymentId(ApplicationId.from(tenant.value(), "app1", "instance1"), ZoneId.from("dev", "us-south-1")), ClusterSpec.Id.from("cluster1")), "cluster msg"),
-            notification(1501, Type.deployment, Level.warning, NotificationSource.from(new RunId(ApplicationId.from(tenant.value(), "app1", "instance1"), JobType.devUsEast1, 4)), "run id msg"));
+            notification(1501, Type.deployment, Level.warning, NotificationSource.from(new RunId(ApplicationId.from(tenant.value(), "app1", "instance1"), DeploymentContext.devUsEast1, 4)), "run id msg"));
 
     private final ManualClock clock = new ManualClock(Instant.ofEpochSecond(12345));
-    private final MockCuratorDb curatorDb = new MockCuratorDb();
-    private final NotificationsDb notificationsDb = new NotificationsDb(clock, curatorDb);
+    private final MockCuratorDb curatorDb = new MockCuratorDb(SystemName.Public);
+    private final MockMailer mailer = new MockMailer();
+    private final FlagSource flagSource = new InMemoryFlagSource().withBooleanFlag(Flags.NOTIFICATION_DISPATCH_FLAG.id(), true);
+    private final NotificationsDb notificationsDb = new NotificationsDb(clock, curatorDb, new Notifier(curatorDb, new ZoneRegistryMock(SystemName.cd), mailer, flagSource));
 
     @Test
-    public void list_test() {
+    void list_test() {
         assertEquals(notifications, notificationsDb.listNotifications(NotificationSource.from(tenant), false));
         assertEquals(notificationIndices(0, 1, 2, 3), notificationsDb.listNotifications(NotificationSource.from(tenant), true));
         assertEquals(notificationIndices(2, 3), notificationsDb.listNotifications(NotificationSource.from(TenantAndApplicationId.from(tenant.value(), "app2")), false));
         assertEquals(notificationIndices(4, 5), notificationsDb.listNotifications(NotificationSource.from(ApplicationId.from(tenant.value(), "app1", "instance1")), false));
-        assertEquals(notificationIndices(5), notificationsDb.listNotifications(NotificationSource.from(new RunId(ApplicationId.from(tenant.value(), "app1", "instance1"), JobType.devUsEast1, 5)), false));
-        assertEquals(List.of(), notificationsDb.listNotifications(NotificationSource.from(new RunId(ApplicationId.from(tenant.value(), "app1", "instance1"), JobType.productionUsEast3, 4)), false));
+        assertEquals(notificationIndices(5), notificationsDb.listNotifications(NotificationSource.from(new RunId(ApplicationId.from(tenant.value(), "app1", "instance1"), DeploymentContext.devUsEast1, 5)), false));
+        assertEquals(List.of(), notificationsDb.listNotifications(NotificationSource.from(new RunId(ApplicationId.from(tenant.value(), "app1", "instance1"), DeploymentContext.productionUsEast3, 4)), false));
     }
 
     @Test
-    public void add_test() {
+    void add_test() {
         Notification notification1 = notification(12345, Type.deployment, Level.warning, NotificationSource.from(ApplicationId.from(tenant.value(), "app2", "instance2")), "instance msg #2");
         Notification notification2 = notification(12345, Type.deployment, Level.error,   NotificationSource.from(ApplicationId.from(tenant.value(), "app3", "instance2")), "instance msg #3");
 
@@ -75,7 +105,30 @@ public class NotificationsDbTest {
     }
 
     @Test
-    public void remove_single_test() {
+    void notifier_test() {
+        Notification notification1 = notification(12345, Type.deployment, Level.warning, NotificationSource.from(ApplicationId.from(tenant.value(), "app2", "instance2")), "instance msg #2");
+        Notification notification2 = notification(12345, Type.applicationPackage, Level.error,   NotificationSource.from(ApplicationId.from(tenant.value(), "app3", "instance2")), "instance msg #3");
+        Notification notification3 = notification(12345, Type.reindex, Level.warning, NotificationSource.from(new DeploymentId(ApplicationId.from(tenant.value(), "app2", "instance2"), ZoneId.defaultId()), new ClusterSpec.Id("content")), "instance msg #2");
+        ;
+        var a = notifications.get(0);
+        notificationsDb.setNotification(a.source(), a.type(), a.level(), a.messages());
+        assertEquals(0, mailer.inbox(email.getEmailAddress()).size());
+
+        // Replace the 3rd notification. but don't change source or type
+        notificationsDb.setNotification(notification1.source(), notification1.type(), notification1.level(), notification1.messages());
+        assertEquals(0, mailer.inbox(email.getEmailAddress()).size());
+
+        // Notification for a new app, add without replacement
+        notificationsDb.setNotification(notification2.source(), notification2.type(), notification2.level(), notification2.messages());
+        assertEquals(1, mailer.inbox(email.getEmailAddress()).size());
+
+        // Notification for new type on existing app
+        notificationsDb.setNotification(notification3.source(), notification3.type(), notification3.level(), notification3.messages());
+        assertEquals(2, mailer.inbox(email.getEmailAddress()).size());
+    }
+
+    @Test
+    void remove_single_test() {
         // Remove the 3rd notification
         notificationsDb.removeNotification(NotificationSource.from(ApplicationId.from(tenant.value(), "app2", "instance2")), Type.deployment);
 
@@ -86,7 +139,7 @@ public class NotificationsDbTest {
     }
 
     @Test
-    public void remove_multiple_test() {
+    void remove_multiple_test() {
         // Remove the 3rd notification
         notificationsDb.removeNotifications(NotificationSource.from(ApplicationId.from(tenant.value(), "app1", "instance1")));
         assertEquals(notificationIndices(0, 1, 2, 3), curatorDb.readNotifications(tenant));
@@ -98,7 +151,30 @@ public class NotificationsDbTest {
     }
 
     @Test
-    public void feed_blocked_single_cluster_test() {
+    void deployment_metrics_notify_test() {
+        DeploymentId deploymentId = new DeploymentId(ApplicationId.from(tenant.value(), "app1", "instance1"), ZoneId.from("prod", "us-south-3"));
+        NotificationSource sourceCluster1 = NotificationSource.from(deploymentId, ClusterSpec.Id.from("cluster1"));
+        List<Notification> expected = new ArrayList<>(notifications);
+
+        // No metrics, no new notification
+        notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of());
+        assertEquals(0, mailer.inbox(email.getEmailAddress()).size());
+
+        // Metrics that contain none of the feed block metrics does not create new notification
+        notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of(clusterMetrics("cluster1", null, null, null, null, Map.of())));
+        assertEquals(0, mailer.inbox(email.getEmailAddress()).size());
+
+        // One resource is at warning
+        notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of(clusterMetrics("cluster1", 0.88, 0.9, 0.3, 0.5, Map.of())));
+        assertEquals(1, mailer.inbox(email.getEmailAddress()).size());
+
+        // One resource over the limit
+        notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of(clusterMetrics("cluster1", 0.95, 0.9, 0.3, 0.5, Map.of())));
+        assertEquals(2, mailer.inbox(email.getEmailAddress()).size());
+    }
+
+    @Test
+    void feed_blocked_single_cluster_test() {
         DeploymentId deploymentId = new DeploymentId(ApplicationId.from(tenant.value(), "app1", "instance1"), ZoneId.from("prod", "us-south-3"));
         NotificationSource sourceCluster1 = NotificationSource.from(deploymentId, ClusterSpec.Id.from("cluster1"));
         List<Notification> expected = new ArrayList<>(notifications);
@@ -116,8 +192,8 @@ public class NotificationsDbTest {
         assertEquals(expected, curatorDb.readNotifications(tenant));
 
         // One resource is at warning
-        notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of(clusterMetrics("cluster1", 0.85, 0.9, 0.3, 0.5, Map.of())));
-        expected.add(notification(12345, Type.feedBlock, Level.warning, sourceCluster1, "disk (usage: 85.0%, feed block limit: 90.0%)"));
+        notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of(clusterMetrics("cluster1", 0.88, 0.9, 0.3, 0.5, Map.of())));
+        expected.add(notification(12345, Type.feedBlock, Level.warning, sourceCluster1, "disk (usage: 88.0%, feed block limit: 90.0%)"));
         assertEquals(expected, curatorDb.readNotifications(tenant));
 
         // Both resources over the limit
@@ -133,7 +209,7 @@ public class NotificationsDbTest {
     }
 
     @Test
-    public void deployment_metrics_multiple_cluster_test() {
+    void deployment_metrics_multiple_cluster_test() {
         DeploymentId deploymentId = new DeploymentId(ApplicationId.from(tenant.value(), "app1", "instance1"), ZoneId.from("prod", "us-south-3"));
         NotificationSource sourceCluster1 = NotificationSource.from(deploymentId, ClusterSpec.Id.from("cluster1"));
         NotificationSource sourceCluster2 = NotificationSource.from(deploymentId, ClusterSpec.Id.from("cluster2"));
@@ -142,24 +218,26 @@ public class NotificationsDbTest {
 
         // Cluster1 and cluster2 are having feed block issues, cluster 3 is reindexing
         notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of(
-                clusterMetrics("cluster1", 0.85, 0.9, 0.3, 0.5, Map.of()), clusterMetrics("cluster2", 0.6, 0.8, 0.9, 0.75, Map.of()), clusterMetrics("cluster3", 0.1, 0.8, 0.2, 0.9, Map.of("announcements", 0.75, "build", 0.5))));
-        expected.add(notification(12345, Type.feedBlock, Level.warning, sourceCluster1, "disk (usage: 85.0%, feed block limit: 90.0%)"));
+                clusterMetrics("cluster1", 0.88, 0.9, 0.3, 0.5, Map.of()), clusterMetrics("cluster2", 0.6, 0.8, 0.9, 0.75, Map.of()), clusterMetrics("cluster3", 0.1, 0.8, 0.2, 0.9, Map.of("announcements", 0.75, "build", 0.5))));
+        expected.add(notification(12345, Type.feedBlock, Level.warning, sourceCluster1, "disk (usage: 88.0%, feed block limit: 90.0%)"));
         expected.add(notification(12345, Type.feedBlock, Level.error, sourceCluster2, "memory (usage: 90.0%, feed block limit: 75.0%)"));
         expected.add(notification(12345, Type.reindex, Level.info, sourceCluster3, "document type 'announcements' (75.0% done)", "document type 'build' (50.0% done)"));
         assertEquals(expected, curatorDb.readNotifications(tenant));
 
         // Cluster1 improves, while cluster3 starts having feed block issues and finishes reindexing 'build' documents
         notificationsDb.setDeploymentMetricsNotifications(deploymentId, List.of(
-                clusterMetrics("cluster1", 0.15, 0.9, 0.3, 0.5, Map.of()), clusterMetrics("cluster2", 0.6, 0.8, 0.9, 0.75, Map.of()), clusterMetrics("cluster3", 0.75, 0.8, 0.2, 0.9,  Map.of("announcements", 0.9))));
+                clusterMetrics("cluster1", 0.15, 0.9, 0.3, 0.5, Map.of()), clusterMetrics("cluster2", 0.6, 0.8, 0.9, 0.75, Map.of()), clusterMetrics("cluster3", 0.78, 0.8, 0.2, 0.9,  Map.of("announcements", 0.9))));
         expected.set(6, notification(12345, Type.feedBlock, Level.error, sourceCluster2, "memory (usage: 90.0%, feed block limit: 75.0%)"));
-        expected.set(7, notification(12345, Type.feedBlock, Level.warning, sourceCluster3, "disk (usage: 75.0%, feed block limit: 80.0%)"));
+        expected.set(7, notification(12345, Type.feedBlock, Level.warning, sourceCluster3, "disk (usage: 78.0%, feed block limit: 80.0%)"));
         expected.set(8, notification(12345, Type.reindex, Level.info, sourceCluster3, "document type 'announcements' (90.0% done)"));
         assertEquals(expected, curatorDb.readNotifications(tenant));
     }
 
-    @Before
+    @BeforeEach
     public void init() {
         curatorDb.writeNotifications(tenant, notifications);
+        curatorDb.writeTenant(cloudTenant);
+        mailer.reset();
     }
 
     private static List<Notification> notificationIndices(int... indices) {

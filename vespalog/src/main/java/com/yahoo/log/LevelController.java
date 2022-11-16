@@ -10,8 +10,9 @@ import java.util.logging.Level;
  *
  * @author arnej27959
  *
+ * Should only be used internally in the log library
  */
-public interface LevelController {
+interface LevelController {
 
     /**
      * should we actually publish a log message with the given Level now?

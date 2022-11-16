@@ -6,25 +6,37 @@
     "name": "Joe Developer",
     "email": "dev@domail",
     "nickname": "dev",
-    "verified":false
+    "verified": false
   },
   "tenants": {
     "sandbox": {
+      "supported": false,
       "roles": [
         "developer",
         "reader"
       ]
     },
     "tenant1": {
+      "supported": false,
       "roles": [
         "administrator"
       ]
     },
     "tenant2": {
+      "supported": false,
       "roles": [
         "developer"
       ]
     }
   },
-  "flags": [{"id":"enable-public-signup-flow","rules":[{"value":false}]}]
+  "flags": [
+    {
+      "id": "enable-public-signup-flow",
+      "rules": [
+        {
+          "value": false
+        }
+      ]
+    }
+  ]
 }

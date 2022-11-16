@@ -1,17 +1,15 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.client.dsl;
 
-import java.util.Collections;
-import java.util.Map;
 import java.util.UUID;
 
 public class UserInput extends QueryChain {
 
-    Annotation annotation; // accept only defaultIndex annotation
-    String value;
-    String indexField;
-    String placeholder; // for generating unique param
-    boolean setDefaultIndex;
+    private final Annotation annotation; // accept only defaultIndex annotation
+    private final String value;
+    private final boolean valueIsReference;
+    private final String indexField;
+    private boolean setDefaultIndex;
 
     UserInput(Sources sources, String value) {
         this(sources, A.empty(), value);
@@ -21,11 +19,12 @@ public class UserInput extends QueryChain {
         this.sources = sources;
         this.annotation = annotation;
         this.value = value;
+        this.valueIsReference = value.startsWith("@");
         this.nonEmpty = true;
 
-        if (annotation.annotations.containsKey("defaultIndex")) {
+        if (annotation.contains("defaultIndex")) {
             setDefaultIndex = true;
-            indexField = (String) annotation.annotations.get("defaultIndex");
+            indexField = (String) annotation.get("defaultIndex");
         } else {
             indexField = UUID.randomUUID().toString().substring(0, 5);
         }
@@ -39,23 +38,21 @@ public class UserInput extends QueryChain {
         this(null, annotation, value);
     }
 
-    public void setIndex(int index) {
-        placeholder = setDefaultIndex
-                      ? "_" + index + "_" + indexField
-                      : "_" + index;
-    }
-
     @Override
     public String toString() {
-        //([{"defaultIndex": "shpdescfree"}](userInput(@_shpdescfree_1)))
-        return setDefaultIndex
-               ? Text.format("([%s]userInput(@%s))", annotation, placeholder)
-               : Text.format("userInput(@%s)", placeholder);
-    }
-
-
-    Map<String, String> getParam() {
-        return Collections.singletonMap(placeholder, value);
+        StringBuilder b = new StringBuilder();
+        if (setDefaultIndex)
+            b.append("(").append(annotation);
+        b.append("userInput(");
+        if ( ! valueIsReference)
+            b.append("\"");
+        b.append(value);
+        if ( ! valueIsReference)
+            b.append("\"");
+        b.append(")");
+        if (setDefaultIndex)
+            b.append(")");
+        return b.toString();
     }
 
     @Override
@@ -77,4 +74,5 @@ public class UserInput extends QueryChain {
     boolean hasNegativeSearchField(String fieldName, Object value) {
         return hasNegativeSearchField(fieldName) && this.value.equals(value);
     }
+
 }

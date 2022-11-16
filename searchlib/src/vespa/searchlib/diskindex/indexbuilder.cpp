@@ -1,15 +1,16 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "indexbuilder.h"
+#include "fieldwriter.h"
 #include <vespa/searchlib/index/docidandfeatures.h>
 #include <vespa/searchlib/index/field_length_info.h>
 #include <vespa/searchlib/index/i_field_length_inspector.h>
 #include <vespa/searchlib/index/schemautil.h>
 #include <vespa/searchlib/common/documentsummary.h>
 #include <vespa/vespalib/io/fileutil.h>
-#include <vespa/searchlib/diskindex/fieldwriter.h>
 #include <vespa/vespalib/util/array.hpp>
 #include <vespa/vespalib/util/error.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".diskindex.indexbuilder");
@@ -298,14 +299,14 @@ IndexBuilder::open(uint32_t docIdLimit, uint64_t numWordIds,
     _docIdLimit = docIdLimit;
     _numWordIds = numWordIds;
     if (!_prefix.empty()) {
-        vespalib::mkdir(_prefix, false);
+        std::filesystem::create_directory(std::filesystem::path(_prefix));
     }
     // TODO: Filter for text indexes
     for (FieldHandle & fh : _fields) {
         if (!fh.getValid()) {
             continue;
         }
-        vespalib::mkdir(fh.getDir(), false);
+        std::filesystem::create_directory(std::filesystem::path(fh.getDir()));
         fh.open(docIdLimit, numWordIds,
                 field_length_inspector.get_field_length_info(fh.getName()),
                 tuneFileIndexing._write,

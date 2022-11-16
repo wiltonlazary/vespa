@@ -3,7 +3,6 @@ package com.yahoo.vespa.model.content;
 
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.metrics.MetricsmanagerConfig;
-import com.yahoo.vespa.config.content.LoadTypeConfig;
 import com.yahoo.vespa.config.content.core.StorCommunicationmanagerConfig;
 import com.yahoo.vespa.config.content.core.StorServerConfig;
 import com.yahoo.vespa.config.content.core.StorStatusConfig;
@@ -16,23 +15,27 @@ import com.yahoo.vespa.model.application.validation.RestartConfigs;
  * Common class for config producers for storage and distributor nodes.
  */
 @RestartConfigs({StorCommunicationmanagerConfig.class, StorStatusConfig.class,
-                 StorServerConfig.class, LoadTypeConfig.class, MetricsmanagerConfig.class})
+                 StorServerConfig.class, MetricsmanagerConfig.class})
 public abstract class ContentNode extends AbstractService
         implements StorCommunicationmanagerConfig.Producer, StorStatusConfig.Producer, StorServerConfig.Producer {
 
     private final int distributionKey;
     private final String rootDirectory;
-    private final boolean skipCommunicationManagerThread;
-    private final boolean skipMbusRequestThread;
-    private final boolean skipMbusReplyThread;
+    private final int mbus_network_threads;
+    private final int mbus_rpc_targets;
+    private final int mbus_events_before_wakeup;
+    private final int rpc_num_targets;
+    private final int rpc_events_before_wakeup;
 
     public ContentNode(ModelContext.FeatureFlags featureFlags, AbstractConfigProducer<?> parent, String clusterName, String rootDirectory, int distributionKey) {
         super(parent, "" + distributionKey);
         this.distributionKey = distributionKey;
-        this.skipCommunicationManagerThread = featureFlags.skipCommunicationManagerThread();
-        this.skipMbusRequestThread = featureFlags.skipMbusRequestThread();
-        this.skipMbusReplyThread = featureFlags.skipMbusReplyThread();
         this.rootDirectory = rootDirectory;
+        mbus_network_threads = featureFlags.mbusNetworkThreads();
+        mbus_rpc_targets = featureFlags.mbusCppRpcNumTargets();
+        mbus_events_before_wakeup = featureFlags.mbusCppEventsBeforeWakeup();
+        rpc_num_targets = featureFlags.rpcNumTargets();
+        rpc_events_before_wakeup = featureFlags.rpcEventsBeforeWakeup();
 
         initialize();
         setProp("clustertype", "content");
@@ -76,9 +79,11 @@ public abstract class ContentNode extends AbstractService
     public void getConfig(StorCommunicationmanagerConfig.Builder builder) {
         builder.mbusport(getRelativePort(0));
         builder.rpcport(getRelativePort(1));
-        builder.skip_thread(skipCommunicationManagerThread);
-        builder.mbus.skip_request_thread(skipMbusRequestThread);
-        builder.mbus.skip_reply_thread(skipMbusReplyThread);
+        builder.mbus.num_network_threads(mbus_network_threads);
+        builder.mbus.num_rpc_targets(mbus_rpc_targets);
+        builder.mbus.events_before_wakeup(mbus_events_before_wakeup);
+        builder.rpc.num_targets_per_node(rpc_num_targets);
+        builder.rpc.events_before_wakeup(rpc_events_before_wakeup);
     }
 
     @Override

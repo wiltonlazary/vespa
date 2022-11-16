@@ -5,6 +5,8 @@
 #include <vespa/log/log.h>
 LOG_SETUP(".persistence.persistencehandler");
 
+using vespalib::CpuUsage;
+
 namespace storage {
 
 PersistenceHandler::PersistenceHandler(vespalib::ISequencedTaskExecutor & sequencedExecutor,
@@ -17,10 +19,10 @@ PersistenceHandler::PersistenceHandler(vespalib::ISequencedTaskExecutor & sequen
     : _clock(component.getClock()),
       _env(component, filestorHandler, metrics, provider),
       _processAllHandler(_env, provider),
-      _mergeHandler(_env, provider, component.cluster_context(), _clock,
+      _mergeHandler(_env, provider, component.cluster_context(), _clock, sequencedExecutor,
                     cfg.bucketMergeChunkSize,
                     cfg.commonMergeChainOptimalizationMinimumSize),
-      _asyncHandler(_env, provider, sequencedExecutor, component.getBucketIdFactory()),
+      _asyncHandler(_env, provider, bucketOwnershipNotifier, sequencedExecutor, component.getBucketIdFactory()),
       _splitJoinHandler(_env, provider, bucketOwnershipNotifier, cfg.enableMultibitSplitOptimalization),
       _simpleHandler(_env, provider)
 {
@@ -28,12 +30,35 @@ PersistenceHandler::PersistenceHandler(vespalib::ISequencedTaskExecutor & sequen
 
 PersistenceHandler::~PersistenceHandler() = default;
 
+// Guard that allows an operation that may be executed in an async fashion to
+// be explicitly notified when the sync phase of the operation is done, i.e.
+// when the persistence thread is no longer working on it. An operation that
+// does not care about such notifications can safely return a nullptr notifier,
+// in which case the guard is a no-op.
+class OperationSyncPhaseTrackingGuard {
+    std::shared_ptr<FileStorHandler::OperationSyncPhaseDoneNotifier> _maybe_notifier;
+public:
+    explicit OperationSyncPhaseTrackingGuard(const MessageTracker& tracker)
+        : _maybe_notifier(tracker.sync_phase_done_notifier_or_nullptr())
+    {}
+
+    ~OperationSyncPhaseTrackingGuard() {
+        if (_maybe_notifier) {
+            _maybe_notifier->signal_operation_sync_phase_done();
+        }
+    }
+};
+
 MessageTracker::UP
 PersistenceHandler::handleCommandSplitByType(api::StorageCommand& msg, MessageTracker::UP tracker) const
 {
+    OperationSyncPhaseTrackingGuard sync_guard(*tracker);
     switch (msg.getType().getId()) {
     case api::MessageType::GET_ID:
+    {
+        auto usage = vespalib::CpuUsage::use(CpuUsage::Category::READ);
         return _simpleHandler.handleGet(static_cast<api::GetCommand&>(msg), std::move(tracker));
+    }
     case api::MessageType::PUT_ID:
         return _asyncHandler.handlePut(static_cast<api::PutCommand&>(msg), std::move(tracker));
     case api::MessageType::REMOVE_ID:
@@ -43,9 +68,9 @@ PersistenceHandler::handleCommandSplitByType(api::StorageCommand& msg, MessageTr
     case api::MessageType::REVERT_ID:
         return _simpleHandler.handleRevert(static_cast<api::RevertCommand&>(msg), std::move(tracker));
     case api::MessageType::CREATEBUCKET_ID:
-        return _simpleHandler.handleCreateBucket(static_cast<api::CreateBucketCommand&>(msg), std::move(tracker));
+        return _asyncHandler.handleCreateBucket(static_cast<api::CreateBucketCommand&>(msg), std::move(tracker));
     case api::MessageType::DELETEBUCKET_ID:
-        return _simpleHandler.handleDeleteBucket(static_cast<api::DeleteBucketCommand&>(msg), std::move(tracker));
+        return _asyncHandler.handleDeleteBucket(static_cast<api::DeleteBucketCommand&>(msg), std::move(tracker));
     case api::MessageType::JOINBUCKETS_ID:
         return _splitJoinHandler.handleJoinBuckets(static_cast<api::JoinBucketsCommand&>(msg), std::move(tracker));
     case api::MessageType::SPLITBUCKET_ID:
@@ -54,7 +79,7 @@ PersistenceHandler::handleCommandSplitByType(api::StorageCommand& msg, MessageTr
     case api::MessageType::STATBUCKET_ID:
         return _processAllHandler.handleStatBucket(static_cast<api::StatBucketCommand&>(msg), std::move(tracker));
     case api::MessageType::REMOVELOCATION_ID:
-        return _processAllHandler.handleRemoveLocation(static_cast<api::RemoveLocationCommand&>(msg), std::move(tracker));
+        return _asyncHandler.handleRemoveLocation(static_cast<api::RemoveLocationCommand&>(msg), std::move(tracker));
     case api::MessageType::MERGEBUCKET_ID:
         return _mergeHandler.handleMergeBucket(static_cast<api::MergeBucketCommand&>(msg), std::move(tracker));
     case api::MessageType::GETBUCKETDIFF_ID:
@@ -62,13 +87,19 @@ PersistenceHandler::handleCommandSplitByType(api::StorageCommand& msg, MessageTr
     case api::MessageType::APPLYBUCKETDIFF_ID:
         return _mergeHandler.handleApplyBucketDiff(static_cast<api::ApplyBucketDiffCommand&>(msg), std::move(tracker));
     case api::MessageType::SETBUCKETSTATE_ID:
-        return _splitJoinHandler.handleSetBucketState(static_cast<api::SetBucketStateCommand&>(msg), std::move(tracker));
+        return _asyncHandler.handleSetBucketState(static_cast<api::SetBucketStateCommand&>(msg), std::move(tracker));
     case api::MessageType::INTERNAL_ID:
         switch(static_cast<api::InternalCommand&>(msg).getType()) {
         case GetIterCommand::ID:
+        {
+            auto usage = vespalib::CpuUsage::use(CpuUsage::Category::READ);
             return _simpleHandler.handleGetIter(static_cast<GetIterCommand&>(msg), std::move(tracker));
+        }
         case CreateIteratorCommand::ID:
+        {
+            auto usage = vespalib::CpuUsage::use(CpuUsage::Category::READ);
             return _simpleHandler.handleCreateIterator(static_cast<CreateIteratorCommand&>(msg), std::move(tracker));
+        }
         case ReadBucketList::ID:
             return _simpleHandler.handleReadBucketList(static_cast<ReadBucketList&>(msg), std::move(tracker));
         case ReadBucketInfo::ID:
@@ -87,19 +118,20 @@ PersistenceHandler::handleCommandSplitByType(api::StorageCommand& msg, MessageTr
     return MessageTracker::UP();
 }
 
-void
-PersistenceHandler::handleReply(api::StorageReply& reply) const
+MessageTracker::UP
+PersistenceHandler::handleReply(api::StorageReply& reply, MessageTracker::UP tracker) const
 {
     switch (reply.getType().getId()) {
     case api::MessageType::GETBUCKETDIFF_REPLY_ID:
         _mergeHandler.handleGetBucketDiffReply(static_cast<api::GetBucketDiffReply&>(reply), _env._fileStorHandler);
         break;
     case api::MessageType::APPLYBUCKETDIFF_REPLY_ID:
-        _mergeHandler.handleApplyBucketDiffReply(static_cast<api::ApplyBucketDiffReply&>(reply), _env._fileStorHandler);
+        _mergeHandler.handleApplyBucketDiffReply(static_cast<api::ApplyBucketDiffReply&>(reply), _env._fileStorHandler, std::move(tracker));
         break;
     default:
         break;
     }
+    return tracker;
 }
 
 MessageTracker::UP
@@ -112,7 +144,7 @@ PersistenceHandler::processMessage(api::StorageMessage& msg, MessageTracker::UP 
         try{
             LOG(debug, "Handling reply: %s", msg.toString().c_str());
             LOG(spam, "Message content: %s", msg.toString(true).c_str());
-            handleReply(static_cast<api::StorageReply&>(msg));
+            return handleReply(static_cast<api::StorageReply&>(msg), std::move(tracker));
         } catch (std::exception& e) {
             // It's a reply, so nothing we can do.
             LOG(debug, "Caught exception for %s: %s", msg.toString().c_str(), e.what());
@@ -136,16 +168,23 @@ PersistenceHandler::processMessage(api::StorageMessage& msg, MessageTracker::UP 
 
 void
 PersistenceHandler::processLockedMessage(FileStorHandler::LockedMessage lock) const {
-    LOG(debug, "NodeIndex %d, ptr=%p", _env._nodeIndex, lock.second.get());
-    api::StorageMessage & msg(*lock.second);
+    LOG(debug, "NodeIndex %d, ptr=%p", _env._nodeIndex, lock.msg.get());
+    api::StorageMessage & msg(*lock.msg);
 
     // Important: we _copy_ the message shared_ptr instead of moving to ensure that `msg` remains
     // valid even if the tracker is destroyed by an exception in processMessage().
-    auto tracker = std::make_unique<MessageTracker>(framework::MilliSecTimer(_clock), _env, _env._fileStorHandler, std::move(lock.first), lock.second);
+    auto tracker = std::make_unique<MessageTracker>(framework::MilliSecTimer(_clock), _env, _env._fileStorHandler,
+                                                    std::move(lock.lock), lock.msg, std::move(lock.throttle_token));
     tracker = processMessage(msg, std::move(tracker));
     if (tracker) {
         tracker->sendReply();
     }
+}
+
+void
+PersistenceHandler::set_throttle_merge_feed_ops(bool throttle) noexcept
+{
+    _mergeHandler.set_throttle_merge_feed_ops(throttle);
 }
 
 }

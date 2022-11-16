@@ -23,14 +23,14 @@ public final class ReferenceNode extends CompositeNode {
 
     private final Reference reference;
 
-    /* Creates a node with a simple identifier reference */
+    /* Parses this string into a reference */
     public ReferenceNode(String name) {
-        this.reference = Reference.fromIdentifier(name);
+        this.reference = Reference.simple(name).orElseGet(() -> Reference.fromIdentifier(name));
     }
 
     public ReferenceNode(String name, List<? extends ExpressionNode> arguments, String output) {
         this.reference = new Reference(name,
-                                       arguments != null ? new Arguments(arguments) : new Arguments(),
+                                       arguments != null ? new Arguments(arguments) : Arguments.EMPTY,
                                        output);
     }
 
@@ -42,9 +42,6 @@ public final class ReferenceNode extends CompositeNode {
         return reference.name();
     }
 
-    public int hashCode() {
-        return reference.hashCode();
-    }
     /** Returns the arguments, never null */
     public Arguments getArguments() { return reference.arguments(); }
 
@@ -118,7 +115,7 @@ public final class ReferenceNode extends CompositeNode {
             throw new IllegalArgumentException(reference + " is invalid", e);
         }
         if (type == null)
-            throw new IllegalArgumentException("Unknown feature '" + toString() + "'");
+            throw new IllegalArgumentException("Unknown feature '" + this + "'");
         return type;
     }
 
@@ -134,6 +131,11 @@ public final class ReferenceNode extends CompositeNode {
     @Override
     public CompositeNode setChildren(List<ExpressionNode> newChildren) {
         return setArguments(newChildren);
+    }
+
+    @Override
+    public int hashCode() {
+        return reference.hashCode();
     }
 
 }

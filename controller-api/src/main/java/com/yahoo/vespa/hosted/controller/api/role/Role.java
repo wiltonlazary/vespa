@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.role;
 
 import com.yahoo.config.provision.ApplicationName;
@@ -50,6 +50,11 @@ public abstract class Role {
     /** Returns a {@link RoleDefinition#developer} for the current system and given tenant. */
     public static TenantRole developer(TenantName tenant) {
         return new TenantRole(RoleDefinition.developer, tenant);
+    }
+
+    /** Returns a {@link RoleDefinition#hostedDeveloper} for the current system and given tenant. */
+    public static TenantRole hostedDeveloper(TenantName tenant) {
+        return new TenantRole(RoleDefinition.hostedDeveloper, tenant);
     }
 
     /** Returns a {@link RoleDefinition#administrator} for the current system and given tenant. */

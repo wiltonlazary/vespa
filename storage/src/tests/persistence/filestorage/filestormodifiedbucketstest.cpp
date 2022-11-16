@@ -39,7 +39,7 @@ struct BucketCheckerInjector : FileStorTestFixture::StorageLinkInjector
        link.push_back(std::make_unique<ModifiedBucketChecker>(
                _node.getComponentRegister(),
                _node.getPersistenceProvider(),
-               _fixture._config->getConfigId()));
+               config::ConfigUri(_fixture._config->getConfigId())));
     }
 };
 
@@ -67,7 +67,7 @@ FileStorModifiedBucketsTest::modifyBuckets(uint32_t first, uint32_t count)
                 spi::BucketInfo::ACTIVE);
     }
 
-    getDummyPersistence().setModifiedBuckets(buckets); 
+    getDummyPersistence().setModifiedBuckets(std::move(buckets));
 }
 
 TEST_F(FileStorModifiedBucketsTest, modified_buckets_send_notify_bucket_change) {

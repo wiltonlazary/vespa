@@ -1,15 +1,17 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "reference_attribute.h"
 #include "attributesaver.h"
 #include "load_utils.h"
 #include "readerbase.h"
-#include "reference_attribute.h"
 #include "reference_attribute_saver.h"
+#include "search_context.h"
 #include <vespa/document/base/documentid.h>
 #include <vespa/document/base/idstringexception.h>
 #include <vespa/searchlib/common/i_gid_to_lid_mapper.h>
 #include <vespa/searchlib/common/i_gid_to_lid_mapper_factory.h>
 #include <vespa/searchlib/query/query_term_simple.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/data/fileheader.h>
 #include <vespa/vespalib/datastore/unique_store_builder.h>
 #include <vespa/vespalib/datastore/datastore.hpp>
@@ -24,6 +26,7 @@ namespace search::attribute {
 using document::DocumentId;
 using document::GlobalId;
 using document::IdParseException;
+using vespalib::datastore::CompactionSpec;
 
 namespace {
 
@@ -37,15 +40,17 @@ extractUniqueValueCount(const vespalib::GenericHeader &header)
 
 }
 
-ReferenceAttribute::ReferenceAttribute(const vespalib::stringref baseFileName,
-                                       const Config & cfg)
+ReferenceAttribute::ReferenceAttribute(const vespalib::stringref baseFileName)
+    : ReferenceAttribute(baseFileName, Config(BasicType::REFERENCE))
+{}
+
+ReferenceAttribute::ReferenceAttribute(const vespalib::stringref baseFileName, const Config & cfg)
     : NotImplementedAttribute(baseFileName, cfg),
-      _store(),
-      _indices(getGenerationHolder()),
-      _cached_unique_store_values_memory_usage(),
-      _cached_unique_store_dictionary_memory_usage(),
+      _store(get_memory_allocator()),
+      _indices(cfg.getGrowStrategy(), getGenerationHolder(), get_initial_alloc()),
+      _compaction_spec(),
       _gidToLidMapperFactory(),
-      _referenceMappings(getGenerationHolder(), getCommittedDocIdLimitRef())
+      _referenceMappings(getGenerationHolder(), getCommittedDocIdLimitRef(), get_initial_alloc())
 {
     setEnum(true);
 }
@@ -56,8 +61,8 @@ ReferenceAttribute::~ReferenceAttribute()
     incGeneration(); // Force freeze
     const auto &store = _store;
     const auto enumerator = _store.getEnumerator(true);
-    enumerator.foreach_key([&store,this](EntryRef ref)
-                      {   const Reference &entry = store.get(ref);
+    enumerator.foreach_key([&store,this](const AtomicEntryRef& ref)
+                      {   const Reference &entry = store.get(ref.load_relaxed());
                           _referenceMappings.clearMapping(entry);
                       });
     incGeneration(); // Force freeze
@@ -75,14 +80,14 @@ ReferenceAttribute::addDoc(DocId &doc)
 {
     bool incGen = _indices.isFull();
     doc = _indices.size();
-    _indices.push_back(EntryRef());
+    _indices.push_back(AtomicEntryRef());
     _referenceMappings.addDoc();
     incNumDocs();
     updateUncommittedDocIdLimit(doc);
     if (incGen) {
         incGeneration();
     } else {
-        removeAllOldGenerations();
+        reclaim_unused_memory();
     }
     return true;
 }
@@ -116,7 +121,7 @@ ReferenceAttribute::buildReverseMapping()
     uint32_t numDocs = _indices.size();
     indices.reserve(numDocs);
     for (uint32_t lid = 0; lid < numDocs; ++lid) {
-        EntryRef ref = _indices[lid];
+        EntryRef ref = _indices[lid].load_relaxed();
         if (ref.valid()) {
             indices.emplace_back(ref, lid);
         }
@@ -144,10 +149,10 @@ ReferenceAttribute::clearDoc(DocId doc)
 {
     updateUncommittedDocIdLimit(doc);
     assert(doc < _indices.size());
-    EntryRef oldRef = _indices[doc];
+    EntryRef oldRef = _indices[doc].load_relaxed();
     if (oldRef.valid()) {
         removeReverseMapping(oldRef, doc);
-        _indices[doc] = EntryRef();
+        _indices[doc].store_release(EntryRef());
         _store.remove(oldRef);
         return 1u;
     } else {
@@ -156,21 +161,21 @@ ReferenceAttribute::clearDoc(DocId doc)
 }
 
 void
-ReferenceAttribute::removeOldGenerations(generation_t firstUsed)
+ReferenceAttribute::reclaim_memory(generation_t oldest_used_gen)
 {
-    _referenceMappings.trimHoldLists(firstUsed);
-    _store.trimHoldLists(firstUsed);
-    getGenerationHolder().trimHoldLists(firstUsed);
+    _referenceMappings.reclaim_memory(oldest_used_gen);
+    _store.reclaim_memory(oldest_used_gen);
+    getGenerationHolder().reclaim(oldest_used_gen);
 }
 
 void
-ReferenceAttribute::onGenerationChange(generation_t generation)
+ReferenceAttribute::before_inc_generation(generation_t current_gen)
 {
     _referenceMappings.freeze();
     _store.freeze();
-    _referenceMappings.transferHoldLists(generation - 1);
-    _store.transferHoldLists(generation - 1);
-    getGenerationHolder().transferHoldLists(generation - 1);
+    _referenceMappings.assign_generation(current_gen);
+    _store.assign_generation(current_gen);
+    getGenerationHolder().assign_generation(current_gen);
 }
 
 void
@@ -191,12 +196,14 @@ ReferenceAttribute::onCommit()
 void
 ReferenceAttribute::onUpdateStat()
 {
+    auto& compaction_strategy = getConfig().getCompactionStrategy();
     vespalib::MemoryUsage total = _store.get_values_memory_usage();
-    _cached_unique_store_values_memory_usage = total;
     auto& dictionary = _store.get_dictionary();
-    _cached_unique_store_dictionary_memory_usage = dictionary.get_memory_usage();
-    total.merge(_cached_unique_store_dictionary_memory_usage);
-    total.mergeGenerationHeldBytes(getGenerationHolder().getHeldBytes());
+    auto dictionary_memory_usage = dictionary.get_memory_usage();
+    _compaction_spec = ReferenceAttributeCompactionSpec(compaction_strategy.should_compact_memory(total),
+                                                        compaction_strategy.should_compact_memory(dictionary_memory_usage));
+    total.merge(dictionary_memory_usage);
+    total.mergeGenerationHeldBytes(getGenerationHolder().get_held_bytes());
     total.merge(_indices.getMemoryUsage());
     total.merge(_referenceMappings.getMemoryUsage());
     updateStatistics(getTotalValueCount(), getUniqueValueCount(),
@@ -245,7 +252,7 @@ ReferenceAttribute::onLoad(vespalib::Executor *)
     _indices.unsafe_reserve(numDocs);
     for (uint32_t doc = 0; doc < numDocs; ++doc) {
         uint32_t enumValue = attrReader.getNextEnum();
-        _indices.push_back(builder.mapEnumValueToEntryRef(enumValue));
+        _indices.push_back(AtomicEntryRef(builder.mapEnumValueToEntryRef(enumValue)));
     }
     builder.makeDictionary();
     setNumDocs(numDocs);
@@ -260,11 +267,11 @@ ReferenceAttribute::update(DocId doc, const GlobalId &gid)
 {
     updateUncommittedDocIdLimit(doc);
     assert(doc < _indices.size());
-    EntryRef oldRef = _indices[doc];
+    EntryRef oldRef = _indices[doc].load_relaxed();
     Reference refToAdd(gid);
     EntryRef newRef = _store.add(refToAdd).ref();
     std::atomic_thread_fence(std::memory_order_release);
-    _indices[doc] = newRef;
+    _indices[doc].store_release(newRef);
     if (oldRef.valid()) {
         if (oldRef != newRef) {
             removeReverseMapping(oldRef, doc);
@@ -279,8 +286,10 @@ ReferenceAttribute::update(DocId doc, const GlobalId &gid)
 const Reference *
 ReferenceAttribute::getReference(DocId doc) const
 {
-    assert(doc < _indices.size());
-    EntryRef ref = _indices[doc];
+    if (doc >= getCommittedDocIdLimit()) {
+        return nullptr;
+    }
+    EntryRef ref = _indices.acquire_elem_ref(doc).load_acquire();
     if (!ref.valid()) {
         return nullptr;
     } else {
@@ -291,22 +300,20 @@ ReferenceAttribute::getReference(DocId doc) const
 bool
 ReferenceAttribute::consider_compact_values(const CompactionStrategy &compactionStrategy)
 {
-    size_t used_bytes = _cached_unique_store_values_memory_usage.usedBytes();
-    size_t dead_bytes = _cached_unique_store_values_memory_usage.deadBytes();
-    bool compact_memory = compactionStrategy.should_compact_memory(used_bytes, dead_bytes);
-    if (compact_memory) {
-        compact_worst_values();
+    if (_compaction_spec.values()) {
+        compact_worst_values(compactionStrategy);
         return true;
     }
     return false;
 }
 
 void
-ReferenceAttribute::compact_worst_values()
+ReferenceAttribute::compact_worst_values(const CompactionStrategy& compaction_strategy)
 {
-    auto remapper(_store.compact_worst(true, true));
+    CompactionSpec compaction_spec(true, true);
+    auto remapper(_store.compact_worst(compaction_spec, compaction_strategy));
     if (remapper) {
-        remapper->remap(vespalib::ArrayRef<EntryRef>(&_indices[0], _indices.size()));
+        remapper->remap(vespalib::ArrayRef<AtomicEntryRef>(&_indices[0], _indices.size()));
         remapper->done();
     }
 }
@@ -318,10 +325,8 @@ ReferenceAttribute::consider_compact_dictionary(const CompactionStrategy &compac
     if (dictionary.has_held_buffers()) {
         return false;
     }
-    if (compaction_strategy.should_compact_memory(_cached_unique_store_dictionary_memory_usage.usedBytes(),
-                                                  _cached_unique_store_dictionary_memory_usage.deadBytes()))
-    {
-        dictionary.compact_worst(true, true);
+    if (_compaction_spec.dictionary()) {
+        dictionary.compact_worst(true, true, compaction_strategy);
         return true;
     }
     return false;
@@ -336,8 +341,14 @@ ReferenceAttribute::getUniqueValueCount() const
 ReferenceAttribute::IndicesCopyVector
 ReferenceAttribute::getIndicesCopy(uint32_t size) const
 {
-    assert(size <= _indices.size());
-    return IndicesCopyVector(&_indices[0], &_indices[0] + size);
+    assert(size <= _indices.get_size());       // Called from writer only
+    auto* indices = &_indices.get_elem_ref(0); // Called from writer only
+    IndicesCopyVector result;
+    result.reserve(size);
+    for (uint32_t i = 0; i < size; ++i) {
+        result.push_back(indices[i].load_relaxed());
+    }
+    return result;
 }
 
 void
@@ -366,8 +377,8 @@ ReferenceAttribute::notifyReferencedPut(const GlobalId &gid, DocId targetLid)
     commit();
 }
 
-void
-ReferenceAttribute::notifyReferencedRemove(const GlobalId &gid)
+bool
+ReferenceAttribute::notifyReferencedRemoveNoCommit(const GlobalId &gid)
 {
     EntryRef ref = _store.find(gid);
     if (ref.valid()) {
@@ -377,6 +388,15 @@ ReferenceAttribute::notifyReferencedRemove(const GlobalId &gid)
         if (oldTargetLid != 0) {
             _store.remove(ref);
         }
+        return true;
+    }
+    return false;
+}
+
+void
+ReferenceAttribute::notifyReferencedRemove(const GlobalId &gid)
+{
+    if (notifyReferencedRemoveNoCommit(gid)) {
         commit();
     }
 }
@@ -401,7 +421,7 @@ public:
 }
 
 void
-ReferenceAttribute::populateTargetLids()
+ReferenceAttribute::populateTargetLids(const std::vector<GlobalId>& removes)
 {
     if (_gidToLidMapperFactory) {
         std::unique_ptr<IGidToLidMapper> mapperUP = _gidToLidMapperFactory->getMapper();
@@ -409,19 +429,22 @@ ReferenceAttribute::populateTargetLids()
         TargetLidPopulator populator(*this);
         mapper.foreach(populator);
     }
+    for (auto& remove : removes) {
+        notifyReferencedRemoveNoCommit(remove);
+    }
     commit();
 }
 
 void
-ReferenceAttribute::clearDocs(DocId lidLow, DocId lidLimit)
+ReferenceAttribute::clearDocs(DocId lidLow, DocId lidLimit, bool)
 {
     assert(lidLow <= lidLimit);
     assert(lidLimit <= getNumDocs());
     for (DocId lid = lidLow; lid < lidLimit; ++lid) {
-        EntryRef oldRef = _indices[lid];
+        EntryRef oldRef = _indices[lid].load_relaxed();
         if (oldRef.valid()) {
             removeReverseMapping(oldRef, lid);
-            _indices[lid] = EntryRef();
+            _indices[lid].store_release(EntryRef());
             _store.remove(oldRef);
         }
     }
@@ -440,14 +463,14 @@ ReferenceAttribute::onShrinkLidSpace()
 
 namespace {
 
-class ReferenceSearchContext : public AttributeVector::SearchContext {
+class ReferenceSearchContext : public attribute::SearchContext {
 private:
     const ReferenceAttribute& _ref_attr;
     GlobalId _term;
 
 public:
     ReferenceSearchContext(const ReferenceAttribute& ref_attr, const GlobalId& term)
-        : AttributeVector::SearchContext(ref_attr),
+        : attribute::SearchContext(ref_attr),
           _ref_attr(ref_attr),
           _term(term)
     {
@@ -474,7 +497,7 @@ public:
 
 }
 
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 ReferenceAttribute::getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams& params) const
 {
     (void) params;
@@ -487,8 +510,6 @@ ReferenceAttribute::getSearch(QueryTermSimpleUP term, const attribute::SearchCon
     }
     return std::make_unique<ReferenceSearchContext>(*this, gid);
 }
-
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(ReferenceAttribute, AttributeVector);
 
 }
 

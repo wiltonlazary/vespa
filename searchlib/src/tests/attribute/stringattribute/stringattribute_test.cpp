@@ -7,9 +7,7 @@
 #include <vespa/searchlib/attribute/multistringpostattribute.h>
 
 #include <vespa/searchlib/attribute/enumstore.hpp>
-#include <vespa/searchlib/attribute/singlestringattribute.h>
 #include <vespa/searchlib/attribute/singlestringpostattribute.hpp>
-#include <vespa/searchlib/attribute/multistringattribute.h>
 #include <vespa/searchlib/attribute/multistringpostattribute.hpp>
 
 #include <vespa/log/log.h>
@@ -17,6 +15,8 @@ LOG_SETUP("stringattribute_test");
 
 using search::attribute::CollectionType;
 using search::attribute::IAttributeVector;
+using search::attribute::SearchContext;
+using search::attribute::StringSearchHelper;
 using vespalib::datastore::EntryRef;
 using namespace search;
 
@@ -48,7 +48,7 @@ checkCount(Attribute & vec, uint32_t doc, uint32_t valueCount,
 {
     std::vector<vespalib::string> buffer(valueCount);
     EXPECT_TRUE(static_cast<uint32_t>(vec.getValueCount(doc)) == valueCount);
-    EXPECT_TRUE(vec.get(doc, &buffer[0], buffer.size()) == valueCount);
+    EXPECT_TRUE(vec.get(doc, buffer.data(), buffer.size()) == valueCount);
     EXPECT_TRUE(std::count(buffer.begin(), buffer.end(), value) == numValues);
 }
 
@@ -125,10 +125,10 @@ testMultiValue(Attribute & attr, uint32_t numDocs)
 
         // test get all
         std::vector<vespalib::string> values(valueCount);
-        ASSERT_TRUE(attr.get(doc, &values[0], valueCount) == valueCount);
+        ASSERT_TRUE(attr.get(doc, values.data(), valueCount) == valueCount);
 
         std::vector<uint32_t> enums(valueCount);
-        ASSERT_TRUE((static_cast<search::attribute::IAttributeVector &>(attr)).get(doc, &enums[0], valueCount) == valueCount);
+        ASSERT_TRUE((static_cast<search::attribute::IAttributeVector &>(attr)).get(doc, enums.data(), valueCount) == valueCount);
 
         auto combined = zipped_and_sorted_by_first(values, enums);
         for (uint32_t j = 0; j < valueCount; ++j) {
@@ -167,10 +167,10 @@ testMultiValue(Attribute & attr, uint32_t numDocs)
 
         // test get all
         std::vector<vespalib::string> values(valueCount);
-        EXPECT_TRUE(attr.get(doc, &values[0], valueCount) == valueCount);
+        EXPECT_TRUE(attr.get(doc, values.data(), valueCount) == valueCount);
 
         std::vector<uint32_t> enums(valueCount);
-        EXPECT_TRUE((static_cast<search::attribute::IAttributeVector &>(attr)).get(doc, &enums[0], valueCount) == valueCount);
+        EXPECT_TRUE((static_cast<search::attribute::IAttributeVector &>(attr)).get(doc, enums.data(), valueCount) == valueCount);
 
         auto combined = zipped_and_sorted_by_first(values, enums);
         for (uint32_t j = 0; j < valueCount; ++j) {
@@ -385,14 +385,12 @@ testSingleValue(Attribute & svsa, Config &cfg)
 
 TEST("testSingleValue")
 {
-    EXPECT_EQUAL(24u, sizeof(AttributeVector::SearchContext));
-    EXPECT_EQUAL(24u, sizeof(StringSearchHelper));
-    EXPECT_EQUAL(56u, sizeof(SingleValueStringAttribute::StringSingleImplSearchContext));
+    EXPECT_EQUAL(24u, sizeof(SearchContext));
+    EXPECT_EQUAL(32u, sizeof(StringSearchHelper));
+    EXPECT_EQUAL(80u, sizeof(attribute::SingleStringEnumSearchContext));
     {
         Config cfg(BasicType::STRING, CollectionType::SINGLE);
         SingleValueStringAttribute svsa("svsa", cfg);
-        const IAttributeVector * ia = &svsa;
-        EXPECT_TRUE(dynamic_cast<const SingleValueEnumAttributeBase *>(ia) != nullptr);
         testSingleValue(svsa, cfg);
 
         SingleValueStringAttribute svsb("svsa", cfg);
@@ -492,6 +490,22 @@ TEST("test cased regex match") {
     EXPECT_FALSE(helper.isMatch("xYz"));
     EXPECT_FALSE(helper.isMatch("xaYZ"));
     EXPECT_FALSE(helper.isMatch("xY"));
+}
+
+TEST("test fuzzy match") {
+    QueryTermUCS4 xyz("xyz", QueryTermSimple::Type::FUZZYTERM);
+    StringSearchHelper helper(xyz, false);
+    EXPECT_FALSE(helper.isCased());
+    EXPECT_FALSE(helper.isPrefix());
+    EXPECT_FALSE(helper.isRegex());
+    EXPECT_TRUE(helper.isFuzzy());
+    EXPECT_TRUE(helper.isMatch("xyz"));
+    EXPECT_TRUE(helper.isMatch("xyza"));
+    EXPECT_TRUE(helper.isMatch("xyv"));
+    EXPECT_TRUE(helper.isMatch("xy"));
+    EXPECT_TRUE(helper.isMatch("x"));
+    EXPECT_TRUE(helper.isMatch("xvv"));
+    EXPECT_FALSE(helper.isMatch("vvv"));
 }
 
 TEST_MAIN() { TEST_RUN_ALL(); }

@@ -2,8 +2,11 @@
 
 #pragma once
 
-#include "multi_value_mapping.h"
+#include "atomic_utils.h"
 #include "attributevector.h"
+#include "multi_value_mapping.h"
+#include <vespa/searchcommon/attribute/i_multi_value_attribute.h>
+#include <vespa/searchcommon/attribute/multi_value_traits.h>
 
 namespace search {
 
@@ -14,7 +17,8 @@ namespace search {
  * M: MultiValueType
  */
 template <typename B, typename M>
-class MultiValueAttribute : public B
+class MultiValueAttribute : public B,
+                            public attribute::IMultiValueAttribute
 {
 protected:
     typedef typename B::DocId                             DocId;
@@ -23,11 +27,11 @@ protected:
 
     using MultiValueType = M;
     using MultiValueMapping = attribute::MultiValueMapping<MultiValueType>;
-    typedef typename MultiValueType::ValueType            ValueType;
+    using ValueType = multivalue::ValueType_t<MultiValueType>;
     typedef std::vector<MultiValueType>                   ValueVector;
     using MultiValueArrayRef = vespalib::ConstArrayRef<MultiValueType>;
-    typedef typename ValueVector::iterator                ValueVectorIterator;
     typedef std::vector<std::pair<DocId, ValueVector> >   DocumentValues;
+    using NonAtomicValueType = attribute::atomic_utils::NonAtomicValue_t<ValueType>;
 
     MultiValueMapping _mvMapping;
 
@@ -39,7 +43,7 @@ protected:
      */
     void applyAttributeChanges(DocumentValues & docValues);
 
-    virtual bool extractChangeData(const Change & c, ValueType & data) = 0;
+    virtual bool extractChangeData(const Change & c, NonAtomicValueType & data) = 0;
 
     /**
      * Called when a new document has been added.
@@ -69,9 +73,15 @@ private:
     void apply_attribute_changes_to_wset(DocumentValues& docValues);
 
 public:
-    void clearDocs(DocId lidLow, DocId lidLimit) override;
+    void clearDocs(DocId lidLow, DocId lidLimit, bool in_shrink_lid_space) override;
     void onShrinkLidSpace() override ;
     void onAddDocs(DocId lidLimit) override;
+
+    const IMultiValueAttribute* as_multi_value_attribute() const override;
+
+    // Implements attribute::IMultiValueAttribute
+    const attribute::IArrayReadView<ValueType>* make_read_view(attribute::IMultiValueAttribute::ArrayTag<ValueType>, vespalib::Stash& stash) const override;
+    const attribute::IWeightedSetReadView<ValueType>* make_read_view(attribute::IMultiValueAttribute::WeightedSetTag<ValueType>, vespalib::Stash& stash) const override;
 };
 
 } // namespace search

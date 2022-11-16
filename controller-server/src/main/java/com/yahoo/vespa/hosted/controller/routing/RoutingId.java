@@ -1,55 +1,34 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.routing;
 
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.vespa.hosted.controller.application.EndpointId;
+import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
 
 import java.util.Objects;
 
 /**
- * Unique identifier for a global routing table entry (application x endpoint ID).
+ * Unique identifier for a instance routing table entry (instance x endpoint ID).
  *
  * @author mpolden
  */
-public class RoutingId {
+public record RoutingId(ApplicationId instance,
+                        EndpointId endpointId,
+                        TenantAndApplicationId application) {
 
-    private final ApplicationId application;
-    private final EndpointId endpointId;
-
-    public RoutingId(ApplicationId application, EndpointId endpointId) {
-        this.application = Objects.requireNonNull(application, "application must be non-null");
-        this.endpointId = Objects.requireNonNull(endpointId, "endpointId must be non-null");
-    }
-
-    public ApplicationId application() {
-        return application;
-    }
-
-    public EndpointId endpointId() {
-        return endpointId;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        RoutingId that = (RoutingId) o;
-        return application.equals(that.application) &&
-               endpointId.equals(that.endpointId);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(application, endpointId);
+    public RoutingId {
+        Objects.requireNonNull(instance, "application must be non-null");
+        Objects.requireNonNull(endpointId, "endpointId must be non-null");
+        Objects.requireNonNull(application, "application must be non-null");
     }
 
     @Override
     public String toString() {
-        return "routing id for " + endpointId + " of " + application;
+        return "routing id for " + endpointId + " of " + instance;
     }
 
-    public static RoutingId of(ApplicationId application, EndpointId endpoint) {
-        return new RoutingId(application, endpoint);
+    public static RoutingId of(ApplicationId instance, EndpointId endpoint) {
+        return new RoutingId(instance, endpoint, TenantAndApplicationId.from(instance));
     }
 
 }

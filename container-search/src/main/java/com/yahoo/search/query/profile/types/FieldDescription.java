@@ -4,10 +4,8 @@ package com.yahoo.search.query.profile.types;
 import com.google.common.collect.ImmutableList;
 import com.yahoo.processing.request.CompoundName;
 import com.yahoo.search.query.profile.QueryProfile;
-import com.yahoo.tensor.TensorType;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -81,7 +79,7 @@ public class FieldDescription implements Comparable<FieldDescription> {
     /**
      * Creates a field description
      *
-     * @param name the name of the field
+     * @param name the name of the field, empty means it describes the value held by  the query profile itself
      * @param type the type of the field represented as a string - see {@link com.yahoo.search.query.profile.types.FieldType}
      * @param aliases a list of aliases, never null. Aliases are not following dotted
      *        (meaning they are global, not that they cannot contain dots) and are case insensitive.
@@ -89,8 +87,6 @@ public class FieldDescription implements Comparable<FieldDescription> {
      * @param overridable whether this can be overridden when first set in a profile. Default: true
      */
     public FieldDescription(CompoundName name, FieldType type, List<String> aliases, boolean mandatory, boolean overridable) {
-        if (name.isEmpty())
-            throw new IllegalArgumentException("Illegal name ''");
         for (String nameComponent : name.asList())
             QueryProfile.validateName(nameComponent);
         this.name = name;

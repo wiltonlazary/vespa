@@ -2,6 +2,7 @@
 
 #include "application.h"
 
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/config/config-documenttypes.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/documentapi/messagebus/documentprotocol.h>
@@ -9,7 +10,6 @@
 #include <vespa/messagebus/routing/routingtable.h>
 #include <vespa/messagebus/routing/routedirective.h>
 #include <vespa/messagebus/rpcmessagebus.h>
-#include <vespa/messagebus/network/rpcsendv1.h>
 #include <vespa/messagebus/network/rpcsendv2.h>
 #include <vespa/slobrok/sbmirror.h>
 #include <vespa/config/common/exceptions.h>
@@ -18,9 +18,10 @@
 #include <vespa/fnet/frt/supervisor.h>
 
 using config::ConfigGetter;
-using document::DocumenttypesConfig;
+using config::InvalidConfigException;
 using messagebus::MessagebusConfig;
 using document::DocumentTypeRepo;
+using namespace vespalib::make_string_short;
 
 namespace vesparoute {
 
@@ -30,23 +31,23 @@ Application::Application() :
     _params()
 { }
 
-Application::~Application() {}
+Application::~Application() = default;
 
 
-    int
-Application::Main()
+int
+Application::main(int argc, char **argv)
 {
     try {
-        if (_argc == 1) {
+        if (argc == 1) {
             _params.setListRoutes(true);
             _params.setListHops(true);
-        } else if (!parseArgs()) {
+        } else if (!parseArgs(argc, argv)) {
             return EXIT_SUCCESS;
         }
 
         auto repo = std::make_shared<DocumentTypeRepo>(
                         *ConfigGetter<DocumenttypesConfig>::getConfig(_params.getDocumentTypesConfigId()));
-        _net = std::make_unique<MyNetwork>(mbus::RPCNetworkParams(_params.getSlobrokConfigId())
+        _net = std::make_unique<MyNetwork>(mbus::RPCNetworkParams(config::ConfigUri(_params.getSlobrokConfigId()))
                 .setIdentity(_params.getRPCNetworkParams().getIdentity())
                 .setListenPort(_params.getRPCNetworkParams().getListenPort()));
         _mbus = std::make_unique<mbus::MessageBus>(
@@ -60,13 +61,11 @@ Application::Main()
         // _P_A_R_A_N_O_I_A_
         mbus::RoutingTable::SP table = _mbus->getRoutingTable(_params.getProtocol());
         if ( ! table) {
-            throw config::InvalidConfigException(vespalib::make_string("There is no routing table for protocol '%s'.",
-                                                                       _params.getProtocol().c_str()));
+            throw InvalidConfigException(fmt("There is no routing table for protocol '%s'.", _params.getProtocol().c_str()));
         }
         for (const std::string & hop : _params.getHops()) {
             if (table->getHop(hop) == NULL) {
-                throw config::InvalidConfigException(vespalib::make_string("There is no hop named '%s' for protocol '%s'.",
-                                                                           hop.c_str(), _params.getProtocol().c_str()));
+                throw InvalidConfigException(fmt("There is no hop named '%s' for protocol '%s'.", hop.c_str(), _params.getProtocol().c_str()));
             }
         }
 
@@ -102,73 +101,73 @@ Application::Main()
 }
 
 bool
-Application::parseArgs()
+Application::parseArgs(int argc, char **argv)
 {
-    for (int arg = 1; arg < _argc; arg++) {
-        if (strcasecmp(_argv[arg], "--documenttypesconfigid") == 0) {
-            if (++arg < _argc) {
-                _params.setDocumentTypesConfigId(_argv[arg]);
+    for (int arg = 1; arg < argc; arg++) {
+        if (strcasecmp(argv[arg], "--documenttypesconfigid") == 0) {
+            if (++arg < argc) {
+                _params.setDocumentTypesConfigId(argv[arg]);
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'documenttypesconfigid'.");
+                throw InvalidConfigException("Missing value for parameter 'documenttypesconfigid'.");
             }
-        } else if (strcasecmp(_argv[arg], "--dump") == 0) {
+        } else if (strcasecmp(argv[arg], "--dump") == 0) {
             _params.setDump(true);
-        } else if (strcasecmp(_argv[arg], "--help") == 0 ||
-                   strcasecmp(_argv[arg], "-h") == 0) {
+        } else if (strcasecmp(argv[arg], "--help") == 0 ||
+                   strcasecmp(argv[arg], "-h") == 0) {
             printHelp();
             return false;
-        } else if (strcasecmp(_argv[arg], "--hop") == 0) {
-            if (++arg < _argc) {
-                _params.getHops().push_back(_argv[arg]);
+        } else if (strcasecmp(argv[arg], "--hop") == 0) {
+            if (++arg < argc) {
+                _params.getHops().push_back(argv[arg]);
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'hop'.");
+                throw InvalidConfigException("Missing value for parameter 'hop'.");
             }
-        } else if (strcasecmp(_argv[arg], "--hops") == 0) {
+        } else if (strcasecmp(argv[arg], "--hops") == 0) {
             _params.setListHops(true);
-        } else if (strcasecmp(_argv[arg], "--identity") == 0) {
-            if (++arg < _argc) {
-                _params.getRPCNetworkParams().setIdentity(mbus::Identity(_argv[arg]));
+        } else if (strcasecmp(argv[arg], "--identity") == 0) {
+            if (++arg < argc) {
+                _params.getRPCNetworkParams().setIdentity(mbus::Identity(argv[arg]));
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'identity'.");
+                throw InvalidConfigException("Missing value for parameter 'identity'.");
             }
-        } else if (strcasecmp(_argv[arg], "--listenport") == 0) {
-            if (++arg < _argc) {
-                _params.getRPCNetworkParams().setListenPort(atoi(_argv[arg]));
+        } else if (strcasecmp(argv[arg], "--listenport") == 0) {
+            if (++arg < argc) {
+                _params.getRPCNetworkParams().setListenPort(atoi(argv[arg]));
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'listenport'.");
+                throw InvalidConfigException("Missing value for parameter 'listenport'.");
             }
-        } else if (strcasecmp(_argv[arg], "--protocol") == 0) {
-            if (++arg < _argc) {
-                _params.setProtocol(_argv[arg]);
+        } else if (strcasecmp(argv[arg], "--protocol") == 0) {
+            if (++arg < argc) {
+                _params.setProtocol(argv[arg]);
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'protocol'.");
+                throw InvalidConfigException("Missing value for parameter 'protocol'.");
             }
-        } else if (strcasecmp(_argv[arg], "--route") == 0) {
-            if (++arg < _argc) {
-                _params.getRoutes().push_back(_argv[arg]);
+        } else if (strcasecmp(argv[arg], "--route") == 0) {
+            if (++arg < argc) {
+                _params.getRoutes().push_back(argv[arg]);
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'route'.");
+                throw InvalidConfigException("Missing value for parameter 'route'.");
             }
-        } else if (strcasecmp(_argv[arg], "--routes") == 0) {
+        } else if (strcasecmp(argv[arg], "--routes") == 0) {
             _params.setListRoutes(true);
-        } else if (strcasecmp(_argv[arg], "--routingconfigid") == 0) {
-            if (++arg < _argc) {
-                _params.setRoutingConfigId(_argv[arg]);
+        } else if (strcasecmp(argv[arg], "--routingconfigid") == 0) {
+            if (++arg < argc) {
+                _params.setRoutingConfigId(argv[arg]);
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'routingconfigid'.");
+                throw InvalidConfigException("Missing value for parameter 'routingconfigid'.");
             }
-        } else if (strcasecmp(_argv[arg], "--services") == 0) {
+        } else if (strcasecmp(argv[arg], "--services") == 0) {
             _params.setListServices(true);
-        } else if (strcasecmp(_argv[arg], "--slobrokconfigid") == 0) {
-            if (++arg < _argc) {
-                _params.setSlobrokId(_argv[arg]);
+        } else if (strcasecmp(argv[arg], "--slobrokconfigid") == 0) {
+            if (++arg < argc) {
+                _params.setSlobrokId(argv[arg]);
             } else {
-                throw config::InvalidConfigException("Missing value for parameter 'slobrokconfigid'.");
+                throw InvalidConfigException("Missing value for parameter 'slobrokconfigid'.");
             }
-        } else if (strcasecmp(_argv[arg], "--verify") == 0) {
+        } else if (strcasecmp(argv[arg], "--verify") == 0) {
             _params.setVerify(true);
         } else {
-            throw config::InvalidConfigException(vespalib::make_string("Unknown option '%s'.", _argv[arg]));
+            throw InvalidConfigException(fmt("Unknown option '%s'.", argv[arg]));
         }
     }
     return true;
@@ -206,7 +205,7 @@ Application::verifyRoute(const mbus::Route &route, std::set<std::string> &errors
             for (std::set<std::string>::iterator err = hopErrors.begin();
                  err != hopErrors.end(); ++err)
             {
-                errors.insert(vespalib::make_string("for hop '%s', %s", str.c_str(), err->c_str()));
+                errors.insert(fmt("for hop '%s', %s", str.c_str(), err->c_str()));
             }
         }
     }
@@ -237,7 +236,7 @@ Application::verifyHop(const mbus::HopBlueprint &hop, std::set<std::string> &err
     if (hop.getDirective(0)->getType() == mbus::IHopDirective::TYPE_ROUTE) {
         const mbus::RouteDirective &dir = static_cast<const mbus::RouteDirective &>(*hop.getDirective(0));
         if (table.getRoute(dir.getName()) == nullptr) {
-            errors.insert(vespalib::make_string("route '%s' not found", dir.getName().c_str()));
+            errors.insert(fmt("route '%s' not found", dir.getName().c_str()));
             return false;
         } else {
             return true;
@@ -495,8 +494,7 @@ Application::isService(FRT_Supervisor &frt, const std::string &spec) const
         FRT_StringValue *retList = req->GetReturn()->GetValue(2)._string_array._pt;
 
         for (uint32_t i = 0; i < numMethods; ++i) {
-            if (mbus::RPCSendV1::isCompatible(methods[i]._str,argList[i]._str, retList[i]._str) ||
-                mbus::RPCSendV2::isCompatible(methods[i]._str,argList[i]._str, retList[i]._str)) {
+            if (mbus::RPCSendV2::isCompatible(methods[i]._str,argList[i]._str, retList[i]._str)) {
                 ret = true;
                 break;
             }

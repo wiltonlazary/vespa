@@ -18,6 +18,7 @@ private:
     FNET_IPacketStreamer  *_streamer;
     FNET_IServerAdapter   *_serverAdapter;
     vespalib::ServerSocket _server_socket;
+    uint32_t _cached_port;
 
     FNET_Connector(const FNET_Connector &);
     FNET_Connector &operator=(const FNET_Connector &);
@@ -44,6 +45,8 @@ public:
      * @return port number
      **/
     uint32_t GetPortNumber() const;
+
+    FNET_IServerAdapter *server_adapter() override;
 
     /**
      * Close this connector. This method must be called in the transport

@@ -3,8 +3,12 @@
 #include "rank_program.h"
 #include "featureoverrider.h"
 #include <vespa/vespalib/locale/c.h>
+#include <vespa/eval/eval/fast_value.h>
+#include <vespa/eval/eval/value_codec.h>
 #include <vespa/vespalib/stllike/hash_set.hpp>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/issue.h>
+#include <vespa/vespalib/util/execution_profiler.h>
 #include <algorithm>
 #include <cassert>
 
@@ -12,6 +16,11 @@
 LOG_SETUP(".fef.rankprogram");
 
 using vespalib::Stash;
+using vespalib::Issue;
+using vespalib::ExecutionProfiler;
+using vespalib::eval::Value;
+using vespalib::eval::ValueType;
+using vespalib::eval::FastValueBuilderFactory;
 
 namespace search::fef {
 
@@ -22,10 +31,14 @@ namespace {
 struct Override
 {
     BlueprintResolver::FeatureRef ref;
-    feature_t                     value;
+    feature_t                     number;
+    Value::UP                     object;
 
     Override(const BlueprintResolver::FeatureRef &r, feature_t v) noexcept
-        : ref(r), value(v) {}
+    : ref(r), number(v), object() {}
+
+    Override(const BlueprintResolver::FeatureRef &r, Value::UP v) noexcept
+    : ref(r), number(), object(std::move(v)) {}
 
     bool operator<(const Override &rhs) const {
         return (ref.executor < rhs.ref.executor);
@@ -34,29 +47,50 @@ struct Override
 
 struct OverrideVisitor : public IPropertiesVisitor
 {
+    const BlueprintResolver::ExecutorSpecList &specs;
     const BlueprintResolver::FeatureMap &feature_map;
     std::vector<Override>               &overrides;
 
-    OverrideVisitor(const BlueprintResolver::FeatureMap &feature_map_in,
+    OverrideVisitor(const BlueprintResolver::ExecutorSpecList &specs_in,
+                    const BlueprintResolver::FeatureMap &feature_map_in,
                     std::vector<Override> &overrides_out)
-        : feature_map(feature_map_in), overrides(overrides_out) {}
+      : specs(specs_in), feature_map(feature_map_in), overrides(overrides_out) {}
 
-     void visitProperty(const Property::Value & key,
-                        const Property & values) override
-    {
+    void visitProperty(const Property::Value &key, const Property &prop) override {
         auto pos = feature_map.find(key);
         if (pos != feature_map.end()) {
-            overrides.emplace_back(pos->second, vespalib::locale::c::strtod(values.get().c_str(), nullptr));
+            const auto &name = pos->first;
+            const auto &ref = pos->second;
+            const auto &feature_type = specs[ref.executor].output_types[ref.output];
+            if (feature_type.is_object()) {
+                const auto &value_type = feature_type.type();
+                const vespalib::string &encoded_value = prop.get();
+                vespalib::nbostream stream(encoded_value.data(), encoded_value.size());
+                try {
+                    auto tensor = vespalib::eval::decode_value(stream, vespalib::eval::FastValueBuilderFactory::get());
+                    if (tensor->type() == value_type) {
+                        overrides.emplace_back(ref, std::move(tensor));
+                    } else {
+                        Issue::report("override for feature '%s' has invalid type: expected %s, got %s",
+                                      name.c_str(), value_type.to_spec().c_str(), tensor->type().to_spec().c_str());
+                    }
+                } catch (const vespalib::eval::DecodeValueException &e) {
+                    Issue::report("override for feature '%s' has invalid format: %s", name.c_str(), e.what());
+                }
+            } else {
+                overrides.emplace_back(ref, vespalib::locale::c::strtod(prop.get().c_str(), nullptr));
+            }
         }
     }
 };
 
-std::vector<Override> prepare_overrides(const BlueprintResolver::FeatureMap &feature_map,
+std::vector<Override> prepare_overrides(const BlueprintResolver::ExecutorSpecList &specs,
+                                        const BlueprintResolver::FeatureMap &feature_map,
                                         const Properties &featureOverrides)
 {
     std::vector<Override> overrides;
     overrides.reserve(featureOverrides.numValues());
-    OverrideVisitor visitor(feature_map, overrides);
+    OverrideVisitor visitor(specs, feature_map, overrides);
     featureOverrides.visitProperties(visitor);
     std::sort(overrides.begin(), overrides.end());
     return overrides;
@@ -66,6 +100,33 @@ struct UnboxingExecutor : FeatureExecutor {
     bool isPure() override { return true; }
     void execute(uint32_t) override {
         outputs().set_number(0, inputs().get_object(0).get().as_double());
+    }
+};
+
+struct ProfiledExecutor : FeatureExecutor {
+    ExecutionProfiler &profiler;
+    FeatureExecutor &executor;
+    ExecutionProfiler::TaskId self;
+    ProfiledExecutor(ExecutionProfiler &profiler_in,
+                     FeatureExecutor &executor_in,
+                     const vespalib::string &name)
+      : profiler(profiler_in), executor(executor_in), self(profiler.resolve(name)) {}
+    void handle_bind_match_data(const MatchData &md) override {
+        executor.bind_match_data(md);
+    }
+    void handle_bind_inputs(vespalib::ConstArrayRef<LazyValue> inputs) override {
+        executor.bind_inputs(inputs);
+    }
+    void handle_bind_outputs(vespalib::ArrayRef<NumberOrObject> outputs) override {
+        executor.bind_outputs(outputs);
+    }
+    bool isPure() override {
+        return executor.isPure();
+    }
+    void execute(uint32_t docId) override {
+        profiler.start(self);
+        executor.lazy_execute(docId);
+        profiler.complete();
     }
 };
 
@@ -171,14 +232,15 @@ RankProgram::~RankProgram() = default;
 void
 RankProgram::setup(const MatchData &md,
                    const IQueryEnvironment &queryEnv,
-                   const Properties &featureOverrides)
+                   const Properties &featureOverrides,
+                   ExecutionProfiler *profiler)
 {
+    const auto &specs = _resolver->getExecutorSpecs();
     assert(_executors.empty());
-    std::vector<Override> overrides = prepare_overrides(_resolver->getFeatureMap(), featureOverrides);
+    std::vector<Override> overrides = prepare_overrides(specs, _resolver->getFeatureMap(), featureOverrides);
     auto override = overrides.begin();
     auto override_end = overrides.end();
 
-    const auto &specs = _resolver->getExecutorSpecs();
     _executors.reserve(specs.size());
     _is_const.resize(specs.size()*2); // Reserve space in hashmap for executors to be const
     for (uint32_t i = 0; i < specs.size(); ++i) {
@@ -205,7 +267,11 @@ RankProgram::setup(const MatchData &md,
         }
         for (; (override < override_end) && (override->ref.executor == i); ++override) {
             FeatureExecutor *tmp = executor;
-            executor = &(stash.get().create<FeatureOverrider>(*tmp, override->ref.output, override->value));
+            executor = &(stash.get().create<FeatureOverrider>(*tmp, override->ref.output, override->number, std::move(override->object)));
+        }
+        if (profiler) {
+            FeatureExecutor *tmp = executor;
+            executor = &(stash.get().create<ProfiledExecutor>(*profiler, *tmp, specs[i].blueprint->getName()));
         }
         executor->bind_inputs(inputs);
         executor->bind_outputs(outputs);

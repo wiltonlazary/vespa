@@ -99,7 +99,13 @@ ResultSet::mergeWithBitOverflow(HitRank default_value)
 
 void
 ResultSet::sort(FastS_IResultSorter & sorter, unsigned int ntop) {
-    sorter.sortResults(&_rankedHitsArray[0], _rankedHitsArray.size(), ntop);
+    sorter.sortResults(_rankedHitsArray.data(), _rankedHitsArray.size(), ntop);
+}
+
+std::pair<std::unique_ptr<BitVector>, vespalib::Array<RankedHit>>
+ResultSet::copyResult() const {
+    std::unique_ptr<BitVector> copy = _bitOverflow ? BitVector::create(*_bitOverflow) : std::unique_ptr<BitVector>();
+    return std::make_pair(std::move(copy), _rankedHitsArray);
 }
 
 std::pair<std::unique_ptr<BitVector>, vespalib::Array<RankedHit>>

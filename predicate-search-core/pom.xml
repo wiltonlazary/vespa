@@ -6,22 +6,23 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../parent/pom.xml</relativePath>
     </parent>
     <artifactId>predicate-search-core</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <packaging>jar</packaging>
     <name>${project.artifactId}</name>
     <dependencies>
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
             <groupId>org.antlr</groupId>
             <artifactId>antlr-runtime</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>junit</groupId>
+                    <artifactId>junit</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
@@ -32,6 +33,17 @@
             <groupId>com.yahoo.vespa</groupId>
             <artifactId>annotations</artifactId>
             <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -41,6 +53,10 @@
     </dependencies>
     <build>
         <plugins>
+            <plugin>
+                <groupId>com.yahoo.vespa</groupId>
+                <artifactId>abi-check-plugin</artifactId>
+            </plugin>
             <plugin>
                 <groupId>org.antlr</groupId>
                 <artifactId>antlr3-maven-plugin</artifactId>

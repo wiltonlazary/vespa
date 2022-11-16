@@ -6,6 +6,7 @@
 #include <vespa/searchlib/attribute/attributevector.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
 #include <vespa/vespalib/util/exceptions.h>
+#include <cassert>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.common.attribute_field_value_node");
@@ -23,7 +24,6 @@ using document::select::Visitor;
 using search::AttributeVector;
 using search::attribute::AttributeContent;
 using search::attribute::BasicType;
-using search::attribute::CollectionType;
 using search::attribute::IAttributeVector;
 using vespalib::IllegalArgumentException;
 using vespalib::IllegalStateException;
@@ -103,7 +103,7 @@ AttributeFieldValueNode::traceValue(const Context &context, std::ostream& out) c
 document::select::ValueNode::UP
 AttributeFieldValueNode::clone() const
 {
-    return wrapParens(new AttributeFieldValueNode(getDocType(), getFieldName(), _attr_guard_index));
+    return wrapParens(std::make_unique<AttributeFieldValueNode>(getDocType(), getFieldName(), _attr_guard_index));
 }
 
 } // namespace proton

@@ -29,12 +29,15 @@
 #include <vespa/storageapi/message/datagram.h>
 #include <vespa/storageapi/message/internal.h>
 #include <vespa/storageapi/message/visitor.h>
-#include <vespa/config/config.h>
+#include <vespa/config/helper/ifetchercallback.h>
 #include <vespa/vespalib/util/document_runnable.h>
 
-namespace storage {
+namespace config {
+    class ConfigUri;
+    class ConfigFetcher;
+}
 
-namespace api { class BucketTimeInterval; }
+namespace storage {
 
 class RequestStatusPageReply;
 
@@ -63,7 +66,7 @@ private:
     mutable std::mutex      _visitorLock;
     std::condition_variable _visitorCond;
     uint64_t _visitorCounter;
-    config::ConfigFetcher _configFetcher;
+    std::unique_ptr<config::ConfigFetcher> _configFetcher;
     std::shared_ptr<VisitorMetrics> _metrics;
     uint32_t _maxFixedConcurrentVisitors;
     uint32_t _maxVariableConcurrentVisitors;
@@ -81,9 +84,11 @@ private:
     bool _enforceQueueUse;
     VisitorFactory::Map _visitorFactories;
 public:
-    VisitorManager(const config::ConfigUri & configUri, StorageComponentRegister&,
+    VisitorManager(const config::ConfigUri & configUri,
+                   StorageComponentRegister&,
                    VisitorMessageSessionFactory&,
-                   const VisitorFactory::Map& external = VisitorFactory::Map());
+                   const VisitorFactory::Map& external = VisitorFactory::Map(),
+                   bool defer_manager_thread_start = false);
     ~VisitorManager() override;
 
     void onClose() override;
@@ -112,6 +117,8 @@ public:
     }
     /** For unit testing */
     bool hasPendingMessageState() const;
+    // Must be called exactly once iff manager was created with defer_manager_thread_start == true
+    void create_and_start_manager_thread();
 
     void enforceQueueUsage() { _enforceQueueUse = true; }
 

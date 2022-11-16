@@ -5,6 +5,7 @@
 #include "integerbase.h"
 #include "floatbase.h"
 #include "multivalueattribute.h"
+#include "search_context.h"
 #include <limits>
 
 namespace search {
@@ -48,125 +49,24 @@ protected:
     using WType = MultiValueType;
     uint32_t get(DocId doc, const WType * & values) const {
         MultiValueArrayRef array(this->_mvMapping.get(doc));
-        values = &array[0];
+        values = array.data();
         return array.size();
     }
 
 public:
-    uint32_t getRawValues(DocId doc, const WType * & values) const final override {
-        return get(doc, values);
-    }
-    /*
-     * Specialization of SearchContext for weighted set type
-     */
-    class SetSearchContext final : public NumericAttribute::Range<T>, public AttributeVector::SearchContext
-    {
-    private:
-        const MultiValueNumericAttribute<B, M> & _toBeSearched;
-
-        int32_t onFind(DocId docId, int32_t elemId, int32_t & weight) const override {
-            return find(docId, elemId, weight);
-        }
-
-        int32_t onFind(DocId docId, int32_t elemId) const override {
-            return find(docId, elemId);
-        }
-
-        bool valid() const override;
-
-    public:
-        SetSearchContext(std::unique_ptr<QueryTermSimple> qTerm, const NumericAttribute & toBeSearched);
-
-        Int64Range getAsIntegerTerm() const override;
-
-        int32_t find(DocId doc, int32_t elemId, int32_t & weight) const {
-            MultiValueArrayRef values(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < values.size(); i++) {
-                if (this->match(values[i].value())) {
-                    weight = values[i].weight();
-                    return i;
-                }
-            }
-            return -1;
-        }
-
-        int32_t find(DocId doc, int32_t elemId) const {
-            MultiValueArrayRef values(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < values.size(); i++) {
-                if (this->match(values[i].value())) {
-                    return i;
-                }
-            }
-            return -1;
-        }
-
-        std::unique_ptr<queryeval::SearchIterator>
-        createFilterIterator(fef::TermFieldMatchData * matchData, bool strict) override;
-    };
-
-    /*
-     * Specialization of SearchContext for array type
-     */
-    class ArraySearchContext : public NumericAttribute::Range<T>, public AttributeVector::SearchContext
-    {
-    private:
-        const MultiValueNumericAttribute<B, M> & _toBeSearched;
-
-        int32_t onFind(DocId docId, int32_t elemId, int32_t & weight) const override final {
-            return find(docId, elemId, weight);
-        }
-
-        int32_t onFind(DocId docId, int32_t elemId) const override final {
-            return find(docId, elemId);
-        }
-
-    protected:
-        bool valid() const override;
-
-    public:
-        ArraySearchContext(std::unique_ptr<QueryTermSimple> qTerm, const NumericAttribute & toBeSearched);
-        int32_t find(DocId doc, int32_t elemId, int32_t & weight) const {
-            MultiValueArrayRef values(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < values.size(); i++) {
-                if (this->match(values[i].value())) {
-                    weight = 1;
-                    return i;
-                }
-            }
-            weight = 0;
-
-            return -1;
-        }
-
-        int32_t find(DocId doc, int32_t elemId) const {
-            MultiValueArrayRef values(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < values.size(); i++) {
-                if (this->match(values[i].value())) {
-                    return i;
-                }
-            }
-            return -1;
-        }
-
-        Int64Range getAsIntegerTerm() const override;
-
-        std::unique_ptr<queryeval::SearchIterator>
-        createFilterIterator(fef::TermFieldMatchData * matchData, bool strict) override;
-    };
-
     MultiValueNumericAttribute(const vespalib::string & baseFileName, const AttributeVector::Config & c =
                                AttributeVector::Config(AttributeVector::BasicType::fromType(T()),
                                                        attribute::CollectionType::ARRAY));
     uint32_t getValueCount(DocId doc) const override;
     void onCommit() override;
     void onUpdateStat() override;
-    void removeOldGenerations(generation_t firstUsed) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
 
-    void onGenerationChange(generation_t generation) override;
+    void before_inc_generation(generation_t current_gen) override;
     bool onLoad(vespalib::Executor *executor) override;
     virtual bool onLoadEnumerated(ReaderBase &attrReader);
 
-    AttributeVector::SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(std::unique_ptr<QueryTermSimple> term, const attribute::SearchContextParams & params) const override;
 
     virtual void clearOldValues(DocId doc);
@@ -177,22 +77,19 @@ public:
     //-------------------------------------------------------------------------
     T get(DocId doc) const override {
         MultiValueArrayRef values(this->_mvMapping.get(doc));
-        return ((values.size() > 0) ? values[0].value() : T());
+        return ((values.size() > 0) ? multivalue::get_value(values[0]) : T());
     }
     largeint_t getInt(DocId doc) const override {
         MultiValueArrayRef values(this->_mvMapping.get(doc));
-        return static_cast<largeint_t>((values.size() > 0) ? values[0].value() : T());
+        return static_cast<largeint_t>((values.size() > 0) ? multivalue::get_value(values[0]) : T());
     }
     double getFloat(DocId doc) const override {
         MultiValueArrayRef values(this->_mvMapping.get(doc));
-        return static_cast<double>((values.size() > 0) ? values[0].value() : T());
+        return static_cast<double>((values.size() > 0) ? multivalue::get_value(values[0]) : T());
     }
     EnumHandle getEnum(DocId doc) const override {
         (void) doc;
         return std::numeric_limits<uint32_t>::max(); // does not have enum
-    }
-    uint32_t getAll(DocId doc, T * v, uint32_t sz) const override {
-        return getHelper(doc, v, sz);
     }
     uint32_t get(DocId doc, largeint_t * v, uint32_t sz) const override {
         return getHelper(doc, v, sz);
@@ -205,7 +102,7 @@ public:
         MultiValueArrayRef handle(this->_mvMapping.get(doc));
         uint32_t ret = handle.size();
         for(size_t i(0), m(std::min(sz, ret)); i < m; i++) {
-            buffer[i] = static_cast<BufferType>(handle[i].value());
+            buffer[i] = static_cast<BufferType>(multivalue::get_value(handle[i]));
         }
         return ret;
     }
@@ -225,9 +122,6 @@ public:
         }
         return available;
     }
-    uint32_t getAll(DocId doc, Weighted * v, uint32_t sz) const override{
-        return getWeightedHelper<Weighted, T>(doc, v, sz);
-    }
     uint32_t get(DocId doc, WeightedInt * v, uint32_t sz) const override {
         return getWeightedHelper<WeightedInt, largeint_t>(doc, v, sz);
     }
@@ -239,8 +133,8 @@ public:
         MultiValueArrayRef handle(this->_mvMapping.get(doc));
         uint32_t ret = handle.size();
         for(size_t i(0), m(std::min(sz, ret)); i < m; i++) {
-            buffer[i] = WeightedType(static_cast<ValueType>(handle[i].value()),
-                                     handle[i].weight());
+            buffer[i] = WeightedType(static_cast<ValueType>(multivalue::get_value(handle[i])),
+                                     multivalue::get_weight(handle[i]));
         }
         return ret;
     }

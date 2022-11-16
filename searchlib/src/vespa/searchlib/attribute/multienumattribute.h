@@ -2,29 +2,13 @@
 
 #pragma once
 
-#include "enum_store_loaders.h"
 #include "i_enum_store.h"
 #include "loadedenumvalue.h"
-#include "multivalue.h"
 #include "multivalueattribute.h"
 #include "no_loaded_vector.h"
+#include <vespa/searchcommon/attribute/multivalue.h>
 
 namespace search {
-
-class IWeightedIndexVector {
-public:
-    virtual ~IWeightedIndexVector() = default;
-    using WeightedIndex = multivalue::WeightedValue<IEnumStore::Index>;
-    /**
-     * Provides a reference to the underlying enum/weight pairs.
-     * This method should only be invoked if @ref getCollectionType(docId) returns CollectionType::WEIGHTED_SET.
-     *
-     * @param doc document identifier
-     * @param values Reference to values and weights
-     * @return the number of values for this document
-     **/
-    virtual uint32_t getEnumHandles(uint32_t doc, const WeightedIndex * & values) const;
-};
 
 class ReaderBase;
 
@@ -36,10 +20,10 @@ class ReaderBase;
  * M: MultiValueType
  */
 template <typename B, typename M>
-class MultiValueEnumAttribute : public MultiValueAttribute<B, M>,
-                                public IWeightedIndexVector
+class MultiValueEnumAttribute : public MultiValueAttribute<B, M>
 {
 protected:
+    using AtomicEntryRef = vespalib::datastore::AtomicEntryRef;
     using Change = typename B::BaseClass::Change;
     using DocId = typename B::BaseClass::DocId;
     using EnumHandle = typename B::BaseClass::EnumHandle;
@@ -76,13 +60,11 @@ protected:
 public:
     MultiValueEnumAttribute(const vespalib::string & baseFileName, const AttributeVector::Config & cfg);
 
-    uint32_t getEnumHandles(DocId doc, const IWeightedIndexVector::WeightedIndex * & values) const override final;
-
     void onCommit() override;
     void onUpdateStat() override;
 
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
 
     //-----------------------------------------------------------------------------------------------------------------
     // Attribute read API
@@ -92,7 +74,7 @@ public:
         if (indices.size() == 0) {
             return std::numeric_limits<uint32_t>::max();
         } else {
-            return indices[0].value().ref();
+            return multivalue::get_value_ref(indices[0]).load_acquire().ref();
         }
     }
 
@@ -100,7 +82,7 @@ public:
         WeightedIndexArrayRef indices(this->_mvMapping.get(doc));
         uint32_t valueCount = indices.size();
         for (uint32_t i = 0, m = std::min(sz, valueCount); i < m; ++i) {
-            e[i] = indices[i].value().ref();
+            e[i] = multivalue::get_value_ref(indices[i]).load_acquire().ref();
         }
         return valueCount;
     }
@@ -108,7 +90,7 @@ public:
         WeightedIndexArrayRef indices(this->_mvMapping.get(doc));
         uint32_t valueCount = indices.size();
         for (uint32_t i = 0, m = std::min(sz, valueCount); i < m; ++i) {
-            e[i] = WeightedEnum(indices[i].value().ref(), indices[i].weight());
+            e[i] = WeightedEnum(multivalue::get_value_ref(indices[i]).load_acquire().ref(), multivalue::get_weight(indices[i]));
         }
         return valueCount;
     }

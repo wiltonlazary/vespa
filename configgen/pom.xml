@@ -5,18 +5,23 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>configgen</artifactId>
   <packaging>jar</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <name>configgen</name>
   <description>Config java code generation from config definition files for Java Vespa components.</description>
   <dependencies>
     <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -25,13 +30,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Xlint:all</arg>
-            <arg>-Xlint:-serial</arg>
-            <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

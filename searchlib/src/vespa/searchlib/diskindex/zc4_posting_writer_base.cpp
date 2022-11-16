@@ -1,7 +1,8 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "zc4_posting_writer_base.h"
 #include <vespa/searchlib/index/postinglistcounts.h>
+#include <vespa/searchlib/index/postinglistparams.h>
 
 using search::index::PostingListCounts;
 using search::index::PostingListParams;
@@ -225,9 +226,7 @@ Zc4PostingWriterBase::Zc4PostingWriterBase(PostingListCounts &counts)
     _l4Skip.maybeExpand();
 }
 
-Zc4PostingWriterBase::~Zc4PostingWriterBase()
-{
-}
+Zc4PostingWriterBase::~Zc4PostingWriterBase() = default;
 
 #define L1SKIPSTRIDE 16
 #define L2SKIPSTRIDE 8

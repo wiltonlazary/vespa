@@ -9,11 +9,11 @@ import com.yahoo.vespa.hosted.controller.ControllerTester;
 import com.yahoo.vespa.hosted.controller.api.integration.archive.ArchiveBucket;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeRepository;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
-import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
+import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentContext;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentTester;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.time.Duration;
@@ -21,7 +21,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author freva
@@ -31,7 +31,7 @@ public class ArchiveUriUpdaterTest {
     private final DeploymentTester tester = new DeploymentTester(new ControllerTester(SystemName.Public));
 
     @Test
-    public void archive_uri_test() {
+    void archive_uri_test() {
         var updater = new ArchiveUriUpdater(tester.controller(), Duration.ofDays(1));
 
         var tenant1 = TenantName.from("tenant1");
@@ -40,24 +40,24 @@ public class ArchiveUriUpdaterTest {
         var application = tester.newDeploymentContext(tenant1.value(), "app1", "instance1");
         ZoneId zone = ZoneId.from("prod", "aws-us-east-1c");
 
-        // Initially we should not set any archive URIs as the archive service does not return any
+        // Initially we should only is the bucket for hosted-vespa tenant
         updater.maintain();
-        assertArchiveUris(Map.of(), zone);
+        assertArchiveUris(Map.of(TenantName.from("hosted-vespa"), "s3://bucketName/hosted-vespa/"), zone);
+        assertArchiveUris(Map.of(TenantName.from("hosted-vespa"), "s3://bucketName/hosted-vespa/"), ZoneId.from("prod", "controller"));
 
         // Archive service now has URI for tenant1, but tenant1 is not deployed in zone
         setBucketNameInService(Map.of(tenant1, "uri-1"), zone);
-        setBucketNameInService(Map.of(tenantInfra, "uri-3"), zone);
         updater.maintain();
-        assertArchiveUris(Map.of(), zone);
+        assertArchiveUris(Map.of(TenantName.from("hosted-vespa"), "s3://bucketName/hosted-vespa/"), zone);
 
         deploy(application, zone);
         updater.maintain();
-        assertArchiveUris(Map.of(tenant1, "s3://uri-1/tenant1/", tenantInfra, "s3://uri-3/hosted-vespa/"), zone);
+        assertArchiveUris(Map.of(tenant1, "s3://uri-1/tenant1/", tenantInfra, "s3://bucketName/hosted-vespa/"), zone);
 
         // URI for tenant1 should be updated and removed for tenant2
         setArchiveUriInNodeRepo(Map.of(tenant1, "wrong-uri", tenant2, "uri-2"), zone);
         updater.maintain();
-        assertArchiveUris(Map.of(tenant1, "s3://uri-1/tenant1/", tenantInfra, "s3://uri-3/hosted-vespa/"), zone);
+        assertArchiveUris(Map.of(tenant1, "s3://uri-1/tenant1/", tenantInfra, "s3://bucketName/hosted-vespa/"), zone);
     }
 
     private void assertArchiveUris(Map<TenantName, String> expectedUris, ZoneId zone) {
@@ -80,6 +80,7 @@ public class ArchiveUriUpdaterTest {
     }
 
     private void deploy(DeploymentContext application, ZoneId zone) {
-        application.runJob(JobType.from(SystemName.Public, zone).orElseThrow(), new ApplicationPackage(new byte[0]), Version.fromString("7.1"));
+        application.runJob(JobType.deploymentTo(zone), new ApplicationPackage(new byte[0]));
     }
+
 }

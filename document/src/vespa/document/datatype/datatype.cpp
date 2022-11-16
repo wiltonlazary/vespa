@@ -1,18 +1,15 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/document/datatype/datatype.h>
-#include <vespa/document/datatype/numericdatatype.h>
-#include <vespa/document/datatype/primitivedatatype.h>
-#include <vespa/document/datatype/documenttype.h>
-#include <vespa/document/datatype/weightedsetdatatype.h>
+#include "datatype.h"
+#include "numericdatatype.h"
+#include "primitivedatatype.h"
+#include "documenttype.h"
+#include "weightedsetdatatype.h"
 #include <vespa/document/fieldvalue/fieldvalues.h>
 #include <vespa/document/base/exceptions.h>
 #include <vespa/vespalib/text/lowercase.h>
-#include <stdexcept>
 
 namespace document {
-
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(DataType, vespalib::Identifiable);
 
 namespace {
 NumericDataType BYTE_OBJ(DataType::T_BYTE);
@@ -54,32 +51,32 @@ class DataType2FieldValueId
 {
 public:
     DataType2FieldValueId();
-    unsigned int getFieldValueId(unsigned int id) const {
+    FieldValue::Type getFieldValueId(unsigned int id) const {
         return id < sizeof(_type2FieldValueId)/sizeof(_type2FieldValueId[0])
                ? _type2FieldValueId[id]
-               : 0;
+               : FieldValue::Type::NONE;
     }
 private:
-    unsigned int _type2FieldValueId[DataType::MAX];
+    FieldValue::Type _type2FieldValueId[DataType::MAX];
 };
 
 DataType2FieldValueId::DataType2FieldValueId()
 {
     for (size_t i(0); i < sizeof(_type2FieldValueId)/sizeof(_type2FieldValueId[0]); i++) {
-        _type2FieldValueId[i] = 0;
+        _type2FieldValueId[i] = FieldValue::Type::NONE;
     }
-    _type2FieldValueId[DataType::T_BYTE]  = ByteFieldValue::classId;
-    _type2FieldValueId[DataType::T_SHORT] = ShortFieldValue::classId;
-    _type2FieldValueId[DataType::T_INT] = IntFieldValue::classId;
-    _type2FieldValueId[DataType::T_LONG] = LongFieldValue::classId;
-    _type2FieldValueId[DataType::T_FLOAT] = FloatFieldValue::classId;
-    _type2FieldValueId[DataType::T_DOUBLE] = DoubleFieldValue::classId;
-    _type2FieldValueId[DataType::T_BOOL] = BoolFieldValue::classId;
-    _type2FieldValueId[DataType::T_STRING] = StringFieldValue::classId;
-    _type2FieldValueId[DataType::T_RAW] = RawFieldValue::classId;
-    _type2FieldValueId[DataType::T_URI] = StringFieldValue::classId;
-    _type2FieldValueId[DataType::T_PREDICATE] = PredicateFieldValue::classId;
-    _type2FieldValueId[DataType::T_TENSOR] = TensorFieldValue::classId;
+    _type2FieldValueId[DataType::T_BYTE]  = FieldValue::Type::BYTE;
+    _type2FieldValueId[DataType::T_SHORT] = FieldValue::Type::SHORT;
+    _type2FieldValueId[DataType::T_INT] = FieldValue::Type::INT;
+    _type2FieldValueId[DataType::T_LONG] = FieldValue::Type::LONG;
+    _type2FieldValueId[DataType::T_FLOAT] = FieldValue::Type::FLOAT;
+    _type2FieldValueId[DataType::T_DOUBLE] = FieldValue::Type::DOUBLE;
+    _type2FieldValueId[DataType::T_BOOL] = FieldValue::Type::BOOL;
+    _type2FieldValueId[DataType::T_STRING] = FieldValue::Type::STRING;
+    _type2FieldValueId[DataType::T_RAW] = FieldValue::Type::RAW;
+    _type2FieldValueId[DataType::T_URI] = FieldValue::Type::STRING;
+    _type2FieldValueId[DataType::T_PREDICATE] = FieldValue::Type::PREDICATE;
+    _type2FieldValueId[DataType::T_TENSOR] = FieldValue::Type::TENSOR;
 }
 
 DataType2FieldValueId _G_type2FieldValueId;
@@ -89,9 +86,8 @@ DataType2FieldValueId _G_type2FieldValueId;
 bool DataType::isValueType(const FieldValue & fv) const
 {
     if ((_dataTypeId >= 0) && _dataTypeId < MAX) {
-        const uint32_t cid(_G_type2FieldValueId.getFieldValueId(_dataTypeId));
-        if (cid != 0) {
-            return cid == fv.getClass().id();
+        if (fv.isA(_G_type2FieldValueId.getFieldValueId(_dataTypeId))) {
+            return true;
         }
     }
     return _dataTypeId == fv.getDataType()->getId();
@@ -122,7 +118,8 @@ namespace {
 // ASCII characters. Probably screwed up otherwise, but generated ids
 // should only be used in testing anyways. In production this will be
 // set from the document manager config.
-uint32_t crappyJavaStringHash(vespalib::stringref value) {
+uint32_t
+crappyJavaStringHash(vespalib::stringref value) {
     uint32_t h = 0;
     for (uint32_t i = 0; i < value.size(); ++i) {
         h = 31 * h + value[i];
@@ -140,45 +137,25 @@ int32_t createId(vespalib::stringref name)
 
 } // anon namespace
 
-DataType::DataType()
-    : _dataTypeId(-1),
-      _name("invalid")
-{
-}
-
-DataType::DataType(vespalib::stringref name, int dataTypeId)
+DataType::DataType(vespalib::stringref name, int dataTypeId) noexcept
     : _dataTypeId(dataTypeId),
       _name(name)
 {
 }
 
-DataType::DataType(vespalib::stringref name)
-    : _dataTypeId(createId(name)),
-      _name(name)
+DataType::DataType(vespalib::stringref name) noexcept
+    : DataType(name, createId(name))
 {
 }
 
 DataType::~DataType() = default;
-
-bool
-DataType::operator==(const DataType& other) const
-{
-    return _dataTypeId == other._dataTypeId;
-}
-
-bool
-DataType::operator<(const DataType& other) const
-{
-    if (this == &other) return false;
-    return (_dataTypeId < other._dataTypeId);
-}
 
 void
 DataType::buildFieldPath(FieldPath & path, vespalib::stringref remainFieldName) const
 {
     if ( !remainFieldName.empty() ) {
         path.reserve(4);  // Optimize for short paths
-        onBuildFieldPath(path,remainFieldName);
+        onBuildFieldPath(path, remainFieldName);
     }
 }
 

@@ -1,11 +1,11 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
+#include <vespa/vespalib/datastore/entryref.h>
 #include <cstdint>
 #include <queue>
 #include <vector>
-#include "hnsw_graph.h"
 
 namespace search::tensor {
 
@@ -13,13 +13,13 @@ namespace search::tensor {
  * Represents a candidate node with its distance to another point in space.
  */
 struct HnswCandidate {
-    uint32_t docid;
-    HnswGraph::NodeRef node_ref;
+    uint32_t nodeid;
+    vespalib::datastore::EntryRef node_ref;
     double distance;
-    HnswCandidate(uint32_t docid_in, double distance_in) noexcept
-      : docid(docid_in), node_ref(), distance(distance_in) {}
-    HnswCandidate(uint32_t docid_in, HnswGraph::NodeRef node_ref_in, double distance_in) noexcept
-      : docid(docid_in), node_ref(node_ref_in), distance(distance_in) {}
+    HnswCandidate(uint32_t nodeid_in, double distance_in) noexcept
+      : nodeid(nodeid_in), node_ref(), distance(distance_in) {}
+    HnswCandidate(uint32_t nodeid_in, vespalib::datastore::EntryRef node_ref_in, double distance_in) noexcept
+      : nodeid(nodeid_in), node_ref(node_ref_in), distance(distance_in) {}
 };
 
 struct GreaterDistance {

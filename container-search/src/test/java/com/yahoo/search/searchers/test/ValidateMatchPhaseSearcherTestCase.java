@@ -3,19 +3,18 @@ package com.yahoo.search.searchers.test;
 
 import com.yahoo.component.chain.Chain;
 import com.yahoo.config.subscription.ConfigGetter;
-import com.yahoo.config.subscription.RawSource;
 import com.yahoo.search.Searcher;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.searchers.ValidateMatchPhaseSearcher;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.vespa.config.search.AttributesConfig;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author baldersheim
@@ -24,11 +23,12 @@ public class ValidateMatchPhaseSearcherTestCase {
 
     private final ValidateMatchPhaseSearcher searcher;
 
+    @SuppressWarnings("deprecation")
     public ValidateMatchPhaseSearcherTestCase() {
         searcher = new ValidateMatchPhaseSearcher(
                 ConfigGetter.getConfig(AttributesConfig.class,
-                                       "raw:",
-                                       new RawSource("attribute[4]\n" +
+                                       "raw:" +
+                                                     "attribute[4]\n" +
                                                      "attribute[0].name                ok\n" +
                                                      "attribute[0].datatype            INT32\n" +
                                                      "attribute[0].collectiontype      SINGLE\n" +
@@ -45,7 +45,7 @@ public class ValidateMatchPhaseSearcherTestCase {
                                                      "attribute[3].datatype            INT32\n" +
                                                      "attribute[3].collectiontype      ARRAY\n" +
                                                      "attribute[3].fastsearch          true"
-        )));
+        ));
     }
 
     private static String getErrorMatch(String attribute) {
@@ -61,7 +61,7 @@ public class ValidateMatchPhaseSearcherTestCase {
     }
 
     @Test
-    public void testMatchPhaseAttribute() {
+    void testMatchPhaseAttribute() {
         assertEquals("", search(""));
         assertEquals("", match("ok"));
         assertEquals(getErrorMatch("not_numeric"), match("not_numeric"));
@@ -71,7 +71,7 @@ public class ValidateMatchPhaseSearcherTestCase {
     }
 
     @Test
-    public void testDiversityAttribute() {
+    void testDiversityAttribute() {
         assertEquals("", search(""));
         assertEquals("", diversify("ok"));
         assertEquals("", diversify("not_numeric"));

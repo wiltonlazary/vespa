@@ -1,11 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.subscription;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
 import com.yahoo.config.ConfigInstance;
 import com.yahoo.vespa.config.ConfigKey;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Config source as a programmatically built set of {@link com.yahoo.config.ConfigInstance}s
@@ -24,7 +23,6 @@ public class ConfigSet implements ConfigSource {
     @SuppressWarnings({"unchecked", "rawtypes"})
     public void addBuilder(String configId, ConfigInstance.Builder builder) {
         Class<?> configClass = builder.getClass().getDeclaringClass();
-        //System.out.println("Declaring class for builder " + builder + " is " + configClass);
         ConfigKey<?> key = new ConfigKey(configClass, configId);
         configs.put(key, builder);
     }
@@ -57,4 +55,5 @@ public class ConfigSet implements ConfigSource {
         }
         return sb.toString();
     }
+
 }

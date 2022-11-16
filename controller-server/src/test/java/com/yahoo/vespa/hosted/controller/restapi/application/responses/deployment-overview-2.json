@@ -5,7 +5,7 @@
   "steps": [
     {
       "type": "instance",
-      "dependencies": [],
+      "dependencies": [ ],
       "declared": true,
       "instance": "default",
       "readyAt": 0,
@@ -22,6 +22,16 @@
           "platform": "7.1.0",
           "at": 0,
           "upgrade": true,
+          "available": [
+            {
+              "platform": "7.1.0",
+              "upgrade": true
+            },
+            {
+              "platform": "6.1.0",
+              "upgrade": false
+            }
+          ],
           "blockers": [
             {
               "days": [
@@ -82,6 +92,32 @@
           },
           "at": 1000,
           "upgrade": true,
+          "available": [
+            {
+              "application": {
+                "build": 3,
+                "compileVersion": "6.1.0",
+                "sourceUrl": "repository1/tree/commit1",
+                "commit": "commit1"
+              }
+            },
+            {
+              "application": {
+                "build": 2,
+                "compileVersion": "6.1.0",
+                "sourceUrl": "repository1/tree/commit1",
+                "commit": "commit1"
+              }
+            },
+            {
+              "application": {
+                "build": 1,
+                "compileVersion": "6.1.0",
+                "sourceUrl": "repository1/tree/commit1",
+                "commit": "commit1"
+              }
+            }
+          ],
           "blockers": [
             {
               "days": [
@@ -115,15 +151,14 @@
     },
     {
       "type": "test",
-      "dependencies": [],
+      "dependencies": [ ],
       "declared": false,
       "instance": "default",
       "readyAt": 0,
       "jobName": "system-test",
       "url": "https://some.url:43/instance/default/job/system-test",
       "environment": "test",
-      "region": "test.us-east-1",
-      "toRun": [],
+      "toRun": [ ],
       "runs": [
         {
           "id": 3,
@@ -135,13 +170,6 @@
             "targetPlatform": "6.1.0",
             "targetApplication": {
               "build": 3,
-              "compileVersion": "6.1.0",
-              "sourceUrl": "repository1/tree/commit1",
-              "commit": "commit1"
-            },
-            "sourcePlatform": "6.1.0",
-            "sourceApplication": {
-              "build": 2,
               "compileVersion": "6.1.0",
               "sourceUrl": "repository1/tree/commit1",
               "commit": "commit1"
@@ -200,13 +228,6 @@
             "targetPlatform": "6.1.0",
             "targetApplication": {
               "build": 2,
-              "compileVersion": "6.1.0",
-              "sourceUrl": "repository1/tree/commit1",
-              "commit": "commit1"
-            },
-            "sourcePlatform": "6.1.0",
-            "sourceApplication": {
-              "build": 1,
               "compileVersion": "6.1.0",
               "sourceUrl": "repository1/tree/commit1",
               "commit": "commit1"
@@ -317,7 +338,7 @@
     },
     {
       "type": "test",
-      "dependencies": [],
+      "dependencies": [ ],
       "declared": true,
       "instance": "default",
       "readyAt": 15153000,
@@ -326,7 +347,6 @@
       "jobName": "staging-test",
       "url": "https://some.url:43/instance/default/job/staging-test",
       "environment": "staging",
-      "region": "staging.us-east-3",
       "toRun": [
         {
           "versions": {
@@ -768,7 +788,7 @@
         "sourceUrl": "repository1/tree/commit1",
         "commit": "commit1"
       },
-      "toRun": [],
+      "toRun": [ ],
       "runs": [
         {
           "id": 3,
@@ -947,6 +967,10 @@
               "status": "succeeded"
             },
             {
+              "name": "copyVespaLogs",
+              "status": "succeeded"
+            },
+            {
               "name": "deactivateTester",
               "status": "succeeded"
             },
@@ -993,6 +1017,10 @@
             },
             {
               "name": "endTests",
+              "status": "succeeded"
+            },
+            {
+              "name": "copyVespaLogs",
               "status": "succeeded"
             },
             {
@@ -1222,6 +1250,29 @@
           ]
         }
       ]
+    }
+  ],
+  "builds": [
+    {
+      "build": 3,
+      "compileVersion": "6.1.0",
+      "sourceUrl": "repository1/tree/commit1",
+      "commit": "commit1",
+      "deployable": true
+    },
+    {
+      "build": 2,
+      "compileVersion": "6.1.0",
+      "sourceUrl": "repository1/tree/commit1",
+      "commit": "commit1",
+      "deployable": true
+    },
+    {
+      "build": 1,
+      "compileVersion": "6.1.0",
+      "sourceUrl": "repository1/tree/commit1",
+      "commit": "commit1",
+      "deployable": true
     }
   ]
 }

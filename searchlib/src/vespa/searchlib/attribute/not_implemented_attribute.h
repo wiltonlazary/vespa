@@ -7,8 +7,8 @@
 namespace search {
 
 struct NotImplementedAttribute : AttributeVector {
-    using AttributeVector::AttributeVector;
-
+    NotImplementedAttribute(const vespalib::string & name);
+    NotImplementedAttribute(const vespalib::string & name, const Config & config);
     void notImplemented [[noreturn]] () const;
 
     uint32_t getValueCount(DocId) const override;
@@ -31,12 +31,11 @@ struct NotImplementedAttribute : AttributeVector {
     long onSerializeForAscendingSort(DocId, void *, long, const common::BlobConverter *) const override;
     long onSerializeForDescendingSort(DocId, void *, long, const common::BlobConverter *) const override;
     uint32_t clearDoc(DocId) override;
-    int64_t getDefaultValue() const override;
     uint32_t getEnum(DocId) const override;
     bool addDoc(DocId &) override;
     void onAddDocs(DocId lidLimit) override;
 
-    SearchContext::UP getSearch(QueryTermSimpleUP, const attribute::SearchContextParams &) const override;
+    std::unique_ptr<attribute::SearchContext> getSearch(QueryTermSimpleUP, const attribute::SearchContextParams &) const override;
 };
 
 }  // namespace search

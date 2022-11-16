@@ -24,6 +24,7 @@ import com.yahoo.config.provision.Zone;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.MockProvisioner;
 import com.yahoo.vespa.config.server.TimeoutBudget;
+import com.yahoo.vespa.config.server.application.ConfigConvergenceChecker;
 import com.yahoo.vespa.config.server.application.OrchestratorMock;
 import com.yahoo.vespa.config.server.filedistribution.MockFileDistributionFactory;
 import com.yahoo.vespa.config.server.http.v2.PrepareResult;
@@ -37,11 +38,14 @@ import com.yahoo.vespa.config.server.tenant.TenantRepository;
 import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.mock.MockCurator;
+import com.yahoo.vespa.flags.FlagSource;
+import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.VespaModelFactory;
-import com.yahoo.vespa.orchestrator.Orchestrator;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.time.Clock;
 import java.time.Duration;
@@ -75,6 +79,10 @@ public class DeployTester {
 
     public Tenant tenant() {
         return tenantRepository.getTenant(tenantName);
+    }
+
+    public Tenant tenant(ApplicationId applicationId) {
+        return tenantRepository.getTenant(applicationId.tenant());
     }
 
     /** Create a model factory for the version of this source*/
@@ -146,9 +154,8 @@ public class DeployTester {
     }
 
     public AllocatedHosts getAllocatedHostsOf(ApplicationId applicationId) {
-        Tenant tenant = tenant();
-        Session session = applicationRepository.getActiveSession(tenant, applicationId);
-        return session.getAllocatedHosts();
+        Optional<Session> session = applicationRepository.getActiveSession(tenant(applicationId), applicationId);
+        return session.orElseThrow(() -> new IllegalArgumentException("No active session for " + applicationId)).getAllocatedHosts();
     }
 
     public ApplicationId applicationId() { return applicationId; }
@@ -165,8 +172,12 @@ public class DeployTester {
         return applicationRepository;
     }
 
+    public Curator curator() {
+        return tenantRepository.getCurator();
+    }
+
     private static HostProvisioner createProvisioner() {
-        return new InMemoryProvisioner(7, false);
+        return new InMemoryProvisioner(9, false);
     }
 
     private static class FailingModelFactory implements ModelFactory {
@@ -208,19 +219,19 @@ public class DeployTester {
         private int creationCount;
 
         public CountingModelFactory(Clock clock) {
-            this.wrapped = new VespaModelFactory(new NullConfigModelRegistry(), clock);
+            this.wrapped = VespaModelFactory.createTestFactory(new NullConfigModelRegistry(), clock);
         }
 
         public CountingModelFactory(Version version, Clock clock, Zone zone) {
-            this.wrapped = new VespaModelFactory(version, new NullConfigModelRegistry(), clock, zone);
+            this.wrapped = VespaModelFactory.createTestFactory(version, new NullConfigModelRegistry(), clock, zone);
         }
 
         public CountingModelFactory(ConfigModelRegistry registry, Clock clock) {
-            this.wrapped = new VespaModelFactory(registry, clock);
+            this.wrapped = VespaModelFactory.createTestFactory(registry, clock);
         }
 
         public CountingModelFactory(ConfigModelRegistry registry, Version version, Clock clock, Zone zone) {
-            this.wrapped = new VespaModelFactory(version, registry, clock, zone);
+            this.wrapped = VespaModelFactory.createTestFactory(version, registry, clock, zone);
         }
 
         /** Returns the number of models created successfully by this instance */
@@ -246,6 +257,8 @@ public class DeployTester {
     }
 
     public static class Builder {
+
+        private final TemporaryFolder temporaryFolder;
         private Clock clock;
         private Provisioner provisioner;
         private ConfigserverConfig configserverConfig;
@@ -253,7 +266,12 @@ public class DeployTester {
         private Curator curator = new MockCurator();
         private Metrics metrics;
         private List<ModelFactory> modelFactories;
-        private Orchestrator orchestrator;
+        private ConfigConvergenceChecker configConvergenceChecker = new ConfigConvergenceChecker();
+        private FlagSource flagSource = new InMemoryFlagSource();
+
+        public Builder(TemporaryFolder temporaryFolder) {
+            this.temporaryFolder = temporaryFolder;
+        }
 
         public DeployTester build() {
             Clock clock = Optional.ofNullable(this.clock).orElseGet(Clock::systemUTC);
@@ -285,9 +303,11 @@ public class DeployTester {
             ApplicationRepository applicationRepository = new ApplicationRepository.Builder()
                     .withTenantRepository(tenantRepository)
                     .withConfigserverConfig(configserverConfig)
-                    .withOrchestrator(Optional.ofNullable(orchestrator).orElseGet(OrchestratorMock::new))
+                    .withOrchestrator(new OrchestratorMock())
                     .withClock(clock)
                     .withProvisioner(provisioner)
+                    .withConfigConvergenceChecker(configConvergenceChecker)
+                    .withFlagSource(flagSource)
                     .build();
 
             return new DeployTester(clock, tenantRepository, applicationRepository);
@@ -336,10 +356,34 @@ public class DeployTester {
             return this;
         }
 
-        public Builder orchestrator(Orchestrator orchestrator) {
-            this.orchestrator = orchestrator;
+        public Builder configConvergenceChecker(ConfigConvergenceChecker configConvergenceChecker) {
+            this.configConvergenceChecker = configConvergenceChecker;
             return this;
         }
+
+        public Builder flagSource(FlagSource flagSource) {
+            this.flagSource = flagSource;
+            return this;
+        }
+
+        public Builder hostedConfigserverConfig(Zone zone) {
+            try {
+                this.configserverConfig = new ConfigserverConfig(new ConfigserverConfig.Builder()
+                                                      .configServerDBDir(temporaryFolder.newFolder().getAbsolutePath())
+                                                      .configDefinitionsDir(temporaryFolder.newFolder().getAbsolutePath())
+                                                      .fileReferencesDir(temporaryFolder.newFolder().getAbsolutePath())
+                                                      .hostedVespa(true)
+                                                      .multitenant(true)
+                                                      .region(zone.region().value())
+                                                      .environment(zone.environment().value())
+                                                      .system(zone.system().value()));
+                return this;
+            }
+            catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
     }
 
 }

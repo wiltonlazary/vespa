@@ -7,6 +7,7 @@
 #include "node_types.h"
 #include "lazy_params.h"
 #include <vespa/vespalib/util/stash.h>
+#include <vespa/vespalib/util/time.h>
 
 namespace vespalib::eval {
 
@@ -14,6 +15,7 @@ namespace nodes { struct Node; }
 struct TensorFunction;
 class TensorSpec;
 struct CTFMetaData;
+struct ValueBuilderFactory;
 
 /**
  * A Function that has been prepared for execution. This will
@@ -50,6 +52,11 @@ public:
             stack.pop_back();
             stack.back() = value;
         }
+        void pop_pop_pop_push(const Value &value) {
+            stack.pop_back();
+            stack.pop_back();
+            stack.back() = value;
+        }
         void pop_n_push(size_t n, const Value &value) {
             stack.resize(stack.size() - (n - 1), value);
             stack.back() = value;
@@ -62,6 +69,11 @@ public:
     public:
         explicit Context(const InterpretedFunction &ifun);
         uint32_t if_cnt() const { return _state.if_cnt; }
+    };
+    struct ProfiledContext {
+        Context context;
+        std::vector<std::pair<size_t,duration>> cost;
+        ProfiledContext(const InterpretedFunction &ifun);
     };
     using op_function = void (*)(State &, uint64_t);
     class Instruction {
@@ -105,6 +117,7 @@ public:
     ~InterpretedFunction();
     size_t program_size() const { return _program.size(); }
     const Value &eval(Context &ctx, const LazyParams &params) const;
+    const Value &eval(ProfiledContext &ctx, const LazyParams &params) const;
     double estimate_cost_us(const std::vector<double> &params, double budget = 5.0) const;
     static Function::Issues detect_issues(const Function &function);
 

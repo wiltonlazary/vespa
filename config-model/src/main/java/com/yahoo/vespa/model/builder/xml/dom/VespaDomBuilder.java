@@ -4,11 +4,10 @@ package com.yahoo.vespa.model.builder.xml.dom;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.ApplicationConfigProducerRoot;
 import com.yahoo.config.model.ConfigModelRepo;
-import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.builder.xml.XmlHelper;
+import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.config.model.producer.UserConfigRepo;
-import java.util.logging.Level;
 import com.yahoo.text.XML;
 import com.yahoo.vespa.model.AbstractService;
 import com.yahoo.vespa.model.Affinity;
@@ -21,18 +20,9 @@ import com.yahoo.vespa.model.container.ContainerCluster;
 import com.yahoo.vespa.model.container.ContainerModel;
 import com.yahoo.vespa.model.container.docproc.ContainerDocproc;
 import com.yahoo.vespa.model.content.Content;
-import com.yahoo.vespa.model.generic.builder.DomServiceClusterBuilder;
-import com.yahoo.vespa.model.generic.service.ServiceCluster;
-import com.yahoo.vespa.model.search.AbstractSearchCluster;
-
-import org.w3c.dom.Document;
+import com.yahoo.vespa.model.search.SearchCluster;
 import org.w3c.dom.Element;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-
-import java.util.ArrayList;
-import java.util.LinkedList;
-import java.util.List;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -42,7 +32,6 @@ import java.util.logging.Logger;
  */
 public class VespaDomBuilder extends VespaModelBuilder {
 
-    public static final String JVMARGS_ATTRIB_NAME = "jvmargs";
     public static final String JVM_OPTIONS = "jvm-options";
     public static final String OPTIONS = "options";
     public static final String JVM_GC_OPTIONS = "jvm-gc-options";
@@ -60,41 +49,13 @@ public class VespaDomBuilder extends VespaModelBuilder {
 
     public static final Logger log = Logger.getLogger(VespaDomBuilder.class.getPackage().toString());
 
-    /**
-     * Get all aliases for one host from a list of 'alias' xml nodes.
-     *
-     * @param hostAliases  List of xml nodes, each representing one hostalias
-     * @return a list of alias strings.
-     */
-    // TODO Move and change scope
-    public static List<String> getHostAliases(NodeList hostAliases) {
-        List<String> aliases = new LinkedList<>();
-        for (int i=0; i < hostAliases.getLength(); i++) {
-            Node n = hostAliases.item(i);
-            if (! (n instanceof Element)) {
-                continue;
-            }
-            Element e = (Element)n;
-            if (! e.getNodeName().equals("alias")) {
-                throw new RuntimeException("Unexpected tag: '" + e.getNodeName() + "' at node " +
-                        XML.getNodePath(e, " > ") + ", expected 'alias'.");
-            }
-            String alias = e.getFirstChild().getNodeValue();
-            if ((alias == null) || (alias.equals(""))) {
-                throw new RuntimeException("Missing value for the alias tag at node " +
-                        XML.getNodePath(e, " > ") + "'.");
-            }
-            aliases.add(alias);
-        }
-        return aliases;
-    }
-
 
     @Override
     public ApplicationConfigProducerRoot getRoot(String name, DeployState deployState, AbstractConfigProducer parent) {
         try {
             return new DomRootBuilder(name).
-                    build(deployState, parent, XmlHelper.getDocument(deployState.getApplicationPackage().getServices()).getDocumentElement());
+                    build(deployState, parent, XmlHelper.getDocument(deployState.getApplicationPackage().getServices(), "services.xml")
+                                                        .getDocumentElement());
         } catch (Exception e) {
             throw new IllegalArgumentException(e);
         }
@@ -113,7 +74,6 @@ public class VespaDomBuilder extends VespaModelBuilder {
      * include hostalias, baseport and user config overrides generically.
      *
      * @param <T> an {@link com.yahoo.config.model.producer.AbstractConfigProducer}
-     * @author vegardh
      */
     public static abstract class DomConfigProducerBuilder<T extends AbstractConfigProducer<?>> {
 
@@ -146,10 +106,6 @@ public class VespaDomBuilder extends VespaModelBuilder {
             if (producerSpec != null) {
                 if (producerSpec.hasAttribute(JVM_OPTIONS)) {
                     t.appendJvmOptions(producerSpec.getAttribute(JVM_OPTIONS));
-                } else {
-                    if (producerSpec.hasAttribute(JVMARGS_ATTRIB_NAME)) {
-                        t.appendJvmOptions(producerSpec.getAttribute(JVMARGS_ATTRIB_NAME));
-                    }
                 }
                 if (producerSpec.hasAttribute(PRELOAD_ATTRIB_NAME)) {
                     t.setPreLoad(producerSpec.getAttribute(PRELOAD_ATTRIB_NAME));
@@ -184,7 +140,7 @@ public class VespaDomBuilder extends VespaModelBuilder {
             // This depends on which constructor in AbstractService is used, but the best way
             // is to let this method do initialize.
             if (!t.isInitialized()) {
-                t.initService(deployState.getDeployLogger());
+                t.initService(deployState);
             }
         }
 
@@ -203,7 +159,7 @@ public class VespaDomBuilder extends VespaModelBuilder {
     }
 
     /**
-     * The SimpleConfigProducer is the producer for elements such as qrservers, gateways.
+     * The SimpleConfigProducer is the producer for elements such as container.
      * Must support overrides for that too, hence this builder
      *
      * @author vegardh
@@ -240,7 +196,9 @@ public class VespaDomBuilder extends VespaModelBuilder {
                                                                                    deployState.getDocumentModel(),
                                                                                    deployState.getVespaVersion(),
                                                                                    deployState.getProperties().applicationId());
-            root.setHostSystem(new HostSystem(root, "hosts", deployState.getProvisioner(), deployState.getDeployLogger()));
+            root.setHostSystem(new HostSystem(root, "hosts", deployState.getProvisioner(),
+                                              deployState.getDeployLogger(),
+                                              deployState.isHosted()));
             new Client(root);
             return root;
         }
@@ -296,20 +254,9 @@ public class VespaDomBuilder extends VespaModelBuilder {
      */
     private void setContentSearchClusterIndexes(ConfigModelRepo configModelRepo) {
         int index = 0;
-        for (AbstractSearchCluster sc : Content.getSearchClusters(configModelRepo)) {
+        for (SearchCluster sc : Content.getSearchClusters(configModelRepo)) {
             sc.setClusterIndex(index++);
         }
-    }
-
-    @Override
-    public List<ServiceCluster> getClusters(DeployState deployState, AbstractConfigProducer parent) {
-        List<ServiceCluster> clusters = new ArrayList<>();
-        Document services = XmlHelper.getDocument(deployState.getApplicationPackage().getServices());
-        for (Element clusterSpec : XML.getChildren(services.getDocumentElement(), "cluster")) {
-            DomServiceClusterBuilder clusterBuilder = new DomServiceClusterBuilder(clusterSpec.getAttribute("name"));
-            clusters.add(clusterBuilder.build(deployState, parent.getRoot(), clusterSpec));
-        }
-        return clusters;
     }
 
 }

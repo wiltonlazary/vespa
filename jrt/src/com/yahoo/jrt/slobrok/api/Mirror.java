@@ -1,8 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.jrt.slobrok.api;
 
-
-import com.yahoo.jrt.ErrorCode;
 import com.yahoo.jrt.Int32Value;
 import com.yahoo.jrt.Request;
 import com.yahoo.jrt.RequestWaiter;
@@ -13,6 +11,7 @@ import com.yahoo.jrt.Task;
 import com.yahoo.jrt.TransportThread;
 import com.yahoo.jrt.Values;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -33,11 +32,12 @@ public class Mirror implements IMirror {
 
     private static final Logger log = Logger.getLogger(Mirror.class.getName());
 
-    private final Supervisor  orb;
+    private final Supervisor orb;
     private final SlobrokList slobroks;
     private String currSlobrok;
     private final BackOffPolicy backOff;
     private volatile int updates = 0;
+    private volatile long iterations = 0;
     private boolean requestDone = false;
     private boolean logOnSuccess = true;
     private final AtomicReference<Entry[]> specs = new AtomicReference<>(new Entry[0]);
@@ -49,8 +49,7 @@ public class Mirror implements IMirror {
     private Request req = null;
 
     /**
-     * Create a new MirrorAPI using the given Supervisor and slobrok
-     * connect specs.
+     * Create a new MirrorAPI using the given Supervisor and slobrok connect specs.
      *
      * @param orb the Supervisor to use
      * @param slobroks slobrok connect spec list
@@ -66,9 +65,10 @@ public class Mirror implements IMirror {
                 public void handleRequestDone(Request req) {
                     requestDone = true;
                     updateTask.scheduleNow();
+                    transportThread.wakeup_if_not_self();
                 }
             };
-        updateTask.scheduleNow();
+        startFetchRequest();
     }
 
     /**
@@ -169,12 +169,15 @@ public class Mirror implements IMirror {
      * Invoked by the update task.
      */
     private void checkForUpdate() {
+        ++iterations;
         if (requestDone) {
             handleUpdate();
             requestDone = false;
-            return;
         }
+        startFetchRequest();
+    }
 
+    private void startFetchRequest() {
         if (target != null && ! slobroks.contains(currSlobrok)) {
             log.log(Level.INFO, "location broker "+currSlobrok+" removed, will disconnect and use one of: "+slobroks);
             target.close();
@@ -194,15 +197,16 @@ public class Mirror implements IMirror {
                 updateTask.schedule(delay);
                 return;
             }
+            log.fine(() -> "Try connecting to "+currSlobrok);
             target = orb.connect(new Spec(currSlobrok));
             specsGeneration = 0;
         }
         req = new Request("slobrok.incremental.fetch");
         req.parameters().add(new Int32Value(specsGeneration)); // gencnt
         req.parameters().add(new Int32Value(5000));     // mstimeout
-        target.invokeAsync(req, 40.0, reqWait);
+        target.invokeAsync(req, Duration.ofSeconds(40), reqWait);
     }
-    
+
     private void handleUpdate() {
         if (!req.checkReturnTypes("iSSSi")
             || (req.returnValues().get(2).count() !=
@@ -211,10 +215,12 @@ public class Mirror implements IMirror {
             if (! logOnSuccess) {
                 log.log(Level.INFO, "Error with location broker "+currSlobrok+" update: " + req.errorMessage() +
                         " (error code " + req.errorCode() + ")");
+            } else {
+                log.fine(() -> "Error with location broker "+currSlobrok+" update: " + req.errorMessage() +
+                         " (error code " + req.errorCode() + ")");
             }
             target.close();
-            target = null;
-            updateTask.scheduleNow(); // try next slobrok
+            target = null; // try next slobrok
             return;
         }
         Values answer = req.returnValues();
@@ -233,7 +239,6 @@ public class Mirror implements IMirror {
             Entry[]  newSpecs;
             if (diffFromGeneration == 0) {
                 newSpecs = new Entry[numNames];
-
                 for (int idx = 0; idx < numNames; idx++) {
                     newSpecs[idx] = new Entry(n[idx], s[idx]);
                 }
@@ -257,6 +262,8 @@ public class Mirror implements IMirror {
             if (logOnSuccess) {
                 log.log(Level.INFO, "successfully connected to location broker "+currSlobrok+" (mirror initialized with "+newSpecs.length+" service names)");
                 logOnSuccess = false;
+            } else {
+                log.fine(() -> "successfully updated from location broker "+currSlobrok+" (now "+newSpecs.length+" service names)");
             }
             specs.set(newSpecs);
 
@@ -266,9 +273,10 @@ public class Mirror implements IMirror {
                 u++;
             }
             updates = u;
+        } else {
+            log.fine(() -> "NOP update from location broker "+currSlobrok+" (curr gen "+specsGeneration+")");
         }
         backOff.reset();
-        updateTask.schedule(0.1); // be nice
     }
 
     /**
@@ -325,6 +333,19 @@ public class Mirror implements IMirror {
         public Spec getSpec() { return spec; }
         public String getSpecString() { return spec.toString(); }
 
+    }
+
+    public void dumpState() {
+        log.log(Level.INFO, "location broker mirror state: " +
+                " iterations: " + iterations +
+                ", connected to: " + target +
+                ", seen " + updates + " updates" +
+                ", current server: "+ currSlobrok +
+                ", list of servers: " + slobroks);
+    }
+
+    public long getIterations() {
+        return iterations;
     }
 
 }

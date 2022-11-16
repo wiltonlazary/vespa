@@ -5,18 +5,17 @@ package com.yahoo.vespa.hosted.controller.maintenance;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.vespa.hosted.controller.Instance;
 import com.yahoo.vespa.hosted.controller.api.integration.aws.MockRoleService;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
 import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.deployment.ApplicationPackageBuilder;
+import com.yahoo.vespa.hosted.controller.deployment.DeploymentContext;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentTester;
-import org.hamcrest.Matchers;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author mortent
@@ -26,21 +25,21 @@ public class TenantRoleMaintainerTest {
     private final DeploymentTester tester = new DeploymentTester();
 
     @Test
-    public void maintains_iam_roles_for_tenants_in_production() {
+    void maintains_iam_roles_for_tenants_in_production() {
         var devAppTenant1 = tester.newDeploymentContext("tenant1", "app1", "default");
         var prodAppTenant2 = tester.newDeploymentContext("tenant2", "app2", "default");
-        var devAppTenant2 = tester.newDeploymentContext("tenant2","app3","default");
-        var perfAppTenant1 = tester.newDeploymentContext("tenant3","app1","default");
+        var devAppTenant2 = tester.newDeploymentContext("tenant2", "app3", "default");
+        var perfAppTenant1 = tester.newDeploymentContext("tenant3", "app1", "default");
         ApplicationPackage appPackage = new ApplicationPackageBuilder()
                 .region("us-west-1")
                 .build();
 
         // Deploy dev apps
-        devAppTenant1.runJob(JobType.devUsEast1, appPackage);
-        devAppTenant2.runJob(JobType.devUsEast1, appPackage);
+        devAppTenant1.runJob(DeploymentContext.devUsEast1, appPackage);
+        devAppTenant2.runJob(DeploymentContext.devUsEast1, appPackage);
 
         // Deploy perf apps
-        perfAppTenant1.runJob(JobType.perfUsEast3, appPackage);
+        perfAppTenant1.runJob(DeploymentContext.perfUsEast3, appPackage);
 
         // Deploy prod
         prodAppTenant2.submit(appPackage).deploy();
@@ -54,7 +53,7 @@ public class TenantRoleMaintainerTest {
         var roleService = tester.controller().serviceRegistry().roleService();
         List<TenantName> tenantNames = ((MockRoleService) roleService).maintainedTenants();
 
-        assertThat(tenantNames, Matchers.containsInAnyOrder(prodAppTenant2.application().id().tenant(), perfAppTenant1.application().id().tenant()));
+        assertTrue(tenantNames.containsAll(List.of(prodAppTenant2.application().id().tenant(), perfAppTenant1.application().id().tenant())));
     }
 
     private long permanentDeployments(Instance instance) {

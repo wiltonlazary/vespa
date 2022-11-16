@@ -15,15 +15,20 @@
 #include <vespa/storageapi/message/bucket.h>
 #include <vespa/document/bucket/bucket.h>
 #include <vespa/vespalib/util/document_runnable.h>
-#include <vespa/messagebus/staticthrottlepolicy.h>
 #include <vespa/metrics/metricset.h>
 #include <vespa/metrics/summetric.h>
 #include <vespa/metrics/countmetric.h>
 #include <vespa/metrics/valuemetric.h>
 #include <vespa/metrics/metrictimer.h>
-#include <vespa/config/config.h>
+#include <vespa/config/helper/ifetchercallback.h>
+
 #include <chrono>
 
+namespace mbus { class DynamicThrottlePolicy; }
+namespace config {
+    class ConfigFetcher;
+    class ConfigUri;
+}
 namespace storage {
 
 class AbortBucketOperationsCommand;
@@ -47,7 +52,7 @@ public:
         metrics::LongCountMetric rejected;
         metrics::LongCountMetric other;
 
-        MergeFailureMetrics(metrics::MetricSet* owner);
+        explicit MergeFailureMetrics(metrics::MetricSet* owner);
         ~MergeFailureMetrics() override;
     };
 
@@ -64,12 +69,13 @@ public:
     public:
         metrics::DoubleAverageMetric averageQueueWaitingTime;
         metrics::LongValueMetric queueSize;
+        metrics::LongValueMetric active_window_size;
         metrics::LongCountMetric bounced_due_to_back_pressure;
         MergeOperationMetrics chaining;
         MergeOperationMetrics local;
 
-        Metrics(metrics::MetricSet* owner = 0);
-        ~Metrics();
+        explicit Metrics(metrics::MetricSet* owner = nullptr);
+        ~Metrics() override;
     };
 
 private:
@@ -79,20 +85,24 @@ private:
         MessageType _msg;
         metrics::MetricTimer _startTimer;
         uint64_t _sequence;
+        bool _is_forwarded_merge;
 
-        StablePriorityOrderingWrapper(const MessageType& msg, uint64_t sequence)
-            : _msg(msg), _startTimer(), _sequence(sequence)
+        StablePriorityOrderingWrapper(const MessageType& msg,
+                                      uint64_t sequence,
+                                      bool is_forwarded_merge) noexcept
+            : _msg(msg),
+              _startTimer(),
+              _sequence(sequence),
+              _is_forwarded_merge(is_forwarded_merge)
         {
         }
 
-        bool operator==(const StablePriorityOrderingWrapper& other) const {
-            return (*_msg == *other._msg
-                    && _sequence == other._sequence);
-        }
-
-        bool operator<(const StablePriorityOrderingWrapper& other) const {
+        bool operator<(const StablePriorityOrderingWrapper& other) const noexcept {
             if (_msg->getPriority() < other._msg->getPriority()) {
                 return true;
+            }
+            if (_is_forwarded_merge != other._is_forwarded_merge) {
+                return _is_forwarded_merge; // Forwarded merges sort before non-forwarded merges.
             }
             return (_sequence < other._sequence);
         }
@@ -109,14 +119,14 @@ private:
         bool _aborted;
 
         ChainedMergeState();
-        ChainedMergeState(const api::StorageMessage::SP& cmd, bool executing = false);
+        explicit ChainedMergeState(const api::StorageMessage::SP& cmd, bool executing = false);
         ~ChainedMergeState();
         // Use default copy-constructor/assignment operator
 
-        bool isExecutingLocally() const { return _executingLocally; }
-        void setExecutingLocally(bool execLocally) { _executingLocally = execLocally; }
+        bool isExecutingLocally() const noexcept { return _executingLocally; }
+        void setExecutingLocally(bool execLocally) noexcept { _executingLocally = execLocally; }
 
-        const api::StorageMessage::SP& getMergeCmd() const { return _cmd; }
+        const api::StorageMessage::SP& getMergeCmd() const noexcept { return _cmd; }
         void setMergeCmd(const api::StorageMessage::SP& cmd) {
             _cmd = cmd;
             if (cmd.get()) {
@@ -124,45 +134,45 @@ private:
             }
         }
 
-        bool isInCycle() const { return _inCycle; }
-        void setInCycle(bool inCycle) { _inCycle = inCycle; }
+        bool isInCycle() const noexcept { return _inCycle; }
+        void setInCycle(bool inCycle) noexcept { _inCycle = inCycle; }
 
-        bool isUnwinding() const { return _unwinding; }
-        void setUnwinding(bool unwinding) { _unwinding = unwinding; }
+        bool isUnwinding() const noexcept { return _unwinding; }
+        void setUnwinding(bool unwinding) noexcept { _unwinding = unwinding; }
 
-        bool isCycleBroken() const { return _cycleBroken; }
-        void setCycleBroken(bool cycleBroken) { _cycleBroken = cycleBroken; }
+        bool isCycleBroken() const noexcept { return _cycleBroken; }
+        void setCycleBroken(bool cycleBroken) noexcept { _cycleBroken = cycleBroken; }
 
-        bool isAborted() const { return _aborted; }
-        void setAborted(bool aborted) { _aborted = aborted; }
+        bool isAborted() const noexcept { return _aborted; }
+        void setAborted(bool aborted) noexcept { _aborted = aborted; }
 
-        const std::string& getMergeCmdString() const { return _cmdString; }
+        const std::string& getMergeCmdString() const noexcept { return _cmdString; }
     };
 
-    typedef std::map<document::Bucket, ChainedMergeState> ActiveMergeMap;
+    using ActiveMergeMap = std::map<document::Bucket, ChainedMergeState>;
 
     // Use a set rather than a priority_queue, since we want to be
     // able to iterate over the collection during status rendering
-    typedef std::set<
+    using MergePriorityQueue = std::set<
         StablePriorityOrderingWrapper<api::StorageMessage::SP>
-    > MergePriorityQueue;
+    >;
 
-    enum RendezvousState {
-        RENDEZVOUS_NONE,
-        RENDEZVOUS_REQUESTED,
-        RENDEZVOUS_ESTABLISHED,
-        RENDEZVOUS_RELEASED
+    enum class RendezvousState {
+        NONE,
+        REQUESTED,
+        ESTABLISHED,
+        RELEASED
     };
 
     ActiveMergeMap _merges;
     MergePriorityQueue _queue;
-    std::size_t _maxQueueSize;
-    mbus::StaticThrottlePolicy::UP _throttlePolicy;
+    size_t _maxQueueSize;
+    std::unique_ptr<mbus::DynamicThrottlePolicy> _throttlePolicy;
     uint64_t _queueSequence; // TODO: move into a stable priority queue class
     mutable std::mutex _messageLock;
     std::condition_variable _messageCond;
     mutable std::mutex _stateLock;
-    config::ConfigFetcher _configFetcher;
+    std::unique_ptr<config::ConfigFetcher> _configFetcher;
     // Messages pending to be processed by the worker thread
     std::vector<api::StorageMessage::SP> _messagesDown;
     std::vector<api::StorageMessage::SP> _messagesUp;
@@ -172,6 +182,7 @@ private:
     RendezvousState _rendezvous;
     mutable std::chrono::steady_clock::time_point _throttle_until_time;
     std::chrono::steady_clock::duration _backpressure_duration;
+    bool _use_dynamic_throttling;
     bool _disable_queue_limits_for_chained_merges;
     bool _closing;
 public:
@@ -208,14 +219,14 @@ public:
     // For unit testing only
     const MergePriorityQueue& getMergeQueue() const { return _queue; }
     // For unit testing only
-    const mbus::StaticThrottlePolicy& getThrottlePolicy() const { return *_throttlePolicy; }
-    mbus::StaticThrottlePolicy& getThrottlePolicy() { return *_throttlePolicy; }
+    const mbus::DynamicThrottlePolicy& getThrottlePolicy() const { return *_throttlePolicy; }
+    mbus::DynamicThrottlePolicy& getThrottlePolicy() { return *_throttlePolicy; }
     void set_disable_queue_limits_for_chained_merges(bool disable_limits) noexcept;
     // For unit testing only
     std::mutex& getStateLock() { return _stateLock; }
 
     Metrics& getMetrics() { return *_metrics; }
-    std::size_t getMaxQueueSize() const { return _maxQueueSize; }
+    size_t getMaxQueueSize() const { return _maxQueueSize; }
     void print(std::ostream& out, bool verbose, const std::string& indent) const override;
     void reportHtmlStatus(std::ostream&, const framework::HttpUrlPath&) const override;
 private:
@@ -225,43 +236,50 @@ private:
     struct MergeNodeSequence {
         const api::MergeBucketCommand& _cmd;
         std::vector<api::MergeBucketCommand::Node> _sortedNodes;
-        std::size_t _sortedIndex; // Index of current storage node in the sorted node sequence
+        uint16_t _sortedIndex; // Index of current storage node in the sorted node sequence
+        uint16_t _unordered_index;
         const uint16_t _thisIndex; // Index of the current storage node
+        bool _use_unordered_forwarding;
 
         MergeNodeSequence(const api::MergeBucketCommand& cmd, uint16_t thisIndex);
 
-        std::size_t getSortedIndex() const { return _sortedIndex; }
-        const std::vector<api::MergeBucketCommand::Node>& getSortedNodes() const {
+        [[nodiscard]] const std::vector<api::MergeBucketCommand::Node>& getSortedNodes() const noexcept {
             return _sortedNodes;
         }
-        bool isIndexUnknown() const {
-            return (_sortedIndex == std::numeric_limits<std::size_t>::max());
+        [[nodiscard]] bool isIndexUnknown() const noexcept {
+            return (_sortedIndex == UINT16_MAX);
         }
         /**
          * This node is the merge executor if it's the first element in the
          * _unsorted_ node sequence.
          */
-        bool isMergeExecutor() const {
+        [[nodiscard]] bool isMergeExecutor() const noexcept {
             return (_cmd.getNodes()[0].index == _thisIndex);
         }
-        uint16_t getExecutorNodeIndex() const{
+        [[nodiscard]] uint16_t getExecutorNodeIndex() const noexcept {
             return _cmd.getNodes()[0].index;
         }
-        bool isLastNode() const {
-            return (_sortedIndex == _sortedNodes.size() - 1);
+        [[nodiscard]] const std::vector<api::MergeBucketCommand::Node>& unordered_nodes() const noexcept {
+            return _cmd.getNodes();
         }
-        bool chainContainsIndex(uint16_t idx) const;
-        uint16_t getThisNodeIndex() const { return _thisIndex; }
+        [[nodiscard]] bool isLastNode() const noexcept {
+            if (!_use_unordered_forwarding) {
+                return (_sortedIndex == _sortedNodes.size() - 1);
+            } else {
+                return (_unordered_index == (unordered_nodes().size() - 1));
+            }
+        }
+        [[nodiscard]] bool chain_contains_this_node() const noexcept;
         /**
          * Gets node to forward to in strictly increasing order.
          */
-        uint16_t getNextNodeInChain() const;
+        [[nodiscard]] uint16_t getNextNodeInChain() const noexcept;
 
         /**
          * Returns true iff the chain vector (which is implicitly sorted)
          * pairwise compares equally to the vector of sorted node indices
          */
-        bool isChainCompleted() const;
+        [[nodiscard]] bool isChainCompleted() const noexcept;
     };
 
     /**
@@ -334,7 +352,7 @@ private:
      * @return Highest priority waiting merge or null SP if queue is empty
      */
     api::StorageMessage::SP getNextQueuedMerge();
-    void enqueueMerge(const api::StorageMessage::SP& msg, MessageGuard& msgGuard);
+    void enqueue_merge_for_later_processing(const api::StorageMessage::SP& msg, MessageGuard& msgGuard);
 
     /**
      * @return true if throttle policy says at least one additional
@@ -342,12 +360,13 @@ private:
      */
     bool canProcessNewMerge() const;
 
-    bool merge_is_backpressure_throttled(const api::MergeBucketCommand& cmd) const;
+    [[nodiscard]] bool merge_is_backpressure_throttled(const api::MergeBucketCommand& cmd) const;
     void bounce_backpressure_throttled_merge(const api::MergeBucketCommand& cmd, MessageGuard& guard);
-    bool merge_has_this_node_as_source_only_node(const api::MergeBucketCommand& cmd) const;
-    bool backpressure_mode_active_no_lock() const;
+    [[nodiscard]] bool merge_has_this_node_as_source_only_node(const api::MergeBucketCommand& cmd) const;
+    [[nodiscard]] bool backpressure_mode_active_no_lock() const;
     void backpressure_bounce_all_queued_merges(MessageGuard& guard);
-    bool allow_merge_with_queue_full(const api::MergeBucketCommand& cmd) const noexcept;
+    [[nodiscard]] bool allow_merge_despite_full_window(const api::MergeBucketCommand& cmd) const noexcept;
+    [[nodiscard]] bool may_allow_into_queue(const api::MergeBucketCommand& cmd) const noexcept;
 
     void sendReply(const api::MergeBucketCommand& cmd,
                    const api::ReturnCode& result,
@@ -387,6 +406,8 @@ private:
     void handleOutdatedMerges(const api::SetSystemStateCommand&);
     void rejectOperationsInThreadQueue(MessageGuard&, uint32_t minimumStateVersion);
     void markActiveMergesAsAborted(uint32_t minimumStateVersion);
+
+    void update_active_merge_window_size_metric() noexcept;
 
     // const function, but metrics are mutable
     void updateOperationMetrics(

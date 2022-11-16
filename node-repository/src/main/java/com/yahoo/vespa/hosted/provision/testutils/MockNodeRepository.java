@@ -23,6 +23,7 @@ import com.yahoo.transaction.NestedTransaction;
 import com.yahoo.vespa.curator.mock.MockCurator;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.provision.Node;
+import com.yahoo.vespa.hosted.provision.NodeMutex;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.applications.Application;
 import com.yahoo.vespa.hosted.provision.applications.Cluster;
@@ -41,8 +42,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 
+import static com.yahoo.config.provision.NodeResources.Architecture;
+import static com.yahoo.config.provision.NodeResources.Architecture.x86_64;
+import static com.yahoo.config.provision.NodeResources.DiskSpeed;
 import static com.yahoo.config.provision.NodeResources.DiskSpeed.fast;
 import static com.yahoo.config.provision.NodeResources.DiskSpeed.slow;
+import static com.yahoo.config.provision.NodeResources.StorageType;
 import static com.yahoo.config.provision.NodeResources.StorageType.local;
 import static com.yahoo.config.provision.NodeResources.StorageType.remote;
 
@@ -70,6 +75,7 @@ public class MockNodeRepository extends NodeRepository {
               Optional.empty(),
               new InMemoryFlagSource(),
               new MemoryMetricsDb(Clock.fixed(Instant.ofEpochMilli(123), ZoneId.of("Z"))),
+              new OrchestratorMock(),
               true,
               0, 1000);
         this.flavors = flavors;
@@ -79,10 +85,7 @@ public class MockNodeRepository extends NodeRepository {
     }
 
     private void populate() {
-        NodeRepositoryProvisioner provisioner = new NodeRepositoryProvisioner(this,
-                                                                              Zone.defaultZone(),
-                                                                              new MockProvisionServiceProvider(),
-                                                                              new InMemoryFlagSource());
+        NodeRepositoryProvisioner provisioner = new NodeRepositoryProvisioner(this, Zone.defaultZone(), new MockProvisionServiceProvider());
         List<Node> nodes = new ArrayList<>();
 
         // Regular nodes
@@ -135,7 +138,7 @@ public class MockNodeRepository extends NodeRepository {
         nodes.add(Node.create("dockerhost5", ipConfig(104, 1, 3), "dockerhost5.yahoo.com",
                              flavors.getFlavorOrThrow("large"), NodeType.host).build());
         nodes.add(Node.create("dockerhost6", ipConfig(105, 1, 3), "dockerhost6.yahoo.com",
-                flavors.getFlavorOrThrow("large"), NodeType.host).build());
+                flavors.getFlavorOrThrow("arm64"), NodeType.host).build());
 
         // Config servers
         nodes.add(Node.create("cfg1", ipConfig(201), "cfg1.yahoo.com", flavors.getFlavorOrThrow("default"), NodeType.config).build());
@@ -146,13 +149,18 @@ public class MockNodeRepository extends NodeRepository {
         nodes.remove(node7);
         nodes.remove(node55);
         nodes = nodes().deallocate(nodes, Agent.system, getClass().getSimpleName());
-        nodes().setReady(nodes, Agent.system, getClass().getSimpleName());
+        nodes.forEach(node -> nodes().setReady(new NodeMutex(node, () -> {}), Agent.system, getClass().getSimpleName()));
 
         nodes().fail(node5.hostname(), Agent.system, getClass().getSimpleName());
         nodes().deallocateRecursively(node55.hostname(), Agent.system, getClass().getSimpleName());
 
         nodes().fail("dockerhost6.yahoo.com", Agent.operator, getClass().getSimpleName());
         nodes().removeRecursively("dockerhost6.yahoo.com");
+
+        // Activate config servers
+        ApplicationId cfgApp = ApplicationId.from("cfg", "cfg", "cfg");
+        ClusterSpec cfgCluster = ClusterSpec.request(ClusterSpec.Type.container, ClusterSpec.Id.from("configservers")).vespaVersion("6.42").build();
+        activate(provisioner.prepare(cfgApp, cfgCluster, Capacity.fromRequiredNodeType(NodeType.config), null), cfgApp, provisioner);
 
         ApplicationId zoneApp = ApplicationId.from(TenantName.from("zoneapp"), ApplicationName.from("zoneapp"), InstanceName.from("zoneapp"));
         ClusterSpec zoneCluster = ClusterSpec.request(ClusterSpec.Type.container, ClusterSpec.Id.from("node-admin")).vespaVersion("6.42").build();
@@ -172,7 +180,7 @@ public class MockNodeRepository extends NodeRepository {
                                                                              clock().instant())));
         cluster1 = cluster1.withTarget(Optional.of(new ClusterResources(4, 1,
                                                                         new NodeResources(3, 16, 100, 1))));
-        try (Mutex lock = nodes().lock(app1Id)) {
+        try (Mutex lock = applications().lock(app1Id)) {
             applications().put(app1.with(cluster1), lock);
         }
 
@@ -188,7 +196,7 @@ public class MockNodeRepository extends NodeRepository {
         largeNodes.add(Node.create("node13", ipConfig(13), "host13.yahoo.com", resources(10, 48, 500, 1, fast, local), NodeType.tenant).build());
         largeNodes.add(Node.create("node14", ipConfig(14), "host14.yahoo.com", resources(10, 48, 500, 1, fast, local), NodeType.tenant).build());
         nodes().addNodes(largeNodes, Agent.system);
-        nodes().setReady(largeNodes, Agent.system, getClass().getSimpleName());
+        largeNodes.forEach(node -> nodes().setReady(new NodeMutex(node, () -> {}), Agent.system, getClass().getSimpleName()));
         ApplicationId app4 = ApplicationId.from(TenantName.from("tenant4"), ApplicationName.from("application4"), InstanceName.from("instance4"));
         ClusterSpec cluster4 = ClusterSpec.request(ClusterSpec.Type.container, ClusterSpec.Id.from("id4")).vespaVersion("6.42").build();
         activate(provisioner.prepare(app4, cluster4, Capacity.from(new ClusterResources(2, 1, new NodeResources(10, 48, 500, 1)), false, true), null), app4, provisioner);
@@ -237,7 +245,13 @@ public class MockNodeRepository extends NodeRepository {
         return ipConfig(nodeIndex, 1, 0);
     }
 
-    private static Flavor resources(double vcpu, double memoryGb, double diskGb, double bandwidthGbps, NodeResources.DiskSpeed diskSpeed, NodeResources.StorageType storageType) {
-        return new Flavor(new NodeResources(vcpu, memoryGb, diskGb, bandwidthGbps, diskSpeed, storageType));
+    private static Flavor resources(double vcpu, double memoryGb, double diskGb, double bandwidth, DiskSpeed diskSpeed, StorageType storageType) {
+        return resources(vcpu, memoryGb, diskGb, bandwidth, diskSpeed, storageType, x86_64);
     }
+
+    private static Flavor resources(double vcpu, double memoryGb, double diskGb, double bandwidth, DiskSpeed diskSpeed,
+                                    StorageType storageType, Architecture architecture) {
+        return new Flavor(new NodeResources(vcpu, memoryGb, diskGb, bandwidth, diskSpeed, storageType, architecture));
+    }
+
 }

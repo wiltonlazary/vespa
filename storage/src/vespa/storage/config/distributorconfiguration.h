@@ -119,6 +119,8 @@ public:
     const MaintenancePriorities& getMaintenancePriorities() const {
         return _maintenancePriorities;
     }
+
+    uint8_t default_external_feed_priority() const noexcept { return 120; }
     
     /**
        @see setSplitCount
@@ -267,6 +269,24 @@ public:
     [[nodiscard]] bool implicitly_clear_priority_on_schedule() const noexcept {
         return _implicitly_clear_priority_on_schedule;
     }
+    void set_use_unordered_merge_chaining(bool unordered) noexcept {
+        _use_unordered_merge_chaining = unordered;
+    }
+    [[nodiscard]] bool use_unordered_merge_chaining() const noexcept {
+        return _use_unordered_merge_chaining;
+    }
+    void set_inhibit_default_merges_when_global_merges_pending(bool inhibit) noexcept {
+        _inhibit_default_merges_when_global_merges_pending = inhibit;
+    }
+    [[nodiscard]] bool inhibit_default_merges_when_global_merges_pending() const noexcept {
+        return _inhibit_default_merges_when_global_merges_pending;
+    }
+    void set_enable_two_phase_garbage_collection(bool enable) noexcept {
+        _enable_two_phase_garbage_collection = enable;
+    }
+    [[nodiscard]] bool enable_two_phase_garbage_collection() const noexcept {
+        return _enable_two_phase_garbage_collection;
+    }
 
     uint32_t num_distributor_stripes() const noexcept { return _num_distributor_stripes; }
 
@@ -324,6 +344,9 @@ private:
     bool _prioritize_global_bucket_merges;
     bool _enable_revert;
     bool _implicitly_clear_priority_on_schedule;
+    bool _use_unordered_merge_chaining;
+    bool _inhibit_default_merges_when_global_merges_pending;
+    bool _enable_two_phase_garbage_collection;
 
     DistrConfig::MinimumReplicaCountingMode _minimumReplicaCountingMode;
 

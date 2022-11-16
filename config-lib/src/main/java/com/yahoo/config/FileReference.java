@@ -2,6 +2,7 @@
 package com.yahoo.config;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -10,8 +11,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * An immutable file reference that can only be created from classes within the same package.
- * This is to prevent clients from creating arbitrary and invalid file references.
+ * An immutable file reference.
  *
  * @author Tony Vaagenes
  */
@@ -20,6 +20,8 @@ public final class FileReference {
     private final String value;
 
     public FileReference(String value) {
+        if (Path.of(value).normalize().startsWith(".."))
+            throw new IllegalArgumentException("Path may not start with '..' but got '" + value + "'");
         this.value = Objects.requireNonNull(value);
     }
 

@@ -4,7 +4,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <new>
-#include <stdlib.h>
+#include <cstdlib>
 #include <malloc.h>
 
 class CreateAllocator
@@ -113,12 +113,12 @@ struct mallinfo2 mallinfo2() __THROW {
     info.arena = vespamalloc::_GmemP->dataSegment().dataSize();
     info.ordblks = 0;
     info.smblks = 0;
-    info.hblks = 0;
-    info.hblkhd = 0;
+    info.hblkhd = vespamalloc::_GmemP->mmapPool().getNumMappings();
+    info.hblks = vespamalloc::_GmemP->mmapPool().getMmappedBytes();
     info.usmblks = 0;
     info.fsmblks = 0;
-    info.uordblks = 0;
-    info.fordblks = 0;
+    info.fordblks = vespamalloc::_GmemP->dataSegment().freeSize();
+    info.uordblks = info.arena + info.hblks - info.fordblks;
     info.keepcost = 0;
     return info;
 }
@@ -129,16 +129,21 @@ struct mallinfo mallinfo() __THROW {
     info.arena = (vespamalloc::_GmemP->dataSegment().dataSize() >> 20); // Note reporting in 1M blocks
     info.ordblks = 0;
     info.smblks = 0;
-    info.hblks = 0;
-    info.hblkhd = 0;
+    info.hblkhd = vespamalloc::_GmemP->mmapPool().getNumMappings();
+    info.hblks = (vespamalloc::_GmemP->mmapPool().getMmappedBytes() >> 20);
     info.usmblks = 0;
     info.fsmblks = 0;
-    info.uordblks = 0;
-    info.fordblks = 0;
+    info.fordblks = (vespamalloc::_GmemP->dataSegment().freeSize() >> 20);
+    info.uordblks = info.arena + info.hblks - info.fordblks;
     info.keepcost = 0;
     return info;
 }
 #endif
+
+int mallopt(int param, int value) throw() __attribute((visibility("default")));
+int mallopt(int param, int value) throw() {
+    return vespamalloc::createAllocator()->mallopt(param, value);
+}
 
 void * malloc(size_t sz) __attribute((visibility("default")));
 void * malloc(size_t sz) {
@@ -237,7 +242,11 @@ void  __libc_free(void* ptr)                         __THROW __attribute__((leaf
 void  __libc_cfree(void* ptr)                        __THROW __attribute__((leaf)) ALIAS("cfree");
 #endif
 size_t  __libc_malloc_usable_size(void *ptr)         __THROW  ALIAS("malloc_usable_size");
+#if __GLIBC_PREREQ(2, 34)
+void* __libc_memalign(size_t align, size_t s)        __THROW __attribute__((leaf, malloc, alloc_align(1), alloc_size(2))) ALIAS("memalign");
+#else
 void* __libc_memalign(size_t align, size_t s)        __THROW __attribute__((leaf, malloc, alloc_size(2))) ALIAS("memalign");
+#endif
 int   __posix_memalign(void** r, size_t a, size_t s) __THROW __nonnull((1)) ALIAS("posix_memalign");
 #if __GLIBC_PREREQ(2, 33)
 struct mallinfo2 __libc_mallinfo2()                  __THROW  ALIAS("mallinfo2");

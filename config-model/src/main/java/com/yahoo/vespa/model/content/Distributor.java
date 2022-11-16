@@ -3,7 +3,6 @@ package com.yahoo.vespa.model.content;
 
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.deploy.DeployState;
-import com.yahoo.vespa.config.content.core.StorCommunicationmanagerConfig;
 import com.yahoo.vespa.config.content.core.StorDistributormanagerConfig;
 import com.yahoo.vespa.config.content.core.StorServerConfig;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
@@ -11,6 +10,7 @@ import com.yahoo.vespa.model.builder.xml.dom.ModelElement;
 import com.yahoo.vespa.model.builder.xml.dom.VespaDomBuilder;
 import com.yahoo.vespa.model.content.engines.PersistenceEngine;
 import org.w3c.dom.Element;
+import java.util.Optional;
 
 /**
  * Represents specific configuration for a given distributor node.
@@ -71,20 +71,13 @@ public class Distributor extends ContentNode implements StorDistributormanagerCo
     }
 
     @Override
-    public void getConfig(StorCommunicationmanagerConfig.Builder builder) {
-        super.getConfig(builder);
-        // Single distributor needs help to encode the messages.
-        builder.mbus.dispatch_on_encode(true);
-    }
-
-    @Override
     public void getConfig(StorDistributormanagerConfig.Builder builder) {
         builder.num_distributor_stripes(tuneNumDistributorStripes());
     }
 
     @Override
-    public String getStartupCommand() {
-        return "exec sbin/vespa-distributord -c $VESPA_CONFIG_ID";
+    public Optional<String> getStartupCommand() {
+        return Optional.of("exec sbin/vespa-distributord -c $VESPA_CONFIG_ID");
     }
 
 }

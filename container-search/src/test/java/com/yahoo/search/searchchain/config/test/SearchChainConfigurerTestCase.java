@@ -14,9 +14,9 @@ import com.yahoo.search.searchchain.ExecutionFactory;
 import com.yahoo.search.searchchain.SearchChain;
 import com.yahoo.search.searchchain.SearchChainRegistry;
 import com.yahoo.search.searchchain.SearcherRegistry;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -30,17 +30,13 @@ import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static org.hamcrest.CoreMatchers.*;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author bratseth
@@ -63,12 +59,12 @@ public class SearchChainConfigurerTestCase {
         }
     }
 
-    @BeforeClass
+    @BeforeAll
     public static void createDefaultComponentsConfigs() throws IOException {
         createComponentsConfig(testDir + "chains.cfg", testDir + "handlers.cfg", testDir + "components.cfg");
     }
 
-    @AfterClass
+    @AfterAll
     public static void removeDefaultComponentsConfigs() {
         new File(testDir + "components.cfg").delete();
     }
@@ -79,21 +75,21 @@ public class SearchChainConfigurerTestCase {
     }
 
     @Test
-    public synchronized void testConfiguration() {
+    synchronized void testConfiguration() {
         HandlersConfigurerTestWrapper configurer = new HandlersConfigurerTestWrapper("dir:" + testDir);
 
-        SearchChain simple=getSearchChainRegistryFrom(configurer).getComponent("simple");
+        SearchChain simple = getSearchChainRegistryFrom(configurer).getComponent("simple");
         assertNotNull(simple);
-        assertThat(getSearcherNumbers(simple), is(Arrays.asList(1, 2, 3)));
+        assertEquals(List.of(1, 2, 3), getSearcherNumbers(simple));
 
-        SearchChain child1=getSearchChainRegistryFrom(configurer).getComponent("child:1");
-        assertThat(getSearcherNumbers(child1), is(Arrays.asList(1, 2, 4, 5, 7, 8)));
+        SearchChain child1 = getSearchChainRegistryFrom(configurer).getComponent("child:1");
+        assertEquals(List.of(1, 2, 4, 5, 7, 8), getSearcherNumbers(child1));
 
-        SearchChain child2=getSearchChainRegistryFrom(configurer).getComponent("child");
-        assertThat(getSearcherNumbers(child2), is(Arrays.asList(3, 6, 7, 9)));
+        SearchChain child2 = getSearchChainRegistryFrom(configurer).getComponent("child");
+        assertEquals(List.of(3, 6, 7, 9), getSearcherNumbers(child2));
 
         // Verify successful loading of an explicitly declared searcher that takes no user-defined configs.
-        //assertNotNull(SearchChainRegistry.get().getSearcherRegistry().getComponent
+        // assertNotNull(SearchChainRegistry.get().getSearcherRegistry().getComponent
         //        ("com.yahoo.search.searchchain.config.test.SearchChainConfigurerTestCase$DeclaredTestSearcher"));
         configurer.shutdown();
     }
@@ -128,18 +124,17 @@ public class SearchChainConfigurerTestCase {
     public static final class DeclaredTestSearcher extends TestSearcher {}
 
     @Test
-    public  void testConfigurableSearcher() {
-        HandlersConfigurerTestWrapper configurer=new HandlersConfigurerTestWrapper("dir:" + testDir);
+    void testConfigurableSearcher() {
+        HandlersConfigurerTestWrapper configurer = new HandlersConfigurerTestWrapper("dir:" + testDir);
 
         SearchChain configurable = getSearchChainRegistryFrom(configurer).getComponent("configurable");
         assertNotNull(configurable);
 
         Searcher s = configurable.searchers().get(0);
-        assertThat(s, instanceOf(ConfigurableSearcher.class));
-        ConfigurableSearcher searcher = (ConfigurableSearcher)s;
-        assertThat("Value from int.cfg file", searcher.intConfig.intVal(), is(7));
-        assertThat("Value from string.cfg file", searcher.stringConfig.stringVal(),
-                is("com.yahoo.search.searchchain.config.test"));
+        assertTrue(s instanceof ConfigurableSearcher);
+        ConfigurableSearcher searcher = (ConfigurableSearcher) s;
+        assertEquals(7, searcher.intConfig.intVal(), "Value from int.cfg file");
+        assertEquals("com.yahoo.search.searchchain.config.test", searcher.stringConfig.stringVal(), "Value from string.cfg file");
         configurer.shutdown();
     }
 
@@ -148,12 +143,13 @@ public class SearchChainConfigurerTestCase {
      * that does not contain any bootstrap configs.
      */
     @Test
-    public void testSearcherConfigUpdate() throws IOException {
+    void testSearcherConfigUpdate() throws IOException {
         File cfgDir = getCfgDir();
         copyFile(testDir + "handlers.cfg", cfgDir +  "/handlers.cfg");
         copyFile(testDir + "qr-search.cfg", cfgDir +  "/qr-search.cfg");
         copyFile(testDir + "qr-searchers.cfg", cfgDir +  "/qr-searchers.cfg");
         copyFile(testDir + "index-info.cfg", cfgDir +  "/index-info.cfg");
+        copyFile(testDir + "schema-info.cfg", cfgDir +  "/schema-info.cfg");
         copyFile(testDir + "specialtokens.cfg", cfgDir +  "/specialtokens.cfg");
         copyFile(testDir + "three-searchers.cfg", cfgDir +  "/chains.cfg");
         copyFile(testDir + "container-http.cfg", cfgDir +  "/container-http.cfg");
@@ -163,33 +159,33 @@ public class SearchChainConfigurerTestCase {
 
         HandlersConfigurerTestWrapper configurer = new HandlersConfigurerTestWrapper("dir:" + cfgDir);
         SearcherRegistry searchers = getSearchChainRegistryFrom(configurer).getSearcherRegistry();
-        assertThat(searchers.getComponentCount(), is(3));
+        assertEquals(3, searchers.getComponentCount());
 
-        IntSearcher intSearcher = (IntSearcher)searchers.getComponent(IntSearcher.class.getName());
-        assertThat(intSearcher.intConfig.intVal(), is(16));
-        StringSearcher stringSearcher = (StringSearcher)searchers.getComponent(StringSearcher.class.getName());
+        IntSearcher intSearcher = (IntSearcher) searchers.getComponent(IntSearcher.class.getName());
+        assertEquals(16, intSearcher.intConfig.intVal());
+        StringSearcher stringSearcher = (StringSearcher) searchers.getComponent(StringSearcher.class.getName());
         DeclaredTestSearcher noConfigSearcher =
-                (DeclaredTestSearcher)searchers.getComponent(DeclaredTestSearcher.class.getName());
+                (DeclaredTestSearcher) searchers.getComponent(DeclaredTestSearcher.class.getName());
 
         // Update int config for IntSearcher,
         printFile(new File(cfgDir + "/int.cfg"), "intVal 17\n");
         configurer.reloadConfig();
 
         // Registry is rebuilt
-        assertThat(getSearchChainRegistryFrom(configurer).getSearcherRegistry(), not(searchers));
+        assertNotEquals(searchers, getSearchChainRegistryFrom(configurer).getSearcherRegistry());
         searchers = getSearchChainRegistryFrom(configurer).getSearcherRegistry();
-        assertThat(searchers.getComponentCount(), is(3));
+        assertEquals(3, searchers.getComponentCount());
 
         // Searcher with updated config is re-instantiated.
-        IntSearcher intSearcher2 = (IntSearcher)searchers.getComponent(IntSearcher.class.getName());
-        assertThat(intSearcher2, not(sameInstance(intSearcher)));
-        assertThat(intSearcher2.intConfig.intVal(), is(17));
+        IntSearcher intSearcher2 = (IntSearcher) searchers.getComponent(IntSearcher.class.getName());
+        assertNotSame(intSearcher, intSearcher2);
+        assertEquals(17, intSearcher2.intConfig.intVal());
 
         // Searchers with unchanged config (or that takes no config) are the same as before.
         Searcher s = searchers.getComponent(DeclaredTestSearcher.class.getName());
-        assertThat(s, sameInstance(noConfigSearcher));
+        assertSame(noConfigSearcher, s);
         s = searchers.getComponent(StringSearcher.class.getName());
-        assertThat(s, sameInstance(stringSearcher));
+        assertSame(stringSearcher, s);
 
         configurer.shutdown();
         cleanup(cfgDir);
@@ -201,12 +197,13 @@ public class SearchChainConfigurerTestCase {
      * and that a searcher that has been removed from the configuration is not in the new registry.
      */
     @Test
-    public void testChainsConfigUpdate() throws IOException {
+    void testChainsConfigUpdate() throws IOException {
         File cfgDir = getCfgDir();
         copyFile(testDir + "handlers.cfg", cfgDir +  "/handlers.cfg");
         copyFile(testDir + "qr-search.cfg", cfgDir +  "/qr-search.cfg");
         copyFile(testDir + "qr-searchers.cfg", cfgDir +  "/qr-searchers.cfg");
         copyFile(testDir + "index-info.cfg", cfgDir +  "/index-info.cfg");
+        copyFile(testDir + "schema-info.cfg", cfgDir +  "/schema-info.cfg");
         copyFile(testDir + "specialtokens.cfg", cfgDir +  "/specialtokens.cfg");
         copyFile(testDir + "chainsConfigUpdate_1.cfg", cfgDir +  "/chains.cfg");
         copyFile(testDir + "container-http.cfg", cfgDir +  "/container-http.cfg");
@@ -216,29 +213,29 @@ public class SearchChainConfigurerTestCase {
 
         SearchChainRegistry scReg = getSearchChainRegistryFrom(configurer);
         SearcherRegistry searchers = scReg.getSearcherRegistry();
-        assertThat(searchers.getComponentCount(), is(2));
-        assertThat(searchers.getComponent(IntSearcher.class.getName()), instanceOf(IntSearcher.class));
-        assertThat(searchers.getComponent(StringSearcher.class.getName()), instanceOf(StringSearcher.class));
-        assertThat(searchers.getComponent(ConfigurableSearcher.class.getName()), nullValue());
-        assertThat(searchers.getComponent(DeclaredTestSearcher.class.getName()), nullValue());
+        assertEquals(2, searchers.getComponentCount());
+        assertTrue(searchers.getComponent(IntSearcher.class.getName()) instanceof IntSearcher);
+        assertTrue(searchers.getComponent(StringSearcher.class.getName()) instanceof StringSearcher);
+        assertNull(searchers.getComponent(ConfigurableSearcher.class.getName()));
+        assertNull(searchers.getComponent(DeclaredTestSearcher.class.getName()));
 
-        IntSearcher intSearcher = (IntSearcher)searchers.getComponent(IntSearcher.class.getName());
+        IntSearcher intSearcher = (IntSearcher) searchers.getComponent(IntSearcher.class.getName());
 
         // Update chains config
         copyFile(testDir + "chainsConfigUpdate_2.cfg", cfgDir +  "/chains.cfg");
         createComponentsConfig(testDir + "chainsConfigUpdate_2.cfg", testDir + "handlers.cfg", cfgDir +  "/components.cfg");
         configurer.reloadConfig();
 
-        assertThat(getSearchChainRegistryFrom(configurer), not(scReg));
+        assertNotEquals(scReg, getSearchChainRegistryFrom(configurer));
 
         // In the new registry, the correct searchers are removed and added
-        assertThat(getSearchChainRegistryFrom(configurer).getSearcherRegistry(), not(searchers));
+        assertNotEquals(searchers, getSearchChainRegistryFrom(configurer).getSearcherRegistry());
         searchers = getSearchChainRegistryFrom(configurer).getSearcherRegistry();
-        assertThat(searchers.getComponentCount(), is(3));
-        assertThat(searchers.getComponent(IntSearcher.class.getName()), sameInstance(intSearcher));
-        assertThat(searchers.getComponent(ConfigurableSearcher.class.getName()), instanceOf(ConfigurableSearcher.class));
-        assertThat(searchers.getComponent(DeclaredTestSearcher.class.getName()), instanceOf(DeclaredTestSearcher.class));
-        assertThat(searchers.getComponent(StringSearcher.class.getName()), nullValue());
+        assertEquals(3, searchers.getComponentCount());
+        assertSame(intSearcher, searchers.getComponent(IntSearcher.class.getName()));
+        assertTrue(searchers.getComponent(ConfigurableSearcher.class.getName()) instanceof ConfigurableSearcher);
+        assertTrue(searchers.getComponent(DeclaredTestSearcher.class.getName()) instanceof DeclaredTestSearcher);
+        assertNull(searchers.getComponent(StringSearcher.class.getName()));
         configurer.shutdown();
         cleanup(cfgDir);
     }
@@ -296,8 +293,8 @@ public class SearchChainConfigurerTestCase {
      * Copies src file to dst file. If the dst file does not exist, it is created.
      */
     public static void copyFile(String srcName, String dstName) throws IOException {
-        InputStream src = new FileInputStream(new File(srcName));
-        OutputStream dst = new FileOutputStream(new File(dstName));
+        InputStream src = new FileInputStream(srcName);
+        OutputStream dst = new FileOutputStream(dstName);
         byte[] buf = new byte[1024];
         int len;
         while ((len = src.read(buf)) > 0) {
@@ -342,7 +339,7 @@ public class SearchChainConfigurerTestCase {
         if (append) {
             Pattern p = Pattern.compile("^[a-z]+" + "\\[\\d+\\]\\.id (.+)");
             BufferedReader reader = new BufferedReader(new InputStreamReader(
-                                                       new FileInputStream(new File(componentsFile)), StandardCharsets.UTF_8));
+                                                       new FileInputStream(componentsFile), StandardCharsets.UTF_8));
             while ((line = reader.readLine()) != null) {
                 Matcher m = p.matcher(line);
                 if (m.matches() && !m.group(1).equals(HandlersConfigurerDi.RegistriesHack.class.getName())) {
@@ -353,7 +350,7 @@ public class SearchChainConfigurerTestCase {
             reader.close();
         }
         BufferedReader reader = new BufferedReader(new InputStreamReader(
-                new FileInputStream(new File(configFile)), StandardCharsets.UTF_8));
+                new FileInputStream(configFile), StandardCharsets.UTF_8));
         Pattern component = Pattern.compile("^" + componentType + "\\[\\d+\\]\\.id (.+)");
         while ((line = reader.readLine()) != null) {
             Matcher m = component.matcher(line);
@@ -366,13 +363,22 @@ public class SearchChainConfigurerTestCase {
 
         buf.append("components[").append(i++).append("].id ").append(HandlersConfigurerDi.RegistriesHack.class.getName()).append("\n");
         if (componentType.equals("components"))
-            buf.append("components[").append(i++).append("].id ").append(ExecutionFactory.class.getName()).append("\n");
+            i = addStandardComponents(i, buf);
         buf.insert(0, "components["+i+"]\n");
 
-        Writer writer = new OutputStreamWriter(new FileOutputStream(new File(componentsFile)), StandardCharsets.UTF_8);
+        Writer writer = new OutputStreamWriter(new FileOutputStream(componentsFile), StandardCharsets.UTF_8);
         writer.write(buf.toString());
         writer.flush();
         writer.close();
+    }
+
+    private static int addStandardComponents(int i, StringBuilder builder) {
+        addComponent(ExecutionFactory.class.getName(), i++, builder);
+        return i;
+    }
+
+    private static void addComponent(String component, int i, StringBuilder builder) {
+        builder.append("components[").append(i).append("].id ").append(component).append("\n");
     }
 
 }

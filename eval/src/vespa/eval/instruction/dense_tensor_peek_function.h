@@ -1,8 +1,9 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
 #include <vespa/eval/eval/tensor_function.h>
+#include <vespa/vespalib/util/small_vector.h>
 
 namespace vespalib::eval {
 
@@ -23,7 +24,7 @@ private:
     SmallVector<std::pair<int64_t,size_t>> _spec;
 public:
     DenseTensorPeekFunction(std::vector<Child> children, SmallVector<std::pair<int64_t,size_t>> spec);
-    ~DenseTensorPeekFunction();
+    ~DenseTensorPeekFunction() override;
     const ValueType &result_type() const override { return DoubleValue::shared_type(); }
     void push_children(std::vector<Child::CREF> &children) const override;
     InterpretedFunction::Instruction compile_self(const ValueBuilderFactory &factory, Stash &stash) const override;

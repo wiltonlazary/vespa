@@ -1,11 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.processing.response;
 
-import com.google.common.util.concurrent.AbstractFuture;
-import com.google.common.util.concurrent.ListenableFuture;
+import com.yahoo.processing.impl.ProcessingFuture;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
@@ -35,7 +35,7 @@ public interface IncomingData<DATATYPE extends Data> {
      * <p>
      * This return the list owning this for convenience.
      */
-    ListenableFuture<DataList<DATATYPE>> completed();
+    CompletableFuture<DataList<DATATYPE>> completedFuture();
 
     /**
      * Returns whether this is complete
@@ -108,9 +108,7 @@ public interface IncomingData<DATATYPE extends Data> {
             completionFuture = new ImmediateFuture<>(owner);
         }
 
-        public ListenableFuture<DataList<DATATYPE>> completed() {
-            return completionFuture;
-        }
+        @Override public CompletableFuture<DataList<DATATYPE>> completedFuture() { return completionFuture; }
 
         @Override
         public DataList<DATATYPE> getOwner() {
@@ -178,13 +176,13 @@ public interface IncomingData<DATATYPE extends Data> {
          * This is semantically the same as Futures.immediateFuture but contrary to it,
          * this never causes any memory synchronization when accessed.
          */
-        public static class ImmediateFuture<DATATYPE extends Data> extends AbstractFuture<DataList<DATATYPE>> {
+        public static class ImmediateFuture<DATATYPE extends Data> extends ProcessingFuture<DataList<DATATYPE>> {
 
-            private DataList<DATATYPE> owner;
+            private final DataList<DATATYPE> owner;
 
             public ImmediateFuture(DataList<DATATYPE> owner) {
                 this.owner = owner; // keep here to avoid memory synchronization for access
-                set(owner); // Signal completion (for future listeners)
+                complete(owner); // Signal completion (for future listeners)
             }
 
             @Override

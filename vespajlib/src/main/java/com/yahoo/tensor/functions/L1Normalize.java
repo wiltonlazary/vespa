@@ -5,6 +5,7 @@ import com.yahoo.tensor.evaluation.Name;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * @author bratseth
@@ -39,8 +40,11 @@ public class L1Normalize<NAMETYPE extends Name> extends CompositeTensorFunction<
     }
 
     @Override
-    public String toString(ToStringContext context) {
+    public String toString(ToStringContext<NAMETYPE> context) {
         return "l1_normalize(" + argument.toString(context) + ", " + dimension + ")";
     }
+
+    @Override
+    public int hashCode() { return Objects.hash("l1_normalize", argument, dimension); }
 
 }

@@ -1,23 +1,30 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.integration;
 
-import com.google.inject.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.AbstractComponent;
+import com.yahoo.component.Version;
+import com.yahoo.component.annotation.Inject;
+import com.yahoo.config.provision.CloudName;
+import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.test.ManualClock;
+import com.yahoo.vespa.hosted.controller.api.identifiers.ControllerVersion;
 import com.yahoo.vespa.hosted.controller.api.integration.ServiceRegistry;
 import com.yahoo.vespa.hosted.controller.api.integration.archive.ArchiveService;
 import com.yahoo.vespa.hosted.controller.api.integration.archive.MockArchiveService;
 import com.yahoo.vespa.hosted.controller.api.integration.athenz.AccessControlService;
 import com.yahoo.vespa.hosted.controller.api.integration.athenz.MockAccessControlService;
-import com.yahoo.vespa.hosted.controller.api.integration.aws.MockRoleService;
-import com.yahoo.vespa.hosted.controller.api.integration.aws.RoleService;
-import com.yahoo.vespa.hosted.controller.api.integration.aws.MockCloudEventFetcher;
 import com.yahoo.vespa.hosted.controller.api.integration.aws.MockResourceTagger;
+import com.yahoo.vespa.hosted.controller.api.integration.aws.MockRoleService;
 import com.yahoo.vespa.hosted.controller.api.integration.aws.ResourceTagger;
+import com.yahoo.vespa.hosted.controller.api.integration.aws.RoleService;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.BillingController;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.BillingDatabaseClient;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.BillingDatabaseClientMock;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.MockBillingController;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.PlanRegistry;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.PlanRegistryMock;
 import com.yahoo.vespa.hosted.controller.api.integration.certificates.EndpointCertificateMock;
 import com.yahoo.vespa.hosted.controller.api.integration.certificates.EndpointCertificateValidator;
 import com.yahoo.vespa.hosted.controller.api.integration.certificates.EndpointCertificateValidatorMock;
@@ -28,17 +35,23 @@ import com.yahoo.vespa.hosted.controller.api.integration.horizon.MockHorizonClie
 import com.yahoo.vespa.hosted.controller.api.integration.organization.MockContactRetriever;
 import com.yahoo.vespa.hosted.controller.api.integration.organization.MockIssueHandler;
 import com.yahoo.vespa.hosted.controller.api.integration.resource.CostReportConsumerMock;
-import com.yahoo.vespa.hosted.controller.api.integration.routing.GlobalRoutingService;
-import com.yahoo.vespa.hosted.controller.api.integration.routing.MemoryGlobalRoutingService;
+import com.yahoo.vespa.hosted.controller.api.integration.resource.ResourceDatabaseClient;
+import com.yahoo.vespa.hosted.controller.api.integration.resource.ResourceDatabaseClientMock;
+import com.yahoo.vespa.hosted.controller.api.integration.secrets.GcpSecretStore;
+import com.yahoo.vespa.hosted.controller.api.integration.secrets.NoopGcpSecretStore;
 import com.yahoo.vespa.hosted.controller.api.integration.secrets.NoopTenantSecretService;
 import com.yahoo.vespa.hosted.controller.api.integration.stubs.DummyOwnershipIssues;
 import com.yahoo.vespa.hosted.controller.api.integration.stubs.DummySystemMonitor;
 import com.yahoo.vespa.hosted.controller.api.integration.stubs.LoggingDeploymentIssues;
 import com.yahoo.vespa.hosted.controller.api.integration.stubs.MockMailer;
-import com.yahoo.vespa.hosted.controller.api.integration.stubs.MockMeteringClient;
 import com.yahoo.vespa.hosted.controller.api.integration.stubs.MockRunDataStore;
 import com.yahoo.vespa.hosted.controller.api.integration.stubs.MockTesterCloud;
+import com.yahoo.vespa.hosted.controller.api.integration.user.RoleMaintainer;
+import com.yahoo.vespa.hosted.controller.api.integration.user.RoleMaintainerMock;
 import com.yahoo.vespa.hosted.controller.api.integration.vcmr.MockChangeRequestClient;
+
+import java.time.Instant;
+import java.util.Optional;
 
 /**
  * A mock implementation of a {@link ServiceRegistry} for testing purposes.
@@ -48,14 +61,13 @@ import com.yahoo.vespa.hosted.controller.api.integration.vcmr.MockChangeRequestC
 public class ServiceRegistryMock extends AbstractComponent implements ServiceRegistry {
 
     private final ManualClock clock = new ManualClock();
+    private final ControllerVersion controllerVersion;
     private final ZoneRegistryMock zoneRegistryMock;
     private final ConfigServerMock configServerMock;
     private final MemoryNameService memoryNameService = new MemoryNameService();
-    private final MemoryGlobalRoutingService memoryGlobalRoutingService = new MemoryGlobalRoutingService();
     private final MockMailer mockMailer = new MockMailer();
-    private final EndpointCertificateMock endpointCertificateMock = new EndpointCertificateMock();
+    private final EndpointCertificateMock endpointCertificateMock = new EndpointCertificateMock(clock);
     private final EndpointCertificateValidatorMock endpointCertificateValidatorMock = new EndpointCertificateValidatorMock();
-    private final MockMeteringClient mockMeteringClient = new MockMeteringClient();
     private final MockContactRetriever mockContactRetriever = new MockContactRetriever();
     private final MockIssueHandler mockIssueHandler = new MockIssueHandler();
     private final DummyOwnershipIssues dummyOwnershipIssues = new DummyOwnershipIssues();
@@ -63,7 +75,6 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
     private final MemoryEntityService memoryEntityService = new MemoryEntityService();
     private final DummySystemMonitor systemMonitor = new DummySystemMonitor();
     private final CostReportConsumerMock costReportConsumerMock = new CostReportConsumerMock();
-    private final MockCloudEventFetcher mockAwsEventFetcher = new MockCloudEventFetcher();
     private final ArtifactRepositoryMock artifactRepositoryMock = new ArtifactRepositoryMock();
     private final MockTesterCloud mockTesterCloud;
     private final ApplicationStoreMock applicationStoreMock = new ApplicationStoreMock();
@@ -71,17 +82,23 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
     private final MockResourceTagger mockResourceTagger = new MockResourceTagger();
     private final RoleService roleService = new MockRoleService();
     private final BillingController billingController = new MockBillingController(clock);
-    private final ContainerRegistryMock containerRegistry = new ContainerRegistryMock();
+    private final ArtifactRegistryMock containerRegistry = new ArtifactRegistryMock();
     private final NoopTenantSecretService tenantSecretService = new NoopTenantSecretService();
     private final ArchiveService archiveService = new MockArchiveService();
     private final MockChangeRequestClient changeRequestClient = new MockChangeRequestClient();
     private final AccessControlService accessControlService = new MockAccessControlService();
     private final HorizonClient horizonClient = new MockHorizonClient();
+    private final PlanRegistry planRegistry = new PlanRegistryMock();
+    private final ResourceDatabaseClient resourceDb = new ResourceDatabaseClientMock(planRegistry);
+    private final BillingDatabaseClient billingDb = new BillingDatabaseClientMock(clock, planRegistry);
+    private final RoleMaintainerMock roleMaintainer = new RoleMaintainerMock();
 
     public ServiceRegistryMock(SystemName system) {
         this.zoneRegistryMock = new ZoneRegistryMock(system);
         this.configServerMock = new ConfigServerMock(zoneRegistryMock);
         this.mockTesterCloud = new MockTesterCloud(nameService());
+        this.clock.setInstant(Instant.ofEpochSecond(1600000000));
+        this.controllerVersion = new ControllerVersion(Version.fromString("6.1.0"), "badb01", clock.instant());
     }
 
     @Inject
@@ -104,8 +121,13 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
     }
 
     @Override
-    public GlobalRoutingService globalRoutingService() {
-        return memoryGlobalRoutingService;
+    public ControllerVersion controllerVersion() {
+        return controllerVersion;
+    }
+
+    @Override
+    public HostName getHostname() {
+        return HostName.of("test-controller");
     }
 
     @Override
@@ -121,11 +143,6 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
     @Override
     public EndpointCertificateValidator endpointCertificateValidator() {
         return endpointCertificateValidatorMock;
-    }
-
-    @Override
-    public MockMeteringClient meteringService() {
-        return mockMeteringClient;
     }
 
     @Override
@@ -156,11 +173,6 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
     @Override
     public CostReportConsumerMock costReportConsumer() {
         return costReportConsumerMock;
-    }
-
-    @Override
-    public MockCloudEventFetcher eventFetcherService() {
-        return mockAwsEventFetcher;
     }
 
     @Override
@@ -214,8 +226,8 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
     }
 
     @Override
-    public ContainerRegistryMock containerRegistry() {
-        return containerRegistry;
+    public Optional<ArtifactRegistryMock> artifactRegistry(CloudName cloudName) {
+        return Optional.of(containerRegistry);
     }
 
     @Override
@@ -243,12 +255,28 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
         return horizonClient;
     }
 
-    public ConfigServerMock configServerMock() {
-        return configServerMock;
+    @Override
+    public PlanRegistry planRegistry() {
+        return planRegistry;
     }
 
-    public MemoryGlobalRoutingService globalRoutingServiceMock() {
-        return memoryGlobalRoutingService;
+    @Override
+    public ResourceDatabaseClient resourceDatabase() {
+        return resourceDb;
+    }
+
+    @Override
+    public BillingDatabaseClient billingDatabase() {
+        return billingDb;
+    }
+
+    @Override
+    public RoleMaintainer roleMaintainer() {
+        return roleMaintainer;
+    }
+
+    public ConfigServerMock configServerMock() {
+        return configServerMock;
     }
 
     public MockContactRetriever contactRetrieverMock() {
@@ -259,4 +287,9 @@ public class ServiceRegistryMock extends AbstractComponent implements ServiceReg
         return endpointCertificateMock;
     }
 
+    public RoleMaintainerMock roleMaintainerMock() {
+        return roleMaintainer;
+    }
+
+    public GcpSecretStore gcpSecretStore() { return new NoopGcpSecretStore(); }
 }

@@ -29,11 +29,12 @@ private:
     int32_t _maxWeight;
 
 public:
-    MinMaxPostingInfo(int32_t minWeight, int32_t maxWeight)
+    MinMaxPostingInfo(int32_t minWeight, int32_t maxWeight) noexcept
         : PostingInfo(),
           _minWeight(minWeight),
           _maxWeight(maxWeight)
     {}
+    ~MinMaxPostingInfo() override;
     int32_t getMinWeight() const { return _minWeight; }
     int32_t getMaxWeight() const { return _maxWeight; }
 };

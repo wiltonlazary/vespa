@@ -18,7 +18,7 @@ namespace vespalib::datastore {
 namespace uniquestore {
 
 using DefaultDictionaryTraits = btree::BTreeTraits<32, 32, 7, true>;
-using DefaultDictionary = btree::BTree<EntryRef, btree::BTreeNoLeafData,
+using DefaultDictionary = btree::BTree<AtomicEntryRef, btree::BTreeNoLeafData,
                                        btree::NoAggregated,
                                        EntryComparatorWrapper,
                                        DefaultDictionaryTraits>;
@@ -27,14 +27,14 @@ using DefaultUniqueStoreDictionary = UniqueStoreDictionary<DefaultDictionary>;
 }
 
 template <typename EntryT, typename RefT, typename Compare, typename Allocator>
-UniqueStore<EntryT, RefT, Compare, Allocator>::UniqueStore()
-    : UniqueStore<EntryT, RefT, Compare, Allocator>(std::make_unique<uniquestore::DefaultUniqueStoreDictionary>(std::unique_ptr<EntryComparator>()))
+UniqueStore<EntryT, RefT, Compare, Allocator>::UniqueStore(std::shared_ptr<alloc::MemoryAllocator> memory_allocator)
+    : UniqueStore<EntryT, RefT, Compare, Allocator>(std::make_unique<uniquestore::DefaultUniqueStoreDictionary>(std::unique_ptr<EntryComparator>()), std::move(memory_allocator))
 {
 }
 
 template <typename EntryT, typename RefT, typename Compare, typename Allocator>
-UniqueStore<EntryT, RefT, Compare, Allocator>::UniqueStore(std::unique_ptr<IUniqueStoreDictionary> dict)
-    : _allocator(),
+UniqueStore<EntryT, RefT, Compare, Allocator>::UniqueStore(std::unique_ptr<IUniqueStoreDictionary> dict, std::shared_ptr<alloc::MemoryAllocator> memory_allocator)
+    : _allocator(std::move(memory_allocator)),
       _store(_allocator.get_data_store()),
       _dict(std::move(dict))
 {
@@ -94,68 +94,58 @@ private:
                                     btree::NoAggregated,
                                     EntryComparatorWrapper,
                                     DictionaryTraits>;
-    using UniqueStoreRemapper<RefT>::_compacting_buffer;
+    using UniqueStoreRemapper<RefT>::_filter;
     using UniqueStoreRemapper<RefT>::_mapping;
-    DataStoreBase &_dataStore;
     IUniqueStoreDictionary &_dict;
     ICompactable &_store;
-    std::vector<uint32_t> _bufferIdsToCompact;
+    std::unique_ptr<CompactingBuffers> _compacting_buffers;
 
     void allocMapping() {
-        _compacting_buffer.resize(RefT::numBuffers());
         _mapping.resize(RefT::numBuffers());
-        for (const auto bufferId : _bufferIdsToCompact) {
-            BufferState &state = _dataStore.getBufferState(bufferId);
-            _compacting_buffer[bufferId] = true;
+        auto& data_store = _compacting_buffers->get_store();
+        for (const auto bufferId : _compacting_buffers->get_buffer_ids()) {
+            BufferState &state = data_store.getBufferState(bufferId);
             _mapping[bufferId].resize(state.get_used_arrays());
         }
     }
 
-    EntryRef move(EntryRef oldRef) override {
+    EntryRef move_on_compact(EntryRef oldRef) override {
         RefT iRef(oldRef);
-        assert(iRef.valid());
         uint32_t buffer_id = iRef.bufferId();
-        if (_compacting_buffer[buffer_id]) {
-            auto &inner_mapping = _mapping[buffer_id];
-            assert(iRef.unscaled_offset() < inner_mapping.size());
-            EntryRef &mappedRef = inner_mapping[iRef.unscaled_offset()];
-            assert(!mappedRef.valid());
-            EntryRef newRef = _store.move(oldRef);
-            mappedRef = newRef;
-            return newRef;
-        } else {
-            return oldRef;
-        }
+        auto &inner_mapping = _mapping[buffer_id];
+        assert(iRef.offset() < inner_mapping.size());
+        EntryRef &mappedRef = inner_mapping[iRef.offset()];
+        assert(!mappedRef.valid());
+        EntryRef newRef = _store.move_on_compact(oldRef);
+        mappedRef = newRef;
+        return newRef;
     }
     
     void fillMapping() {
-        _dict.move_entries(*this);
+        _dict.move_keys_on_compact(*this, _filter);
     }
 
 public:
-    CompactionContext(DataStoreBase &dataStore,
-                      IUniqueStoreDictionary &dict,
+    CompactionContext(IUniqueStoreDictionary &dict,
                       ICompactable &store,
-                      std::vector<uint32_t> bufferIdsToCompact)
-        : UniqueStoreRemapper<RefT>(),
+                      std::unique_ptr<CompactingBuffers> compacting_buffers)
+        : UniqueStoreRemapper<RefT>(compacting_buffers->make_entry_ref_filter()),
           ICompactable(),
-          _dataStore(dataStore),
           _dict(dict),
           _store(store),
-          _bufferIdsToCompact(std::move(bufferIdsToCompact))
+          _compacting_buffers(std::move(compacting_buffers))
     {
-        if (!_bufferIdsToCompact.empty()) {
+        if (!_compacting_buffers->empty()) {
             allocMapping();
             fillMapping();
         }
     }
 
     void done() override {
-        _dataStore.finishCompact(_bufferIdsToCompact);
-        _bufferIdsToCompact.clear();
+        _compacting_buffers->finish();
     }
     ~CompactionContext() override {
-        assert(_bufferIdsToCompact.empty());
+        assert(_compacting_buffers->empty());
     }
 };
 
@@ -163,13 +153,13 @@ public:
 
 template <typename EntryT, typename RefT, typename Compare, typename Allocator>
 std::unique_ptr<typename UniqueStore<EntryT, RefT, Compare, Allocator>::Remapper>
-UniqueStore<EntryT, RefT, Compare, Allocator>::compact_worst(bool compact_memory, bool compact_address_space)
+UniqueStore<EntryT, RefT, Compare, Allocator>::compact_worst(CompactionSpec compaction_spec, const CompactionStrategy& compaction_strategy)
 {
-    std::vector<uint32_t> bufferIdsToCompact = _store.startCompactWorstBuffers(compact_memory, compact_address_space);
-    if (bufferIdsToCompact.empty()) {
+    auto compacting_buffers = _store.start_compact_worst_buffers(compaction_spec, compaction_strategy);
+    if (compacting_buffers->empty()) {
         return std::unique_ptr<Remapper>();
     } else {
-        return std::make_unique<uniquestore::CompactionContext<RefT>>(_store, *_dict, _allocator, std::move(bufferIdsToCompact));
+        return std::make_unique<uniquestore::CompactionContext<RefT>>(*_dict, _allocator, std::move(compacting_buffers));
     }
 }
 
@@ -184,7 +174,7 @@ UniqueStore<EntryT, RefT, Compare, Allocator>::getMemoryUsage() const
 
 template <typename EntryT, typename RefT, typename Compare, typename Allocator>
 vespalib::AddressSpace
-UniqueStore<EntryT, RefT, Compare, Allocator>::get_address_space_usage() const
+UniqueStore<EntryT, RefT, Compare, Allocator>::get_values_address_space_usage() const
 {
     return _allocator.get_data_store().getAddressSpaceUsage();
 }
@@ -200,18 +190,18 @@ UniqueStore<EntryT, RefT, Compare, Allocator>::bufferState(EntryRef ref) const
 
 template <typename EntryT, typename RefT, typename Compare, typename Allocator>
 void
-UniqueStore<EntryT, RefT, Compare, Allocator>::transferHoldLists(generation_t generation)
+UniqueStore<EntryT, RefT, Compare, Allocator>::assign_generation(generation_t current_gen)
 {
-    _dict->transfer_hold_lists(generation);
-    _store.transferHoldLists(generation);
+    _dict->assign_generation(current_gen);
+    _store.assign_generation(current_gen);
 }
 
 template <typename EntryT, typename RefT, typename Compare, typename Allocator>
 void
-UniqueStore<EntryT, RefT, Compare, Allocator>::trimHoldLists(generation_t firstUsed)
+UniqueStore<EntryT, RefT, Compare, Allocator>::reclaim_memory(generation_t oldest_used_gen)
 {
-    _dict->trim_hold_lists(firstUsed);
-    _store.trimHoldLists(firstUsed);
+    _dict->reclaim_memory(oldest_used_gen);
+    _store.reclaim_memory(oldest_used_gen);
 }
 
 template <typename EntryT, typename RefT, typename Compare, typename Allocator>

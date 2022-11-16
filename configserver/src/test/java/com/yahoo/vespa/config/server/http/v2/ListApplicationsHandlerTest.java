@@ -26,9 +26,8 @@ import static com.yahoo.jdisc.http.HttpRequest.Method.DELETE;
 import static com.yahoo.jdisc.http.HttpRequest.Method.GET;
 import static com.yahoo.jdisc.http.HttpRequest.Method.POST;
 import static com.yahoo.jdisc.http.HttpRequest.Method.PUT;
-import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertEquals;
 
 /**
  * @author Ulf Lilleengen
@@ -56,7 +55,7 @@ public class ListApplicationsHandlerTest {
         tenantRepository.addTenant(foobar);
         applicationRepo = tenantRepository.getTenant(mytenant).getApplicationRepo();
         applicationRepo2 = tenantRepository.getTenant(foobar).getApplicationRepo();
-        handler = new ListApplicationsHandler(ListApplicationsHandler.testOnlyContext(),
+        handler = new ListApplicationsHandler(ListApplicationsHandler.testContext(),
                                               tenantRepository,
                                               new Zone(Environment.dev, RegionName.from("us-east")));
     }
@@ -122,7 +121,7 @@ public class ListApplicationsHandlerTest {
     static void assertResponse(ListApplicationsHandler handler, String url, int expectedStatus, String expectedResponse, Method method) throws IOException {
         HttpResponse response = handler.handle(HttpRequest.createTestRequest(url, method));
         assertNotNull(response);
-        assertThat(response.getStatus(), is(expectedStatus));
-        assertThat(SessionHandlerTest.getRenderedString(response), is(expectedResponse));
+        assertEquals(expectedStatus, response.getStatus());
+        assertEquals(expectedResponse, SessionHandlerTest.getRenderedString(response));
     }
 }

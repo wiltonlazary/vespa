@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.slime;
 
 import java.util.function.Function;
@@ -11,6 +11,7 @@ import java.util.stream.Stream;
  * @author ogronnesby
  */
 public final class SlimeStream {
+
     private SlimeStream() {}
 
     /**
@@ -24,4 +25,5 @@ public final class SlimeStream {
                 .mapToObj(array::entry)
                 .map(mapper);
     }
+
 }

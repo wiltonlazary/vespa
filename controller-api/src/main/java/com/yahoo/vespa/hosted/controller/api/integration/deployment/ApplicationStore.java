@@ -5,21 +5,31 @@ import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.Optional;
 
 /**
- * Store for the application and tester packages.
- *
- * This will replace ArtifactRepository for tenant applications.
+ * Store for the application and test packages, diffs, and other metadata.
  *
  * @author smorgrav
  * @author jonmv
  */
 public interface ApplicationStore {
 
-    /** Returns the tenant application package of the given version. */
-    byte[] get(DeploymentId deploymentId, ApplicationVersion applicationVersion);
+    /** Returns the application package of the given revision. */
+    default byte[] get(DeploymentId deploymentId, RevisionId revisionId) {
+        try (InputStream stream = stream(deploymentId, revisionId)) {
+            return stream.readAllBytes();
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    InputStream stream(DeploymentId deploymentId, RevisionId revisionId);
 
     /** Returns the application package diff, compared to the previous build, for the given tenant, application and build number */
     Optional<byte[]> getDiff(TenantName tenantName, ApplicationName applicationName, long buildNumber);
@@ -27,29 +37,34 @@ public interface ApplicationStore {
     /** Removes diffs for packages before the given build number */
     void pruneDiffs(TenantName tenantName, ApplicationName applicationName, long beforeBuildNumber);
 
-    /** Find application package by given build number */
+    /** Find prod application package by given build number */
     Optional<byte[]> find(TenantName tenant, ApplicationName application, long buildNumber);
 
-    /** Stores the given tenant application package of the given version and diff since previous version. */
-    void put(TenantName tenant, ApplicationName application, ApplicationVersion applicationVersion, byte[] applicationPackage, byte[] diff);
+    /** Whether the prod application package with the given number is stored. */
+    default boolean hasBuild(TenantName tenant, ApplicationName application, long buildNumber) {
+        return find(tenant, application, buildNumber).isPresent();
+    }
 
-    /** Removes applications older than the given version, for the given application, and returns whether something was removed. */
-    boolean prune(TenantName tenant, ApplicationName application, ApplicationVersion olderThanVersion);
+    /** Stores the given tenant application and test packages of the given revision, and diff since previous version. */
+    void put(TenantName tenant, ApplicationName application, RevisionId revision, byte[] applicationPackage, byte[] testPackage, byte[] diff);
 
-    /** Removes all application packages for the given application, including any development package. */
+    /** Removes application and test packages older than the given revision, for the given application. */
+    void prune(TenantName tenant, ApplicationName application, RevisionId revision);
+
+    /** Removes all application and test packages for the given application, including any development package. */
     void removeAll(TenantName tenant, ApplicationName application);
 
-    /** Returns the tester application package of the given version. Does NOT contain the services.xml. */
-    byte[] getTester(TenantName tenant, ApplicationName application, ApplicationVersion applicationVersion);
+    /** Returns the tester application package of the given revision. Does NOT contain the services.xml. */
+    default byte[] getTester(TenantName tenant, ApplicationName application, RevisionId revision) {
+        try (InputStream stream = streamTester(tenant, application, revision)) {
+            return stream.readAllBytes();
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
 
-    /** Stores the given tester application package of the given version. Does NOT contain the services.xml. */
-    void putTester(TenantName tenant, ApplicationName application, ApplicationVersion applicationVersion, byte[] testerPackage);
-
-    /** Removes tester packages older than the given version, for the given tester, and returns whether something was removed. */
-    boolean pruneTesters(TenantName tenant, ApplicationName application, ApplicationVersion olderThanVersion);
-
-    /** Removes all tester packages for the given tester. */
-    void removeAllTesters(TenantName tenant, ApplicationName application);
+    InputStream streamTester(TenantName tenantName, ApplicationName applicationName, RevisionId revision);
 
     /** Returns the application package diff, compared to the previous build, for the given deployment and build number */
     Optional<byte[]> getDevDiff(DeploymentId deploymentId, long buildNumber);
@@ -57,22 +72,22 @@ public interface ApplicationStore {
     /** Removes diffs for dev packages before the given build number */
     void pruneDevDiffs(DeploymentId deploymentId, long beforeBuildNumber);
 
-    /** Stores the given application package as the development package for the given deployment and version and diff since previous version. */
-    void putDev(DeploymentId deploymentId, ApplicationVersion version, byte[] applicationPackage, byte[] diff);
+    /** Stores the given application package as the development package for the given deployment and revision and diff since previous version. */
+    void putDev(DeploymentId deploymentId, RevisionId revision, byte[] applicationPackage, byte[] diff);
 
-    /** Stores the given application meta data with the current time as part of the path. */
+    /** Stores the given application metadata with the current time as part of the path. */
     void putMeta(TenantName tenant, ApplicationName application, Instant now, byte[] metaZip);
 
-    /** Marks the given application as deleted, and eligible for meta data GC at a later time. */
+    /** Marks the given application as deleted, and eligible for metadata GC at a later time. */
     void putMetaTombstone(TenantName tenant, ApplicationName application, Instant now);
 
-    /** Stores the given manual deployment meta data with the current time as part of the path. */
+    /** Stores the given manual deployment metadata with the current time as part of the path. */
     void putMeta(DeploymentId id, Instant now, byte[] metaZip);
 
-    /** Marks the given manual deployment as deleted, and eligible for meta data GC at a later time. */
+    /** Marks the given manual deployment as deleted, and eligible for metadata GC at a later time. */
     void putMetaTombstone(DeploymentId id, Instant now);
 
-    /** Prunes meta data such that only what was active at the given instant, and anything newer, is retained. */
+    /** Prunes metadata such that only what was active at the given instant, and anything newer, is retained. */
     void pruneMeta(Instant oldest);
 
 }

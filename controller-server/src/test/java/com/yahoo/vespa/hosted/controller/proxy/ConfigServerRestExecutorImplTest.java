@@ -1,17 +1,17 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.proxy;
 
-import com.github.tomakehurst.wiremock.junit.WireMockRule;
+import ai.vespa.http.HttpURL.Path;
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
-import com.yahoo.config.provision.SystemName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.vespa.hosted.controller.integration.ZoneRegistryMock;
 import com.yahoo.yolean.concurrent.Sleeper;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.protocol.HttpCoreContext;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.net.ssl.SSLContext;
 import java.io.ByteArrayOutputStream;
@@ -25,28 +25,28 @@ import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author mpolden
  */
 public class ConfigServerRestExecutorImplTest {
 
-    @Rule
-    public final WireMockRule wireMock = new WireMockRule(options().dynamicPort(), true);
+    @RegisterExtension
+    public final WireMockExtension wireMock = WireMockExtension.newInstance().options(options().dynamicPort()).failOnUnmatchedRequests(true).build();
 
     @Test
-    public void proxy_with_retries() throws Exception {
+    void proxy_with_retries() throws Exception {
         var connectionReuseStrategy = new CountingConnectionReuseStrategy(Set.of("127.0.0.1"));
-        var proxy = new ConfigServerRestExecutorImpl(new ZoneRegistryMock(SystemName.cd), SSLContext.getDefault(),
-                                                     Sleeper.NOOP, connectionReuseStrategy);
+        var proxy = new ConfigServerRestExecutorImpl(new SSLConnectionSocketFactory(SSLContext.getDefault()),
+                Sleeper.NOOP, connectionReuseStrategy);
 
         URI url = url();
         String path = url.getPath();
         stubRequests(path);
 
         HttpRequest request = HttpRequest.createTestRequest(url.toString(), com.yahoo.jdisc.http.HttpRequest.Method.GET);
-        ProxyRequest proxyRequest = ProxyRequest.tryOne(url, path, request);
+        ProxyRequest proxyRequest = ProxyRequest.tryOne(url, Path.parse(path), request);
 
         // Request is retried
         HttpResponse response = proxy.handle(proxyRequest);
@@ -61,17 +61,17 @@ public class ConfigServerRestExecutorImplTest {
     }
 
     @Test
-    public void proxy_without_connection_reuse() throws Exception {
+    void proxy_without_connection_reuse() throws Exception {
         var connectionReuseStrategy = new CountingConnectionReuseStrategy(Set.of());
-        var proxy = new ConfigServerRestExecutorImpl(new ZoneRegistryMock(SystemName.cd), SSLContext.getDefault(),
-                                                     (duration) -> {}, connectionReuseStrategy);
+        var proxy = new ConfigServerRestExecutorImpl(new SSLConnectionSocketFactory(SSLContext.getDefault()),
+                Sleeper.NOOP, connectionReuseStrategy);
 
         URI url = url();
         String path = url.getPath();
         stubRequests(path);
 
         HttpRequest request = HttpRequest.createTestRequest(url.toString(), com.yahoo.jdisc.http.HttpRequest.Method.GET);
-        ProxyRequest proxyRequest = ProxyRequest.tryOne(url, path, request);
+        ProxyRequest proxyRequest = ProxyRequest.tryOne(url, Path.parse(path), request);
 
         // Connections are reused
         assertEquals(200, proxy.handle(proxyRequest).getStatus());
@@ -79,7 +79,7 @@ public class ConfigServerRestExecutorImplTest {
     }
 
     private URI url() {
-        return URI.create("http://127.0.0.1:" + wireMock.port() + "/");
+        return URI.create("http://127.0.0.1:" + wireMock.getPort() + "/");
     }
 
     private void stubRequests(String path) {

@@ -3,10 +3,11 @@
 
 #include "bucketinfo.h"
 #include "bucket.h"
-#include "docentry.h"
 #include <vespa/document/bucket/bucketidlist.h>
 
 namespace storage::spi {
+
+class DocEntry;
 
 class Result {
 public:
@@ -25,17 +26,20 @@ public:
     /**
      * Constructor to use for a result where there is no error.
      */
-    Result() : _errorCode(ErrorType::NONE), _errorMessage() {}
+    Result() noexcept : _errorCode(ErrorType::NONE), _errorMessage() {}
 
     /**
      * Constructor to use when an error has been detected.
      */
-    Result(ErrorType error, const vespalib::string& errorMessage)
+    Result(ErrorType error, const vespalib::string& errorMessage) noexcept
         : _errorCode(error),
-          _errorMessage(errorMessage) {}
+          _errorMessage(errorMessage)
+    {}
 
     Result(const Result &);
+    Result(Result&&) noexcept;
     Result & operator = (const Result &);
+    Result& operator=(Result&&) noexcept;
 
     virtual ~Result();
 
@@ -67,7 +71,7 @@ std::ostream & operator << (std::ostream & os, const Result & r);
 
 std::ostream & operator << (std::ostream & os, const Result::ErrorType &errorCode);
 
-class BucketInfoResult : public Result {
+class BucketInfoResult final : public Result {
 public:
     /**
      * Constructor to use for a result where an error has been detected.
@@ -91,7 +95,7 @@ private:
     BucketInfo _info;
 };
 
-class UpdateResult : public Result
+class UpdateResult final : public Result
 {
 public:
     /**
@@ -130,24 +134,24 @@ public:
      * The service layer will not update the bucket information in this case,
      * so it should not be returned either.
      */
-    RemoveResult(ErrorType error, const vespalib::string& errorMessage)
+    RemoveResult(ErrorType error, const vespalib::string& errorMessage) noexcept
         : Result(error, errorMessage),
-          _wasFound(false)
+          _numRemoved(0)
     { }
 
-    /**
-     * Constructor to use when the remove was successful.
-     */
-    RemoveResult(bool foundDocument)
-        : _wasFound(foundDocument) { }
-
-    bool wasFound() const { return _wasFound; }
+    explicit RemoveResult(bool found) noexcept
+            : RemoveResult(found ? 1u : 0u) { }
+    explicit RemoveResult(uint32_t numRemoved) noexcept
+        : _numRemoved(numRemoved) { }
+    bool wasFound() const { return _numRemoved > 0; }
+    uint32_t num_removed() const { return _numRemoved; }
+    void inc_num_removed(uint32_t add) { _numRemoved += add; }
 
 private:
-    bool _wasFound;
+    uint32_t _numRemoved;
 };
 
-class GetResult : public Result {
+class GetResult final : public Result {
 public:
     /**
      * Constructor to use when there was an error retrieving the document.
@@ -169,6 +173,8 @@ public:
           _is_tombstone(false)
     {
     }
+    GetResult(GetResult &&) noexcept = default;
+    GetResult & operator=(GetResult &&) noexcept = default;
 
     /**
      * Constructor to use when we found the document asked for.
@@ -221,7 +227,7 @@ private:
     bool       _is_tombstone;
 };
 
-class BucketIdListResult : public Result {
+class BucketIdListResult final : public Result {
 public:
     using List = document::bucket::BucketIdList;
 
@@ -237,12 +243,16 @@ public:
      * @param list The list of bucket ids this partition has. Is swapped with
      * the list internal to this object.
      */
-    BucketIdListResult(List& list)
-        : Result()
-    {
-        _info.swap(list);
-    }
-
+    BucketIdListResult(List list)
+        : Result(),
+          _info(std::move(list))
+    { }
+    BucketIdListResult()
+        : Result(),
+          _info()
+    { }
+    BucketIdListResult(BucketIdListResult &&) noexcept = default;
+    BucketIdListResult & operator =(BucketIdListResult &&) noexcept = default;
     ~BucketIdListResult();
 
     const List& getList() const { return _info; }
@@ -257,14 +267,14 @@ public:
     /**
      * Constructor used when there was an error creating the iterator.
      */
-    CreateIteratorResult(ErrorType error, const vespalib::string& errorMessage)
+    CreateIteratorResult(ErrorType error, const vespalib::string& errorMessage) noexcept
         : Result(error, errorMessage),
           _iterator(0) { }
 
     /**
      * Constructor used when the iterator state was successfully created.
      */
-    CreateIteratorResult(const IteratorId& id)
+    CreateIteratorResult(const IteratorId& id) noexcept
         : _iterator(id)
     { }
 
@@ -274,17 +284,14 @@ private:
     IteratorId _iterator;
 };
 
-class IterateResult : public Result {
+class IterateResult final : public Result {
 public:
-    typedef std::vector<DocEntry::UP> List;
+    using List = std::vector<std::unique_ptr<DocEntry>>;
 
     /**
      * Constructor used when there was an error creating the iterator.
      */
-    IterateResult(ErrorType error, const vespalib::string& errorMessage)
-        : Result(error, errorMessage),
-          _completed(false)
-    { }
+    IterateResult(ErrorType error, const vespalib::string& errorMessage);
 
     /**
      * Constructor used when the iteration was successful.
@@ -293,24 +300,21 @@ public:
      *
      * @param completed Set to true if iteration has been completed.
      */
-    IterateResult(List entries, bool completed)
-        : _completed(completed),
-          _entries(std::move(entries))
-    { }
+    IterateResult(List entries, bool completed);
 
     IterateResult(const IterateResult &) = delete;
-    IterateResult(IterateResult &&rhs) = default;
-    IterateResult &operator=(IterateResult &&rhs) = default;
+    IterateResult(IterateResult &&rhs) noexcept;
+    IterateResult &operator=(IterateResult &&rhs) noexcept;
 
     ~IterateResult();
 
     const List& getEntries() const { return _entries; }
-    List steal_entries() { return std::move(_entries); }
+    List steal_entries();
     bool isCompleted() const { return _completed; }
 
 private:
     bool _completed;
-    std::vector<DocEntry::UP> _entries;
+    List _entries;
 };
 
 }

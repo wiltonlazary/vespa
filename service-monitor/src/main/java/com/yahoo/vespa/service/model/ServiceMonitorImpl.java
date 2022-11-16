@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.service.model;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.config.model.api.ApplicationInfo;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Zone;
@@ -118,6 +118,6 @@ public class ServiceMonitorImpl implements ServiceMonitor, AntiServiceMonitor {
 
     /** The duper model uses HostName from config.provision. */
     private static com.yahoo.config.provision.HostName toConfigProvisionHostName(HostName hostname) {
-        return com.yahoo.config.provision.HostName.from(hostname.s());
+        return com.yahoo.config.provision.HostName.of(hostname.s());
     }
 }

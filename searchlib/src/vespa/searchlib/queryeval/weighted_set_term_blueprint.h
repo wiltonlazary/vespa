@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "searchable.h"
+#include "blueprint.h"
 #include <vespa/searchlib/fef/matchdatalayout.h>
 #include <vector>
 
@@ -12,18 +12,17 @@ namespace search::queryeval {
 
 class WeightedSetTermBlueprint : public ComplexLeafBlueprint
 {
-    HitEstimate             _estimate;
-    fef::MatchDataLayout    _layout;
-    FieldSpec               _children_field;
-    std::vector<int32_t>    _weights;
-    std::vector<Blueprint*> _terms;
-
-    WeightedSetTermBlueprint(const WeightedSetTermBlueprint &); // disabled
-    WeightedSetTermBlueprint &operator=(const WeightedSetTermBlueprint &); // disabled
+    HitEstimate                _estimate;
+    fef::MatchDataLayout       _layout;
+    FieldSpec                  _children_field;
+    std::vector<int32_t>       _weights;
+    std::vector<Blueprint::UP> _terms;
 
 public:
     WeightedSetTermBlueprint(const FieldSpec &field);
-    ~WeightedSetTermBlueprint();
+    WeightedSetTermBlueprint(const WeightedSetTermBlueprint &) = delete;
+    WeightedSetTermBlueprint &operator=(const WeightedSetTermBlueprint &) = delete;
+    ~WeightedSetTermBlueprint() override;
 
     // used by create visitor
     // matches signature in dot product blueprint for common blueprint
@@ -38,7 +37,7 @@ public:
     std::unique_ptr<MatchingElementsSearch> create_matching_elements_search(const MatchingElementsFields &fields) const override;
     void visitMembers(vespalib::ObjectVisitor &visitor) const override;
     const vespalib::string &field_name() const { return _children_field.getName(); }
-    const std::vector<Blueprint*>& get_terms() const { return _terms; }
+    const std::vector<Blueprint::UP> &get_terms() const { return _terms; }
 
 private:
     void fetchPostings(const ExecuteInfo &execInfo) override;

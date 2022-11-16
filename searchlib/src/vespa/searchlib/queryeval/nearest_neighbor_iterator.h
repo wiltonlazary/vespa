@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -7,11 +7,14 @@
 #include <vespa/eval/eval/value.h>
 #include <vespa/searchlib/fef/termfieldmatchdata.h>
 #include <vespa/searchlib/tensor/i_tensor_attribute.h>
-#include <vespa/searchlib/tensor/distance_function.h>
 #include <vespa/vespalib/util/priority_queue.h>
 #include <cmath>
 
+namespace search::tensor { class DistanceCalculator; }
+
 namespace search::queryeval {
+
+class GlobalFilter;
 
 class NearestNeighborIterator : public SearchIterator
 {
@@ -21,24 +24,18 @@ public:
 
     struct Params {
         fef::TermFieldMatchData &tfmd;
-        const Value &queryTensor;
-        const ITensorAttribute &tensorAttribute;
+        const search::tensor::DistanceCalculator &distance_calc;
         NearestNeighborDistanceHeap &distanceHeap;
-        const search::BitVector *filter;
-        const search::tensor::DistanceFunction *distanceFunction;
-        
+        const GlobalFilter &filter;
+
         Params(fef::TermFieldMatchData &tfmd_in,
-               const Value &queryTensor_in,
-               const ITensorAttribute &tensorAttribute_in,
+               const search::tensor::DistanceCalculator &distance_calc_in,
                NearestNeighborDistanceHeap &distanceHeap_in,
-               const search::BitVector *filter_in,
-               const search::tensor::DistanceFunction *distanceFunction_in)
+               const GlobalFilter &filter_in)
           : tfmd(tfmd_in),
-            queryTensor(queryTensor_in),
-            tensorAttribute(tensorAttribute_in),
+            distance_calc(distance_calc_in),
             distanceHeap(distanceHeap_in),
-            filter(filter_in),
-            distanceFunction(distanceFunction_in)
+            filter(filter_in)
         {}
     };
 
@@ -49,11 +46,9 @@ public:
     static std::unique_ptr<NearestNeighborIterator> create(
             bool strict,
             fef::TermFieldMatchData &tfmd,
-            const Value &queryTensor,
-            const search::tensor::ITensorAttribute &tensorAttribute,
+            const search::tensor::DistanceCalculator &distance_calc,
             NearestNeighborDistanceHeap &distanceHeap,
-            const search::BitVector *filter,
-            const search::tensor::DistanceFunction *dist_fun);
+            const GlobalFilter &filter);
 
     const Params& params() const { return _params; }
 private:

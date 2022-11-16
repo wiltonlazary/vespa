@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.di.componentgraph.core;
 
-import com.google.inject.Inject;
 import com.google.inject.Key;
 import com.yahoo.collections.Pair;
 import com.yahoo.component.AbstractComponent;
@@ -142,8 +141,8 @@ public class ComponentNode extends Node {
         for (Object ob : arguments) {
             if (ob instanceof Node) {
                 actualArguments.add(((Node) ob).component());
-            } else if (ob instanceof ConfigKey) {
-                actualArguments.add(availableConfigs.get(ob));
+            } else if (ob instanceof ConfigKey<?>) {
+                actualArguments.add(getConfigInstance((ConfigKey<?>)ob));
             } else {
                 actualArguments.add(ob);
             }
@@ -214,8 +213,8 @@ public class ComponentNode extends Node {
         }
         List<ConfigInstance> ret = new ArrayList<>();
         for (Object arg : arguments) {
-            if (arg instanceof ConfigKey) {
-                ret.add(availableConfigs.get(arg));
+            if (arg instanceof ConfigKey<?>) {
+                ret.add(getConfigInstance((ConfigKey<?>)arg));
             }
         }
         return ret;
@@ -238,6 +237,15 @@ public class ComponentNode extends Node {
             throw new IllegalStateException("graph.complete must be called before graph.setAvailableConfigs.");
         }
         this.availableConfigs = configs;
+    }
+
+    private ConfigInstance getConfigInstance(ConfigKey<?> key) {
+        if (! availableConfigs.containsKey(key))
+            throw new IllegalArgumentException("Config not found in the map of available configs: " + key);
+        else if (availableConfigs.get(key) == null)
+            throw new IllegalStateException("The map of available configs has a null config for: " + key);
+
+        return availableConfigs.get(key);
     }
 
     @Override
@@ -271,7 +279,8 @@ public class ComponentNode extends Node {
 
         Constructor<?> annotated = null;
         for (Constructor<?> ctor : publicConstructors) {
-            Annotation annotation = ctor.getAnnotation(Inject.class);
+            Annotation annotation = ctor.getAnnotation(com.google.inject.Inject.class);
+            if (annotation == null) annotation = ctor.getAnnotation(com.yahoo.component.annotation.Inject.class);
             if (annotation != null) {
                 if (annotated == null) {
                     annotated = ctor;

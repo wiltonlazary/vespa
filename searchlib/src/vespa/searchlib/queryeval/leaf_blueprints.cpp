@@ -2,6 +2,7 @@
 
 #include "leaf_blueprints.h"
 #include "emptysearch.h"
+#include "full_search.h"
 #include "simplesearch.h"
 #include "fake_search.h"
 
@@ -35,6 +36,24 @@ EmptyBlueprint::EmptyBlueprint(const FieldSpecBaseList &fields)
 EmptyBlueprint::EmptyBlueprint()
     : SimpleLeafBlueprint(FieldSpecBaseList())
 {
+}
+
+
+SearchIterator::UP
+AlwaysTrueBlueprint::createLeafSearch(const search::fef::TermFieldMatchDataArray &, bool) const
+{
+    return std::make_unique<FullSearch>();
+}
+
+SearchIterator::UP
+AlwaysTrueBlueprint::createFilterSearch(bool /*strict*/, FilterConstraint /* constraint */) const
+{
+    return std::make_unique<FullSearch>();
+}
+
+AlwaysTrueBlueprint::AlwaysTrueBlueprint() : SimpleLeafBlueprint(FieldSpecBaseList())
+{
+    setEstimate(HitEstimate(search::endDocId, false));
 }
 
 //-----------------------------------------------------------------------------
@@ -106,8 +125,9 @@ struct FakeContext : attribute::ISearchContext {
     std::unique_ptr<SearchIterator> createIterator(fef::TermFieldMatchData *, bool) override { abort(); }
     void fetchPostings(const ExecuteInfo &) override { }
     bool valid() const override { return true; }
-    search::Int64Range getAsIntegerTerm() const override { abort(); }
-    const search::QueryTermUCS4 * queryTerm() const override { abort(); }
+    Int64Range getAsIntegerTerm() const override { abort(); }
+    DoubleRange getAsDoubleTerm() const override { abort(); }
+    const QueryTermUCS4 * queryTerm() const override { abort(); }
     const vespalib::string &attributeName() const override { return name; }
 };
 

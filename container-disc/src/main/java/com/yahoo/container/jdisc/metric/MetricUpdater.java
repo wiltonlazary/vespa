@@ -1,17 +1,22 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc.metric;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.statistics.ContainerWatchdogMetrics;
+import com.yahoo.nativec.NativeHeap;
 
+import java.lang.management.BufferPoolMXBean;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -23,11 +28,19 @@ import java.util.TimerTask;
  */
 public class MetricUpdater extends AbstractComponent {
 
-    private static final String FREE_MEMORY_BYTES = "mem.heap.free";
-    private static final String USED_MEMORY_BYTES = "mem.heap.used";
-    private static final String TOTAL_MEMORY_BYTES = "mem.heap.total";
+    private static final String NATIVE_FREE_MEMORY_BYTES = "mem.native.free";
+    private static final String NATIVE_USED_MEMORY_BYTES = "mem.native.used";
+    private static final String NATIVE_TOTAL_MEMORY_BYTES = "mem.native.total";
+    private static final String HEAP_FREE_MEMORY_BYTES = "mem.heap.free";
+    private static final String HEAP_USED_MEMORY_BYTES = "mem.heap.used";
+    private static final String HEAP_TOTAL_MEMORY_BYTES = "mem.heap.total";
+    private static final String DIRECT_FREE_MEMORY_BYTES = "mem.direct.free";
+    private static final String DIRECT_USED_MEMORY_BYTES = "mem.direct.used";
+    private static final String DIRECT_TOTAL_MEMORY_BYTES = "mem.direct.total";
+    private static final String DIRECT_COUNT = "mem.direct.count";
     private static final String MEMORY_MAPPINGS_COUNT = "jdisc.memory_mappings";
     private static final String OPEN_FILE_DESCRIPTORS = "jdisc.open_file_descriptors";
+    private static final String TOTAL_THREADS = "jdisc.threads.total";
 
     private final Scheduler scheduler;
 
@@ -88,6 +101,7 @@ public class MetricUpdater extends AbstractComponent {
         private final ContainerWatchdogMetrics containerWatchdogMetrics;
         private final GarbageCollectionMetrics garbageCollectionMetrics;
         private final JrtMetrics jrtMetrics;
+        private final ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
 
         public UpdaterTask(Metric metric, ContainerWatchdogMetrics containerWatchdogMetrics) {
             this.metric = metric;
@@ -96,20 +110,55 @@ public class MetricUpdater extends AbstractComponent {
             this.jrtMetrics = new JrtMetrics(metric);
         }
 
+        private void directMemoryUsed() {
+            long count = 0;
+            long used = 0;
+            long total = 0;
+            for (BufferPoolMXBean pool : ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class)) {
+                count += pool.getCount();
+                used += pool.getMemoryUsed();
+                total += pool.getTotalCapacity();
+            }
+            metric.set(DIRECT_FREE_MEMORY_BYTES, total - used, null);
+            metric.set(DIRECT_USED_MEMORY_BYTES, used, null);
+            metric.set(DIRECT_TOTAL_MEMORY_BYTES, total, null);
+            metric.set(DIRECT_COUNT, count, null);
+        }
+
+        private void nativeHeapUsed() {
+            NativeHeap nativeHeap = NativeHeap.sample();
+            metric.set(NATIVE_FREE_MEMORY_BYTES, nativeHeap.availableSize(), null);
+            metric.set(NATIVE_USED_MEMORY_BYTES, nativeHeap.usedSize(), null);
+            metric.set(NATIVE_TOTAL_MEMORY_BYTES, nativeHeap.totalSize(), null);
+        }
+
+        private void jvmDetails() {
+            Metric.Context ctx = metric.createContext(Map.of(
+                    "version", System.getProperty("java.runtime.version"),
+                    "home", System.getProperty("java.home"),
+                    "vendor", System.getProperty("java.vm.vendor"),
+                    "arch", System.getProperty("os.arch")));
+            metric.set("jdisc.jvm", Runtime.version().feature(), ctx);
+        }
+
         @Override
         public void run() {
             long freeMemory = runtime.freeMemory();
             long totalMemory = runtime.totalMemory();
             long usedMemory = totalMemory - freeMemory;
-            metric.set(FREE_MEMORY_BYTES, freeMemory, null);
-            metric.set(USED_MEMORY_BYTES, usedMemory, null);
-            metric.set(TOTAL_MEMORY_BYTES, totalMemory, null);
+            metric.set(HEAP_FREE_MEMORY_BYTES, freeMemory, null);
+            metric.set(HEAP_USED_MEMORY_BYTES, usedMemory, null);
+            metric.set(HEAP_TOTAL_MEMORY_BYTES, totalMemory, null);
             metric.set(MEMORY_MAPPINGS_COUNT, count_mappings(), null);
             metric.set(OPEN_FILE_DESCRIPTORS, count_open_files(), null);
+            metric.set(TOTAL_THREADS, threadMXBean.getThreadCount(), null);
+            directMemoryUsed();
+            nativeHeapUsed();
 
             containerWatchdogMetrics.emitMetrics(metric);
             garbageCollectionMetrics.emitMetrics(metric);
             jrtMetrics.emitMetrics();
+            jvmDetails();
         }
     }
 

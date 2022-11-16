@@ -3,7 +3,9 @@
 #include "common.h"
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/fastos/file.h>
+#include <filesystem>
 #include <stdexcept>
+#include <system_error>
 
 namespace search::transactionlog {
 
@@ -32,7 +34,9 @@ makeDirectory(const char * dir)
     if ( FastOS_File::Stat(dir, &st) ) {
         retval = st._isDirectory ? 0 : -2;
     } else {
-        retval = FastOS_File::MakeDirectory(dir) ? 0 : -3;
+        std::error_code ec;
+        std::filesystem::create_directory(std::filesystem::path(dir), ec);
+        retval = (!ec) ? 0 : -3;
     }
 
     return retval;
@@ -64,6 +68,8 @@ Packet::Packet(const void * buf, size_t sz) :
         _count++;
     }
 }
+
+Packet::~Packet() = default;
 
 void
 Packet::merge(const Packet & packet)
@@ -114,6 +120,14 @@ Packet::add(const Packet::Entry & e)
     _range.to(e.serial());
 }
 
+void
+Packet::shrinkToFit() {
+    if (_buf.size() * 8 < _buf.capacity()) {
+        nbostream::Buffer shrunkToFit(_buf.data(), _buf.data() + _buf.size());
+        _buf.swap(shrunkToFit);
+    }
+}
+
 Writer::CommitResult::CommitResult()
     : _callBacks()
 {}
@@ -147,6 +161,11 @@ CommitChunk::add(const Packet &packet, Writer::DoneCallback onDone) {
 Writer::CommitResult
 CommitChunk::createCommitResult() const {
     return Writer::CommitResult(_callBacks);
+}
+
+void
+CommitChunk::shrinkPayloadToFit() {
+    _data.shrinkToFit();
 }
 
 }

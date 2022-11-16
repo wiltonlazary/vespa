@@ -12,8 +12,9 @@ import java.util.logging.Logger;
  */
 public class MasterElectionHandler implements MasterInterface {
 
-    private static final Logger log = Logger.getLogger(MasterElectionHandler.class.getName());
+    private static final Logger logger = Logger.getLogger(MasterElectionHandler.class.getName());
 
+    private final FleetControllerContext context;
     private final Object monitor;
     private final Timer timer;
     private final int index;
@@ -27,17 +28,16 @@ public class MasterElectionHandler implements MasterInterface {
     private long masterZooKeeperCooldownPeriod; // The period in ms that we won't take over unless master come back.
     private boolean usingZooKeeper = false; // Unit tests may not use ZooKeeper at all.
 
-    public MasterElectionHandler(int index, int totalCount, Object monitor, Timer timer) {
+    public MasterElectionHandler(FleetControllerContext context, int index, int totalCount, Object monitor, Timer timer) {
+        this.context = context;
         this.monitor = monitor;
         this.timer = timer;
         this.index = index;
         this.totalCount = totalCount;
         this.nextInLineCount = Integer.MAX_VALUE;
-        // Only a given set of nodes can ever become master
-        if (index > (totalCount - 1) / 2) {
-            log.log(Level.FINE, () -> "Cluster controller " + index + ": We can never become master and will always stay a follower.");
-        }
-            // Tag current time as when we have not seen any other master. Make sure we're not taking over at once for master that is on the way down
+        if (cannotBecomeMaster())
+            context.log(logger, Level.FINE, () -> "We can never become master and will always stay a follower.");
+        // Tag current time as when we have not seen any other master. Make sure we're not taking over at once for master that is on the way down
         masterGoneFromZooKeeperTime = timer.getCurrentTimeInMillis();
     }
 
@@ -75,16 +75,15 @@ public class MasterElectionHandler implements MasterInterface {
 
     @Override
     public Integer getMaster() {
-            // If too few followers there can be no master
-        if (2 * followers <= totalCount) {
+        if (tooFewFollowersToHaveAMaster()) {
             return null;
         }
-            // If all are following master candidate, it is master if it exists.
+        // If all are following master candidate, it is master if it exists.
         if (followers == totalCount) {
             return masterCandidate;
         }
-            // If not all are following we only accept master candidate if old master
-            // disappeared sufficient time ago
+        // If not all are following we only accept master candidate if old master
+        // disappeared sufficient time ago
         if (masterGoneFromZooKeeperTime + masterZooKeeperCooldownPeriod > timer.getCurrentTimeInMillis()) {
             return null;
         }
@@ -95,8 +94,7 @@ public class MasterElectionHandler implements MasterInterface {
         if (masterCandidate == null) {
             return "There is currently no master candidate.";
         }
-        // If too few followers there can be no master
-        if (2 * followers <= totalCount) {
+        if (tooFewFollowersToHaveAMaster()) {
             return "More than half of the nodes must agree for there to be a master. Only " + followers + " of "
                     + totalCount + " nodes agree on current master candidate (" + masterCandidate + ").";
         }
@@ -116,41 +114,45 @@ public class MasterElectionHandler implements MasterInterface {
         return followers + " of " + totalCount + " nodes agree " + masterCandidate + " is master.";
     }
 
+    private boolean tooFewFollowersToHaveAMaster() {
+        return 2 * followers <= totalCount;
+    }
+
     public boolean isAmongNthFirst(int first) { return (nextInLineCount < first); }
 
     public boolean watchMasterElection(DatabaseHandler database,
-                                       DatabaseHandler.Context dbContext) throws InterruptedException {
+                                       DatabaseHandler.DatabaseContext dbContext) throws InterruptedException {
         if (totalCount == 1 && !usingZooKeeper) {
             return false; // Allow single configured node to become master implicitly if no ZK configured
         }
         if (nextMasterData == null) {
             if (masterCandidate == null) {
-                log.log(Level.FINEST, () -> "Cluster controller " + index + ": No current master candidate. Waiting for data to do master election.");
+                context.log(logger, Level.FINEST, () -> "No current master candidate. Waiting for data to do master election.");
             }
             return false; // Nothing have happened since last time.
         }
-            // Move next data to temporary, such that we don't need to keep lock, and such that we don't retry
-            // if we happen to fail processing the data.
+        // Move next data to temporary, such that we don't need to keep lock, and such that we don't retry
+        // if we happen to fail processing the data.
         Map<Integer, Integer> state;
-        log.log(Level.INFO, "Cluster controller " + index + ": Handling new master election, as we have received " + nextMasterData.size() + " entries");
+        context.log(logger, Level.INFO, "Handling new master election, as we have received " + nextMasterData.size() + " entries");
         synchronized (monitor) {
             state = nextMasterData;
             nextMasterData = null;
         }
-        log.log(Level.INFO, "Cluster controller " + index + ": Got master election state " + toString(state) + ".");
+        context.log(logger, Level.INFO, "Got master election state " + toString(state) + ".");
         if (state.isEmpty()) throw new IllegalStateException("Database has no master data. We should at least have data for ourselves.");
         Map.Entry<Integer, Integer> first = state.entrySet().iterator().next();
         Integer currentMaster = getMaster();
         if (currentMaster != null && first.getKey().intValue() != currentMaster.intValue()) {
-            log.log(Level.INFO, "Cluster controller " + index + ": Master gone from ZooKeeper. Tagging timestamp. Will wait " + this.masterZooKeeperCooldownPeriod + " ms.");
+            context.log(logger, Level.INFO, "Master gone from ZooKeeper. Tagging timestamp. Will wait " + this.masterZooKeeperCooldownPeriod + " ms.");
             masterGoneFromZooKeeperTime = timer.getCurrentTimeInMillis();
             masterCandidate = null;
         }
         if (first.getValue().intValue() != first.getKey().intValue()) {
-            log.log(Level.INFO, "Fleet controller " + index + ": First index is not currently trying to become master. Waiting for it to change state");
+            context.log(logger, Level.INFO, "First index is not currently trying to become master. Waiting for it to change state");
             masterCandidate = null;
             if (first.getKey() == index) {
-                log.log(Level.INFO, "Cluster controller " + index + ": We are next in line to become master. Altering our state to look for followers");
+                context.log(logger, Level.INFO, "We are next in line to become master. Altering our state to look for followers");
                 database.setMasterVote(dbContext, index);
             }
         } else {
@@ -164,26 +166,25 @@ public class MasterElectionHandler implements MasterInterface {
             if (2 * followers > totalCount) {
                 Integer newMaster = getMaster();
                 if (newMaster != null && currentMaster != null && newMaster.intValue() == currentMaster.intValue()) {
-                    log.log(Level.INFO, "MASTER_ELECTION: Cluster controller " + index + ": " + currentMaster + " is still the master");
+                    context.log(logger, Level.INFO, currentMaster + " is still the master");
                 } else if (newMaster != null && currentMaster != null) {
-                    log.log(Level.INFO, "MASTER_ELECTION: Cluster controller " + index + ": " + newMaster + " took over for fleet controller " + currentMaster + " as master");
+                    context.log(logger, Level.INFO, newMaster + " took over for fleet controller " + currentMaster + " as master");
                 } else if (newMaster == null) {
-                    log.log(Level.INFO, "MASTER_ELECTION: Cluster controller " + index + ": " + masterCandidate + " is new master candidate, but needs to wait before it can take over");
+                    context.log(logger, Level.INFO, masterCandidate + " is new master candidate, but needs to wait before it can take over");
                 }  else {
-                    log.log(Level.INFO, "MASTER_ELECTION: Cluster controller " + index + ": " + newMaster + " is newly elected master");
+                    context.log(logger, Level.INFO, newMaster + " is newly elected master");
                 }
             } else {
-                log.log(Level.INFO, "MASTER_ELECTION: Cluster controller " + index + ": Currently too few followers for cluster controller candidate " + masterCandidate + ". No current master. (" + followers + "/" + totalCount + " followers)");
+                context.log(logger, Level.INFO, "Currently too few followers for cluster controller candidate " + masterCandidate + ". No current master. (" + followers + "/" + totalCount + " followers)");
             }
             Integer ourState = state.get(index);
             if (ourState == null) throw new IllegalStateException("Database lacks data from ourselves. This should always be present.");
             if (ourState.intValue() != first.getKey().intValue()) {
-                log.log(Level.INFO, "Cluster controller " + index + ": Altering our state to follow new fleet controller master candidate " + first.getKey());
+                context.log(logger, Level.INFO, "Altering our state to follow new fleet controller master candidate " + first.getKey());
                 database.setMasterVote(dbContext, first.getKey());
             }
         }
-            // Only a given set of nodes can ever become master
-        if (index <= (totalCount - 1) / 2) {
+        if (canBecomeMaster()) {
             int ourPosition = 0;
             for (Map.Entry<Integer, Integer> entry : state.entrySet()) {
                 if (entry.getKey() != index) {
@@ -195,13 +196,18 @@ public class MasterElectionHandler implements MasterInterface {
             if (nextInLineCount != ourPosition) {
                 nextInLineCount = ourPosition;
                 if (ourPosition > 0) {
-                    log.log(Level.FINE, () -> "Cluster controller " + index + ": We are now " + getPosition(nextInLineCount) + " in queue to take over being master.");
+                    context.log(logger, Level.FINE, () -> "We are now " + getPosition(nextInLineCount) + " in queue to take over being master.");
                 }
             }
         }
         masterData = state;
         return true;
     }
+
+    // Only a given set of nodes can ever become master
+    private boolean canBecomeMaster() {return index <= (totalCount - 1) / 2;}
+
+    private boolean cannotBecomeMaster() {return ! canBecomeMaster();}
 
     private static String toString(Map<Integer, Integer> data) {
         StringBuilder sb = new StringBuilder();
@@ -225,7 +231,7 @@ public class MasterElectionHandler implements MasterInterface {
     }
 
     public void handleFleetData(Map<Integer, Integer> data) {
-        log.log(Level.INFO, "Cluster controller " + index + ": Got new fleet data with " + data.size() + " entries: " + data);
+        context.log(logger, Level.INFO, "Got new fleet data with " + data.size() + " entries: " + data);
         synchronized (monitor) {
             nextMasterData = data;
             monitor.notifyAll();
@@ -234,7 +240,7 @@ public class MasterElectionHandler implements MasterInterface {
 
     public void lostDatabaseConnection() {
         if (totalCount > 1 || usingZooKeeper) {
-            log.log(Level.INFO, "Cluster controller " + index + ": Clearing master data as we lost connection on node " + index);
+            context.log(logger, Level.INFO, "Clearing master data as we lost connection on node " + index);
             resetElectionProgress();
         }
     }
@@ -251,10 +257,10 @@ public class MasterElectionHandler implements MasterInterface {
         Integer master = getMaster();
         if (master != null) {
             sb.append("<p>Current cluster controller master is node " + master + ".");
-            if (master.intValue() == index) sb.append(" (This node)");
+            if (master == index) sb.append(" (This node)");
             sb.append("</p>");
         } else {
-            if (2 * followers <= totalCount) {
+            if (tooFewFollowersToHaveAMaster()) {
                 sb.append("<p>There is currently no master. Less than half the fleet controllers (")
                   .append(followers).append(") are following master candidate ").append(masterCandidate)
                   .append(".</p>");
@@ -265,19 +271,19 @@ public class MasterElectionHandler implements MasterInterface {
                   .append(" before electing new master unless all possible master candidates are online.</p>");
             }
         }
-        if ((master == null || master.intValue() != index) && nextInLineCount < stateGatherCount) {
+        if ((master == null || master != index) && nextInLineCount < stateGatherCount) {
             sb.append("<p>As we are number ").append(nextInLineCount)
                     .append(" in line for taking over as master, we're gathering state from nodes.</p>");
             sb.append("<p><font color=\"red\">As we are not the master, we don't know about nodes current system state"
                     + " or wanted states, so some statistics below may be stale. Look at status page on master "
                     + "for updated data.</font></p>");
         }
-        if (index * 2 > totalCount) {
+        if (cannotBecomeMaster()) {
             sb.append("<p>As lowest index fleet controller is prioritized to become master, and more than half "
                     + "of the fleet controllers need to be available to select a master, we can never become master.</p>");
         }
 
-            // Debug data
+        // Debug data
         sb.append("<p><font size=\"-1\" color=\"grey\">Master election handler internal state:")
           .append("<br>Index: " + index)
           .append("<br>Fleet controller count: " + totalCount)

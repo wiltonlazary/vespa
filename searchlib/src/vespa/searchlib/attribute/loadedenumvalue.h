@@ -3,16 +3,11 @@
 #pragma once
 
 #include "enum_store_types.h"
-#include <vespa/vespalib/util/array.h>
 #include <vespa/vespalib/util/arrayref.h>
 #include <cassert>
 #include <limits>
 
-namespace search
-{
-
-namespace attribute
-{
+namespace search::attribute {
 
 /**
  * Temporary representation of enumerated attribute loaded from enumerated
@@ -33,13 +28,11 @@ public:
         uint64_t
         operator()(const LoadedEnumAttribute &v)
         {
-            return (static_cast<uint64_t>(v._enum) << 32) | v._docId;
+            return (static_cast<uint64_t>(v._enum) << 32) | v.getDocId();
         } 
     };
 
-    class EnumCompare : public std::binary_function<LoadedEnumAttribute,
-                                                    LoadedEnumAttribute,
-                                                    bool>
+    class EnumCompare
     {
     public:
         bool
@@ -73,7 +66,7 @@ public:
     int32_t getWeight() const { return _weight; }
 };
     
-typedef vespalib::Array<LoadedEnumAttribute> LoadedEnumAttributeVector;
+using LoadedEnumAttributeVector = std::vector<LoadedEnumAttribute, vespalib::allocator_large<LoadedEnumAttribute>>;
 
 
 /**
@@ -144,10 +137,6 @@ public:
     }
 };
 
-void
-sortLoadedByEnum(LoadedEnumAttributeVector &loaded);
+void sortLoadedByEnum(LoadedEnumAttributeVector &loaded);
 
-} // namespace attribute
-
-} // namespace search
-
+}

@@ -50,11 +50,44 @@ public:
         api::LockingRequirements lockingRequirements() const noexcept override {
             return api::LockingRequirements::Shared;
         }
+        void signal_operation_sync_phase_done() noexcept override {}
+        bool wants_sync_phase_done_notification() const noexcept override { return false; }
         static std::shared_ptr<NoBucketLock> make(document::Bucket bucket) {
             return std::make_shared<NoBucketLock>(bucket);
         }
     private:
         document::Bucket _bucket;
+    };
+    class MockBucketLocks {
+        std::mutex _mutex;
+        std::condition_variable _cv;
+        std::set<document::Bucket> _locked_buckets;
+    public:
+        MockBucketLocks();
+        ~MockBucketLocks();
+        void lock(document::Bucket bucket);
+        void unlock(document::Bucket bucket);
+    };
+
+    class MockBucketLock : public FileStorHandler::BucketLockInterface
+    {
+    public:
+        MockBucketLock(document::Bucket bucket, MockBucketLocks &locks) noexcept : _bucket(bucket), _locks(locks) { _locks.lock(bucket); }
+        ~MockBucketLock() { _locks.unlock(_bucket); }
+        const document::Bucket &getBucket() const override {
+            return _bucket;
+        }
+        api::LockingRequirements lockingRequirements() const noexcept override {
+            return api::LockingRequirements::Exclusive;
+        }
+        void signal_operation_sync_phase_done() noexcept override {}
+        bool wants_sync_phase_done_notification() const noexcept override { return false; }
+        static std::shared_ptr<MockBucketLock> make(document::Bucket bucket, MockBucketLocks& locks) {
+            return std::make_shared<MockBucketLock>(bucket, locks);
+        }
+    private:
+        document::Bucket _bucket;
+        MockBucketLocks& _locks;
     };
 
     struct ReplySender : public MessageSender {
@@ -73,19 +106,16 @@ public:
     std::unique_ptr<vespalib::ISequencedTaskExecutor> _sequenceTaskExecutor;
     ReplySender _replySender;
     BucketOwnershipNotifier _bucketOwnershipNotifier;
+    MockBucketLocks _mock_bucket_locks;
     std::unique_ptr<PersistenceHandler> _persistenceHandler;
 
     PersistenceTestUtils();
     ~PersistenceTestUtils() override;
 
-    document::Document::SP schedulePut(uint32_t location, spi::Timestamp timestamp, uint32_t minSize = 0, uint32_t maxSize = 128);
-
-    void setupDisks();
     void setupExecutor(uint32_t numThreads);
 
     void TearDown() override {
         if (_sequenceTaskExecutor) {
-            _sequenceTaskExecutor->sync();
             _sequenceTaskExecutor.reset();
         }
         _env.reset();
@@ -114,6 +144,12 @@ public:
                                                 _replySender, NoBucketLock::make(bucket), std::move(cmd));
     }
 
+    MessageTracker::UP
+    createLockedTracker(api::StorageMessage::SP cmd, document::Bucket bucket) {
+        return MessageTracker::createForTesting(framework::MilliSecTimer(getEnv()._component.getClock()), getEnv(),
+                                                _replySender, MockBucketLock::make(bucket, _mock_bucket_locks), std::move(cmd));
+    }
+
     api::ReturnCode
     fetchResult(const MessageTracker::UP & tracker) {
         if (tracker) {
@@ -127,44 +163,23 @@ public:
     /**
        Returns the document that was inserted.
     */
-    document::Document::SP doPutOnDisk(
-            uint32_t location,
-            spi::Timestamp timestamp,
-            uint32_t minSize = 0,
-            uint32_t maxSize = 128);
+    document::Document::SP doPutOnDisk(uint32_t location, spi::Timestamp timestamp, uint32_t minSize = 0, uint32_t maxSize = 128);
 
-    document::Document::SP doPut(
-            uint32_t location,
-            spi::Timestamp timestamp,
-            uint32_t minSize = 0,
-            uint32_t maxSize = 128)
-        { return doPutOnDisk(location, timestamp, minSize, maxSize); }
+    document::Document::SP doPut(uint32_t location, spi::Timestamp timestamp, uint32_t minSize = 0, uint32_t maxSize = 128) {
+        return doPutOnDisk(location, timestamp, minSize, maxSize);
+    }
 
     /**
        Returns the new doccount if document was removed, or -1 if not found.
     */
-    bool doRemoveOnDisk(
-            const document::BucketId& bid,
-            const document::DocumentId& id,
-            spi::Timestamp timestamp,
-            bool persistRemove);
-
-    bool doRemove(
-            const document::BucketId& bid,
-            const document::DocumentId& id,
-            spi::Timestamp timestamp,
-            bool persistRemove) {
+    bool doRemoveOnDisk(const document::BucketId& bid, const document::DocumentId& id, spi::Timestamp timestamp, bool persistRemove);
+    bool doRemove(const document::BucketId& bid, const document::DocumentId& id, spi::Timestamp timestamp, bool persistRemove) {
         return doRemoveOnDisk(bid, id, timestamp, persistRemove);
     }
 
-    bool doUnrevertableRemoveOnDisk(const document::BucketId& bid,
-                                    const document::DocumentId& id,
-                                    spi::Timestamp timestamp);
+    bool doUnrevertableRemoveOnDisk(const document::BucketId& bid, const document::DocumentId& id, spi::Timestamp timestamp);
 
-    bool doUnrevertableRemove(const document::BucketId& bid,
-                              const document::DocumentId& id,
-                              spi::Timestamp timestamp)
-    {
+    bool doUnrevertableRemove(const document::BucketId& bid, const document::DocumentId& id, spi::Timestamp timestamp) {
         return doUnrevertableRemoveOnDisk(bid, id, timestamp);
     }
 
@@ -175,25 +190,19 @@ public:
      * @unrevertableRemove If set, instead of adding put, turn put to remove.
      * @usedBits Generate bucket to use from docid using this amount of bits.
      */
-    void doRemove(const document::DocumentId& id, spi::Timestamp,
-                  bool unrevertableRemove = false, uint16_t usedBits = 16);
+    void doRemove(const document::DocumentId& id, spi::Timestamp, bool unrevertableRemove = false, uint16_t usedBits = 16);
 
-    spi::GetResult doGetOnDisk(
-            const document::BucketId& bucketId,
-            const document::DocumentId& docId);
+    spi::GetResult doGetOnDisk(const document::BucketId& bucketId, const document::DocumentId& docId);
 
-    spi::GetResult doGet(
-            const document::BucketId& bucketId,
-            const document::DocumentId& docId)
-        { return doGetOnDisk(bucketId, docId); }
+    spi::GetResult doGet(const document::BucketId& bucketId, const document::DocumentId& docId) {
+        return doGetOnDisk(bucketId, docId);
+    }
 
-    std::shared_ptr<document::DocumentUpdate> createBodyUpdate(
-            const document::DocumentId& id,
-            const document::FieldValue& updateValue);
+    std::shared_ptr<document::DocumentUpdate>
+    createBodyUpdate(const document::DocumentId& id, std::unique_ptr<document::FieldValue> updateValue);
 
-    std::shared_ptr<document::DocumentUpdate> createHeaderUpdate(
-            const document::DocumentId& id,
-            const document::FieldValue& updateValue);
+    std::shared_ptr<document::DocumentUpdate>
+    createHeaderUpdate(const document::DocumentId& id, std::unique_ptr<document::FieldValue> updateValue);
 
     uint16_t getDiskFromBucketDatabaseIfUnset(const document::Bucket &);
 
@@ -205,9 +214,7 @@ public:
      */
     void doPut(const document::Document::SP& doc, spi::Timestamp, uint16_t usedBits = 16);
 
-    void doPut(const document::Document::SP& doc,
-               document::BucketId bid,
-               spi::Timestamp time);
+    void doPut(const document::Document::SP& doc, document::BucketId bid, spi::Timestamp time);
 
     spi::UpdateResult doUpdate(document::BucketId bid,
                                const std::shared_ptr<document::DocumentUpdate>& update,
@@ -229,11 +236,6 @@ public:
      * In-place modify doc so that it has no more body fields.
      */
     void clearBody(document::Document& doc);
-};
-
-class SingleDiskPersistenceTestUtils : public PersistenceTestUtils
-{
-public:
 };
 
 } // storage

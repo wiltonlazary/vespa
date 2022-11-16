@@ -22,7 +22,6 @@ import com.yahoo.jdisc.http.ConnectorConfig;
 import com.yahoo.jdisc.http.HttpRequest;
 import com.yahoo.jdisc.http.HttpResponse;
 import com.yahoo.jdisc.http.ServerConfig;
-import com.yahoo.jdisc.http.ServletPathsConfig;
 import com.yahoo.jdisc.http.filter.RequestFilter;
 import com.yahoo.jdisc.http.filter.ResponseFilter;
 import com.yahoo.jdisc.http.filter.ResponseHeaderFilter;
@@ -30,7 +29,7 @@ import com.yahoo.jdisc.http.filter.chain.RequestFilterChain;
 import com.yahoo.jdisc.http.filter.chain.ResponseFilterChain;
 import com.yahoo.jdisc.http.server.jetty.testutils.ConnectorFactoryRegistryModule;
 import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.io.IOException;
@@ -59,7 +58,7 @@ import static org.mockito.Mockito.when;
  */
 public class FilterTestCase {
     @Test
-    public void requireThatRequestFilterIsNotRunOnUnboundPath() throws Exception {
+    void requireThatRequestFilterIsNotRunOnUnboundPath() throws Exception {
         RequestFilterMockBase filter = mock(RequestFilterMockBase.class);
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", filter)
@@ -77,7 +76,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterIsRunOnBoundPath() throws Exception {
+    void requireThatRequestFilterIsRunOnBoundPath() throws Exception {
         final RequestFilter filter = mock(RequestFilterMockBase.class);
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", filter)
@@ -95,7 +94,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterChangesAreSeenByRequestHandler() throws Exception {
+    void requireThatRequestFilterChangesAreSeenByRequestHandler() throws Exception {
         final RequestFilter filter = new HeaderRequestFilter("foo", "bar");
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", filter)
@@ -113,7 +112,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterCanRespond() throws Exception {
+    void requireThatRequestFilterCanRespond() throws Exception {
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", new RespondForbiddenFilter())
                 .addRequestFilterBinding("my-request-filter", "http://*/*")
@@ -129,7 +128,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatFilterCanHaveNullCompletionHandler() throws Exception {
+    void requireThatFilterCanHaveNullCompletionHandler() throws Exception {
         final int responseStatus = Response.Status.OK;
         final String responseMessage = "Excellent";
         FilterBindings filterBindings = new FilterBindings.Builder()
@@ -149,7 +148,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterExecutionIsExceptionSafe() throws Exception {
+    void requireThatRequestFilterExecutionIsExceptionSafe() throws Exception {
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", new ThrowingRequestFilter())
                 .addRequestFilterBinding("my-request-filter", "http://*/*")
@@ -165,7 +164,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFilterIsNotRunOnUnboundPath() throws Exception {
+    void requireThatResponseFilterIsNotRunOnUnboundPath() throws Exception {
         final ResponseFilter filter = mock(ResponseFilterMockBase.class);
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addResponseFilter("my-response-filter", filter)
@@ -183,7 +182,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFilterIsRunOnBoundPath() throws Exception {
+    void requireThatResponseFilterIsRunOnBoundPath() throws Exception {
         final ResponseFilter filter = mock(ResponseFilterMockBase.class);
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addResponseFilter("my-response-filter", filter)
@@ -201,7 +200,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFilterChangesAreWrittenToResponse() throws Exception {
+    void requireThatResponseFilterChangesAreWrittenToResponse() throws Exception {
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addResponseFilter("my-response-filter", new HeaderResponseFilter("foo", "bar"))
                 .addResponseFilterBinding("my-response-filter", "http://*/*")
@@ -218,7 +217,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFilterExecutionIsExceptionSafe() throws Exception {
+    void requireThatResponseFilterExecutionIsExceptionSafe() throws Exception {
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addResponseFilter("my-response-filter", new ThrowingResponseFilter())
                 .addResponseFilterBinding("my-response-filter", "http://*/*")
@@ -234,7 +233,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterAndResponseFilterCanBindToSamePath() throws Exception {
+    void requireThatRequestFilterAndResponseFilterCanBindToSamePath() throws Exception {
         final RequestFilter requestFilter = mock(RequestFilterMockBase.class);
         final ResponseFilter responseFilter = mock(ResponseFilterMockBase.class);
         final String uriPattern = "http://*/*";
@@ -257,7 +256,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFromRequestFilterGoesThroughResponseFilter() throws Exception {
+    void requireThatResponseFromRequestFilterGoesThroughResponseFilter() throws Exception {
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", new RespondForbiddenFilter())
                 .addRequestFilterBinding("my-request-filter", "http://*/*")
@@ -277,7 +276,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterChainRetainsFilters() {
+    void requireThatRequestFilterChainRetainsFilters() {
         final RequestFilter requestFilter1 = mock(RequestFilter.class);
         final RequestFilter requestFilter2 = mock(RequestFilter.class);
 
@@ -297,7 +296,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterChainIsRun() throws Exception {
+    void requireThatRequestFilterChainIsRun() throws Exception {
         final RequestFilter requestFilter1 = mock(RequestFilter.class);
         final RequestFilter requestFilter2 = mock(RequestFilter.class);
         final RequestFilter requestFilterChain = RequestFilterChain.newInstance(requestFilter1, requestFilter2);
@@ -309,7 +308,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterChainCallsFilterWithOriginalRequest() throws Exception {
+    void requireThatRequestFilterChainCallsFilterWithOriginalRequest() throws Exception {
         final RequestFilter requestFilter = mock(RequestFilter.class);
         final RequestFilter requestFilterChain = RequestFilterChain.newInstance(requestFilter);
         final HttpRequest request = mock(HttpRequest.class);
@@ -326,7 +325,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterChainCallsFilterWithOriginalResponseHandler() throws Exception {
+    void requireThatRequestFilterChainCallsFilterWithOriginalResponseHandler() throws Exception {
         final RequestFilter requestFilter = mock(RequestFilter.class);
         final RequestFilter requestFilterChain = RequestFilterChain.newInstance(requestFilter);
         final HttpRequest request = null;
@@ -343,7 +342,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterCanTerminateChain() throws Exception {
+    void requireThatRequestFilterCanTerminateChain() throws Exception {
         final RequestFilter requestFilter1 = new RespondForbiddenFilter();
         final RequestFilter requestFilter2 = mock(RequestFilter.class);
         final RequestFilter requestFilterChain = RequestFilterChain.newInstance(requestFilter1, requestFilter2);
@@ -361,7 +360,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFilterChainRetainsFilters() {
+    void requireThatResponseFilterChainRetainsFilters() {
         final ResponseFilter responseFilter1 = mock(ResponseFilter.class);
         final ResponseFilter responseFilter2 = mock(ResponseFilter.class);
 
@@ -381,7 +380,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFilterChainIsRun() {
+    void requireThatResponseFilterChainIsRun() {
         final ResponseFilter responseFilter1 = new ResponseHeaderFilter("foo", "bar");
         final ResponseFilter responseFilter2 = mock(ResponseFilter.class);
         final int statusCode = Response.Status.BAD_GATEWAY;
@@ -400,7 +399,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatDefaultRequestFilterChainIsRunIfNoOtherFilterChainMatches() throws IOException, InterruptedException {
+    void requireThatDefaultRequestFilterChainIsRunIfNoOtherFilterChainMatches() throws IOException, InterruptedException {
         RequestFilter filterWithBinding = mock(RequestFilter.class);
         RequestFilter defaultFilter = mock(RequestFilter.class);
         String defaultFilterId = "default-request-filter";
@@ -423,7 +422,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatDefaultResponseFilterChainIsRunIfNoOtherFilterChainMatches() throws IOException, InterruptedException {
+    void requireThatDefaultResponseFilterChainIsRunIfNoOtherFilterChainMatches() throws IOException, InterruptedException {
         ResponseFilter filterWithBinding = mock(ResponseFilter.class);
         ResponseFilter defaultFilter = mock(ResponseFilter.class);
         String defaultFilterId = "default-response-filter";
@@ -446,7 +445,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestFilterWithBindingMatchHasPrecedenceOverDefaultFilter() throws IOException, InterruptedException {
+    void requireThatRequestFilterWithBindingMatchHasPrecedenceOverDefaultFilter() throws IOException, InterruptedException {
         RequestFilterMockBase filterWithBinding = mock(RequestFilterMockBase.class);
         RequestFilterMockBase defaultFilter = mock(RequestFilterMockBase.class);
         String defaultFilterId = "default-request-filter";
@@ -469,7 +468,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatResponseFilterWithBindingMatchHasPrecedenceOverDefaultFilter() throws IOException, InterruptedException {
+    void requireThatResponseFilterWithBindingMatchHasPrecedenceOverDefaultFilter() throws IOException, InterruptedException {
         ResponseFilter filterWithBinding = mock(ResponseFilter.class);
         ResponseFilter defaultFilter = mock(ResponseFilter.class);
         String defaultFilterId = "default-response-filter";
@@ -492,7 +491,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatMetricAreReported() throws IOException, InterruptedException {
+    void requireThatMetricAreReported() throws IOException, InterruptedException {
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", mock(RequestFilter.class))
                 .addRequestFilterBinding("my-request-filter", "http://*/*")
@@ -515,7 +514,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatStrictFilteringRejectsRequestsNotMatchingFilterChains() throws IOException {
+    void requireThatStrictFilteringRejectsRequestsNotMatchingFilterChains() throws IOException {
         RequestFilter filter = mock(RequestFilter.class);
         FilterBindings filterBindings = new FilterBindings.Builder()
                 .addRequestFilter("my-request-filter", filter)
@@ -532,7 +531,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestHandlerSpecIsAvailableThroughDelegate() throws IOException, InterruptedException {
+    void requireThatRequestHandlerSpecIsAvailableThroughDelegate() throws IOException, InterruptedException {
         MyRequestHandler requestHandler = new MyHttpRequestHandler();
         MyDelegatedHandler delegateHandler1 = new MyDelegatedHandler(requestHandler);
         MyDelegatedHandler delegateHandler2 = new MyDelegatedHandler(delegateHandler1);
@@ -540,7 +539,7 @@ public class FilterTestCase {
     }
 
     @Test
-    public void requireThatRequestHandlerSpecIsAvailable() throws IOException, InterruptedException {
+    void requireThatRequestHandlerSpecIsAvailable() throws IOException, InterruptedException {
         MyRequestHandler requestHandler = new MyHttpRequestHandler();
         requestHandlerSpecTest(requestHandler);
     }
@@ -585,7 +584,6 @@ public class FilterTestCase {
                         bind(FilterBindings.class).toInstance(filterBindings);
                         bind(ServerConfig.class).toInstance(new ServerConfig(new ServerConfig.Builder().strictFiltering(strictFiltering)));
                         bind(ConnectorConfig.class).toInstance(new ConnectorConfig(new ConnectorConfig.Builder()));
-                        bind(ServletPathsConfig.class).toInstance(new ServletPathsConfig(new ServletPathsConfig.Builder()));
                         bind(ConnectionLog.class).toInstance(new VoidConnectionLog());
                         bind(RequestLog.class).toInstance(new VoidRequestLog());
                     }

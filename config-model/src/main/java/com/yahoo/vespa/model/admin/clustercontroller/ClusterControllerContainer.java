@@ -25,8 +25,11 @@ import com.yahoo.vespa.model.container.component.SystemBindingPattern;
 import com.yahoo.vespa.model.container.xml.ContainerModelBuilder;
 import com.yahoo.vespa.model.container.PlatformBundles;
 
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+
+import static com.yahoo.vespa.model.container.docproc.DocprocChains.DOCUMENT_TYPE_MANAGER_CLASS;
 
 /**
  * Container implementation for cluster-controllers
@@ -40,11 +43,13 @@ public class ClusterControllerContainer extends Container implements
     private static final ComponentSpecification CLUSTERCONTROLLER_BUNDLE = new ComponentSpecification("clustercontroller-apps");
     private static final ComponentSpecification ZOOKEEPER_SERVER_BUNDLE = new ComponentSpecification("zookeeper-server");
     private static final ComponentSpecification REINDEXING_CONTROLLER_BUNDLE = new ComponentSpecification("clustercontroller-reindexer");
-    // The below adjustments to default netty settings reduces default chunkSize from 16M to 1M
+    // The below adjustments to default netty settings reduces default chunkSize from 16M to 128K
     private static final int DEFAULT_NETTY_PAGE_SIZE = 4096; // Reduced from nettys default of 8192
-    private static final int DEFAULT_NETTY_MAX_ORDER = 8; // Reduced from nettys default of 11
+    private static final int DEFAULT_NETTY_MAX_ORDER = 5; // Reduced from nettys default of 11
+    private static final int DEFAULT_NETTY_NUM_DIRECT_ARENAS = 1; // Reduced from nettys default of 2*cores
+    private static final int DEFAULT_NETTY_NUM_HEAP_ARENAS = 1; // Reduced from nettys default of 2*cores
 
-    private final Set<String> bundles = new TreeSet<>();
+    private final Set<String> bundles = new TreeSet<>(); // Ensure stable ordering
 
     public ClusterControllerContainer(AbstractConfigProducer<?> parent,
                                       int index,
@@ -61,8 +66,8 @@ public class ClusterControllerContainer extends Container implements
                    "/cluster/v2/*",
                    CLUSTERCONTROLLER_BUNDLE);
         addComponent(new AccessLogComponent(containerCluster().orElse(null), AccessLogComponent.AccessLogType.jsonAccessLog,
-                                            AccessLogComponent.CompressionType.GZIP,
-                                            "controller",
+                                            deployState.featureFlags().logFileCompressionAlgorithm("zstd"),
+                                            Optional.of("controller"),
                                             deployState.isHosted()));
 
         // TODO: Why are bundles added here instead of in the cluster?
@@ -72,12 +77,16 @@ public class ClusterControllerContainer extends Container implements
         addFileBundle("zookeeper-server");
         configureReindexing();
         configureZooKeeperServer(runStandaloneZooKeeper);
-        prependJvmOptions(defaultNettyBufferSize(DEFAULT_NETTY_PAGE_SIZE, DEFAULT_NETTY_MAX_ORDER));
+        prependJvmOptions(defaultNettyBufferSize(DEFAULT_NETTY_NUM_HEAP_ARENAS, DEFAULT_NETTY_NUM_DIRECT_ARENAS,
+                DEFAULT_NETTY_PAGE_SIZE, DEFAULT_NETTY_MAX_ORDER));
     }
 
-    private static String defaultNettyBufferSize(int pageSize, int maxOrder) {
+    private static String defaultNettyBufferSize(int numHeapArenas, int numDirectArenas, int pageSize, int maxOrder) {
         return new StringBuffer("-Dio.netty.allocator.pageSize=").append(pageSize)
-                .append(" -Dio.netty.allocator.maxOrder=").append(maxOrder).toString();
+                .append(" -Dio.netty.allocator.maxOrder=").append(maxOrder)
+                .append(" -Dio.netty.allocator.numHeapArenas=").append(numHeapArenas)
+                .append(" -Dio.netty.allocator.numDirectArenas=").append(numDirectArenas)
+                .toString();
     }
 
     @Override
@@ -109,7 +118,7 @@ public class ClusterControllerContainer extends Container implements
                          ZOOKEEPER_SERVER_BUNDLE);
     }
 
-    private void addHandler(Handler<?> h, String path) {
+    private void addHandler(Handler h, String path) {
         h.addServerBindings(SystemBindingPattern.fromHttpPath(path));
         super.addHandler(h);
     }
@@ -129,7 +138,7 @@ public class ClusterControllerContainer extends Container implements
     }
 
     private void addHandler(String id, String className, String path, ComponentSpecification bundle) {
-        addHandler(new Handler<>(createComponentModel(id, className, bundle)), path);
+        addHandler(new Handler(createComponentModel(id, className, bundle)), path);
     }
 
     private ReindexingContext reindexingContext() {
@@ -142,6 +151,8 @@ public class ClusterControllerContainer extends Container implements
         addComponent("reindexing-maintainer",
                      "ai.vespa.reindexing.ReindexingMaintainer",
                      REINDEXING_CONTROLLER_BUNDLE);
+
+        addComponent(new SimpleComponent(DOCUMENT_TYPE_MANAGER_CLASS));
         addHandler("reindexing-status",
                    "ai.vespa.reindexing.http.ReindexingV1ApiHandler",
                    "/reindexing/v1/*",
@@ -177,7 +188,8 @@ public class ClusterControllerContainer extends Container implements
                         status -> clusterBuilder.documentTypes(
                                 typeName,
                                 new ReindexingConfig.Clusters.DocumentTypes.Builder()
-                                        .readyAtMillis(status.ready().toEpochMilli())));
+                                        .readyAtMillis(status.ready().toEpochMilli())
+                                        .speed(status.speed())));
             }
             builder.clusters(clusterId, clusterBuilder);
         }

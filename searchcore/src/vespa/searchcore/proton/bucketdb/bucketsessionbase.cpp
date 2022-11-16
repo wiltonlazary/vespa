@@ -10,6 +10,9 @@ BucketSessionBase::BucketSessionBase(BucketDBOwner &bucketDB, IBucketCreateNotif
 {
 }
 
+BucketSessionBase::~BucketSessionBase() {
+    _bucketDB->restoreIntegrity();
+}
 
 bool
 BucketSessionBase::extractInfo(const BucketId &bucket, BucketState *&state)
@@ -22,8 +25,7 @@ BucketSessionBase::extractInfo(const BucketId &bucket, BucketState *&state)
 
 
 bool
-BucketSessionBase::calcFixupNeed(BucketState *state, bool wantActive,
-                                 bool fixup)
+BucketSessionBase::calcFixupNeed(BucketState *state, bool wantActive, bool fixup)
 {
     if (state && state->isActive() != wantActive) {
         if (fixup) {

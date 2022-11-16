@@ -38,8 +38,7 @@ public:
     using IntervalRange = uint16_t;
     using IntervalRangeVector = vespalib::RcuVectorBase<IntervalRange>;
 
-    DECLARE_IDENTIFIABLE_ABSTRACT(PredicateAttribute);
-
+    PredicateAttribute(const vespalib::string &base_file_name);
     PredicateAttribute(const vespalib::string &base_file_name, const Config &config);
 
     ~PredicateAttribute() override;
@@ -49,8 +48,8 @@ public:
     void onSave(IAttributeSaveTarget & saveTarget) override;
     bool onLoad(vespalib::Executor *executor) override;
     void onCommit() override;
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
     void onUpdateStat() override;
     bool addDoc(DocId &doc_id) override;
     uint32_t clearDoc(DocId doc_id) override;
@@ -63,11 +62,12 @@ public:
      * The pointer is only guaranteed to be valid for as long as you hold the attribute guard.
      **/
     MinFeatureHandle getMinFeatureVector() const {
-        return MinFeatureHandle(&_min_feature[0], getNumDocs());
+        const auto* min_feature_vector = &_min_feature.acquire_elem_ref(0);
+        return MinFeatureHandle(min_feature_vector, getNumDocs());
     }
 
     const IntervalRange * getIntervalRangeVector() const {
-        return &_interval_range_vector[0];
+        return &_interval_range_vector.acquire_elem_ref(0);
     }
 
     IntervalRange getMaxIntervalRange() const {

@@ -1,18 +1,18 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.ca.restapi;
 
 import com.yahoo.application.Networking;
 import com.yahoo.application.container.JDisc;
 import com.yahoo.application.container.handler.Request;
 import com.yahoo.vespa.hosted.ca.restapi.mock.SecretStoreMock;
-import org.junit.After;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import java.io.UncheckedIOException;
 import java.nio.charset.CharacterCodingException;
 import java.util.function.Consumer;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * The superclass of REST API tests which require a functional container instance.
@@ -23,12 +23,12 @@ public class ContainerTester {
 
     private JDisc container;
 
-    @Before
+    @BeforeEach
     public void startContainer() {
         container = JDisc.fromServicesXml(servicesXml(), Networking.enable);
     }
 
-    @After
+    @AfterEach
     public void stopContainer() {
         container.close();
     }
@@ -64,6 +64,7 @@ public class ContainerTester {
                "    <serviceName>servicename</serviceName>\n" +
                "    <secretName>secretname</secretName>\n" +
                "    <secretVersion>0</secretVersion>\n" +
+               "    <caCertSecretName>vespa.external.ca.cert</caCertSecretName>\n" +
                "    <certDnsSuffix>suffix</certDnsSuffix>\n" +
                "    <ztsUrl>https://localhost:123/</ztsUrl>\n" +
                "  </config>\n" +

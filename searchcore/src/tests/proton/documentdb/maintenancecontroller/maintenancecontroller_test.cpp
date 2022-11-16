@@ -1,22 +1,25 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-
+#include <vespa/config-attributes.h>
+#include <vespa/document/repo/documenttyperepo.h>
+#include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/test/make_bucket_space.h>
+#include <vespa/fastos/thread.h>
+#include <vespa/persistence/dummyimpl/dummy_bucket_executor.h>
 #include <vespa/searchcore/proton/attribute/attribute_config_inspector.h>
 #include <vespa/searchcore/proton/attribute/attribute_usage_filter.h>
 #include <vespa/searchcore/proton/attribute/i_attribute_manager.h>
 #include <vespa/searchcore/proton/bucketdb/bucket_create_notifier.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/common/doctypename.h>
-#include <vespa/searchcore/proton/common/monitored_refcount.h>
-#include <vespa/searchcore/proton/common/transient_resource_usage_provider.h>
-#include <vespa/searchcore/proton/documentmetastore/operation_listener.h>
 #include <vespa/searchcore/proton/documentmetastore/documentmetastore.h>
+#include <vespa/searchcore/proton/documentmetastore/operation_listener.h>
 #include <vespa/searchcore/proton/feedoperation/moveoperation.h>
 #include <vespa/searchcore/proton/feedoperation/pruneremoveddocumentsoperation.h>
 #include <vespa/searchcore/proton/feedoperation/putoperation.h>
 #include <vespa/searchcore/proton/feedoperation/removeoperation.h>
 #include <vespa/searchcore/proton/server/blockable_maintenance_job.h>
 #include <vespa/searchcore/proton/server/executor_thread_service.h>
-#include <vespa/searchcore/proton/server/i_document_scan_iterator.h>
 #include <vespa/searchcore/proton/server/i_operation_storer.h>
 #include <vespa/searchcore/proton/server/ibucketmodifiedhandler.h>
 #include <vespa/searchcore/proton/server/idocumentmovehandler.h>
@@ -27,24 +30,19 @@
 #include <vespa/searchcore/proton/server/maintenancecontroller.h>
 #include <vespa/searchcore/proton/test/buckethandler.h>
 #include <vespa/searchcore/proton/test/clusterstatehandler.h>
-#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/test/disk_mem_usage_notifier.h>
 #include <vespa/searchcore/proton/test/mock_attribute_manager.h>
 #include <vespa/searchcore/proton/test/test.h>
-#include <vespa/config-attributes.h>
-#include <vespa/document/repo/documenttyperepo.h>
-#include <vespa/document/test/make_bucket_space.h>
-#include <vespa/persistence/dummyimpl/dummy_bucket_executor.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/searchlib/common/idocumentmetastore.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/vespalib/data/slime/slime.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/vespalib/util/gate.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/monitored_refcount.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
-#include <vespa/fastos/thread.h>
 #include <unistd.h>
 #include <thread>
 
@@ -68,6 +66,7 @@ using search::SerialNum;
 using search::CommitParam;
 using storage::spi::BucketInfo;
 using storage::spi::Timestamp;
+using vespalib::MonitoredRefCount;
 using vespalib::Slime;
 using vespalib::makeLambdaTask;
 using vespa::config::search::AttributesConfigBuilder;
@@ -80,6 +79,8 @@ typedef BucketId::List BucketIdVector;
 constexpr vespalib::duration TIMEOUT = 60s;
 
 namespace {
+
+VESPA_THREAD_STACK_TAG(my_executor_init);
 
 void
 sampleThreadId(FastOS_ThreadId *threadId)
@@ -97,11 +98,11 @@ class MyDocumentSubDB
     uint32_t _subDBId;
     DocumentMetaStore::SP _metaStoreSP;
     DocumentMetaStore & _metaStore;
-    const std::shared_ptr<const document::DocumentTypeRepo> &_repo;
+    std::shared_ptr<const document::DocumentTypeRepo> _repo;
     const DocTypeName &_docTypeName;
 
 public:
-    MyDocumentSubDB(uint32_t subDBId, SubDbType subDbType, const std::shared_ptr<const document::DocumentTypeRepo> &repo,
+    MyDocumentSubDB(uint32_t subDBId, SubDbType subDbType, std::shared_ptr<const document::DocumentTypeRepo> repo,
                     std::shared_ptr<bucketdb::BucketDBOwner> bucketDB, const DocTypeName &docTypeName);
     ~MyDocumentSubDB();
 
@@ -134,7 +135,7 @@ public:
     const IDocumentMetaStore &getMetaStore() const { return _metaStore; }
 };
 
-MyDocumentSubDB::MyDocumentSubDB(uint32_t subDBId, SubDbType subDbType, const std::shared_ptr<const document::DocumentTypeRepo> &repo,
+MyDocumentSubDB::MyDocumentSubDB(uint32_t subDBId, SubDbType subDbType, std::shared_ptr<const document::DocumentTypeRepo> repo,
                                  std::shared_ptr<bucketdb::BucketDBOwner> bucketDB, const DocTypeName &docTypeName)
     : _docs(),
       _subDBId(subDBId),
@@ -142,7 +143,7 @@ MyDocumentSubDB::MyDocumentSubDB(uint32_t subDBId, SubDbType subDbType, const st
               std::move(bucketDB), DocumentMetaStore::getFixedName(), search::GrowStrategy(),
               subDbType)),
       _metaStore(*_metaStoreSP),
-      _repo(repo),
+      _repo(std::move(repo)),
       _docTypeName(docTypeName)
 {
     _metaStore.constructFreeList();
@@ -205,11 +206,11 @@ struct MyBucketModifiedHandler : public IBucketModifiedHandler
 
 struct MySessionCachePruner : public ISessionCachePruner
 {
-    bool isInvoked;
+    std::atomic<bool> isInvoked;
     MySessionCachePruner() : isInvoked(false) { }
     void pruneTimedOutSessions(vespalib::steady_time current) override {
         (void) current;
-        isInvoked = true;
+        isInvoked.store(true, std::memory_order_relaxed);
     }
 };
 
@@ -222,7 +223,7 @@ class MyFeedHandler : public IDocumentMoveHandler,
     FastOS_ThreadId                _executorThreadId;
     std::vector<MyDocumentSubDB *> _subDBs;
     SerialNum                      _serialNum;
-    uint32_t                       _heartBeats;
+    std::atomic<uint32_t>          _heartBeats;
 public:
     explicit MyFeedHandler(FastOS_ThreadId &executorThreadId);
 
@@ -246,17 +247,20 @@ public:
     }
 
     uint32_t getHeartBeats() const {
-        return _heartBeats;
+        return _heartBeats.load(std::memory_order_relaxed);
     }
 };
 
-
-class MyExecutor: public vespalib::ThreadStackExecutor
+class MyExecutor : public vespalib::ThreadStackExecutorBase
 {
 public:
     FastOS_ThreadId       _threadId;
 
     MyExecutor();
+    bool acceptNewTask(unique_lock &, std::condition_variable &) override {
+        return isRoomForNewTask();
+    }
+    void wakeup(unique_lock &, std::condition_variable &) override {}
 
     ~MyExecutor() override;
 
@@ -326,7 +330,7 @@ class MaintenanceControllerFixture
 public:
     MyExecutor                         _executor;
     MyExecutor                         _genericExecutor;
-    ExecutorThreadService              _threadService;
+    SyncableExecutorThreadService      _threadService;
     DummyBucketExecutor                _bucketExecutor;
     DocTypeName                        _docTypeName;
     test::UserDocumentsBuilder         _builder;
@@ -349,6 +353,7 @@ public:
     test::DiskMemUsageNotifier         _diskMemUsageNotifier;
     BucketCreateNotifier               _bucketCreateNotifier;
     MonitoredRefCount                  _refCount;
+    Transport                       _transport;
     MaintenanceController              _mc;
 
     MaintenanceControllerFixture();
@@ -477,7 +482,7 @@ MyDocumentSubDB::handlePruneRemovedDocuments(const PruneRemovedDocumentsOperatio
     const LidVectorContext &lidCtx = *op.getLidsToRemove();
     const LidVector &lidsToRemove(lidCtx.getLidVector());
     _metaStore.removeBatch(lidsToRemove, lidCtx.getDocIdLimit());
-    _metaStore.removeBatchComplete(lidsToRemove);
+    _metaStore.removes_complete(lidsToRemove);
     _metaStore.commit(serialNum);
     for (auto lid : lidsToRemove) {
         _docs.erase(lid);
@@ -517,7 +522,7 @@ MyDocumentSubDB::handlePut(PutOperation &op)
         bool remres = _metaStore.remove(op.getPrevLid(), 0u);
         assert(remres);
         (void) remres;
-        _metaStore.removeComplete(op.getPrevLid());
+        _metaStore.removes_complete({ op.getPrevLid() });
 
         _docs.erase(op.getPrevLid());
         needCommit = true;
@@ -564,7 +569,7 @@ MyDocumentSubDB::handleRemove(RemoveOperationWithDocId &op)
         assert(remres);
         (void) remres;
 
-        _metaStore.removeComplete(op.getPrevLid());
+        _metaStore.removes_complete({ op.getPrevLid() });
         _docs.erase(op.getPrevLid());
         needCommit = true;
     }
@@ -618,7 +623,7 @@ MyDocumentSubDB::handleMove(const MoveOperation &op)
         assert(remres);
         (void) remres;
 
-        _metaStore.removeComplete(op.getPrevLid());
+        _metaStore.removes_complete({ op.getPrevLid() });
         _docs.erase(op.getPrevLid());
         needCommit = true;
     }
@@ -693,7 +698,7 @@ void
 MyFeedHandler::heartBeat()
 {
     assert(isExecutorThread());
-    ++_heartBeats;
+    _heartBeats.store(_heartBeats.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 }
 
 
@@ -711,23 +716,27 @@ MyFeedHandler::appendOperation(const FeedOperation &op, DoneCallback)
 }
 
 MyExecutor::MyExecutor()
-    : vespalib::ThreadStackExecutor(1, 128_Ki),
-      _threadId()
+  : vespalib::ThreadStackExecutorBase(128_Ki, -1, my_executor_init),
+    _threadId()
 {
+    start(1);
     execute(makeLambdaTask([this]() {
-        sampleThreadId(&_threadId);
-    }));
+                sampleThreadId(&_threadId);
+            }));
     sync();
 }
 
-MyExecutor::~MyExecutor() = default;
+MyExecutor::~MyExecutor()
+{
+    cleanup();
+}
 
 bool
 MyExecutor::isIdle()
 {
     (void) getStats();
     sync();
-    Stats stats(getStats());
+    auto stats = getStats();
     return stats.acceptedTasks == 0u;
 }
 
@@ -768,7 +777,8 @@ MaintenanceControllerFixture::MaintenanceControllerFixture()
       _attributeUsageFilter(),
       _bucketCreateNotifier(),
       _refCount(),
-      _mc(_threadService, _genericExecutor, _refCount, _docTypeName)
+      _transport(),
+      _mc(_transport.transport(), _threadService, _genericExecutor, _refCount, _docTypeName)
 {
     std::vector<MyDocumentSubDB *> subDBs;
     subDBs.push_back(&_ready);
@@ -824,8 +834,6 @@ MaintenanceControllerFixture::injectMaintenanceJobs()
                                             _bucketCreateNotifier, makeBucketSpace(), _fh, _fh,
                                             _bmc, _clusterStateHandler, _bucketHandler, _calc, _diskMemUsageNotifier,
                                             _jobTrackers, _readyAttributeManager, _notReadyAttributeManager,
-                                            std::make_unique<const AttributeConfigInspector>(AttributesConfigBuilder()),
-                                            std::make_shared<TransientResourceUsageProvider>(),
                                             _attributeUsageFilter);
     }
 }
@@ -946,17 +954,17 @@ TEST_F("require that heartbeats are scheduled", MaintenanceControllerFixture)
 TEST_F("require that periodic session prunings are scheduled",
        MaintenanceControllerFixture)
 {
-    ASSERT_FALSE(f._gsp.isInvoked);
+    ASSERT_FALSE(f._gsp.isInvoked.load(std::memory_order_relaxed));
     f.notifyClusterStateChanged();
     f.startMaintenance();
     f.setGroupingSessionPruneInterval(200ms);
     for (uint32_t i = 0; i < 600; ++i) {
         std::this_thread::sleep_for(100ms);
-        if (f._gsp.isInvoked) {
+        if (f._gsp.isInvoked.load(std::memory_order_relaxed)) {
             break;
         }
     }
-    ASSERT_TRUE(f._gsp.isInvoked);
+    ASSERT_TRUE(f._gsp.isInvoked.load(std::memory_order_relaxed));
 }
 
 TEST_F("require that a simple maintenance job is executed", MaintenanceControllerFixture)

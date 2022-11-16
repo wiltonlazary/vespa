@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.collections.Tuple2;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.jdisc.Request;
@@ -18,13 +18,14 @@ import com.yahoo.jdisc.handler.ResponseDispatch;
 import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.jdisc.http.HttpHeaders;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static com.yahoo.container.jdisc.state.JsonUtil.sanitizeDouble;
@@ -61,6 +62,7 @@ public class MetricsPacketsHandler extends AbstractRequestHandler {
     private final Timer timer;
     private final SnapshotProvider snapshotProvider;
     private final String applicationName;
+    private final String hostDimension;
 
     @Inject
     public MetricsPacketsHandler(StateMonitor monitor,
@@ -71,6 +73,7 @@ public class MetricsPacketsHandler extends AbstractRequestHandler {
         this.timer = timer;
         snapshotProvider = getSnapshotProviderOrThrow(snapshotProviders);
         applicationName = config.application();
+        hostDimension = config.hostname();
     }
 
 
@@ -80,7 +83,7 @@ public class MetricsPacketsHandler extends AbstractRequestHandler {
             @Override
             protected Response newResponse() {
                 Response response = new Response(Response.Status.OK);
-                response.headers().add(HttpHeaders.Names.CONTENT_TYPE, "application/json");
+                response.headers().add(HttpHeaders.Names.CONTENT_TYPE, getContentType(request.getUri().getQuery()));
                 return response;
             }
 
@@ -98,10 +101,16 @@ public class MetricsPacketsHandler extends AbstractRequestHandler {
             if (query != null && query.equals("array-formatted")) {
                 return getMetricsArray();
             }
+            if ("format=prometheus".equals(query)) {
+                return buildPrometheusOutput();
+            }
+
             String output = jsonToString(getStatusPacket()) + getAllMetricsPackets() + "\n";
             return output.getBytes(StandardCharsets.UTF_8);
         } catch (JsonProcessingException e) {
             throw new RuntimeException("Bad JSON construction.", e);
+        } catch (IOException e) {
+            throw new RuntimeException("Unexcpected IOException.", e);
         }
     }
 
@@ -115,6 +124,13 @@ public class MetricsPacketsHandler extends AbstractRequestHandler {
         root.set("metrics", jsonArray);
         return jsonToString(root)
                 .getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Returns metrics in Prometheus format
+     */
+    private byte[] buildPrometheusOutput() throws IOException {
+        return PrometheusHelper.buildPrometheusOutput(getSnapshot(), applicationName, timer.currentTimeMillis());
     }
 
     /**
@@ -173,16 +189,16 @@ public class MetricsPacketsHandler extends AbstractRequestHandler {
     }
 
     private void addDimensions(MetricDimensions metricDimensions, ObjectNode packet) {
-        if (metricDimensions == null) return;
+        if (metricDimensions == null && hostDimension.isEmpty()) return;
 
-        Iterator<Map.Entry<String, String>> dimensionsIterator = metricDimensions.iterator();
-        if (dimensionsIterator.hasNext()) {
-            ObjectNode jsonDim = jsonMapper.createObjectNode();
-            packet.set(DIMENSIONS_KEY, jsonDim);
-            for (Map.Entry<String, String> dimensionEntry : metricDimensions) {
-                jsonDim.put(dimensionEntry.getKey(), dimensionEntry.getValue());
-            }
+        ObjectNode jsonDim = jsonMapper.createObjectNode();
+        packet.set(DIMENSIONS_KEY, jsonDim);
+        Iterable<Map.Entry<String, String>> dimensionIterator = metricDimensions == null ? Set.of() : metricDimensions;
+        for (Map.Entry<String, String> dimensionEntry : dimensionIterator) {
+            jsonDim.put(dimensionEntry.getKey(), dimensionEntry.getValue());
         }
+        if (!hostDimension.isEmpty() && !jsonDim.has("host"))
+            jsonDim.put("host", hostDimension);
     }
 
     private void addMetrics(MetricSet metricSet, ObjectNode packet) {
@@ -207,6 +223,13 @@ public class MetricsPacketsHandler extends AbstractRequestHandler {
                 throw new UnsupportedOperationException("Unknown metric class: " + value.getClass().getName());
             }
         }
+    }
+
+    private String getContentType(String query) {
+        if ("format=prometheus".equals(query)) {
+            return "text/plain;charset=utf-8";
+        }
+        return "application/json";
     }
 
 }

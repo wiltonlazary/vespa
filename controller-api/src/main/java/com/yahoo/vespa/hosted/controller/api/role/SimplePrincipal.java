@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.role;
 
 import java.security.Principal;
@@ -16,6 +16,10 @@ public class SimplePrincipal implements Principal {
         if (name.isBlank())
             throw new IllegalArgumentException("Name cannot be blank");
         this.name = name;
+    }
+
+    public static SimplePrincipal of(Principal principal) {
+        return new SimplePrincipal(principal.getName());
     }
 
     @Override

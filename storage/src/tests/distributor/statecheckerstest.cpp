@@ -38,14 +38,15 @@ struct StateCheckersTest : Test, DistributorStripeTestUtil {
     struct PendingMessage
     {
         uint32_t _msgType;
+        uint16_t _node;
         uint8_t _pri;
 
-        PendingMessage() : _msgType(UINT32_MAX), _pri(0) {}
+        constexpr PendingMessage() noexcept : _msgType(UINT32_MAX), _node(0), _pri(0) {}
 
-        PendingMessage(uint32_t msgType, uint8_t pri)
-            : _msgType(msgType), _pri(pri) {}
+        constexpr PendingMessage(uint32_t msgType, uint8_t pri) noexcept
+            : _msgType(msgType), _node(0), _pri(pri) {}
 
-        bool shouldCheck() const { return _msgType != UINT32_MAX; }
+        bool shouldCheck() const noexcept { return _msgType != UINT32_MAX; }
     };
 
     void enableClusterState(const lib::ClusterState& systemState) {
@@ -87,18 +88,17 @@ struct StateCheckersTest : Test, DistributorStripeTestUtil {
         c.siblingEntry = getBucketDatabase(c.getBucketSpace()).get(c.siblingBucket);
 
         c.entries = entries;
-        for (uint32_t j = 0; j < entries.size(); ++j) {
+        for (const auto & entry : entries) {
             // Run checking only on this bucketid, but include all buckets
             // owned by it or owners of it, so we can detect inconsistent split.
-            if (entries[j].getBucketId() == c.getBucketId()) {
-                c.entry = entries[j];
+            if (entry.getBucketId() == c.getBucketId()) {
+                c.entry = entry;
 
                 StateChecker::Result result(checker.check(c));
                 IdealStateOperation::UP op(result.createOperation());
                 if (op.get()) {
                     if (blocker.shouldCheck()
-                        && op->shouldBlockThisOperation(blocker._msgType,
-                                                        blocker._pri))
+                        && op->shouldBlockThisOperation(blocker._msgType, blocker._node, blocker._pri))
                     {
                         return "BLOCKED";
                     }
@@ -175,6 +175,8 @@ struct StateCheckersTest : Test, DistributorStripeTestUtil {
         bool _includeSchedulingPriority {false};
         bool _merge_operations_disabled {false};
         bool _prioritize_global_bucket_merges {true};
+        bool _config_enable_default_space_merge_inhibition {false};
+        bool _merges_inhibited_in_bucket_space {false};
         CheckerParams();
         ~CheckerParams();
 
@@ -222,6 +224,14 @@ struct StateCheckersTest : Test, DistributorStripeTestUtil {
             _bucket_space = bucket_space;
             return *this;
         }
+        CheckerParams& config_enable_default_space_merge_inhibition(bool enabled) noexcept {
+            _config_enable_default_space_merge_inhibition = enabled;
+            return *this;
+        }
+        CheckerParams& merges_inhibited_in_bucket_space(bool inhibited) noexcept {
+            _merges_inhibited_in_bucket_space = inhibited;
+            return *this;
+        }
     };
 
     template <typename CheckerImpl>
@@ -236,10 +246,12 @@ struct StateCheckersTest : Test, DistributorStripeTestUtil {
         vespa::config::content::core::StorDistributormanagerConfigBuilder config;
         config.mergeOperationsDisabled = params._merge_operations_disabled;
         config.prioritizeGlobalBucketMerges = params._prioritize_global_bucket_merges;
+        config.inhibitDefaultMergesWhenGlobalMergesPending = params._config_enable_default_space_merge_inhibition;
         configure_stripe(config);
         if (!params._pending_cluster_state.empty()) {
             simulate_set_pending_cluster_state(params._pending_cluster_state);
         }
+        getBucketSpaceRepo().get(params._bucket_space).set_merges_inhibited(params._merges_inhibited_in_bucket_space);
         NodeMaintenanceStatsTracker statsTracker;
         StateChecker::Context c(node_context(),
                                 operation_context(),
@@ -272,6 +284,14 @@ struct StateCheckersTest : Test, DistributorStripeTestUtil {
                                 bool includePriority = false);
     std::string testBucketStatePerGroup(const std::string& bucketInfo,
                                         bool includePriority = false);
+
+    void do_test_bucket_activation();
+
+    void set_node_supports_no_implicit_indexing_on_activation(uint16_t node, bool supported) {
+        NodeSupportedFeatures nsf;
+        nsf.no_implicit_indexing_of_active_buckets = supported;
+        set_node_supported_features(node, nsf);
+    }
 };
 
 StateCheckersTest::CheckerParams::CheckerParams() = default;
@@ -818,6 +838,32 @@ TEST_F(StateCheckersTest, no_merge_operation_generated_if_merges_explicitly_conf
             .merge_operations_disabled(true));
 }
 
+TEST_F(StateCheckersTest, no_merge_operation_generated_if_merges_inhibited_in_default_bucket_space_and_config_allowed) {
+    // Technically, the state checker doesn't look at global vs. non-global but instead defers
+    // to the distributor bucket space repo to set the inhibition flag on the correct bucket space.
+    // This particular logic is tested at a higher repo-level.
+    runAndVerify<SynchronizeAndMoveStateChecker>(
+            CheckerParams()
+                    .expect("NO OPERATIONS GENERATED") // Would normally generate a merge op
+                    .bucketInfo("0=1,2=2")
+                    .config_enable_default_space_merge_inhibition(true)
+                    .merges_inhibited_in_bucket_space(true)
+                    .clusterState("distributor:1 storage:3"));
+}
+
+TEST_F(StateCheckersTest, merge_operation_still_generated_if_merges_inhibited_in_default_bucket_space_but_config_disallowed) {
+    runAndVerify<SynchronizeAndMoveStateChecker>(
+            CheckerParams()
+                    .expect("[Moving bucket to ideal node 1]"
+                            "[Synchronizing buckets with different checksums "
+                            "node(idx=0,crc=0x1,docs=1/1,bytes=1/1,trusted=false,active=false,ready=false), "
+                            "node(idx=2,crc=0x2,docs=2/2,bytes=2/2,trusted=false,active=false,ready=false)]")
+                    .bucketInfo("0=1,2=2")
+                    .config_enable_default_space_merge_inhibition(false)
+                    .merges_inhibited_in_bucket_space(true)
+                    .clusterState("distributor:1 storage:3"));
+}
+
 std::string
 StateCheckersTest::testDeleteExtraCopies(
         const std::string& bucketInfo, uint32_t redundancy,
@@ -858,7 +904,7 @@ TEST_F(StateCheckersTest, delete_extra_copies) {
 
     EXPECT_EQ("[Removing all copies since bucket is empty:node(idx=0,crc=0x0,"
               "docs=0/0,bytes=0/0,trusted=false,active=false,ready=false)]"
-              " (pri 100)",
+              " (pri 120)",
               testDeleteExtraCopies("0=0", 2, PendingMessage(), "", true)) << "Remove empty buckets";
 
     EXPECT_EQ("[Removing redundant in-sync copy from node 2]",
@@ -959,7 +1005,7 @@ std::string StateCheckersTest::testBucketState(
                             includePriority);
 }
 
-TEST_F(StateCheckersTest, bucket_state) {
+void StateCheckersTest::do_test_bucket_activation() {
     setup_stripe(2, 100, "distributor:1 storage:4");
 
     {
@@ -997,11 +1043,13 @@ TEST_F(StateCheckersTest, bucket_state) {
     EXPECT_EQ("[Setting node 0 as active: copy has 3 docs]",
               testBucketState("0=2/3/4"));
 
+    // TODO remove this
     // A replica with more documents should be preferred over one with fewer.
     EXPECT_EQ("[Setting node 3 as active: copy has 6 docs and ideal state priority 1]"
               "[Setting node 1 as inactive]",
               testBucketState("1=2/3/4/u/a,3=5/6/7/t"));
 
+    // TODO remove this
     // Replica 2 has most documents and should be activated
     EXPECT_EQ("[Setting node 2 as active: copy has 9 docs]",
               testBucketState("1=2/3/4,3=5/6/7/,2=8/9/10/t"));
@@ -1049,16 +1097,38 @@ TEST_F(StateCheckersTest, bucket_state) {
               testBucketState("2=8/9/10/u/i/r,1=2/3/4/u/a/r,3=5/6/7/u/i/r"));
 }
 
+TEST_F(StateCheckersTest, bucket_activation_behaves_as_expected_with_implicit_indexing_on_active) {
+    set_node_supports_no_implicit_indexing_on_activation(2, false);
+    do_test_bucket_activation();
+}
+
+TEST_F(StateCheckersTest, bucket_activation_behaves_as_expected_without_implicit_indexing_on_active) {
+    set_node_supports_no_implicit_indexing_on_activation(2, true);
+    do_test_bucket_activation();
+}
+
 /**
  * Users assume that setting nodes into maintenance will not cause extra load
  * on the cluster, but activating non-ready copies because the active copy went
  * into maintenance violates that assumption. See bug 6833209 for context and
  * details.
  */
-TEST_F(StateCheckersTest, do_not_activate_non_ready_copies_when_ideal_node_in_maintenance) {
+TEST_F(StateCheckersTest, do_not_activate_non_ready_copies_when_ideal_node_in_maintenance_if_active_implicitly_indexes) {
     setup_stripe(2, 100, "distributor:1 storage:4 .1.s:m");
+    set_node_supports_no_implicit_indexing_on_activation(2, false);
     // Ideal node 1 is in maintenance and no ready copy available.
     EXPECT_EQ("NO OPERATIONS GENERATED",
+              testBucketState("2=8/9/10/t/i/u,3=5/6/7"));
+    // But we should activate another copy iff there's another ready copy.
+    EXPECT_EQ("[Setting node 2 as active: copy is ready with 9 docs]",
+              testBucketState("2=8/9/10/u/i/r,3=5/6/7/u/i/u"));
+}
+
+TEST_F(StateCheckersTest, activate_non_ready_copies_when_ideal_node_in_maintenance_if_active_does_not_implicitly_index) {
+    setup_stripe(2, 100, "distributor:1 storage:4 .1.s:m");
+    set_node_supports_no_implicit_indexing_on_activation(2, true);
+    // Ideal node 1 is in maintenance and no ready copy available.
+    EXPECT_EQ("[Setting node 2 as active: copy has 9 docs]", // TODO ideal state pri instead
               testBucketState("2=8/9/10/t/i/u,3=5/6/7"));
     // But we should activate another copy iff there's another ready copy.
     EXPECT_EQ("[Setting node 2 as active: copy is ready with 9 docs]",

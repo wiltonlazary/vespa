@@ -230,7 +230,6 @@ public class MessageBusVisitorSession implements VisitorSession {
 
         @Override
         public Sender createSender(ReplyHandler replyHandler, VisitorParameters visitorParameters) {
-            messageBus.setMaxPendingCount(0);
             SourceSessionParams sessionParams = createSourceSessionParams(visitorParameters);
             return new MessageBusSender(messageBus.createSourceSession(replyHandler, sessionParams));
         }
@@ -308,7 +307,7 @@ public class MessageBusVisitorSession implements VisitorSession {
 
     private static final Logger log = Logger.getLogger(MessageBusVisitorSession.class.getName());
 
-    private static AtomicLong sessionCounter = new AtomicLong(0);
+    private static final AtomicLong sessionCounter = new AtomicLong(0);
     private static long getNextSessionId() {
         return sessionCounter.incrementAndGet();
     }
@@ -327,14 +326,16 @@ public class MessageBusVisitorSession implements VisitorSession {
     private final String sessionName = createSessionName();
     private final String dataDestination;
     private final Clock clock;
+    private final Object replyTrackingMonitor = new Object();
     private StateDescription state;
     private long visitorCounter = 0;
     private long startTimeNanos = 0;
+    private long scheduledHandleReplyTasks = 0; // Must be protected by replyTrackingMonitor
     private boolean scheduledSendCreateVisitors = false;
     private boolean done = false;
     private boolean destroying = false; // For testing and sanity checking
     private final Object completionMonitor = new Object();
-    private Trace trace;
+    private final Trace trace;
     /**
      * We keep our own track of pending messages since the sender's pending
      * count cannot be relied on in an async task execution context. This
@@ -454,14 +455,40 @@ public class MessageBusVisitorSession implements VisitorSession {
         return state;
     }
 
+    private boolean hasScheduledHandleReplyTask() {
+        // This is synchronized instead of an AtomicLong simply because it makes it considerably
+        // easier to reason about happens-before relationships, memory visibility and sequencing
+        // of events across threads when an actual critical section is involved.
+        synchronized (replyTrackingMonitor) {
+            return scheduledHandleReplyTasks != 0;
+        }
+    }
+
+    private void incrementScheduledHandleReplyTasks() {
+        synchronized (replyTrackingMonitor) {
+            ++scheduledHandleReplyTasks;
+        }
+    }
+
+    private void decrementScheduleHandleReplyTasks() {
+        synchronized (replyTrackingMonitor) {
+            assert(scheduledHandleReplyTasks > 0);
+            --scheduledHandleReplyTasks;
+        }
+    }
+
     private ReplyHandler createReplyHandler() {
         return (reply) -> {
             // Generally, handleReply will run in the context of the
             // underlying transport layer's processing thread(s), so we
             // schedule our own reply handling task to avoid blocking it.
             try {
+                // Make concurrent reply handling visible in sender thread, if it's active.
+                // See SendCreateVisitorsTask.run() for a rationale.
+                incrementScheduledHandleReplyTasks();
                 taskExecutor.submitTask(new HandleReplyTask(reply));
             } catch (RejectedExecutionException e) {
+                decrementScheduleHandleReplyTasks();
                  // We cannot reliably handle reply tasks failing to be submitted, since
                  // the reply task performs all our internal state handling logic. As such,
                  // we just immediately go into a failure destruction mode as soon as this
@@ -572,7 +599,9 @@ public class MessageBusVisitorSession implements VisitorSession {
                     params.getDocumentSelection(),
                     bucketIdFactory,
                     1,
-                    progressToken);
+                    progressToken,
+                    params.getSlices(),
+                    params.getSliceId());
         } else {
             if (log.isLoggable(Level.FINE)) {
                 log.log(Level.FINE, "parameters specify explicit bucket set " +
@@ -608,6 +637,7 @@ public class MessageBusVisitorSession implements VisitorSession {
             return sb.toString();
         }
 
+        @SuppressWarnings("removal") // TODO: Remove on Vespa 9
         private CreateVisitorMessage createMessage(VisitorIterator.BucketProgress bucket) {
             CreateVisitorMessage msg = new CreateVisitorMessage(
                     params.getVisitorLibrary(),
@@ -629,8 +659,7 @@ public class MessageBusVisitorSession implements VisitorSession {
             msg.setParameters(params.getLibraryParameters());
             msg.setRoute(params.getRoute());
             msg.setMaxBucketsPerVisitor(params.getMaxBucketsPerVisitor());
-            msg.setLoadType(params.getLoadType());
-            msg.setPriority(params.getPriority());
+            msg.setPriority(params.getPriority()); // TODO: remove on Vespa 9
 
             msg.setRetryEnabled(false);
 
@@ -646,7 +675,39 @@ public class MessageBusVisitorSession implements VisitorSession {
                     if (done) {
                         return; // Session already closed; we must not touch anything else.
                     }
-                    while (progress.getIterator().hasNext()) {
+                    // We both send requests and process replies in the context of a dedicated task executor pool.
+                    // However, MessageBus sending and reply receiving happens in the context of entirely
+                    // separate threads. If the backend responds very quickly to visitor requests (such as
+                    // if buckets are empty), this can leave us in the following awkward position:
+                    //
+                    //   1. Replies arrive from backend, open up the throttle window, reply handling
+                    //      task gets pushed onto executor queue (but not yet executed).
+                    //   2. Send loop below continuously get a free send slot, keeps sending visitors
+                    //      and filling up the set of pending buckets in the progress token.
+                    //   3. Since visitor session is busy-looping in the send task, reply processing is
+                    //      consequently entirely starved until the MessageBus throttle window is bursting
+                    //      at the seams. This can effectively nullify the effects of the throttling policy,
+                    //      especially if it's dynamic. But a static throttle policy with a sufficiently
+                    //      high max window size will also potentially cause a runaway visitor train since
+                    //      the active window size keeps getting decreased by backend replies.
+                    //
+                    // To get around this, we explicitly check for concurrently scheduled message handling
+                    // tasks from the transport layer, breaking the loop if at least one handler has been
+                    // scheduled. This also has the (positive) effect of draining all reply tasks before we
+                    // start sending more work downstream.
+                    //
+                    // Since visitor session progress is edge-triggered and progresses exclusively by sending
+                    // new visitors in reply handling tasks, it's critical that we never end up in a situation
+                    // where we have no pending CreateVisitors (or scheduled tasks), or we risk effectively
+                    // hanging the session. We must therefore be very careful that we only exit the send loop
+                    // if we _know_ we have at least one pending task enqueued that will ensure session progress.
+                    //
+                    // We're holding the session (token) lock around checking the pending reply tasks count, so
+                    // if we observe a change we know that a reply task must have been scheduled and that its
+                    // processing must take place sequenced after we have exited the loop, as the reply handling
+                    // also takes the session (token) lock. I.e. it should not be possible to end up in a
+                    // situation where we stall session progress due to not having any further event edges.
+                    while (progress.getIterator().hasNext() && !hasScheduledHandleReplyTask()) {
                         VisitorIterator.BucketProgress bucket = progress.getIterator().getNext();
                         Result result = sender.send(createMessage(bucket));
                         if (result.isAccepted()) {
@@ -680,10 +741,8 @@ public class MessageBusVisitorSession implements VisitorSession {
     }
 
     private void continueVisiting() {
-        if (visitingCompleted()) {
+        if ( ! scheduleSendCreateVisitorsIfApplicable() && visitingCompleted()) {
             markSessionCompleted();
-        } else {
-            scheduleSendCreateVisitorsIfApplicable();
         }
     }
 
@@ -710,7 +769,7 @@ public class MessageBusVisitorSession implements VisitorSession {
     }
 
     private class HandleReplyTask implements Runnable {
-        private Reply reply;
+        private final Reply reply;
         HandleReplyTask(Reply reply) {
             this.reply = reply;
         }
@@ -718,6 +777,10 @@ public class MessageBusVisitorSession implements VisitorSession {
         @Override
         public void run() {
             synchronized (progress.getToken()) {
+                // Decrement pending replies inside same lock as sender task to ensure that if the sender
+                // observes a non-zero number of reply tasks, it's guaranteed that this actually means a
+                // task _will_ be run later at some point.
+                decrementScheduleHandleReplyTasks();
                 try {
                     assert(pendingMessageCount > 0);
                     --pendingMessageCount;
@@ -748,7 +811,7 @@ public class MessageBusVisitorSession implements VisitorSession {
     }
 
     private class HandleMessageTask implements Runnable {
-        private Message message;
+        private final Message message;
 
         private HandleMessageTask(Message message) {
             this.message = message;
@@ -934,19 +997,7 @@ public class MessageBusVisitorSession implements VisitorSession {
     }
 
     private boolean enoughHitsReceived() {
-        if (params.getMaxFirstPassHits() != -1
-                && statistics.getDocumentsReturned() >= params.getMaxFirstPassHits())
-        {
-            return true;
-        }
-        if (params.getMaxTotalHits() != -1
-                && ((statistics.getDocumentsReturned()
-                     + statistics.getSecondPassDocumentsReturned())
-                    >= params.getMaxTotalHits()))
-        {
-            return true;
-        }
-        return false;
+        return params.getMaxTotalHits() != -1 && (statistics.getDocumentsReturned() >= params.getMaxTotalHits());
     }
 
     /**
@@ -994,23 +1045,20 @@ public class MessageBusVisitorSession implements VisitorSession {
     /**
      * Schedule a new SendCreateVisitors task iff there are still buckets to
      * visit, the visiting has not failed fatally and we haven't already
-     * scheduled such a task.
+     * scheduled such a task. Return whether a visitor was scheduled here.
      */
-    private void scheduleSendCreateVisitorsIfApplicable(long delay, TimeUnit unit) {
+    private boolean scheduleSendCreateVisitorsIfApplicable(long delay, TimeUnit unit) {
         final long elapsedMillis = elapsedTimeMillis();
         if (!isInfiniteTimeout(sessionTimeoutMillis()) && (elapsedMillis >= sessionTimeoutMillis())) {
             transitionTo(new StateDescription(State.TIMED_OUT, String.format("Session timeout of %d ms expired", sessionTimeoutMillis())));
-            if (visitingCompleted()) {
-                markSessionCompleted();
-            }
-            return;
         }
-        if (!mayScheduleCreateVisitorsTask()) {
-            return;
+        if (!mayScheduleCreateVisitorsTask() || visitingCompleted()) {
+            return false;
         }
         final long messageTimeoutMillis = computeBoundedMessageTimeoutMillis(elapsedMillis);
         taskExecutor.scheduleTask(new SendCreateVisitorsTask(messageTimeoutMillis), delay, unit);
         scheduledSendCreateVisitors = true;
+        return true;
     }
 
     private boolean mayScheduleCreateVisitorsTask() {
@@ -1020,8 +1068,8 @@ public class MessageBusVisitorSession implements VisitorSession {
                   || enoughHitsReceived());
     }
 
-    private void scheduleSendCreateVisitorsIfApplicable() {
-        scheduleSendCreateVisitorsIfApplicable(0, TimeUnit.MILLISECONDS);
+    private boolean scheduleSendCreateVisitorsIfApplicable() {
+        return scheduleSendCreateVisitorsIfApplicable(0, TimeUnit.MILLISECONDS);
     }
 
     private void handleCreateVisitorReply(CreateVisitorReply reply) {
@@ -1043,18 +1091,6 @@ public class MessageBusVisitorSession implements VisitorSession {
             trace.getRoot().addChild(reply.getTrace().getRoot());
         }
 
-        if (params.getDynamicallyIncreaseMaxBucketsPerVisitor()
-                && (reply.getVisitorStatistics().getDocumentsReturned()
-                    < params.getMaxFirstPassHits() / 2.0))
-        {
-            // Attempt to increase parallelism to reduce latency of visiting
-            // Ensure new count is within [1, 128]
-            int newMaxBuckets = Math.max(Math.min((int)(params.getMaxBucketsPerVisitor()
-                    * params.getDynamicMaxBucketsIncreaseFactor()), 128), 1);
-            params.setMaxBucketsPerVisitor(newMaxBuckets);
-            log.log(Level.FINE, () -> sessionName + ": increasing max buckets per visitor to "
-                    + params.getMaxBucketsPerVisitor());
-        }
     }
 
     private void handleWrongDistributionReply(WrongDistributionReply reply) {
@@ -1182,4 +1218,5 @@ public class MessageBusVisitorSession implements VisitorSession {
             log.log(Level.FINE, () -> sessionName + ": synchronous destroy() done");
         }
     }
+
 }

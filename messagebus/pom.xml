@@ -7,18 +7,13 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>messagebus</artifactId>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <packaging>jar</packaging>
   <dependencies>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <scope>test</scope>
-    </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>vespajlib</artifactId>
@@ -26,9 +21,25 @@
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
+      <artifactId>annotations</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.yahoo.vespa</groupId>
       <artifactId>component</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -53,35 +64,21 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
           <forkCount>4</forkCount>
+          <systemPropertyVariables>
+            <java.util.logging.SimpleFormatter.format>%1$Ts.%1$TL [%4$s] %5$s {%3$s}%n</java.util.logging.SimpleFormatter.format>
+          </systemPropertyVariables>
         </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Werror</arg>
-            <arg>-Xlint:all</arg>
-            <arg>-Xlint:-serial</arg>
-          </compilerArgs>
-	</configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
         <configuration>
           <finalName>${project.artifactId}-jar-with-dependencies</finalName>
-          <filters>
-            <filter>
-              <!-- Don't include signature files from bouncycastle in uber jar.  -->
-              <artifact>*:*</artifact>
-              <excludes>
-                <exclude>META-INF/*.SF</exclude>
-                <exclude>META-INF/*.DSA</exclude>
-                <exclude>META-INF/*.RSA</exclude>
-              </excludes>
-            </filter>
-          </filters>
+          <createDependencyReducedPom>false</createDependencyReducedPom>
         </configuration>
         <executions>
           <execution>

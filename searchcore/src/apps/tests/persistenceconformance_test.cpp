@@ -3,16 +3,19 @@
 #include <vespa/vespalib/testkit/testapp.h>
 
 #include <tests/proton/common/dummydbowner.h>
+#include <vespa/config-attributes.h>
+#include <vespa/config-bucketspaces.h>
 #include <vespa/config-imported-fields.h>
+#include <vespa/config-indexschema.h>
 #include <vespa/config-rank-profiles.h>
-#include <vespa/config-summarymap.h>
+#include <vespa/config-summary.h>
+#include <vespa/config/subscription/sourcespec.h>
 #include <vespa/document/base/testdocman.h>
-#include <vespa/fastos/file.h>
-#include <vespa/persistence/conformancetest/conformancetest.h>
-#include <vespa/persistence/dummyimpl/dummy_bucket_executor.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/test/make_bucket_space.h>
-#include <vespa/searchcommon/common/schemaconfigurer.h>
+#include <vespa/fastos/file.h>
+#include <vespa/persistence/conformancetest/conformancetest.h>
 #include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
 #include <vespa/searchcore/proton/matching/querylimiter.h>
@@ -28,15 +31,13 @@
 #include <vespa/searchcore/proton/server/persistencehandlerproxy.h>
 #include <vespa/searchcore/proton/server/threading_service_config.h>
 #include <vespa/searchcore/proton/test/disk_mem_usage_notifier.h>
+#include <vespa/searchcore/proton/test/mock_shared_threading_service.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/transactionlog/translogserver.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
-#include <vespa/config-bucketspaces.h>
-#include <vespa/config-attributes.h>
-#include <vespa/config-indexschema.h>
-#include <vespa/config-summary.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP("persistenceconformance_test");
@@ -54,13 +55,11 @@ using std::shared_ptr;
 using document::BucketSpace;
 using document::DocumentType;
 using document::DocumentTypeRepo;
-using document::DocumenttypesConfig;
 using document::TestDocMan;
 using document::test::makeBucketSpace;
 using search::TuneFileDocumentDB;
 using search::index::DummyFileHeaderContext;
 using search::index::Schema;
-using search::index::SchemaBuilder;
 using search::transactionlog::TransLogServer;
 using storage::spi::ConformanceTest;
 using storage::spi::PersistenceProvider;
@@ -111,9 +110,9 @@ public:
     DocumenttypesConfigSP getTypeCfg() const { return _typeCfg; }
     DocTypeVector getDocTypes() const {
         DocTypeVector types;
-        _repo->forEachDocumentType(*DocumentTypeRepo::makeLambda([&types](const DocumentType &type) {
+        _repo->forEachDocumentType([&types](const DocumentType &type) {
             types.push_back(DocTypeName(type.getName()));
-        }));
+        });
         return types;
     }
     DocumentDBConfig::SP create(const DocTypeName &docTypeName) const {
@@ -125,10 +124,7 @@ public:
         CS::IndexschemaConfigSP indexschema = _schemaFactory->createIndexSchema(*docType);
         CS::AttributesConfigSP attributes = _schemaFactory->createAttributes(*docType);
         CS::SummaryConfigSP summary = _schemaFactory->createSummary(*docType);
-        Schema::SP schema(new Schema());
-        SchemaBuilder::build(*indexschema, *schema);
-        SchemaBuilder::build(*attributes, *schema);
-        SchemaBuilder::build(*summary, *schema);
+        auto schema = DocumentDBConfig::build_schema(*attributes, *indexschema);
         return std::make_shared<DocumentDBConfig>(
                         1,
                         std::make_shared<RankProfilesConfig>(),
@@ -138,7 +134,6 @@ public:
                         indexschema,
                         attributes,
                         summary,
-                        std::make_shared<SummarymapConfig>(),
                         std::make_shared<JuniperrcConfig>(),
                         _typeCfg,
                         _repo,
@@ -147,8 +142,8 @@ public:
                         schema,
                         std::make_shared<DocumentDBMaintenanceConfig>(),
                         search::LogDocumentStore::Config(),
-                        std::make_shared<const ThreadingServiceConfig>(ThreadingServiceConfig::make(1)),
-                        std::make_shared<const AllocConfig>(),
+                        ThreadingServiceConfig::make(),
+                        AllocConfig::makeDefault(),
                         "client",
                         docTypeName.getName());
     }
@@ -167,14 +162,19 @@ class DocumentDBFactory : public DummyDBOwner {
 private:
     vespalib::string          _baseDir;
     DummyFileHeaderContext    _fileHeaderContext;
-    TransLogServer            _tls;
     vespalib::string          _tlsSpec;
     matching::QueryLimiter    _queryLimiter;
-    vespalib::Clock           _clock;
-    mutable DummyWireService  _metricsWireService;
-    mutable MemoryConfigStores _config_stores;
+    mutable DummyWireService      _metricsWireService;
+    mutable MemoryConfigStores    _config_stores;
     vespalib::ThreadStackExecutor _summaryExecutor;
-    storage::spi::dummy::DummyBucketExecutor _bucketExecutor;
+    MockSharedThreadingService    _shared_service;
+    TransLogServer                _tls;
+
+    static std::shared_ptr<ProtonConfig> make_proton_config() {
+        ProtonConfigBuilder proton_config;
+        proton_config.indexing.optimize = ProtonConfigBuilder::Indexing::Optimize::LATENCY;
+        return std::make_shared<ProtonConfig>(proton_config);
+    }
 
 public:
     DocumentDBFactory(const vespalib::string &baseDir, int tlsListenPort);
@@ -183,27 +183,28 @@ public:
                           const DocTypeName &docType,
                           const ConfigFactory &factory) {
         DocumentDBConfig::SP snapshot = factory.create(docType);
-        vespalib::mkdir(_baseDir, false);
-        vespalib::mkdir(_baseDir + "/" + docType.toString(), false);
+        std::filesystem::create_directory(std::filesystem::path(_baseDir));
+        std::filesystem::create_directory(std::filesystem::path(_baseDir + "/" + docType.toString()));
         vespalib::string inputCfg = _baseDir + "/" + docType.toString() + "/baseconfig";
         {
-            FileConfigManager fileCfg(inputCfg, "", docType.getName());
+            FileConfigManager fileCfg(_shared_service.transport(), inputCfg, "", docType.getName());
             fileCfg.saveConfig(*snapshot, 1);
         }
         config::DirSpec spec(inputCfg + "/config-1");
-        TuneFileDocumentDB::SP tuneFileDocDB(new TuneFileDocumentDB());
+        auto tuneFileDocDB = std::make_shared<TuneFileDocumentDB>();
         DocumentDBConfigHelper mgr(spec, docType.getName());
         auto b = std::make_shared<BootstrapConfig>(1, factory.getTypeCfg(), factory.getTypeRepo(),
-                                                  std::make_shared<ProtonConfig>(),
+                                                  make_proton_config(),
                                                   std::make_shared<FiledistributorrpcConfig>(),
                                                   std::make_shared<BucketspacesConfig>(),
                                                   tuneFileDocDB, HwInfo());
         mgr.forwardConfig(b);
-        mgr.nextGeneration(0ms);
-        return DocumentDB::create(_baseDir, mgr.getConfig(), _tlsSpec, _queryLimiter, _clock, docType, bucketSpace,
+        mgr.nextGeneration(_shared_service.transport(), 0ms);
+        return DocumentDB::create(_baseDir, mgr.getConfig(), _tlsSpec, _queryLimiter, docType, bucketSpace,
                                   *b->getProtonConfigSP(), const_cast<DocumentDBFactory &>(*this),
-                                  _summaryExecutor, _summaryExecutor, _bucketExecutor, _tls, _metricsWireService,
-                                  _fileHeaderContext, _config_stores.getConfigStore(docType.toString()),
+                                  _shared_service, _tls, _metricsWireService,
+                                  _fileHeaderContext, std::make_shared<search::attribute::Interlock>(),
+                                  _config_stores.getConfigStore(docType.toString()),
                                   std::make_shared<vespalib::ThreadStackExecutor>(16, 128_Ki), HwInfo());
     }
 };
@@ -212,13 +213,12 @@ public:
 DocumentDBFactory::DocumentDBFactory(const vespalib::string &baseDir, int tlsListenPort)
     : _baseDir(baseDir),
       _fileHeaderContext(),
-      _tls("tls", tlsListenPort, baseDir, _fileHeaderContext),
       _tlsSpec(vespalib::make_string("tcp/localhost:%d", tlsListenPort)),
       _queryLimiter(),
-      _clock(),
       _metricsWireService(),
       _summaryExecutor(8, 128_Ki),
-      _bucketExecutor(2)
+      _shared_service(_summaryExecutor, _summaryExecutor),
+      _tls(_shared_service.transport(), "tls", tlsListenPort, baseDir, _fileHeaderContext)
 {}
 DocumentDBFactory::~DocumentDBFactory()  = default;
 
@@ -372,7 +372,7 @@ public:
     }
 
     void clear() override {
-        FastOS_FileInterface::EmptyAndRemoveDirectory(_baseDir.c_str());
+        std::filesystem::remove_all(std::filesystem::path(_baseDir));
     }
 
     bool hasPersistence() const override { return true; }

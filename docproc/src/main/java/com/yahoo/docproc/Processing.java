@@ -1,7 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.docproc;
 
-import com.yahoo.component.provider.ComponentRegistry;
+import com.yahoo.docproc.impl.ProcessingAccess;
+import com.yahoo.docproc.impl.ProcessingEndpoint;
 import com.yahoo.document.DocumentOperation;
 
 import java.util.ArrayList;
@@ -18,32 +19,29 @@ import java.util.Map;
  *
  * @author bratseth
  */
-public class Processing {
+public final class Processing extends ProcessingAccess {
 
-    /** The name of the service which owns this processing. Null is the same as "default" */
+    /** The name of the service which owns this processing. Null is the same as "default". */
     private String service = null;
 
-    /** The processors to call the next work is done on this processing */
+    /** The processors to call the next work is done on this processing. */
     private CallStack callStack = null;
 
-    /** The collection of documents or document updates processed by this. This is never null */
+    /** The collection of documents or document updates processed by this. This is never null. */
     private final List<DocumentOperation> documentOperations;
 
     /**
      * Documents or document updates which should be added to <code>documents</code> before
      * the next access, or null if documents or document updates have never been added to
-     * this processing
+     * this processing.
      */
     private List<DocumentOperation> documentsToAdd = null;
 
-    /** The processing context variables */
+    /** The processing context variables. */
     private Map<String, Object> context = null;
 
     /** The endpoint of this processing. */
     private ProcessingEndpoint endpoint = null;
-
-    /** The registry of docproc services. */
-    private ComponentRegistry<DocprocService> docprocServiceRegistry = null;
 
     private boolean operationsGotten = false;
 
@@ -77,7 +75,7 @@ public class Processing {
      * @param callStack         the document processors to call in this processing.
      * @param endp              the endpoint of this processing
      */
-    Processing(String service, DocumentOperation documentOperation, CallStack callStack, ProcessingEndpoint endp) {
+    private Processing(String service, DocumentOperation documentOperation, CallStack callStack, ProcessingEndpoint endp) {
         this.service = service;
         this.documentOperations = new ArrayList<>(1);
         documentOperations.add(documentOperation);
@@ -99,7 +97,7 @@ public class Processing {
         this(service, documentOperation, callStack, null);
     }
 
-    @SuppressWarnings("unused")
+    @SuppressWarnings({"unused"})
     private Processing(String service, List<DocumentOperation> documentOpsAndUpdates, CallStack callStack, ProcessingEndpoint endp, boolean unused) {
         this.service = service;
         this.documentOperations = new ArrayList<>(documentOpsAndUpdates.size());
@@ -108,11 +106,8 @@ public class Processing {
         this.endpoint = endp;
     }
 
-    static Processing createProcessingFromDocumentOperations(String service, List<DocumentOperation> documentOpsAndUpdates, CallStack callStack, ProcessingEndpoint endp) {
-        return new Processing(service, documentOpsAndUpdates, callStack, endp, false);
-    }
-
     /**
+     * Creates a Processing from a list of operations.
      *
      * @param service               the unique name of the service processing this
      * @param documentsAndUpdates   the document operation list. This <b>transfers ownership</b> of this list
@@ -121,16 +116,10 @@ public class Processing {
      *                              This <b>transfers ownership</b> of this structure
      *                              to this class. The caller <i>must not</i> modify it
      */
-    public static Processing createProcessingFromDocumentOperations(String service, List<DocumentOperation> documentsAndUpdates, CallStack callStack) {
+    public static Processing createProcessingFromDocumentOperations(String service,
+                                                                    List<DocumentOperation> documentsAndUpdates,
+                                                                    CallStack callStack) {
         return new Processing(service, documentsAndUpdates, callStack, null, false);
-    }
-
-    public ComponentRegistry<DocprocService> getDocprocServiceRegistry() {
-        return docprocServiceRegistry;
-    }
-
-    public void setDocprocServiceRegistry(ComponentRegistry<DocprocService> docprocServiceRegistry) {
-        this.docprocServiceRegistry = docprocServiceRegistry;
     }
 
     /** Returns the name of the service processing this. This will never return null */
@@ -142,19 +131,6 @@ public class Processing {
     /** Sets the name of the service processing this. */
     public void setServiceName(String service) {
         this.service = service;
-    }
-
-    /**
-     * Convenience method for looking up and returning the service processing this. This might return null
-     * if #getServiceName returns a name that is not registered in {@link com.yahoo.docproc.DocprocService}.
-     *
-     * @return the service processing this, or null if unknown.
-     */
-    public DocprocService getService() {
-        if (docprocServiceRegistry != null) {
-            return docprocServiceRegistry.getComponent(getServiceName());
-        }
-        return null;
     }
 
     /** Returns a context variable, or null if it is not set */
@@ -195,21 +171,13 @@ public class Processing {
         return context != null && context.containsKey(name);
     }
 
-    /**
-     * Returns the ProcessingEndpoint that is called when this Processing is complete, if any.
-     *
-     * @return the ProcessingEndpoint, or null
-     */
-    ProcessingEndpoint getEndpoint() {
+    @Override
+    protected ProcessingEndpoint getEndpoint() {
         return endpoint;
     }
 
-    /**
-     * Sets the ProcessingEndpoint to be called when this Processing is complete.
-     *
-     * @param endpoint the ProcessingEndpoint to use
-     */
-    void setEndpoint(ProcessingEndpoint endpoint) {
+    @Override
+    protected void setEndpoint(ProcessingEndpoint endpoint) {
         this.endpoint = endpoint;
     }
 
@@ -235,16 +203,21 @@ public class Processing {
         return callStack;
     }
 
-    /**
-     * Package-private method to set the callstack of this processing. Only to be used
-     * by DocprocService.process(Processing).
-     *
-     * @param callStack the callstack to set
-     */
-    void setCallStack(CallStack callStack) {
+    @Override
+    protected void setCallStack(CallStack callStack) {
         this.callStack = callStack;
     }
 
+    @Override
+    protected List<DocumentOperation> getOnceOperationsToBeProcessed() {
+        if (operationsGotten)
+            return Collections.emptyList();
+
+        operationsGotten = true;
+        return getDocumentOperations();
+    }
+
+    @Override
     public String toString() {
         String previousCall = "";
         if (callStack != null) {
@@ -266,11 +239,4 @@ public class Processing {
         }
     }
 
-    List<DocumentOperation> getOnceOperationsToBeProcessed() {
-        if (operationsGotten)
-            return Collections.emptyList();
-
-        operationsGotten = true;
-        return getDocumentOperations();
-    }
 }

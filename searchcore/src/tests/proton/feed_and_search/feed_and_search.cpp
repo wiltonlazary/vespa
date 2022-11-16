@@ -3,6 +3,8 @@
 #include <vespa/document/datatype/datatype.h>
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/document/fieldvalue/fieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
 #include <vespa/searchlib/common/documentsummary.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <vespa/searchlib/common/flush_token.h>
@@ -10,9 +12,11 @@
 #include <vespa/searchlib/diskindex/fusion.h>
 #include <vespa/searchlib/diskindex/indexbuilder.h>
 #include <vespa/searchlib/fef/fef.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/memoryindex/memory_index.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchlib/test/string_field_builder.h>
 #include <vespa/searchlib/test/index/mock_field_length_inspector.h>
 #include <vespa/searchlib/query/base.h>
 #include <vespa/searchlib/query/tree/simplequery.h>
@@ -20,6 +24,8 @@
 #include <vespa/searchlib/queryeval/fake_requestcontext.h>
 #include <vespa/searchlib/queryeval/searchiterator.h>
 #include <vespa/vespalib/testkit/testapp.h>
+#include <vespa/vespalib/util/gate.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <sstream>
 
@@ -29,6 +35,7 @@ LOG_SETUP("feed_and_search_test");
 using document::DataType;
 using document::Document;
 using document::FieldValue;
+using document::StringFieldValue;
 using search::DocumentIdT;
 using search::FlushToken;
 using search::TuneFileIndexing;
@@ -42,7 +49,6 @@ using search::fef::MatchData;
 using search::fef::MatchDataLayout;
 using search::fef::TermFieldHandle;
 using search::fef::TermFieldMatchData;
-using search::index::DocBuilder;
 using search::index::DummyFileHeaderContext;
 using search::index::Schema;
 using search::index::test::MockFieldLengthInspector;
@@ -54,15 +60,25 @@ using search::queryeval::FieldSpec;
 using search::queryeval::FieldSpecList;
 using search::queryeval::SearchIterator;
 using search::queryeval::Searchable;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
+using search::test::StringFieldBuilder;
 using std::ostringstream;
 using vespalib::string;
 
 namespace {
 
+void commit_memory_index_and_wait(MemoryIndex &memory_index)
+{
+    vespalib::Gate gate;
+    memory_index.commit(std::make_shared<vespalib::GateCallback>(gate));
+    gate.await();
+}
+
 class Test : public vespalib::TestApp {
     const char *current_state;
     void DumpState(bool) {
-      fprintf(stderr, "%s: ERROR: in %s\n", GetName(), current_state);
+      fprintf(stderr, "%s: ERROR: in %s\n", __FILE__, current_state);
     }
 
     void requireThatMemoryIndexCanBeDumpedAndSearched();
@@ -98,20 +114,13 @@ const string word2 = "bar";
 const DocumentIdT doc_id1 = 1;
 const DocumentIdT doc_id2 = 2;
 
-Schema getSchema() {
-    Schema schema;
-    schema.addIndexField(Schema::IndexField(field_name, search::index::schema::DataType::STRING));
-    return schema;
-}
-
 Document::UP buildDocument(DocBuilder & doc_builder, int id,
                            const string &word) {
     ostringstream ost;
     ost << "id:ns:searchdocument::" << id;
-    doc_builder.startDocument(ost.str());
-    doc_builder.startIndexField(field_name)
-        .addStr(noise).addStr(word).endField();
-    return doc_builder.endDocument();
+    auto doc = doc_builder.make_document(ost.str());
+    doc->setValue(field_name, StringFieldBuilder(doc_builder).word(noise).space().word(word).build());
+    return doc;
 }
 
 // Performs a search using a Searchable.
@@ -151,20 +160,19 @@ VESPA_THREAD_STACK_TAG(write_executor)
 // searches, dumps the index to disk, and performs the searches
 // again.
 void Test::requireThatMemoryIndexCanBeDumpedAndSearched() {
-    Schema schema = getSchema();
     vespalib::ThreadStackExecutor sharedExecutor(2, 0x10000);
     auto indexFieldInverter = vespalib::SequencedTaskExecutor::create(invert_executor, 2);
     auto indexFieldWriter = vespalib::SequencedTaskExecutor::create(write_executor, 2);
+    DocBuilder doc_builder([](auto& header) { header.addField(field_name, DataType::T_STRING); });
+    auto schema = SchemaBuilder(doc_builder).add_all_indexes().build();
     MemoryIndex memory_index(schema, MockFieldLengthInspector(), *indexFieldInverter, *indexFieldWriter);
-    DocBuilder doc_builder(schema);
 
     Document::UP doc = buildDocument(doc_builder, doc_id1, word1);
-    memory_index.insertDocument(doc_id1, *doc.get());
+    memory_index.insertDocument(doc_id1, *doc, {});
 
-    doc = buildDocument(doc_builder, doc_id2, word2);
-    memory_index.insertDocument(doc_id2, *doc.get());
-    memory_index.commit(std::shared_ptr<vespalib::IDestructorCallback>());
-    indexFieldWriter->sync();
+    auto doc2 = buildDocument(doc_builder, doc_id2, word2);
+    memory_index.insertDocument(doc_id2, *doc2, {});
+    commit_memory_index_and_wait(memory_index);
 
     testSearch(memory_index, word1, doc_id1);
     testSearch(memory_index, word2, doc_id2);
@@ -189,16 +197,16 @@ void Test::requireThatMemoryIndexCanBeDumpedAndSearched() {
     bool fret1 = DocumentSummary::readDocIdLimit(index_dir, fusionDocIdLimit);
     ASSERT_TRUE(fret1);
     SelectorArray selector(fusionDocIdLimit, 0);
-    bool fret2 = Fusion::merge(schema,
-                              index_dir2,
-                              fusionInputs,
-                              selector,
-                              false /* dynamicKPosOccFormat */,
-                              tuneFileIndexing,
-                              fileHeaderContext,
-                              sharedExecutor,
-                              std::make_shared<FlushToken>());
-    ASSERT_TRUE(fret2);
+    {
+        Fusion fusion(schema,
+                      index_dir2,
+                      fusionInputs,
+                      selector,
+                      tuneFileIndexing,
+                      fileHeaderContext);
+        bool fret2 = fusion.merge(sharedExecutor, std::make_shared<FlushToken>());
+        ASSERT_TRUE(fret2);
+    }
 
     // Fusion test with all docs removed in output (doesn't affect word list)
     const string index_dir3 = "test_index3";
@@ -208,16 +216,16 @@ void Test::requireThatMemoryIndexCanBeDumpedAndSearched() {
     bool fret3 = DocumentSummary::readDocIdLimit(index_dir, fusionDocIdLimit);
     ASSERT_TRUE(fret3);
     SelectorArray selector2(fusionDocIdLimit, 1);
-    bool fret4 = Fusion::merge(schema,
-                              index_dir3,
-                              fusionInputs,
-                              selector2,
-                              false /* dynamicKPosOccFormat */,
-                              tuneFileIndexing,
-                              fileHeaderContext,
-                              sharedExecutor,
-                              std::make_shared<FlushToken>());
-    ASSERT_TRUE(fret4);
+    {
+        Fusion fusion(schema,
+                      index_dir3,
+                      fusionInputs,
+                      selector2,
+                      tuneFileIndexing,
+                      fileHeaderContext);
+        bool fret4 = fusion.merge(sharedExecutor, std::make_shared<FlushToken>());
+        ASSERT_TRUE(fret4);
+    }
 
     // Fusion test with all docs removed in input (affects word list)
     const string index_dir4 = "test_index4";
@@ -227,16 +235,17 @@ void Test::requireThatMemoryIndexCanBeDumpedAndSearched() {
     bool fret5 = DocumentSummary::readDocIdLimit(index_dir3, fusionDocIdLimit);
     ASSERT_TRUE(fret5);
     SelectorArray selector3(fusionDocIdLimit, 0);
-    bool fret6 = Fusion::merge(schema,
-                              index_dir4,
-                              fusionInputs,
-                              selector3,
-                              false /* dynamicKPosOccFormat */,
-                              tuneFileIndexing,
-                              fileHeaderContext,
-                              sharedExecutor,
-                              std::make_shared<FlushToken>());
-    ASSERT_TRUE(fret6);
+    {
+        Fusion fusion(schema,
+                      index_dir4,
+                      fusionInputs,
+                      selector3,
+                      tuneFileIndexing,
+                      fileHeaderContext);
+        bool fret6 = fusion.merge(sharedExecutor,
+                                  std::make_shared<FlushToken>());
+        ASSERT_TRUE(fret6);
+    }
 
     DiskIndex disk_index(index_dir);
     ASSERT_TRUE(disk_index.setup(TuneFileSearch()));

@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -9,6 +9,8 @@
 #include "i_compactable.h"
 #include <cassert>
 #include <string>
+
+namespace vespalib::alloc { class MemoryAllocator; }
 
 namespace vespalib::datastore {
 
@@ -56,22 +58,26 @@ public:
  * bytes
  */
 class UniqueStoreSmallStringBufferType : public BufferType<char> {
+    std::shared_ptr<vespalib::alloc::MemoryAllocator> _memory_allocator;
 public:
-    UniqueStoreSmallStringBufferType(uint32_t array_size, uint32_t max_arrays);
+    UniqueStoreSmallStringBufferType(uint32_t array_size, uint32_t max_arrays, std::shared_ptr<vespalib::alloc::MemoryAllocator> memory_allocator);
     ~UniqueStoreSmallStringBufferType() override;
     void destroyElements(void *, ElemCount) override;
     void fallbackCopy(void *newBuffer, const void *oldBuffer, ElemCount numElems) override;
     void cleanHold(void *buffer, size_t offset, ElemCount numElems, CleanContext) override;
+    const vespalib::alloc::MemoryAllocator* get_memory_allocator() const override;
 };
 
 /*
  * Buffer type for external strings in unique store.
  */
 class UniqueStoreExternalStringBufferType : public BufferType<UniqueStoreEntry<std::string>> {
+    std::shared_ptr<vespalib::alloc::MemoryAllocator> _memory_allocator;
 public:
-    UniqueStoreExternalStringBufferType(uint32_t array_size, uint32_t max_arrays);
+    UniqueStoreExternalStringBufferType(uint32_t array_size, uint32_t max_arrays, std::shared_ptr<vespalib::alloc::MemoryAllocator> memory_allocator);
     ~UniqueStoreExternalStringBufferType() override;
     void cleanHold(void *buffer, size_t offset, ElemCount numElems, CleanContext cleanCtx) override;
+    const vespalib::alloc::MemoryAllocator* get_memory_allocator() const override;
 };
 
 /**
@@ -101,11 +107,11 @@ private:
     static uint32_t get_type_id(const char *value);
 
 public:
-    UniqueStoreStringAllocator();
+    UniqueStoreStringAllocator(std::shared_ptr<alloc::MemoryAllocator> memory_allocator);
     ~UniqueStoreStringAllocator() override;
     EntryRef allocate(const char *value);
     void hold(EntryRef ref);
-    EntryRef move(EntryRef ref) override;
+    EntryRef move_on_compact(EntryRef ref) override;
     const UniqueStoreEntryBase& get_wrapped(EntryRef ref) const {
         RefType iRef(ref);
         auto &state = _store.getBufferState(iRef.bufferId());

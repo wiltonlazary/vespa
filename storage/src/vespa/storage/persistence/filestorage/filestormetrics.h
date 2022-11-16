@@ -11,6 +11,7 @@
 #pragma once
 
 #include "merge_handler_metrics.h"
+#include "active_operations_metrics.h"
 #include <vespa/metrics/metricset.h>
 #include <vespa/metrics/summetric.h>
 
@@ -100,7 +101,6 @@ struct FileStorThreadMetrics : public metrics::MetricSet
     OpWithNotFound revert;
     Op createIterator;
     Visitor visit;
-    Op multiOp;
     Op createBuckets;
     Op deleteBuckets;
     Op repairs;
@@ -119,7 +119,6 @@ struct FileStorThreadMetrics : public metrics::MetricSet
     metrics::LongCountMetric getBucketDiffReply;
     metrics::LongCountMetric applyBucketDiffReply;
     MergeHandlerMetrics merge_handler_metrics;
-    metrics::LongAverageMetric batchingSize;
 
     FileStorThreadMetrics(const std::string& name, const std::string& desc);
     ~FileStorThreadMetrics() override;
@@ -130,39 +129,31 @@ class FileStorStripeMetrics : public metrics::MetricSet
 public:
     using SP = std::shared_ptr<FileStorStripeMetrics>;
     metrics::DoubleAverageMetric averageQueueWaitingTime;
+    metrics::LongCountMetric throttled_rpc_direct_dispatches;
+    metrics::LongCountMetric throttled_persistence_thread_polls;
+    metrics::LongCountMetric timeouts_waiting_for_throttle_token;
     FileStorStripeMetrics(const std::string& name, const std::string& description);
     ~FileStorStripeMetrics() override;
 };
 
-class FileStorDiskMetrics : public metrics::MetricSet
+struct FileStorMetrics : public metrics::MetricSet
 {
-public:
-    using SP = std::shared_ptr<FileStorDiskMetrics>;
-
     std::vector<FileStorThreadMetrics::SP> threads;
     std::vector<FileStorStripeMetrics::SP> stripes;
     metrics::SumMetric<MetricSet> sumThreads;
     metrics::SumMetric<MetricSet> sumStripes;
-    metrics::DoubleAverageMetric averageQueueWaitingTime;
-    metrics::LongAverageMetric queueSize;
-    metrics::LongAverageMetric pendingMerges;
-    metrics::DoubleAverageMetric waitingForLockHitRate;
-    metrics::DoubleAverageMetric lockWaitTime;
-
-    FileStorDiskMetrics(const std::string& name, const std::string& description, MetricSet* owner);
-    ~FileStorDiskMetrics() override;
-
-    void initDiskMetrics(uint32_t numStripes, uint32_t threadsPerDisk);
-};
-
-struct FileStorMetrics : public metrics::MetricSet
-{
-    FileStorDiskMetrics::SP disk;
-    metrics::SumMetric<MetricSet> sum;
-    metrics::LongCountMetric directoryEvents;
-    metrics::LongCountMetric partitionEvents;
-    metrics::LongCountMetric diskEvents;
-    metrics::LongAverageMetric bucket_db_init_latency;
+    metrics::DoubleAverageMetric  averageQueueWaitingTime;
+    metrics::LongAverageMetric    queueSize;
+    metrics::LongAverageMetric    pendingMerges;
+    metrics::LongAverageMetric    throttle_window_size;
+    metrics::LongAverageMetric    throttle_waiting_threads;
+    metrics::LongAverageMetric    throttle_active_tokens;
+    metrics::DoubleAverageMetric  waitingForLockHitRate;
+    ActiveOperationsMetrics       active_operations;
+    metrics::LongCountMetric      directoryEvents;
+    metrics::LongCountMetric      partitionEvents;
+    metrics::LongCountMetric      diskEvents;
+    metrics::LongAverageMetric    bucket_db_init_latency;
 
     FileStorMetrics();
     ~FileStorMetrics() override;

@@ -54,13 +54,13 @@ bool whole_seconds(int cnt, int secs) {
 class PidFile
 {
 private:
-    char *_pidfile;
+    std::string _pidfile;
     int _fd;
     PidFile(const PidFile&);
     PidFile& operator= (const PidFile&);
 public:
-    PidFile(const char *pidfile) : _pidfile(strdup(pidfile)), _fd(-1) {}
-    ~PidFile() { free(_pidfile); if (_fd >= 0) close(_fd); }
+    PidFile(const char *pidfile) : _pidfile(pidfile), _fd(-1) {}
+    ~PidFile() { if (_fd >= 0) close(_fd); }
     int readPid();
     void writePid();
     bool writeOpen();
@@ -72,7 +72,7 @@ public:
 void
 PidFile::cleanUp()
 {
-    if (!anotherRunning()) remove(_pidfile);
+    if (!anotherRunning()) remove(_pidfile.c_str());
     if (_fd >= 0) close(_fd);
     _fd = -1;
 }
@@ -82,14 +82,14 @@ PidFile::writeOpen()
 {
     if (_fd >= 0) close(_fd);
     int flags = O_CREAT | O_WRONLY | O_NONBLOCK;
-    _fd = open(_pidfile, flags, 0644);
+    _fd = open(_pidfile.c_str(), flags, 0644);
     if (_fd < 0) {
-        fprintf(stderr, "could not create pidfile %s: %s\n", _pidfile,
+        fprintf(stderr, "could not create pidfile %s: %s\n", _pidfile.c_str(),
                 strerror(errno));
         return false;
     }
     if (flock(_fd, LOCK_EX | LOCK_NB) != 0) {
-        fprintf(stderr, "could not lock pidfile %s: %s\n", _pidfile,
+        fprintf(stderr, "could not lock pidfile %s: %s\n", _pidfile.c_str(),
                 strerror(errno));
         close(_fd);
         _fd = -1;
@@ -106,7 +106,7 @@ PidFile::writePid()
     int didtruncate = ftruncate(_fd, (off_t)0);
     if (didtruncate != 0) {
         fprintf(stderr, "could not truncate pid file %s: %s\n",
-                _pidfile, strerror(errno));
+                _pidfile.c_str(), strerror(errno));
         std::_Exit(1);
     }
     char buf[100];
@@ -115,16 +115,16 @@ PidFile::writePid()
     ssize_t didw = write(_fd, buf, l);
     if (didw != l) {
         fprintf(stderr, "could not write pid to %s: %s\n",
-                _pidfile, strerror(errno));
+                _pidfile.c_str(), strerror(errno));
         std::_Exit(1);
     }
-    LOG(debug, "wrote '%s' to %s (fd %d)", buf, _pidfile, _fd);
+    LOG(debug, "wrote '%s' to %s (fd %d)", buf, _pidfile.c_str(), _fd);
 }
 
 int
 PidFile::readPid()
 {
-    FILE *pf = fopen(_pidfile, "r");
+    FILE *pf = fopen(_pidfile.c_str(), "r");
     if (pf == NULL) return 0;
     char buf[100];
     strcpy(buf, "0");
@@ -151,7 +151,7 @@ bool
 PidFile::canStealLock()
 {
     int flags = O_WRONLY | O_NONBLOCK;
-    int desc = open(_pidfile, flags, 0644);
+    int desc = open(_pidfile.c_str(), flags, 0644);
     if (desc < 0) {
         return false;
     }
@@ -342,6 +342,7 @@ int usage(char *prog, int es)
 int main(int argc, char *argv[])
 {
     bool doStop = false;
+    bool checkWouldRun = false;
     int restart = 0;
     const char *service = "runserver";
     const char *pidfile = "vespa-runserver.pid"; // XXX bad default?
@@ -350,7 +351,7 @@ int main(int argc, char *argv[])
     signal(SIGQUIT, SIG_IGN);
 
     int ch;
-    while ((ch = getopt(argc, argv, "k:s:r:p:Sh")) != -1) {
+    while ((ch = getopt(argc, argv, "k:s:r:p:ShW")) != -1) {
         switch (ch) {
         case 's':
             service = optarg;
@@ -366,6 +367,9 @@ int main(int argc, char *argv[])
             break;
         case 'k':
             killcmd = optarg;
+            break;
+        case 'W':
+            checkWouldRun = true;
             break;
         default:
             return usage(argv[0], ch != 'h');
@@ -383,6 +387,14 @@ int main(int argc, char *argv[])
     }
 
     PidFile mypf(pidfile);
+    if (checkWouldRun) {
+        if (mypf.anotherRunning()) {
+            fprintf(stderr, "%s already running with pid %d\n", service, mypf.readPid());
+            return 1;
+        } else {
+            return 0;
+        }
+    }
     if (doStop) {
         if (mypf.anotherRunning()) {
             int pid = mypf.readPid();

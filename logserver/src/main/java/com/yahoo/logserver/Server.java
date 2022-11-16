@@ -22,7 +22,6 @@ import java.util.logging.Logger;
  * @author Bjorn Borud
  * @author Stig Bakken
  */
-
 public class Server implements Runnable {
     private final AtomicBoolean signalCaught = new AtomicBoolean(false);
     static final String APPNAME = "logserver";

@@ -2,16 +2,24 @@
 
 #pragma once
 
-#include <vespa/searchlib/queryeval/searchable.h>
 #include <vespa/vespalib/stllike/string.h>
-#include <vespa/searchlib/queryeval/searchiterator.h>
-#include <vespa/searchlib/queryeval/blueprint.h>
-
-#include <vespa/searchlib/fef/matchdata.h>
+#include <vector>
+#include <memory>
 #include <mutex>
+#include <atomic>
+
+namespace search::queryeval {
+    class Searchable;
+    class IRequestContext;
+    class SearchIterator;
+    class Blueprint;
+}
+namespace search::fef { class MatchData; }
 
 namespace proton::matching {
-    
+
+class RangeQueryLocator;
+
 /**
  * This class is responsible for creating attribute-based search
  * iterators that are used to limit the search space. Each search
@@ -24,30 +32,31 @@ class AttributeLimiter
 {
 public:
     enum DiversityCutoffStrategy { LOOSE, STRICT};
-    AttributeLimiter(search::queryeval::Searchable &searchable_attributes,
+    AttributeLimiter(const RangeQueryLocator & _rangeQueryLocator,
+                     search::queryeval::Searchable &searchable_attributes,
                      const search::queryeval::IRequestContext & requestContext,
                      const vespalib::string &attribute_name, bool descending,
                      const vespalib::string &diversity_attribute,
                      double diversityCutoffFactor,
                      DiversityCutoffStrategy diversityCutoffStrategy);
     ~AttributeLimiter();
-    search::queryeval::SearchIterator::UP create_search(size_t want_hits, size_t max_group_size, bool strictSearch);
-    bool was_used() const { return ((!_match_datas.empty()) || (_blueprint.get() != nullptr)); }
-    ssize_t getEstimatedHits() const { return _estimatedHits; }
+    std::unique_ptr<search::queryeval::SearchIterator> create_search(size_t want_hits, size_t max_group_size, bool strictSearch);
+    bool was_used() const;
+    ssize_t getEstimatedHits() const;
     static DiversityCutoffStrategy toDiversityCutoffStrategy(vespalib::stringref strategy);
 private:
-    const vespalib::string & toString(DiversityCutoffStrategy strategy);
-    search::queryeval::Searchable            & _searchable_attributes;
-    const search::queryeval::IRequestContext & _requestContext;
-    vespalib::string                           _attribute_name;
-    bool                                       _descending;
-    vespalib::string                           _diversity_attribute;
-    std::mutex                                 _lock;
-    std::vector<search::fef::MatchData::UP>    _match_datas;
-    search::queryeval::Blueprint::UP           _blueprint;
-    ssize_t                                    _estimatedHits;
-    double                                     _diversityCutoffFactor;
-    DiversityCutoffStrategy                    _diversityCutoffStrategy;
+    search::queryeval::Searchable                      & _searchable_attributes;
+    const search::queryeval::IRequestContext           & _requestContext;
+    const RangeQueryLocator                            & _rangeQueryLocator;
+    vespalib::string                                     _attribute_name;
+    bool                                                 _descending;
+    vespalib::string                                     _diversity_attribute;
+    std::mutex                                           _lock;
+    std::vector<std::unique_ptr<search::fef::MatchData>> _match_datas;
+    std::unique_ptr<search::queryeval::Blueprint>        _blueprint;
+    std::atomic<ssize_t>                                 _estimatedHits;
+    double                                               _diversityCutoffFactor;
+    DiversityCutoffStrategy                              _diversityCutoffStrategy;
 };
 
 }

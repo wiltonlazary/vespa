@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.abicheck.collector;
 
 import java.util.HashSet;
@@ -13,7 +13,7 @@ public class AnnotationCollector extends ClassVisitor {
   private final Set<String> annotations = new HashSet<>();
 
   public AnnotationCollector() {
-    super(Opcodes.ASM7);
+    super(Opcodes.ASM9);
   }
 
   @Override

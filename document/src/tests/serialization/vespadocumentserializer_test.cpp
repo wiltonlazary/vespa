@@ -1,10 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 // Unit tests for vespadocumentserializer.
 
+#include <vespa/document/test/fieldvalue_helpers.h>
 #include <vespa/document/annotation/annotation.h>
 #include <vespa/document/annotation/span.h>
 #include <vespa/document/annotation/spantree.h>
-#include <vespa/document/config/config-documenttypes.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/datatype/annotationreferencedatatype.h>
 #include <vespa/document/datatype/arraydatatype.h>
 #include <vespa/document/datatype/documenttype.h>
@@ -44,8 +45,8 @@
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/document/base/exceptions.h>
+#include <vespa/vespalib/util/compressionconfig.h>
 
-using document::DocumenttypesConfig;
 using vespalib::File;
 using vespalib::Slime;
 using vespalib::nbostream;
@@ -345,7 +346,7 @@ void checkArrayFieldValue(SizeType value_count) {
     ArrayDataType array_type(*DataType::INT);
     ArrayFieldValue value(array_type);
     for (uint32_t i = 0; i < value_count; ++i) {
-        value.add(static_cast<int32_t>(i));
+        CollectionHelper(value).add(static_cast<int32_t>(i));
     }
 
     nbostream stream;
@@ -488,21 +489,11 @@ TEST("requireThatUncompressedStructFieldValueCanBeSerialized") {
     checkStructSerialization(value, CompressionConfig::NONE);
 }
 
-TEST("requireThatCompressedStructFieldValueCanBeSerialized") {
+TEST("requireThatReserializationIsUnompressedIfUnmodified") {
     StructDataType structType(getStructDataType());
     StructFieldValue value = getStructFieldValue(structType);
-    const_cast<StructDataType *>(static_cast<const StructDataType *>(value.getDataType()))
-            ->setCompressionConfig(CompressionConfig(CompressionConfig::LZ4, 0, 95));
-    checkStructSerialization(value, CompressionConfig::LZ4);
-}
 
-TEST("requireThatReserializationPreservesCompressionIfUnmodified") {
-    StructDataType structType(getStructDataType());
-    StructFieldValue value = getStructFieldValue(structType);
-    const_cast<StructDataType *>(static_cast<const StructDataType *>(value.getDataType()))
-            ->setCompressionConfig(CompressionConfig(CompressionConfig::LZ4, 0, 95));
-
-    TEST_DO(checkStructSerialization(value, CompressionConfig::LZ4));
+    TEST_DO(checkStructSerialization(value, CompressionConfig::NONE));
 
     nbostream os;
     VespaDocumentSerializer serializer(os);
@@ -512,9 +503,9 @@ TEST("requireThatReserializationPreservesCompressionIfUnmodified") {
     StructFieldValue value2(struct_type);
     VespaDocumentDeserializer deserializer(repo, os, serialization_version);
     deserializer.read(value2);
-    TEST_DO(checkStructSerialization(value, CompressionConfig::LZ4));
+    TEST_DO(checkStructSerialization(value, CompressionConfig::NONE));
     // Lazy serialization of structs....
-    TEST_DO(checkStructSerialization(value2, CompressionConfig::LZ4));
+    TEST_DO(checkStructSerialization(value2, CompressionConfig::NONE));
     EXPECT_EQUAL(value, value2);
 }
 
@@ -635,7 +626,7 @@ TEST("requireThatDocumentWithDocumentCanBeSerialized") {
     const AnnotationType *a_type =my_repo.getAnnotationType(*inner_type, a_id);
     StringFieldValue str("foo");
     auto tree = std::make_unique<SpanTree>("name", std::make_unique<Span>(0, 3));
-    tree->annotate(std::make_unique<Annotation>(*a_type));
+    tree->annotate(Annotation(*a_type));
 
 
     setSpanTree(str, *tree);
@@ -660,7 +651,7 @@ TEST("requireThatReadDocumentTypeThrowsIfUnknownType") {
     stream.write(my_type.c_str(), my_type.size() + 1);
     stream << static_cast<uint16_t>(0);  // version (unused)
 
-    DocumentType value;
+    DocumentType value("invalid");
     VespaDocumentDeserializer deserializer(repo, stream, serialization_version);
     EXPECT_EXCEPTION(deserializer.read(value), DocumentTypeNotFoundException,
                 "Document type " + my_type + " not found");
@@ -821,7 +812,7 @@ DocumenttypesConfig getTensorDocTypesConfig() {
 
 const DocumentTypeRepo tensor_doc_repo(getTensorDocTypesConfig());
 const FixedTypeRepo tensor_repo(tensor_doc_repo,
-                                *tensor_doc_repo.getDocumentType(doc_type_id));
+                                *tensor_doc_repo.getDocumentType(tensor_doc_type_id));
 
 const DocumentTypeRepo tensor_doc_repo1(getTensorDocTypesConfig("tensor(dimX{})"));
 
@@ -993,22 +984,6 @@ TEST_F("ReferenceFieldValue with ID can be roundtrip serialized", RefFixture) {
     ReferenceFieldValue ref_with_id(f.ref_type(), DocumentId("id:ns:" + doc_name + "::foo"));
     nbostream stream;
     serializeAndDeserialize(ref_with_id, stream, f.fixed_repo);
-}
-
-TEST_F("Empty ReferenceFieldValue has changed-flag cleared after deserialization", RefFixture) {
-    ReferenceFieldValue src(f.ref_type());
-    ReferenceFieldValue dest(f.ref_type());
-    f.roundtrip_serialize(src, dest);
-
-    EXPECT_FALSE(dest.hasChanged());
-}
-
-TEST_F("ReferenceFieldValue with ID has changed-flag cleared after deserialization", RefFixture) {
-    ReferenceFieldValue src(f.ref_type(), DocumentId("id:ns:" + doc_name + "::foo"));
-    ReferenceFieldValue dest(f.ref_type());
-    f.roundtrip_serialize(src, dest);
-
-    EXPECT_FALSE(dest.hasChanged());
 }
 
 TEST_F("Empty ReferenceFieldValue serialization matches Java", RefFixture) {

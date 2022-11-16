@@ -1,19 +1,23 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.deployment;
 
 import com.yahoo.collections.AbstractFilteringList;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.InstanceName;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationVersion;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobId;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
+import com.yahoo.vespa.hosted.controller.api.integration.deployment.RevisionId;
 
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
+
+import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.aborted;
+import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.nodeAllocationFailure;
 
 /**
  * A list of deployment jobs that can be filtered in various ways.
@@ -51,6 +55,15 @@ public class JobList extends AbstractFilteringList<JobStatus, JobList> {
         return matching(job -> job.lastCompleted().isPresent() && ! job.isSuccess());
     }
 
+    /** Returns the subset of jobs which are currently failing, not out of test capacity, and not aborted. */
+    public JobList failingHard() {
+        return failing().not().outOfTestCapacity().not().withStatus(aborted);
+    }
+
+    public JobList outOfTestCapacity() {
+        return matching(job -> job.isNodeAllocationFailure() && job.id().type().environment().isTest());
+    }
+
     public JobList running() {
         return matching(job -> job.isRunning());
     }
@@ -58,6 +71,14 @@ public class JobList extends AbstractFilteringList<JobStatus, JobList> {
     /** Returns the subset of jobs which must be failing due to an application change */
     public JobList failingApplicationChange() {
         return matching(JobList::failingApplicationChange);
+    }
+
+    /** Returns the subset of jobs which are failing because of an application change, and have been since the threshold, on the given revision. */
+    public JobList failingWithBrokenRevisionSince(RevisionId broken, Instant threshold) {
+        return failingApplicationChange().matching(job -> job.runs().values().stream()
+                                                             .anyMatch(run ->    run.versions().targetRevision().equals(broken)
+                                                                              && run.hasFailed()
+                                                                              && run.start().isBefore(threshold)));
     }
 
     /** Returns the subset of jobs which are failing with the given run status. */
@@ -76,8 +97,13 @@ public class JobList extends AbstractFilteringList<JobStatus, JobList> {
     }
 
     /** Returns the subset of jobs run for the given instance. */
-    public JobList instance(InstanceName instance) {
-        return matching(job -> job.id().application().instance().equals(instance));
+    public JobList instance(InstanceName... instances) {
+        return instance(Set.of(instances));
+    }
+
+    /** Returns the subset of jobs run for the given instance. */
+    public JobList instance(Collection<InstanceName> instances) {
+        return matching(job -> instances.contains(job.id().application().instance()));
     }
 
     /** Returns the subset of jobs of which are production jobs. */
@@ -85,14 +111,27 @@ public class JobList extends AbstractFilteringList<JobStatus, JobList> {
         return matching(job -> job.id().type().isProduction());
     }
 
-    /** Returns the jobs with any runs matching the given versions — targets only for system test, everything present otherwise. */
+    /** Returns the jobs with any runs failing with non-out-of-test-capacity on the given versions — targets only for system test, everything present otherwise. */
+    public JobList failingHardOn(Versions versions) {
+        return matching(job -> ! RunList.from(job)
+                                        .on(versions)
+                                        .matching(Run::hasFailed)
+                                        .not().matching(run -> run.status() == nodeAllocationFailure && run.id().type().environment().isTest())
+                                        .isEmpty());
+    }
+
+    /** Returns the jobs with any runs matching the given versions — targets only for system test, everything present otherwise. */
     public JobList triggeredOn(Versions versions) {
         return matching(job -> ! RunList.from(job).on(versions).isEmpty());
     }
 
-    /** Returns the jobs with successful runs matching the given versions — targets only for system test, everything present otherwise. */
-    public JobList successOn(Versions versions) {
-        return matching(job -> ! RunList.from(job).status(RunStatus.success).on(versions).isEmpty());
+    /** Returns the jobs with successful runs matching the given versions — targets only for system test, everything present otherwise. */
+    public JobList successOn(JobType type, Versions versions) {
+        return matching(job ->      job.id().type().equals(type)
+                               && ! RunList.from(job)
+                                           .matching(run -> run.hasSucceeded() && run.id().type().zone().equals(type.zone()))
+                                           .on(versions)
+                                           .isEmpty());
     }
 
     // ----------------------------------- JobRun filtering
@@ -147,8 +186,8 @@ public class JobList extends AbstractFilteringList<JobStatus, JobList> {
         }
 
         /** Returns the subset of jobs where the run of the indicated type was on the given version */
-        public JobList on(ApplicationVersion version) {
-            return matching(run -> run.versions().targetApplication().equals(version));
+        public JobList on(RevisionId revision) {
+            return matching(run -> run.versions().targetRevision().equals(revision));
         }
 
         /** Returns the subset of jobs where the run of the indicated type was on the given version */
@@ -169,7 +208,7 @@ public class JobList extends AbstractFilteringList<JobStatus, JobList> {
         if (job.isSuccess()) return false;
         if (job.lastSuccess().isEmpty()) return true; // An application which never succeeded is surely bad.
         if ( ! job.firstFailing().get().versions().targetPlatform().equals(job.lastSuccess().get().versions().targetPlatform())) return false; // Version change may be to blame.
-        return ! job.firstFailing().get().versions().targetApplication().equals(job.lastSuccess().get().versions().targetApplication()); // Return whether there is an application change.
+        return ! job.firstFailing().get().versions().targetRevision().equals(job.lastSuccess().get().versions().targetRevision()); // Return whether there is an application change.
     }
 
 }

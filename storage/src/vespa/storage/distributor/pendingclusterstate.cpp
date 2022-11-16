@@ -9,6 +9,7 @@
 #include <vespa/storageframework/defaultimplementation/clock/realclock.h>
 #include <vespa/vdslib/distribution/distribution.h>
 #include <vespa/vespalib/util/xmlstream.hpp>
+#include <vespa/vespalib/stllike/hash_map.hpp>
 #include <climits>
 
 #include <vespa/log/bufferedlogger.h>
@@ -44,7 +45,8 @@ PendingClusterState::PendingClusterState(
       _clusterStateVersion(_cmd->getClusterStateBundle().getVersion()),
       _isVersionedTransition(true),
       _bucketOwnershipTransfer(false),
-      _pendingTransitions()
+      _pendingTransitions(),
+      _node_features()
 {
     logConstructionInformation();
     initializeBucketSpaceTransitions(false, outdatedNodesMap);
@@ -67,7 +69,8 @@ PendingClusterState::PendingClusterState(
       _clusterStateVersion(0),
       _isVersionedTransition(false),
       _bucketOwnershipTransfer(true),
-      _pendingTransitions()
+      _pendingTransitions(),
+      _node_features()
 {
     logConstructionInformation();
     initializeBucketSpaceTransitions(true, OutdatedNodesMap());
@@ -189,29 +192,7 @@ void
 PendingClusterState::requestNode(BucketSpaceAndNode bucketSpaceAndNode)
 {
     const auto &distribution = _bucket_space_states.get(bucketSpaceAndNode.bucketSpace).get_distribution();
-    vespalib::string distributionHash;
-    // TODO remove on Vespa 8 - this is a workaround for https://github.com/vespa-engine/vespa/issues/8475
-    bool sendLegacyHash = false;
-    if (bucketSpaceAndNode.bucketSpace == document::FixedBucketSpaces::global_space()) {
-        auto transitionIter = _pendingTransitions.find(bucketSpaceAndNode.bucketSpace);
-        assert(transitionIter != _pendingTransitions.end());
-        // First request cannot have been rejected yet and will thus be sent with non-legacy hash.
-        // Subsequent requests will be sent 50-50. This is because a request may be rejected due to
-        // other reasons than just the hash mismatching, so if we don't cycle back to the non-legacy
-        // hash we risk never converging.
-        sendLegacyHash = ((transitionIter->second->rejectedRequests(bucketSpaceAndNode.node) % 2) == 1);
-    }
-    if (!sendLegacyHash) {
-        distributionHash = distribution.getNodeGraph().getDistributionConfigHash();
-    } else {
-        const auto& defaultSpace = _bucket_space_states.get(document::FixedBucketSpaces::default_space());
-        // Generate legacy distribution hash explicitly.
-        auto legacyGlobalDistr = GlobalBucketSpaceDistributionConverter::convert_to_global(
-                defaultSpace.get_distribution(), true/*use legacy mode*/);
-        distributionHash = legacyGlobalDistr->getNodeGraph().getDistributionConfigHash();
-        LOG(debug, "Falling back to sending legacy hash to node %u: %s",
-            bucketSpaceAndNode.node, distributionHash.c_str());
-    }
+    vespalib::string distributionHash = distribution.getNodeGraph().getDistributionConfigHash();
 
     LOG(debug,
         "Requesting bucket info for bucket space %" PRIu64 " node %d with cluster state '%s' "
@@ -287,6 +268,9 @@ PendingClusterState::onRequestBucketInfoReply(const std::shared_ptr<api::Request
     auto transitionIter = _pendingTransitions.find(bucketSpaceAndNode.bucketSpace);
     assert(transitionIter != _pendingTransitions.end());
     transitionIter->second->onRequestBucketInfoReply(*reply, bucketSpaceAndNode.node);
+
+    update_node_supported_features_from_reply(iter->second.node, *reply);
+
     _sentMessages.erase(iter);
 
     return true;
@@ -302,21 +286,6 @@ PendingClusterState::resendDelayedMessages() {
         requestNode(_delayedRequests.front().second);
         _delayedRequests.pop_front();
     }
-}
-
-std::string
-PendingClusterState::requestNodesToString() const
-{
-    std::ostringstream ost;
-    for (uint32_t i = 0; i < _requestedNodes.size(); ++i) {
-        if (_requestedNodes[i]) {
-            if (ost.str().length() > 0) {
-                ost << ",";
-            }
-            ost << i;
-        }
-    }
-    return ost.str();
 }
 
 void
@@ -364,6 +333,18 @@ PendingClusterState::getNewClusterStateBundleString() const {
 std::string
 PendingClusterState::getPrevClusterStateBundleString() const {
     return _prevClusterStateBundle.getBaselineClusterState()->toString();
+}
+
+void
+PendingClusterState::update_node_supported_features_from_reply(uint16_t node, const api::RequestBucketInfoReply& reply)
+{
+    const auto& src_feat = reply.supported_node_features();
+    NodeSupportedFeatures dest_feat;
+    dest_feat.unordered_merge_chaining               = src_feat.unordered_merge_chaining;
+    dest_feat.two_phase_remove_location              = src_feat.two_phase_remove_location;
+    dest_feat.no_implicit_indexing_of_active_buckets = src_feat.no_implicit_indexing_of_active_buckets;
+    // This will overwrite per bucket-space reply, but does not matter since it's independent of bucket space.
+    _node_features.insert(std::make_pair(node, dest_feat));
 }
 
 }

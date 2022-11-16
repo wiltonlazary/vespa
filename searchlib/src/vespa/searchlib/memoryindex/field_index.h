@@ -52,20 +52,20 @@ private:
         _dict.getAllocator().freeze();
     }
 
-    void trimHoldLists() {
-        GenerationHandler::generation_t usedGen =
-            _generationHandler.getFirstUsedGeneration();
-        _postingListStore.trimHoldLists(usedGen);
-        _dict.getAllocator().trimHoldLists(usedGen);
-        _featureStore.trimHoldLists(usedGen);
+    void reclaim_memory() {
+        GenerationHandler::generation_t oldest_used_gen =
+                _generationHandler.get_oldest_used_generation();
+        _postingListStore.reclaim_memory(oldest_used_gen);
+        _dict.getAllocator().reclaim_memory(oldest_used_gen);
+        _featureStore.reclaim_memory(oldest_used_gen);
     }
 
-    void transferHoldLists() {
+    void assign_generation() {
         GenerationHandler::generation_t generation =
             _generationHandler.getCurrentGeneration();
-        _postingListStore.transferHoldLists(generation);
-        _dict.getAllocator().transferHoldLists(generation);
-        _featureStore.transferHoldLists(generation);
+        _postingListStore.assign_generation(generation);
+        _dict.getAllocator().assign_generation(generation);
+        _featureStore.assign_generation(generation);
     }
 
     void incGeneration() {
@@ -90,9 +90,9 @@ public:
     void commit() override {
         _remover.flush();
         freeze();
-        transferHoldLists();
+        assign_generation();
         incGeneration();
-        trimHoldLists();
+        reclaim_memory();
     }
 
     /**
@@ -100,10 +100,10 @@ public:
      */
     queryeval::SearchIterator::UP make_search_iterator(const vespalib::string& term,
                                                        uint32_t field_id,
-                                                       const fef::TermFieldMatchDataArray& match_data) const;
+                                                       fef::TermFieldMatchDataArray match_data) const;
 
     std::unique_ptr<queryeval::SimpleLeafBlueprint> make_term_blueprint(const vespalib::string& term,
-                                                                        const queryeval::FieldSpecBase& field,
+                                                                        const queryeval::FieldSpec& field,
                                                                         uint32_t field_id) override;
 };
 

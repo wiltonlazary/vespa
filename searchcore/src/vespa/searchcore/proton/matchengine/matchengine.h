@@ -6,7 +6,7 @@
 #include <vespa/searchcore/proton/common/handlermap.hpp>
 #include <vespa/searchcore/proton/common/statusreport.h>
 #include <vespa/searchlib/engine/searchapi.h>
-#include <vespa/vespalib/net/state_explorer.h>
+#include <vespa/vespalib/net/http/state_explorer.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/util/simple_thread_bundle.h>
 #include <mutex>
@@ -21,10 +21,12 @@ private:
     const uint32_t                     _distributionKey;
     bool                               _async;
     bool                               _closed;
+    std::atomic<bool>                  _forward_issues;
     HandlerMap<ISearchHandler>         _handlers;
     vespalib::ThreadStackExecutor      _executor;
     vespalib::SimpleThreadBundle::Pool _threadBundlePool;
-    bool                               _nodeUp;
+    std::atomic<bool>                  _nodeUp;
+    std::atomic<bool>                  _nodeMaintenance;
 
 public:
     /**
@@ -62,12 +64,12 @@ public:
      *
      * @return executor stats
      **/
-    vespalib::ThreadStackExecutor::Stats getExecutorStats() { return _executor.getStats(); }
+    vespalib::ExecutorStats getExecutorStats() { return _executor.getStats(); }
 
     /**
      * Returns the underlying executor. Only used for state explorers.
      */
-    const vespalib::SyncableThreadExecutor& get_executor() const { return _executor; }
+    const vespalib::ThreadExecutor& get_executor() const { return _executor; }
 
     /**
      * Closes the request handler interface. This will prevent any more data
@@ -130,6 +132,13 @@ public:
      */
     void setNodeUp(bool nodeUp);
 
+    /**
+     * Set node into maintenance, based on info from cluster controller. Note that
+     * nodeMaintenance == true also implies setNodeUp(false), as the node is technically
+     * not in a Up state.
+     */
+    void setNodeMaintenance(bool nodeMaintenance);
+
     StatusReport::UP reportStatus() const;
 
     search::engine::SearchReply::UP search(
@@ -137,6 +146,8 @@ public:
             search::engine::SearchClient &client) override;
 
     void get_state(const vespalib::slime::Inserter &inserter, bool full) const override;
+
+    void set_issue_forwarding(bool enable) { _forward_issues = enable; }
 };
 
 } // namespace proton

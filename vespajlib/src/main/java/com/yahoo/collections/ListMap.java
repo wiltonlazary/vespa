@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 
 /**
  * A map holding multiple items at each key (using ArrayList and HashMap).
@@ -133,6 +134,7 @@ public class ListMap<K, V> {
      */
     public void freeze() {
         if (frozen) return;
+        frozen = true;
 
         for (Map.Entry<K,List<V>> entry : map.entrySet())
             entry.setValue(ImmutableList.copyOf(entry.getValue()));
@@ -152,5 +154,7 @@ public class ListMap<K, V> {
 
     /** Returns the number of keys in this map */
     public int size() { return map.size(); }
+
+    public void forEach(BiConsumer<K, List<V>> action) { map.forEach(action); }
 
 }

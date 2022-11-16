@@ -2,7 +2,9 @@
 package com.yahoo.vespa.hosted.controller.api.integration.zone;
 
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.AthenzDomain;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.CloudName;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.NodeType;
@@ -33,14 +35,23 @@ public interface ZoneRegistry {
     /** Returns whether the system of this registry contains the given zone */
     boolean hasZone(ZoneId zoneId);
 
+    /** Returns whether cloudAccount in this system supports given zone */
+    boolean hasZone(ZoneId zoneId, CloudAccount cloudAccount);
+
     /** Returns a list containing the id of all zones in this registry */
     ZoneFilter zones();
+
+    /** Returns a list containing the id of all zones in this registry, including the system. */
+    ZoneFilter zonesIncludingSystem();
 
     /** Returns the default region for the given environment, if one is configured */
     Optional<RegionName> getDefaultRegion(Environment environment);
 
     /** Returns the URI for the config server VIP in the given zone */
     URI getConfigServerVipUri(ZoneId zoneId);
+
+    /** Returns the VIP hostname for the shared routing layer in given zone, if any */
+    Optional<String> getVipHostname(ZoneId zoneId);
 
     /** Returns the time to live for deployments in the given zone, or empty if this is infinite */
     Optional<Duration> getDeploymentTimeToLive(ZoneId zoneId);
@@ -72,13 +83,19 @@ public interface ZoneRegistry {
     /** Returns all OS upgrade policies */
     List<UpgradePolicy> osUpgradePolicies();
 
-    /** Returns the routing methods supported by given zone, with the most preferred method appearing first */
-    List<RoutingMethod> routingMethods(ZoneId zone);
+    /** Returns the routing method used by given zone */
+    RoutingMethod routingMethod(ZoneId zone);
 
     /** Returns a URL where an informative dashboard can be found. */
     URI dashboardUrl();
 
+    /** Returns a URL which displays information about the given tenant. */
+    URI dashboardUrl(TenantName id);
+
     /** Returns a URL which displays information about the given application. */
+    URI dashboardUrl(TenantName tenantName, ApplicationName applicationName);
+
+    /** Returns a URL which displays information about the given application instance. */
     URI dashboardUrl(ApplicationId id);
 
     /** Returns a URL which displays information about the given job run. */
@@ -92,5 +109,8 @@ public interface ZoneRegistry {
 
     /** IAM tenant developer role ARN */
     Optional<String> tenantDeveloperRoleArn(TenantName tenant);
+
+    /** Returns athenz domain tied to the given cloud account, if any */
+    Optional<AthenzDomain> cloudAccountAthenzDomain(CloudAccount cloudAccount);
 
 }

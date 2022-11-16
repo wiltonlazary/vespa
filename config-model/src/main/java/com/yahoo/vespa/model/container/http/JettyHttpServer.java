@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container.http;
 
+import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.component.ComponentId;
 import com.yahoo.component.ComponentSpecification;
 import com.yahoo.container.bundle.BundleInstantiationSpecification;
@@ -23,14 +24,18 @@ public class JettyHttpServer extends SimpleComponent implements ServerConfig.Pro
     private final ContainerCluster<?> cluster;
     private volatile boolean isHostedVespa;
     private final List<ConnectorFactory> connectorFactories = new ArrayList<>();
+    private final List<String> ignoredUserAgentsList = new ArrayList<>();
 
-    public JettyHttpServer(String componentId, ContainerCluster<?> cluster, boolean isHostedVespa) {
+    public JettyHttpServer(String componentId, ContainerCluster<?> cluster, DeployState deployState) {
         super(new ComponentModel(componentId, com.yahoo.jdisc.http.server.jetty.JettyHttpServer.class.getName(), null));
-        this.isHostedVespa = isHostedVespa;
+        this.isHostedVespa = deployState.isHosted();
         this.cluster = cluster;
         final FilterBindingsProviderComponent filterBindingsProviderComponent = new FilterBindingsProviderComponent(componentId);
         addChild(filterBindingsProviderComponent);
         inject(filterBindingsProviderComponent);
+        for (String agent : deployState.featureFlags().ignoredHttpUserAgents()) {
+            addIgnoredUserAgent(agent);
+        }
     }
 
     public void setHostedVespa(boolean isHostedVespa) { this.isHostedVespa = isHostedVespa; }
@@ -44,10 +49,15 @@ public class JettyHttpServer extends SimpleComponent implements ServerConfig.Pro
         return Collections.unmodifiableList(connectorFactories);
     }
 
+    public void addIgnoredUserAgent(String userAgent) {
+        ignoredUserAgentsList.add(userAgent);
+    }
+
     @Override
     public void getConfig(ServerConfig.Builder builder) {
         builder.metric(new ServerConfig.Metric.Builder()
                 .monitoringHandlerPaths(List.of("/state/v1", "/status.html", "/metrics/v2"))
+                .ignoredUserAgents(ignoredUserAgentsList)
                 .searchHandlerPaths(List.of("/search"))
         );
         if (isHostedVespa) {
@@ -59,12 +69,12 @@ public class JettyHttpServer extends SimpleComponent implements ServerConfig.Pro
             // Enable connection log hosted Vespa
             builder.connectionLog(new ServerConfig.ConnectionLog.Builder().enabled(true));
         } else {
-            // TODO Vespa 8: Remove legacy Yahoo headers
             builder.accessLog(new ServerConfig.AccessLog.Builder()
-                    .remoteAddressHeaders(List.of("x-forwarded-for", "y-ra", "yahooremoteip", "client-ip"))
-                    .remotePortHeaders(List.of("X-Forwarded-Port", "y-rp")));
+                    .remoteAddressHeaders(List.of("x-forwarded-for"))
+                    .remotePortHeaders(List.of("X-Forwarded-Port")));
         }
         configureJettyThreadpool(builder);
+        builder.stopTimeout(300);
     }
 
     private void configureJettyThreadpool(ServerConfig.Builder builder) {

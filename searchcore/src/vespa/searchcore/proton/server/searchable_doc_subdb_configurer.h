@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "documentdbconfigmanager.h"
 #include "isummaryadapter.h"
 #include "matchers.h"
 #include "matchview.h"
@@ -11,7 +10,7 @@
 #include <vespa/searchcore/proton/attribute/i_attribute_writer.h>
 #include <vespa/searchcore/proton/docsummary/summarymanager.h>
 #include <vespa/searchcore/proton/index/i_index_writer.h>
-#include <vespa/searchcore/proton/matching/constant_value_repo.h>
+#include <vespa/searchcore/proton/matching/ranking_assets_repo.h>
 #include <vespa/searchcore/proton/reprocessing/i_reprocessing_initializer.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
 #include <vespa/searchcommon/common/schema.h>
@@ -19,10 +18,13 @@
 #include <vespa/config-indexschema.h>
 #include <vespa/config-rank-profiles.h>
 #include <vespa/config-summary.h>
-#include <vespa/config-summarymap.h>
 #include <vespa/vespalib/util/varholder.h>
 #include <vespa/searchcore/proton/reference/i_document_db_reference_resolver.h>
 
+namespace proton::matching {
+    class RankingExpressions;
+    class OnnxModels;
+}
 namespace proton {
 
 struct IDocumentDBReferenceResolver;
@@ -40,7 +42,7 @@ private:
     SearchViewHolder            &_searchView;
     FeedViewHolder              &_feedView;
     matching::QueryLimiter      &_queryLimiter;
-    matching::ConstantValueRepo &_constantValueRepo;
+    matching::RankingAssetsRepo &_rankingAssetsRepo;
     const vespalib::Clock       &_clock;
     vespalib::string             _subDbName;
     uint32_t                     _distributionKey;
@@ -66,16 +68,14 @@ public:
                                  SearchViewHolder &searchView,
                                  FeedViewHolder &feedView,
                                  matching::QueryLimiter &queryLimiter,
-                                 matching::ConstantValueRepo &constantValueRepo,
+                                 matching::RankingAssetsRepo &rankingAssetsRepo,
                                  const vespalib::Clock &clock,
                                  const vespalib::string &subDbName,
                                  uint32_t distributionKey);
     ~SearchableDocSubDBConfigurer();
 
-    Matchers::UP createMatchers(const search::index::Schema::SP &schema,
-                                const vespa::config::search::RankProfilesConfig &cfg,
-                                const proton::matching::RankingExpressions &rankingExpressions,
-                                const proton::matching::OnnxModels &onnxModels);
+    Matchers::SP createMatchers(const search::index::Schema::SP &schema,
+                                const vespa::config::search::RankProfilesConfig &cfg);
 
     void reconfigureIndexSearchable();
 
@@ -87,7 +87,7 @@ public:
     IReprocessingInitializer::UP
     reconfigure(const DocumentDBConfig &newConfig,
                 const DocumentDBConfig &oldConfig,
-                const AttributeCollectionSpec &attrSpec,
+                AttributeCollectionSpec && attrSpec,
                 const ReconfigParams &params,
                 IDocumentDBReferenceResolver &resolver);
 };

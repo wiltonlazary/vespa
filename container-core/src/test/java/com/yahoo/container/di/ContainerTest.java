@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.di;
 
-import com.google.inject.Guice;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.config.di.IntConfig;
 import com.yahoo.config.test.TestConfig;
@@ -9,23 +8,23 @@ import com.yahoo.container.di.componentgraph.Provider;
 import com.yahoo.container.di.componentgraph.core.ComponentGraph;
 import com.yahoo.container.di.componentgraph.core.ComponentGraphTest.SimpleComponent;
 import com.yahoo.container.di.componentgraph.core.ComponentNode.ComponentConstructorException;
-import org.junit.Ignore;
-import org.junit.Test;
-import org.osgi.framework.Bundle;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
-import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author Tony Vaagenes
@@ -35,7 +34,7 @@ import static org.junit.Assert.fail;
 public class ContainerTest extends ContainerTestBase {
 
     @Test
-    public void components_can_be_created_from_config() {
+    void components_can_be_created_from_config() {
         writeBootstrapConfigs();
         dirConfigSource.writeConfig("test", "stringVal \"myString\"");
 
@@ -44,11 +43,11 @@ public class ContainerTest extends ContainerTestBase {
         ComponentTakingConfig component = createComponentTakingConfig(getNewComponentGraph(container));
         assertEquals("myString", component.config.stringVal());
 
-        container.shutdownConfigurer();
+        container.shutdownConfigRetriever();
     }
 
     @Test
-    public void components_are_reconfigured_after_config_update_without_bootstrap_configs() {
+    void components_are_reconfigured_after_config_update_without_bootstrap_configs() {
         writeBootstrapConfigs();
         dirConfigSource.writeConfig("test", "stringVal \"original\"");
 
@@ -66,11 +65,12 @@ public class ContainerTest extends ContainerTestBase {
         ComponentTakingConfig component2 = createComponentTakingConfig(newComponentGraph);
         assertEquals("reconfigured", component2.config.stringVal());
 
-        container.shutdownConfigurer();
+        container.shutdownConfigRetriever();
+        container.shutdown(newComponentGraph);
     }
 
     @Test
-    public void graph_is_updated_after_bootstrap_update() {
+    void graph_is_updated_after_bootstrap_update() {
         dirConfigSource.writeConfig("test", "stringVal \"original\"");
         writeBootstrapConfigs("id1");
 
@@ -90,15 +90,37 @@ public class ContainerTest extends ContainerTestBase {
         assertNotNull(ComponentGraph.getNode(newGraph, "id1"));
         assertNotNull(ComponentGraph.getNode(newGraph, "id2"));
 
-        container.shutdownConfigurer();
-    }
-
-    //@Test TODO
-    public void deconstructor_is_given_guice_components() {
+        container.shutdownConfigRetriever();
+        container.shutdown(newGraph);
     }
 
     @Test
-    public void component_is_deconstructed_when_not_reused() {
+    void bundle_from_previous_generation_is_uninstalled_when_not_used_in_the_new_generation() {
+        ComponentEntry component1 = new ComponentEntry("component1", SimpleComponent.class);
+        ComponentEntry component2 = new ComponentEntry("component2", SimpleComponent.class);
+
+        writeBootstrapConfigsWithBundles(List.of("bundle-1"), List.of(component1));
+        Container container = newContainer(dirConfigSource);
+        ComponentGraph graph = getNewComponentGraph(container);
+
+        // bundle-1 is installed
+        assertEquals(1, osgi.getBundles().length);
+        assertEquals("bundle-1", osgi.getBundles()[0].getSymbolicName());
+
+        writeBootstrapConfigsWithBundles(List.of("bundle-2"), List.of(component2));
+        container.reloadConfig(2);
+        ComponentGraph newGraph = getNewComponentGraph(container, graph);
+
+        // bundle-2 is installed, bundle-1 has been uninstalled
+        assertEquals(1, osgi.getBundles().length);
+        assertEquals("bundle-2", osgi.getBundles()[0].getSymbolicName());
+
+        container.shutdownConfigRetriever();
+        container.shutdown(newGraph);
+    }
+
+    @Test
+    void component_is_deconstructed_when_not_reused() {
         writeBootstrapConfigs("id1", DestructableComponent.class);
 
         Container container = newContainer(dirConfigSource);
@@ -108,13 +130,16 @@ public class ContainerTest extends ContainerTestBase {
 
         writeBootstrapConfigs("id2", DestructableComponent.class);
         container.reloadConfig(2);
-        getNewComponentGraph(container, oldGraph);
+        ComponentGraph newGraph = getNewComponentGraph(container, oldGraph);
         assertTrue(componentToDestruct.deconstructed);
+
+        container.shutdownConfigRetriever();
+        container.shutdown(newGraph);
     }
 
-    @Ignore  // because logAndDie is impossible(?) to verify programmatically
+    @Disabled("because logAndDie is impossible(?) to verify programmatically")
     @Test
-    public void manually_verify_what_happens_when_first_graph_contains_component_that_throws_exception_in_ctor() {
+    void manually_verify_what_happens_when_first_graph_contains_component_that_throws_exception_in_ctor() {
         writeBootstrapConfigs("thrower", ComponentThrowingExceptionInConstructor.class);
         Container container = newContainer(dirConfigSource);
         try {
@@ -123,10 +148,13 @@ public class ContainerTest extends ContainerTestBase {
         } catch (Throwable t) {
             fail("Expected to log and die");
         }
+
+        container.shutdownConfigRetriever();
     }
 
+    // Failure in component construction phase
     @Test
-    public void previous_graph_is_retained_when_new_graph_contains_component_that_throws_exception_in_ctor() {
+    void previous_graph_is_retained_when_new_graph_contains_component_that_throws_exception_in_ctor() {
         ComponentEntry simpleComponentEntry = new ComponentEntry("simpleComponent", SimpleComponent.class);
 
         writeBootstrapConfigs(simpleComponentEntry);
@@ -137,14 +165,7 @@ public class ContainerTest extends ContainerTestBase {
 
         writeBootstrapConfigs("thrower", ComponentThrowingExceptionInConstructor.class);
         container.reloadConfig(2);
-        try {
-            currentGraph = getNewComponentGraph(container, currentGraph);
-            fail("Expected exception");
-        } catch (ComponentConstructorException ignored) {
-            // Expected, do nothing
-        } catch (Throwable t) {
-            fail("Expected ComponentConstructorException");
-        }
+        assertNewComponentGraphFails(container, currentGraph, ComponentConstructorException.class);
         assertEquals(1, currentGraph.generation());
 
         // Also verify that next reconfig is successful
@@ -157,10 +178,40 @@ public class ContainerTest extends ContainerTestBase {
         assertEquals(3, currentGraph.generation());
         assertSame(simpleComponent, currentGraph.getInstance(SimpleComponent.class));
         assertNotNull(currentGraph.getInstance(ComponentTakingConfig.class));
+
+        container.shutdownConfigRetriever();
+        container.shutdown(currentGraph);
     }
 
     @Test
-    public void previous_graph_is_retained_when_new_graph_throws_exception_for_missing_config() {
+    void bundle_from_generation_that_fails_in_component_construction_is_uninstalled() {
+        ComponentEntry simpleComponentEntry = new ComponentEntry("simpleComponent", SimpleComponent.class);
+        ComponentEntry throwingComponentEntry = new ComponentEntry("throwingComponent", ComponentThrowingExceptionInConstructor.class);
+
+        writeBootstrapConfigsWithBundles(List.of("bundle-1"), List.of(simpleComponentEntry));
+        Container container = newContainer(dirConfigSource);
+        ComponentGraph currentGraph = getNewComponentGraph(container);
+
+        // bundle-1 is installed
+        assertEquals(1, osgi.getBundles().length);
+        assertEquals("bundle-1", osgi.getBundles()[0].getSymbolicName());
+
+        writeBootstrapConfigsWithBundles(List.of("bundle-2"), List.of(throwingComponentEntry));
+        container.reloadConfig(2);
+        assertNewComponentGraphFails(container, currentGraph, ComponentConstructorException.class);
+        assertEquals(1, currentGraph.generation());
+
+        // bundle-1 is kept, bundle-2 has been uninstalled
+        assertEquals(1, osgi.getBundles().length);
+        assertEquals("bundle-1", osgi.getBundles()[0].getSymbolicName());
+
+        container.shutdownConfigRetriever();
+        container.shutdown(currentGraph);
+    }
+
+    // Failure in graph creation phase
+    @Test
+    void previous_graph_is_retained_when_new_graph_throws_exception_for_missing_config() {
         ComponentEntry simpleComponentEntry = new ComponentEntry("simpleComponent", SimpleComponent.class);
 
         writeBootstrapConfigs(simpleComponentEntry);
@@ -172,19 +223,52 @@ public class ContainerTest extends ContainerTestBase {
         writeBootstrapConfigs("thrower", ComponentThrowingExceptionForMissingConfig.class);
         dirConfigSource.writeConfig("test", "stringVal \"myString\"");
         container.reloadConfig(2);
-        try {
-            currentGraph = getNewComponentGraph(container, currentGraph);
-            fail("Expected exception");
-        } catch (IllegalArgumentException ignored) {
-            // Expected, do nothing
-        } catch (Throwable t) {
-            fail("Expected IllegalArgumentException");
-        }
+        assertNewComponentGraphFails(container, currentGraph, IllegalArgumentException.class);
         assertEquals(1, currentGraph.generation());
+
+        container.shutdownConfigRetriever();
+        container.shutdown(currentGraph);
     }
 
     @Test
-    public void getNewComponentGraph_hangs_waiting_for_valid_config_after_invalid_config() throws Exception {
+    void bundle_from_generation_that_throws_in_graph_creation_phase_is_uninstalled() {
+        ComponentEntry simpleComponent = new ComponentEntry("simpleComponent", SimpleComponent.class);
+        ComponentEntry configThrower = new ComponentEntry("configThrower", ComponentThrowingExceptionForMissingConfig.class);
+
+        writeBootstrapConfigsWithBundles(List.of("bundle-1"), List.of(simpleComponent));
+        Container container = newContainer(dirConfigSource);
+        ComponentGraph currentGraph = getNewComponentGraph(container);
+
+        // bundle-1 is installed
+        assertEquals(1, osgi.getBundles().length);
+        assertEquals("bundle-1", osgi.getBundles()[0].getSymbolicName());
+
+        writeBootstrapConfigsWithBundles(List.of("bundle-2"), List.of(configThrower));
+        dirConfigSource.writeConfig("test", "stringVal \"myString\"");
+        container.reloadConfig(2);
+
+        assertNewComponentGraphFails(container, currentGraph, IllegalArgumentException.class);
+        assertEquals(1, currentGraph.generation());
+
+        // bundle-1 is kept, bundle-2 has been uninstalled
+        assertEquals(1, osgi.getBundles().length);
+        assertEquals("bundle-1", osgi.getBundles()[0].getSymbolicName());
+
+        container.shutdownConfigRetriever();
+        container.shutdown(currentGraph);
+    }
+
+    private void assertNewComponentGraphFails(Container container, ComponentGraph currentGraph, Class<? extends RuntimeException> exception) {
+        try {
+            getNewComponentGraph(container, currentGraph);
+            fail("Expected exception");
+        } catch (Exception e) {
+            assertEquals(exception, e.getClass());
+        }
+    }
+
+    @Test
+    void getNewComponentGraph_hangs_waiting_for_valid_config_after_invalid_config() throws Exception {
         dirConfigSource.writeConfig("test", "stringVal \"original\"");
         writeBootstrapConfigs("myId", ComponentTakingConfig.class);
 
@@ -194,32 +278,34 @@ public class ContainerTest extends ContainerTestBase {
         writeBootstrapConfigs("thrower", ComponentThrowingExceptionForMissingConfig.class);
         container.reloadConfig(2);
 
-        try {
-            getNewComponentGraph(container, currentGraph);
-            fail("expected exception");
-        } catch (Exception ignored) {
-        }
-        ExecutorService exec = Executors.newFixedThreadPool(1);
-        Future<ComponentGraph> newGraph = exec.submit(() -> getNewComponentGraph(container, currentGraph));
+        assertThrows(IllegalArgumentException.class,
+                     () -> getNewComponentGraph(container, currentGraph));
 
+        ExecutorService exec = Executors.newFixedThreadPool(1);
+        dirConfigSource.clearCheckedConfigs();
+        Future<ComponentGraph> newGraph = exec.submit(() -> getNewComponentGraph(container, currentGraph));
+        dirConfigSource.awaitConfigChecked(10_000);
         try {
             newGraph.get(1, TimeUnit.SECONDS);
             fail("Expected waiting for new config.");
-        } catch (Exception ignored) {
+        } catch (TimeoutException ignored) {
             // expect to time out
         }
 
         writeBootstrapConfigs("myId2", ComponentTakingConfig.class);
         container.reloadConfig(3);
 
-        assertNotNull(newGraph.get(5, TimeUnit.MINUTES));
+        assertNotNull(newGraph.get(10, TimeUnit.SECONDS));
+
+        container.shutdownConfigRetriever();
+        container.shutdown(newGraph.get());
     }
 
     @Test
-    public void providers_are_destructed() {
+    void providers_are_destroyed() {
         writeBootstrapConfigs("id1", DestructableProvider.class);
 
-        ComponentDeconstructor deconstructor = (components, bundles) -> {
+        ComponentDeconstructor deconstructor = (generation, components, bundles) -> {
             components.forEach(component -> {
                 if (component instanceof AbstractComponent) {
                     ((AbstractComponent) component).deconstruct();
@@ -227,7 +313,7 @@ public class ContainerTest extends ContainerTestBase {
                     ((Provider<?>) component).deconstruct();
                 }
             });
-            if (! bundles.isEmpty()) throw new IllegalArgumentException("This test should not use bundles");
+            if (!bundles.isEmpty()) throw new IllegalArgumentException("This test should not use bundles");
         };
 
         Container container = newContainer(dirConfigSource, deconstructor);
@@ -237,18 +323,22 @@ public class ContainerTest extends ContainerTestBase {
 
         writeBootstrapConfigs("id2", DestructableProvider.class);
         container.reloadConfig(2);
-        getNewComponentGraph(container, oldGraph);
+        ComponentGraph graph = getNewComponentGraph(container, oldGraph);
 
         assertTrue(destructableEntity.deconstructed);
+
+        container.shutdownConfigRetriever();
+        container.shutdown(graph);
     }
 
     @Test
-    public void providers_are_invoked_only_when_needed() {
+    void providers_are_invoked_only_when_needed() {
         writeBootstrapConfigs("id1", FailOnGetProvider.class);
 
         Container container = newContainer(dirConfigSource);
 
         ComponentGraph oldGraph = getNewComponentGraph(container);
+        container.shutdown(oldGraph);
     }
 
     static class DestructableEntity {
@@ -308,36 +398,6 @@ public class ContainerTest extends ContainerTestBase {
         public void deconstruct() {
             deconstructed = true;
         }
-    }
-
-    public static class TestDeconstructor implements ComponentDeconstructor {
-        @Override
-        public void deconstruct(List<Object> components, Collection<Bundle> bundles) {
-            components.forEach(component -> {
-                if (component instanceof DestructableComponent) {
-                    DestructableComponent vespaComponent = (DestructableComponent) component;
-                    vespaComponent.deconstruct();
-                }
-            });
-            if (! bundles.isEmpty()) throw new IllegalArgumentException("This test should not use bundles");
-        }
-    }
-
-    private static Container newContainer(DirConfigSource dirConfigSource,
-                                          ComponentDeconstructor deconstructor) {
-        return new Container(new CloudSubscriberFactory(dirConfigSource.configSource), dirConfigSource.configId(), deconstructor);
-    }
-
-    private static Container newContainer(DirConfigSource dirConfigSource) {
-        return newContainer(dirConfigSource, new TestDeconstructor());
-    }
-
-    ComponentGraph getNewComponentGraph(Container container, ComponentGraph oldGraph) {
-        return container.getNewComponentGraph(oldGraph, Guice.createInjector(), true);
-    }
-
-    ComponentGraph getNewComponentGraph(Container container) {
-        return container.getNewComponentGraph(new ComponentGraph(), Guice.createInjector(), true);
     }
 
     private ComponentTakingConfig createComponentTakingConfig(ComponentGraph componentGraph) {

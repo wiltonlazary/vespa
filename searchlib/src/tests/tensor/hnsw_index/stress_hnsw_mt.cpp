@@ -9,12 +9,14 @@
 #include <vector>
 
 #include <vespa/eval/eval/typed_cells.h>
+#include <vespa/eval/eval/value_type.h>
 #include <vespa/searchlib/common/bitvector.h>
 #include <vespa/searchlib/tensor/distance_functions.h>
 #include <vespa/searchlib/tensor/doc_vector_access.h>
 #include <vespa/searchlib/tensor/hnsw_index.h>
 #include <vespa/searchlib/tensor/inv_log_level_generator.h>
 #include <vespa/searchlib/tensor/random_level_generator.h>
+#include <vespa/searchlib/tensor/vector_bundle.h>
 #include <vespa/vespalib/data/input.h>
 #include <vespa/vespalib/data/memory_input.h>
 #include <vespa/vespalib/data/slime/slime.h>
@@ -31,6 +33,8 @@ LOG_SETUP("stress_hnsw_mt");
 using namespace search::tensor;
 using namespace vespalib::slime;
 using search::BitVector;
+using vespalib::eval::CellType;
+using vespalib::eval::ValueType;
 using vespalib::GenerationHandler;
 using vespalib::MemoryUsage;
 using vespalib::Slime;
@@ -39,6 +43,12 @@ using vespalib::Slime;
 #define NUM_POSSIBLE_V 1000000
 #define NUM_POSSIBLE_DOCS 30000
 #define NUM_OPS 1000000
+
+namespace {
+
+SubspaceType subspace_type(ValueType::make_type(CellType::FLOAT, {{"dims", NUM_DIMS }}));
+
+}
 
 class RndGen {
 private:
@@ -110,10 +120,17 @@ public:
         memcpy(&_vectors[docid], vec.cbegin(), sizeof(MallocPointVector));
         return *this;
     }
-    vespalib::eval::TypedCells get_vector(uint32_t docid) const override {
+    vespalib::eval::TypedCells get_vector(uint32_t docid, uint32_t subspace) const override {
         assert(docid < NUM_POSSIBLE_DOCS);
+        (void) subspace;
         ConstVectorRef ref(_vectors[docid]);
         return vespalib::eval::TypedCells(ref);
+    }
+    VectorBundle get_vectors(uint32_t docid) const override {
+        assert(docid < NUM_POSSIBLE_DOCS);
+        ConstVectorRef ref(_vectors[docid]);
+        assert(subspace_type.size() == ref.size());
+        return VectorBundle(ref.data(), 1, subspace_type);
     }
 };
 
@@ -176,7 +193,8 @@ public:
             return result_promise.get_future();
         }
         void run() override {
-            auto v = vespalib::eval::TypedCells(vec);
+            assert(subspace_type.size() == vec.size());
+            VectorBundle v(vec.data(), 1, subspace_type);
             auto up = parent.index->prepare_add_document(docid, v, read_guard);
             result_promise.set_value(std::move(up));
         }
@@ -234,7 +252,7 @@ public:
         uint32_t m = 16;
         index = std::make_unique<HnswIndex>(vectors, std::make_unique<FloatSqEuclideanDistance>(),
                                             std::make_unique<InvLogLevelGenerator>(m),
-                                            HnswIndex::Config(2*m, m, 200, 10, true));
+                                            HnswIndexConfig(2*m, m, 200, 10, true));
     }
     size_t get_rnd(size_t size) {
         return rng.nextUniform() * size;
@@ -267,10 +285,9 @@ public:
         ASSERT_EQ(r.get(), nullptr);
     }
     void commit(uint32_t docid) {
-        index->transfer_hold_lists(gen_handler.getCurrentGeneration());
+        index->assign_generation(gen_handler.getCurrentGeneration());
         gen_handler.incGeneration();
-        gen_handler.updateFirstUsedGeneration();
-        index->trim_hold_lists(gen_handler.getFirstUsedGeneration());
+        index->reclaim_memory(gen_handler.get_oldest_used_generation());
         std::lock_guard<std::mutex> guard(in_progress_lock);
         in_progress->clearBit(docid);
         // printf("commit: %u\n", docid);

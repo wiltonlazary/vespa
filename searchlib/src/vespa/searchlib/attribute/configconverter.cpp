@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "configconverter.h"
+#include <vespa/searchcommon/attribute/config.h>
 
 using namespace vespa::config::search;
 
@@ -45,8 +46,8 @@ getCollectionTypeMap()
     return map;
 }
 
-static DataTypeMap _dataTypeMap = getDataTypeMap();
-static CollectionTypeMap _collectionTypeMap = getCollectionTypeMap();
+DataTypeMap _dataTypeMap = getDataTypeMap();
+CollectionTypeMap _collectionTypeMap = getCollectionTypeMap();
 
 DictionaryConfig::Type
 convert(AttributesConfig::Attribute::Dictionary::Type type_cfg) {
@@ -76,7 +77,7 @@ convert(AttributesConfig::Attribute::Dictionary::Match match_cfg) {
 
 DictionaryConfig
 convert_dictionary(const AttributesConfig::Attribute::Dictionary & dictionary) {
-    return DictionaryConfig(convert(dictionary.type), convert(dictionary.match));
+    return {convert(dictionary.type), convert(dictionary.match)};
 }
 
 Config::Match
@@ -102,13 +103,12 @@ ConfigConverter::convert(const AttributesConfig::Attribute & cfg)
     Config retval(bType, cType);
     PredicateParams predicateParams;
     retval.setFastSearch(cfg.fastsearch);
-    retval.setHuge(cfg.huge);
-    retval.setEnableBitVectors(cfg.enablebitvectors);
     retval.setEnableOnlyBitVector(cfg.enableonlybitvector);
     retval.setIsFilter(cfg.enableonlybitvector);
     retval.setFastAccess(cfg.fastaccess);
     retval.setMutable(cfg.ismutable);
     retval.setPaged(cfg.paged);
+    retval.setMaxUnCommittedMemory(cfg.maxuncommittedmemory);
     predicateParams.setArity(cfg.arity);
     predicateParams.setBounds(cfg.lowerbound, cfg.upperbound);
     predicateParams.setDensePostingListThreshold(cfg.densepostinglistthreshold);

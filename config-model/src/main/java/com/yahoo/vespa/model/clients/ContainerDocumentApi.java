@@ -1,18 +1,20 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.clients;
 
-import com.yahoo.config.model.producer.AbstractConfigProducer;
-import com.yahoo.container.bundle.BundleInstantiationSpecification;
 import com.yahoo.container.handler.threadpool.ContainerThreadpoolConfig;
 import com.yahoo.osgi.provider.model.ComponentModel;
 import com.yahoo.vespa.model.container.ContainerCluster;
 import com.yahoo.vespa.model.container.ContainerThreadpool;
+import com.yahoo.vespa.model.container.PlatformBundles;
+import com.yahoo.vespa.model.container.component.BindingPattern;
 import com.yahoo.vespa.model.container.component.Handler;
 import com.yahoo.vespa.model.container.component.SystemBindingPattern;
 import com.yahoo.vespa.model.container.component.UserBindingPattern;
 
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.OptionalInt;
 
 /**
  * @author Einar M R Rosenvinge
@@ -21,62 +23,89 @@ import java.util.Collections;
 public class ContainerDocumentApi {
 
     public static final String DOCUMENT_V1_PREFIX = "/document/v1";
+    public static final Path VESPACLIENT_CONTAINER_BUNDLE =
+            PlatformBundles.absoluteBundlePath("vespaclient-container-plugin");
 
-    public ContainerDocumentApi(ContainerCluster<?> cluster, Options options) {
-        addRestApiHandler(cluster, options);
-        addFeedHandler(cluster, options);
+    private final boolean ignoreUndefinedFields;
+
+    public ContainerDocumentApi(ContainerCluster<?> cluster, HandlerOptions handlerOptions, boolean ignoreUndefinedFields, OptionalInt portOverride) {
+        this.ignoreUndefinedFields = ignoreUndefinedFields;
+        addRestApiHandler(cluster, handlerOptions, portOverride);
+        addFeedHandler(cluster, handlerOptions, portOverride);
+        addVespaClientContainerBundle(cluster);
     }
 
-    private static void addFeedHandler(ContainerCluster<?> cluster, Options options) {
+    public static void addVespaClientContainerBundle(ContainerCluster<?> c) {
+        c.addPlatformBundle(VESPACLIENT_CONTAINER_BUNDLE);
+    }
+
+    private static void addFeedHandler(ContainerCluster<?> cluster, HandlerOptions handlerOptions, OptionalInt portOverride) {
         String bindingSuffix = ContainerCluster.RESERVED_URI_PREFIX + "/feedapi";
-        var handler = newVespaClientHandler("com.yahoo.vespa.http.server.FeedHandler", bindingSuffix, options);
+        var executor = new Threadpool("feedapi-handler", handlerOptions.feedApiThreadpoolOptions);
+        var handler = newVespaClientHandler("com.yahoo.vespa.http.server.FeedHandler",
+                                            bindingSuffix, handlerOptions, executor, portOverride);
         cluster.addComponent(handler);
-        var executor = new Threadpool("feedapi-handler", cluster, options.feedApiThreadpoolOptions);
-        handler.inject(executor);
-        handler.addComponent(executor);
     }
 
 
-    private static void addRestApiHandler(ContainerCluster<?> cluster, Options options) {
-        var handler = newVespaClientHandler("com.yahoo.document.restapi.resource.DocumentV1ApiHandler", DOCUMENT_V1_PREFIX + "/*", options);
+    private static void addRestApiHandler(ContainerCluster<?> cluster, HandlerOptions handlerOptions, OptionalInt portOverride) {
+        var handler = newVespaClientHandler("com.yahoo.document.restapi.resource.DocumentV1ApiHandler",
+                                            DOCUMENT_V1_PREFIX + "/*", handlerOptions, null, portOverride);
         cluster.addComponent(handler);
 
         // We need to include a dummy implementation of the previous restapi handler (using the same class name).
         // The internal legacy test framework requires that the name of the old handler is listed in /ApplicationStatus.
-        var oldHandlerDummy = handlerComponentSpecification("com.yahoo.document.restapi.resource.RestApi");
+        var oldHandlerDummy = createHandler("com.yahoo.document.restapi.resource.RestApi", null);
         cluster.addComponent(oldHandlerDummy);
     }
 
-    private static Handler<AbstractConfigProducer<?>> newVespaClientHandler(
-            String componentId,
-            String bindingSuffix,
-            Options options) {
-        Handler<AbstractConfigProducer<?>> handler = handlerComponentSpecification(componentId);
-        if (options.bindings.isEmpty()) {
+    public boolean ignoreUndefinedFields() { return ignoreUndefinedFields; }
+
+    private static Handler newVespaClientHandler(String componentId,
+                                                 String bindingSuffix,
+                                                 HandlerOptions handlerOptions,
+                                                 Threadpool executor,
+                                                 OptionalInt portOverride) {
+        Handler handler = createHandler(componentId, executor);
+        if (handlerOptions.bindings.isEmpty()) {
             handler.addServerBindings(
-                    SystemBindingPattern.fromHttpPath(bindingSuffix),
-                    SystemBindingPattern.fromHttpPath(bindingSuffix + '/'));
+                    bindingPattern(bindingSuffix, portOverride),
+                    bindingPattern(bindingSuffix + '/', portOverride));
         } else {
-            for (String rootBinding : options.bindings) {
+            for (String rootBinding : handlerOptions.bindings) {
                 String pathWithoutLeadingSlash = bindingSuffix.substring(1);
                 handler.addServerBindings(
-                        UserBindingPattern.fromPattern(rootBinding + pathWithoutLeadingSlash),
-                        UserBindingPattern.fromPattern(rootBinding + pathWithoutLeadingSlash + '/'));
+                        userBindingPattern(rootBinding + pathWithoutLeadingSlash, portOverride),
+                        userBindingPattern(rootBinding + pathWithoutLeadingSlash + '/', portOverride));
             }
         }
         return handler;
     }
 
-    private static Handler<AbstractConfigProducer<?>> handlerComponentSpecification(String className) {
-        return new Handler<>(new ComponentModel(
-                BundleInstantiationSpecification.getFromStrings(className, null, "vespaclient-container-plugin"), ""));
+    private static BindingPattern bindingPattern(String path, OptionalInt port) {
+        return port.isPresent()
+                ? SystemBindingPattern.fromHttpPortAndPath(Integer.toString(port.getAsInt()), path)
+                : SystemBindingPattern.fromHttpPath(path);
     }
 
-    public static final class Options {
+    private static UserBindingPattern userBindingPattern(String path, OptionalInt port) {
+        UserBindingPattern bindingPattern = UserBindingPattern.fromPattern(path);
+        return port.isPresent()
+                ? bindingPattern.withPort(port.getAsInt())
+                : bindingPattern;
+    }
+
+    private static Handler createHandler(String className, Threadpool executor) {
+        return new Handler(new ComponentModel(className, null, "vespaclient-container-plugin"),
+                           executor);
+    }
+
+    public static final class HandlerOptions {
+
         private final Collection<String> bindings;
         private final ContainerThreadpool.UserOptions feedApiThreadpoolOptions;
 
-        public Options(Collection<String> bindings, ContainerThreadpool.UserOptions feedApiThreadpoolOptions) {
+        public HandlerOptions(Collection<String> bindings, ContainerThreadpool.UserOptions feedApiThreadpoolOptions) {
             this.bindings = Collections.unmodifiableCollection(bindings);
             this.feedApiThreadpoolOptions = feedApiThreadpoolOptions;
         }
@@ -84,22 +113,15 @@ public class ContainerDocumentApi {
 
     private static class Threadpool extends ContainerThreadpool {
 
-        private final ContainerCluster<?> cluster;
-
-        Threadpool(String name,
-                   ContainerCluster<?> cluster,
-                   ContainerThreadpool.UserOptions threadpoolOptions) {
+        Threadpool(String name, ContainerThreadpool.UserOptions threadpoolOptions) {
             super(name, threadpoolOptions);
-            this.cluster = cluster;
         }
 
         @Override
-        public void getConfig(ContainerThreadpoolConfig.Builder builder) {
-            super.getConfig(builder);
-
-            // User options overrides below configuration
-            if (hasUserOptions()) return;
-            builder.maxThreads(-4).minThreads(-4).queueSize(500);
+        protected void setDefaultConfigValues(ContainerThreadpoolConfig.Builder builder) {
+            builder.maxThreads(-4)
+                    .minThreads(-4)
+                    .queueSize(500);
         }
     }
 

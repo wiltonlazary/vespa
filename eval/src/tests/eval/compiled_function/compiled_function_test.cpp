@@ -78,6 +78,8 @@ struct MyEvalTest : test::EvalSpec::EvalTest {
     size_t fail_cnt = 0;
     bool print_pass = false;
     bool print_fail = false;
+
+    ~MyEvalTest() override;
     virtual void next_expression(const std::vector<vespalib::string> &param_names,
                                  const vespalib::string &expression) override
     {
@@ -106,7 +108,7 @@ struct MyEvalTest : test::EvalSpec::EvalTest {
             CompiledFunction cfun(*function, PassParams::ARRAY);
             auto fun = cfun.get_function();
             ASSERT_EQUAL(cfun.num_params(), param_values.size());
-            double result = fun(&param_values[0]);
+            double result = fun(param_values.data());
             if (is_same(expected_result, result)) {
                 print_pass && fprintf(stderr, "verifying: %s -> %g ... PASS\n",
                                       as_string(param_names, param_values, expression).c_str(),
@@ -121,6 +123,8 @@ struct MyEvalTest : test::EvalSpec::EvalTest {
         }
     }
 };
+
+MyEvalTest::~MyEvalTest() = default;
 
 TEST_FF("require that compiled evaluation passes all conformance tests", MyEvalTest(), test::EvalSpec()) {
     f1.print_fail = true;

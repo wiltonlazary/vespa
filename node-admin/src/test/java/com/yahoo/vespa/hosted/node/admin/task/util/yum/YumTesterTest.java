@@ -1,15 +1,15 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.yum;
 
 import com.yahoo.vespa.hosted.node.admin.component.TestTaskContext;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.TestTerminal;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author freva
@@ -26,7 +26,7 @@ public class YumTesterTest {
     private final TestTaskContext context = new TestTaskContext();
 
     @Test
-    public void generic_yum_methods() {
+    void generic_yum_methods() {
         assertYumMethod(yum -> yum.expectInstall(packages).withEnableRepo(repos),
                 yum -> yum.install(List.of(packages)).enableRepo(repos).converge(context));
 
@@ -38,20 +38,34 @@ public class YumTesterTest {
 
         assertYumMethod(yum -> yum.expectInstallFixedVersion(minimalPackage.toName()).withEnableRepo(repos),
                 yum -> yum.installFixedVersion(minimalPackage).enableRepo(repos).converge(context));
+
+        // versionlock always returns success
+        assertYumMethodAlwaysSuccess(yum -> yum.expectDeleteVersionLock(minimalPackage.toName()),
+                yum -> yum.deleteVersionLock(minimalPackage).converge(context));
+
     }
 
     @Test
-    public void expect_query_installed() {
+    void expect_query_installed() {
         yum.expectQueryInstalled(packages[0]).andReturn(fullPackage);
         assertEquals(Optional.of(fullPackage), yum.queryInstalled(context, packages[0]));
         terminal.verifyAllCommandsExecuted();
     }
 
     private void assertYumMethod(Function<YumTester, YumTester.GenericYumCommandExpectation> yumTesterExpectationFunction,
-                                       Function<Yum, Boolean> yumFunction) {
+                                 Function<Yum, Boolean> yumFunction) {
         List.of(true, false).forEach(wantedReturnValue -> {
             yumTesterExpectationFunction.apply(yum).andReturn(wantedReturnValue);
             assertEquals(wantedReturnValue, yumFunction.apply(yum));
+            terminal.verifyAllCommandsExecuted();
+        });
+    }
+
+    private void assertYumMethodAlwaysSuccess(Function<YumTester, YumTester.GenericYumCommandExpectation> yumTesterExpectationFunction,
+                                              Function<Yum, Boolean> yumFunction) {
+        List.of(true, false).forEach(wantedReturnValue -> {
+            yumTesterExpectationFunction.apply(yum).andReturn(wantedReturnValue);
+            assertEquals(true, yumFunction.apply(yum));
             terminal.verifyAllCommandsExecuted();
         });
     }

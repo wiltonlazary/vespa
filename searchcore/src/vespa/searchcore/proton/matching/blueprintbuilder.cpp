@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "querynodes.h"
 #include "blueprintbuilder.h"
+#include "querynodes.h"
 #include "termdatafromnode.h"
 #include "same_element_builder.h"
 #include <vespa/searchcorespi/index/indexsearchable.h>
@@ -144,7 +144,6 @@ protected:
     void visit(ProtonONear &n)       override { buildIntermediate(new ONearBlueprint(n.getDistance()), n); }
     void visit(ProtonSameElement &n) override { buildSameElement(n); }
 
-
     void visit(ProtonWeightedSetTerm &n) override { buildTerm(n); }
     void visit(ProtonDotProduct &n)      override { buildTerm(n); }
     void visit(ProtonWandTerm &n)        override { buildTerm(n); }
@@ -160,6 +159,13 @@ protected:
     void visit(ProtonPredicateQuery &n)  override { buildTerm(n); }
     void visit(ProtonRegExpTerm &n)      override { buildTerm(n); }
     void visit(ProtonNearestNeighborTerm &n) override { buildTerm(n); }
+    void visit(ProtonTrue &) override {
+        _result = std::make_unique<AlwaysTrueBlueprint>();
+    }
+    void visit(ProtonFalse &) override {
+        _result = std::make_unique<EmptyBlueprint>();
+    }
+    void visit(ProtonFuzzyTerm &n)      override { buildTerm(n); }
 
 public:
     BlueprintBuilderVisitor(const IRequestContext & requestContext, ISearchContext &context) :

@@ -27,8 +27,9 @@
 #include <vespa/searchlib/queryeval/fake_requestcontext.h>
 #include <vespa/searchlib/queryeval/termasstring.h>
 #include <vespa/searchlib/parsequery/stackdumpiterator.h>
-
 #include <vespa/document/datatype/positiondatatype.h>
+#include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/vespalib/util/thread_bundle.h>
 
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/log/log.h>
@@ -43,34 +44,34 @@ using search::fef::ITermFieldData;
 using search::fef::IllegalHandle;
 using search::fef::MatchData;
 using search::fef::MatchDataLayout;
-using search::fef::TermFieldMatchData;
 using search::fef::TermFieldHandle;
+using search::fef::TermFieldMatchData;
 using search::query::CustomTypeTermVisitor;
 using search::query::Node;
 using search::query::QueryBuilder;
 using search::query::Range;
 using search::query::StackDumpCreator;
 using search::query::Weight;
-using search::queryeval::termAsString;
+using search::queryeval::AndBlueprint;
+using search::queryeval::AndNotBlueprint;
 using search::queryeval::Blueprint;
+using search::queryeval::ExecuteInfo;
+using search::queryeval::FakeBlueprint;
+using search::queryeval::FakeRequestContext;
 using search::queryeval::FakeResult;
 using search::queryeval::FakeSearchable;
-using search::queryeval::FakeRequestContext;
-using search::queryeval::FakeBlueprint;
 using search::queryeval::FieldSpec;
 using search::queryeval::FieldSpecList;
-using search::queryeval::Searchable;
-using search::queryeval::SearchIterator;
-using search::queryeval::SimpleBlueprint;
-using search::queryeval::SimpleResult;
+using search::queryeval::GlobalFilter;
+using search::queryeval::IntermediateBlueprint;
 using search::queryeval::ParallelWeakAndBlueprint;
 using search::queryeval::RankBlueprint;
-using search::queryeval::AndBlueprint;
-using search::queryeval::IntermediateBlueprint;
-using search::queryeval::AndNotBlueprint;
+using search::queryeval::SearchIterator;
+using search::queryeval::Searchable;
+using search::queryeval::SimpleBlueprint;
+using search::queryeval::SimpleResult;
 using search::queryeval::SourceBlenderBlueprint;
-using search::queryeval::ExecuteInfo;
-
+using search::queryeval::termAsString;
 using std::string;
 using std::vector;
 namespace fef_test = search::fef::test;
@@ -120,6 +121,8 @@ class Test : public vespalib::TestApp {
     void requireThatSameElementTermsAreProperlyPrefixed();
     void requireThatSameElementDoesNotAllocateMatchData();
     void requireThatSameElementIteratorsCanBeBuilt();
+    void requireThatConstBoolBlueprintsAreCreatedCorrectly();
+    void global_filter_is_calculated_and_handled();
 
 public:
     ~Test() override;
@@ -163,6 +166,8 @@ const uint32_t term_count = 8;
 fef_test::IndexEnvironment plain_index_env;
 fef_test::IndexEnvironment resolved_index_env;
 fef_test::IndexEnvironment attribute_index_env;
+
+vespalib::ThreadBundle &ttb() { return vespalib::ThreadBundle::trivial(); }
 
 vespalib::string
 termAsString(const search::query::Range &term) {
@@ -277,6 +282,7 @@ public:
     void visit(ProtonSubstringTerm &n) override { checkNode(n, 0, true); }
     void visit(ProtonSuffixTerm &n) override { checkNode(n, 2, false); }
     void visit(ProtonPhrase &n) override { checkNode(n, 0, true); }
+    void visit(ProtonFuzzyTerm &n) override { checkNode(n, 1, false); }
     void visit(ProtonWeightedSetTerm &) override {}
     void visit(ProtonDotProduct &) override {}
     void visit(ProtonWandTerm &) override {}
@@ -434,6 +440,7 @@ public:
     void visit(ProtonPredicateQuery &) override {}
     void visit(ProtonRegExpTerm &) override {}
     void visit(ProtonNearestNeighborTerm &) override {}
+    void visit(ProtonFuzzyTerm &) override {}
 };
 
 void Test::requireThatTermDataIsFilledIn() {
@@ -709,7 +716,7 @@ void Test::requireThatQueryGluesEverythingTogether() {
     ASSERT_TRUE(search.get());
 }
 
-void checkQueryAddsLocation(Test &test, const string &loc_in, const string &loc_out) {
+void checkQueryAddsLocation(const string &loc_in, const string &loc_out) {
     fef_test::IndexEnvironment index_environment;
     FieldInfo field_info(FieldType::INDEX, CollectionType::SINGLE, field, 0);
     index_environment.getFields().push_back(field_info);
@@ -727,7 +734,7 @@ void checkQueryAddsLocation(Test &test, const string &loc_in, const string &loc_
                     ViewResolver(), index_environment);
     vector<const ITermData *> term_data;
     query.extractTerms(term_data);
-    test.EXPECT_EQUAL(2u, term_data.size());
+    EXPECT_EQUAL(2u, term_data.size());
 
     FakeRequestContext requestContext;
     FakeSearchContext context;
@@ -735,12 +742,12 @@ void checkQueryAddsLocation(Test &test, const string &loc_in, const string &loc_
     MatchDataLayout mdl;
     query.reserveHandles(requestContext, context, mdl);
     MatchData::UP md = mdl.createMatchData();
-    test.EXPECT_EQUAL(2u, md->getNumTermFields());
+    EXPECT_EQUAL(2u, md->getNumTermFields());
 
     query.fetchPostings();
     SearchIterator::UP search = query.createSearch(*md);
-    test.ASSERT_TRUE(search.get());
-    if (!test.EXPECT_NOT_EQUAL(string::npos, search->asString().find(loc_out))) {
+    ASSERT_TRUE(search.get());
+    if (!EXPECT_NOT_EQUAL(string::npos, search->asString().find(loc_out))) {
         fprintf(stderr, "search (missing loc_out '%s'): %s",
                 loc_out.c_str(), search->asString().c_str());
     }
@@ -801,15 +808,15 @@ void Test::requireThatLocationIsAddedTheCorrectPlace() {
 }
 
 void Test::requireThatQueryAddsLocation() {
-    checkQueryAddsLocation(*this, "(2,10,10,3,0,1,0,0)", "{p:{x:10,y:10},r:3,b:{x:[7,13],y:[7,13]}}");
-    checkQueryAddsLocation(*this, "{p:{x:10,y:10},r:3}", "{p:{x:10,y:10},r:3,b:{x:[7,13],y:[7,13]}}");
-    checkQueryAddsLocation(*this, "{b:{x:[6,11],y:[8,15]},p:{x:10,y:10},r:3}", "{p:{x:10,y:10},r:3,b:{x:[7,11],y:[8,13]}}");
-    checkQueryAddsLocation(*this, "{a:12345,b:{x:[8,10],y:[8,10]},p:{x:10,y:10},r:3}", "{p:{x:10,y:10},r:3,a:12345,b:{x:[8,10],y:[8,10]}}");
+    checkQueryAddsLocation("(2,10,10,3,0,1,0,0)", "{p:{x:10,y:10},r:3,b:{x:[7,13],y:[7,13]}}");
+    checkQueryAddsLocation("{p:{x:10,y:10},r:3}", "{p:{x:10,y:10},r:3,b:{x:[7,13],y:[7,13]}}");
+    checkQueryAddsLocation("{b:{x:[6,11],y:[8,15]},p:{x:10,y:10},r:3}", "{p:{x:10,y:10},r:3,b:{x:[7,11],y:[8,13]}}");
+    checkQueryAddsLocation("{a:12345,b:{x:[8,10],y:[8,10]},p:{x:10,y:10},r:3}", "{p:{x:10,y:10},r:3,a:12345,b:{x:[8,10],y:[8,10]}}");
 }
 
 void Test::requireThatQueryAddsLocationCutoff() {
-    checkQueryAddsLocation(*this, "[2,10,11,23,24]", "{b:{x:[10,23],y:[11,24]}}");
-    checkQueryAddsLocation(*this, "{b:{y:[11,24],x:[10,23]}}", "{b:{x:[10,23],y:[11,24]}}");
+    checkQueryAddsLocation("[2,10,11,23,24]", "{b:{x:[10,23],y:[11,24]}}");
+    checkQueryAddsLocation("{b:{y:[11,24],x:[10,23]}}", "{b:{x:[10,23],y:[11,24]}}");
 }
 
 void
@@ -1088,6 +1095,90 @@ Test::requireThatSameElementIteratorsCanBeBuilt() {
     EXPECT_TRUE(iterator->seek(8));
 }
 
+void Test::requireThatConstBoolBlueprintsAreCreatedCorrectly() {
+    using search::queryeval::AlwaysTrueBlueprint;
+    using search::queryeval::EmptyBlueprint;
+
+    ProtonTrue true_node;
+    ProtonFalse false_node;
+
+    FakeRequestContext requestContext;
+    FakeSearchContext context;
+    context.setLimit(1000);
+    context.addIdx(0).idx(0).getFake()
+        .addResult(field, "foo", FakeResult().doc(1).doc(3));
+
+    Blueprint::UP t_blueprint = BlueprintBuilder::build(requestContext, true_node, context);
+    auto *tbp = dynamic_cast<AlwaysTrueBlueprint*>(t_blueprint.get());
+    EXPECT_TRUE(tbp != nullptr);
+
+    Blueprint::UP f_blueprint = BlueprintBuilder::build(requestContext, false_node, context);
+    auto *fbp = dynamic_cast<EmptyBlueprint*>(f_blueprint.get());
+    EXPECT_TRUE(fbp != nullptr);
+}
+
+class GlobalFilterBlueprint : public SimpleBlueprint {
+public:
+    std::shared_ptr<const GlobalFilter> filter;
+    double estimated_hit_ratio;
+    GlobalFilterBlueprint(const SimpleResult& result,
+                          bool want_global_filter)
+        : search::queryeval::SimpleBlueprint(result),
+          filter(),
+          estimated_hit_ratio(-1.0)
+    {
+        set_want_global_filter(want_global_filter);
+    }
+    ~GlobalFilterBlueprint() {}
+    void set_global_filter(const GlobalFilter& filter_, double estimated_hit_ratio_) override {
+        filter = filter_.shared_from_this();
+        estimated_hit_ratio = estimated_hit_ratio_;
+    }
+};
+
+void
+Test::global_filter_is_calculated_and_handled()
+{
+    // estimated hits = 3, estimated hit ratio = 0.3
+    auto result = SimpleResult().addHit(3).addHit(5).addHit(7);
+    uint32_t docid_limit = 10;
+    { // global filter is not wanted
+        GlobalFilterBlueprint bp(result, false);
+        auto res = Query::handle_global_filter(bp, docid_limit, 0, 1, ttb(), nullptr);
+        EXPECT_FALSE(res);
+        EXPECT_FALSE(bp.filter);
+        EXPECT_EQUAL(-1.0, bp.estimated_hit_ratio);
+    }
+    { // estimated_hit_ratio < global_filter_lower_limit
+        GlobalFilterBlueprint bp(result, true);
+        auto res = Query::handle_global_filter(bp, docid_limit, 0.31, 1, ttb(), nullptr);
+        EXPECT_FALSE(res);
+        EXPECT_FALSE(bp.filter);
+        EXPECT_EQUAL(-1.0, bp.estimated_hit_ratio);
+    }
+    { // estimated_hit_ratio <= global_filter_upper_limit
+        GlobalFilterBlueprint bp(result, true);
+        auto res = Query::handle_global_filter(bp, docid_limit, 0, 0.3, ttb(), nullptr);
+        EXPECT_TRUE(res);
+        EXPECT_TRUE(bp.filter);
+        EXPECT_TRUE(bp.filter->is_active());
+        EXPECT_EQUAL(0.3, bp.estimated_hit_ratio);
+
+        EXPECT_EQUAL(3u, bp.filter->count());
+        EXPECT_TRUE(bp.filter->check(3));
+        EXPECT_TRUE(bp.filter->check(5));
+        EXPECT_TRUE(bp.filter->check(7));
+    }
+    { // estimated_hit_ratio > global_filter_upper_limit
+        GlobalFilterBlueprint bp(result, true);
+        auto res = Query::handle_global_filter(bp, docid_limit, 0, 0.29, ttb(), nullptr);
+        EXPECT_TRUE(res);
+        EXPECT_TRUE(bp.filter);
+        EXPECT_FALSE(bp.filter->is_active());
+        EXPECT_EQUAL(0.3, bp.estimated_hit_ratio);
+    }
+}
+
 Test::~Test() = default;
 
 int
@@ -1126,6 +1217,8 @@ Test::Main()
     TEST_CALL(requireThatSameElementTermsAreProperlyPrefixed);
     TEST_CALL(requireThatSameElementDoesNotAllocateMatchData);
     TEST_CALL(requireThatSameElementIteratorsCanBeBuilt);
+    TEST_CALL(requireThatConstBoolBlueprintsAreCreatedCorrectly);
+    TEST_CALL(global_filter_is_calculated_and_handled);
 
     TEST_DONE();
 }

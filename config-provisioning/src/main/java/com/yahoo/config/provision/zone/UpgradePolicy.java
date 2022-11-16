@@ -2,45 +2,89 @@
 package com.yahoo.config.provision.zone;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 
 /**
- * This class declares the order to use when upgrading zones in a system.
+ * This class declares the steps (zones) to follow when upgrading a system. If a step contains multiple zones, those
+ * will be upgraded in parallel.
  *
  * @author mpolden
  */
-public class UpgradePolicy {
+public record UpgradePolicy(List<Step> steps) {
 
-    private final List<List<ZoneApi>> zones;
-
-    private UpgradePolicy(List<List<ZoneApi>> zones) {
-        this.zones = zones;
+    public UpgradePolicy(List<Step> steps) {
+        Objects.requireNonNull(steps);
+        for (int i = 0; i < steps.size(); i++) {
+            for (int j = 0; j < i; j++) {
+                if (!Collections.disjoint(steps.get(i).zones(), steps.get(j).zones())) {
+                    throw new IllegalArgumentException("One or more zones are declared in multiple steps");
+                }
+            }
+        }
+        this.steps = List.copyOf(steps);
     }
 
-    public List<List<ZoneApi>> asList() {
-        return List.copyOf(zones);
+    /** Returns a copy of this with the step order inverted */
+    public UpgradePolicy inverted() {
+        List<Step> copy = new ArrayList<>(steps);
+        Collections.reverse(copy);
+        return new UpgradePolicy(copy);
     }
 
-    private UpgradePolicy with(ZoneApi... zone) {
-        List<List<ZoneApi>> zones = new ArrayList<>(this.zones);
-        zones.add(Arrays.asList(zone));
-        return new UpgradePolicy(zones);
+    public static UpgradePolicy.Builder builder() {
+        return new UpgradePolicy.Builder();
     }
 
-    /** Upgrade given zone as the next step */
-    public UpgradePolicy upgrade(ZoneApi zone) {
-        return with(zone);
+    public record Builder(List<Step> steps) {
+
+        private Builder() {
+            this(new ArrayList<>());
+        }
+
+        public Builder upgrade(Step step) {
+            this.steps.add(step);
+            return this;
+        }
+
+        public Builder upgrade(ZoneApi zone) {
+            return upgradeInParallel(zone);
+        }
+
+        public Builder upgradeInParallel(ZoneApi... zone) {
+            return upgrade(Step.of(zone));
+        }
+
+        public UpgradePolicy build() {
+            return new UpgradePolicy(steps);
+        }
+
     }
 
-    /** Upgrade given zones in parallel as the next step */
-    public UpgradePolicy upgradeInParallel(ZoneApi... zone) {
-        return with(zone);
-    }
+    /**
+     * An upgrade step, consisting of one or more zones. If a step contains multiple zones, those will be upgraded in
+     * parallel.
+     */
+    public record Step(Set<ZoneApi> zones, NodeSlice nodeSlice) {
 
-    public static UpgradePolicy create() {
-        return new UpgradePolicy(Collections.emptyList());
+        public Step(Set<ZoneApi> zones, NodeSlice nodeSlice) {
+            if (zones.isEmpty()) throw new IllegalArgumentException("A step must contain at least one zone");
+            this.zones = Set.copyOf(Objects.requireNonNull(zones));
+            this.nodeSlice = Objects.requireNonNull(nodeSlice);
+        }
+
+        /** Create a step for given zones, which requires all nodes to complete upgrade */
+        public static Step of(ZoneApi... zone) {
+            return new Step(Set.of(zone), NodeSlice.ALL);
+        }
+
+        /** Returns a copy of this step, requiring only the given slice of nodes for each zone in this step to upgrade */
+        public Step require(NodeSlice slice) {
+            return new Step(zones, slice);
+        }
+
     }
 
 }

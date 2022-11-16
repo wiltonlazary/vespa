@@ -1,32 +1,37 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.component.Version;
 import com.yahoo.config.application.api.DeploymentSpec.UpgradePolicy;
 import com.yahoo.config.provision.ApplicationId;
-import com.yahoo.vespa.curator.Lock;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.application.ApplicationList;
 import com.yahoo.vespa.hosted.controller.application.Change;
 import com.yahoo.vespa.hosted.controller.application.InstanceList;
+import com.yahoo.vespa.hosted.controller.deployment.DeploymentStatus;
+import com.yahoo.vespa.hosted.controller.deployment.DeploymentStatusList;
+import com.yahoo.vespa.hosted.controller.deployment.DeploymentTrigger;
+import com.yahoo.vespa.hosted.controller.deployment.DeploymentTrigger.ChangesToCancel;
 import com.yahoo.vespa.hosted.controller.persistence.CuratorDb;
 import com.yahoo.vespa.hosted.controller.versions.VersionStatus;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence;
 
 import java.time.Duration;
-import java.util.Collection;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Random;
-import java.util.function.BinaryOperator;
-import java.util.function.Function;
+import java.util.Set;
+import java.util.function.UnaryOperator;
+import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
 
 import static com.yahoo.vespa.hosted.controller.deployment.DeploymentTrigger.ChangesToCancel.PLATFORM;
-import static java.util.Comparator.naturalOrder;
 
 /**
  * Maintenance job which schedules applications for Vespa version upgrade
@@ -54,82 +59,96 @@ public class Upgrader extends ControllerMaintainer {
     public double maintain() {
         // Determine target versions for each upgrade policy
         VersionStatus versionStatus = controller().readVersionStatus();
-        Version canaryTarget = controller().systemVersion(versionStatus);
-        Collection<Version> defaultTargets = targetVersions(Confidence.normal, versionStatus);
-        Collection<Version> conservativeTargets = targetVersions(Confidence.high, versionStatus);
+        cancelBrokenUpgrades(versionStatus);
 
-        // Cancel upgrades to broken targets (let other ongoing upgrades complete to avoid starvation)
-        for (VespaVersion version : versionStatus.versions()) {
-            if (version.confidence() == Confidence.broken)
-                cancelUpgradesOf(instances().upgradingTo(version.versionNumber())
-                                            .not().with(UpgradePolicy.canary),
-                                 version.versionNumber() + " is broken");
-        }
+        DeploymentStatusList deploymentStatuses = deploymentStatuses(versionStatus);
+        for (UpgradePolicy policy : UpgradePolicy.values())
+            updateTargets(versionStatus, deploymentStatuses, policy);
 
-        // Canaries should always try the canary target
-        cancelUpgradesOf(instances().upgrading()
-                                    .not().upgradingTo(canaryTarget)
-                                    .with(UpgradePolicy.canary),
-                         "Outdated target version for Canaries");
-
-        // Cancel *failed* upgrades to earlier versions, as the new version may fix it
-        String reason = "Failing on outdated version";
-        cancelUpgradesOf(instances().upgrading()
-                                    .failing()
-                                    .not().upgradingTo(defaultTargets)
-                                    .with(UpgradePolicy.defaultPolicy),
-                         reason);
-        cancelUpgradesOf(instances().upgrading()
-                                    .failing()
-                                    .not().upgradingTo(conservativeTargets)
-                                    .with(UpgradePolicy.conservative),
-                         reason);
-
-        // Schedule the right upgrades
-        InstanceList instances = instances();
-        Optional<Integer> targetMajorVersion = targetMajorVersion();
-        upgrade(instances.with(UpgradePolicy.canary), canaryTarget, targetMajorVersion, instances.size());
-        defaultTargets.forEach(target -> upgrade(instances.with(UpgradePolicy.defaultPolicy), target, targetMajorVersion, numberOfApplicationsToUpgrade()));
-        conservativeTargets.forEach(target -> upgrade(instances.with(UpgradePolicy.conservative), target, targetMajorVersion, numberOfApplicationsToUpgrade()));
         return 1.0;
     }
 
-    /** Returns the target versions for given confidence, one per major version in the system */
-    private Collection<Version> targetVersions(Confidence confidence, VersionStatus versionStatus) {
-        return versionStatus.versions().stream()
-                            // Ensure we never pick a version newer than the system
-                            .filter(v -> !v.versionNumber().isAfter(controller().systemVersion(versionStatus)))
-                            .filter(v -> v.confidence().equalOrHigherThan(confidence))
-                            .map(VespaVersion::versionNumber)
-                            .collect(Collectors.toMap(Version::getMajor, // Key on major version
-                                                      Function.identity(),  // Use version as value
-                                                      BinaryOperator.<Version>maxBy(naturalOrder()))) // Pick highest version when merging versions within this major
-                            .values();
+    private DeploymentStatusList deploymentStatuses(VersionStatus versionStatus) {
+        return controller().jobController().deploymentStatuses(ApplicationList.from(controller().applications().readable())
+                                                                              .withProjectId()
+                                                                              .withJobs(),
+                                                               versionStatus);
     }
 
     /** Returns a list of all production application instances, except those which are pinned, which we should not manipulate here. */
-    private InstanceList instances() {
-        return InstanceList.from(controller().jobController().deploymentStatuses(ApplicationList.from(controller().applications().readable())))
+    private InstanceList instances(DeploymentStatusList deploymentStatuses) {
+        return InstanceList.from(deploymentStatuses)
                            .withDeclaredJobs()
+                           .shuffle(random)
+                           .byIncreasingDeployedVersion()
                            .unpinned();
     }
 
-    private void upgrade(InstanceList instances, Version version, Optional<Integer> targetMajorVersion, int numberToUpgrade) {
-        instances.not().failingOn(version)
-                 .allowMajorVersion(version.getMajor(), targetMajorVersion.orElse(version.getMajor()))
-                 .not().deploying()
-                 .onLowerVersionThan(version)
-                 .canUpgradeAt(version, controller().clock().instant())
-                 .shuffle(random) // Shuffle so we do not always upgrade instances in the same order
-                 .byIncreasingDeployedVersion()
-                 .first(numberToUpgrade).asList()
-                 .forEach(instance -> controller().applications().deploymentTrigger().triggerChange(instance, Change.of(version)));
+    private void cancelBrokenUpgrades(VersionStatus versionStatus) {
+        // Cancel upgrades to broken targets (let other ongoing upgrades complete to avoid starvation)
+        InstanceList instances = instances(deploymentStatuses(controller().readVersionStatus()));
+        for (VespaVersion version : versionStatus.versions()) {
+            if (version.confidence() == Confidence.broken)
+                cancelUpgradesOf(instances.upgradingTo(version.versionNumber()).not().with(UpgradePolicy.canary),
+                                 version.versionNumber() + " is broken");
+        }
+    }
+
+    private void updateTargets(VersionStatus versionStatus, DeploymentStatusList deploymentStatuses, UpgradePolicy policy) {
+        InstanceList instances = instances(deploymentStatuses);
+        InstanceList remaining = instances.with(policy);
+        Instant failureThreshold = controller().clock().instant().minus(DeploymentTrigger.maxFailingRevisionTime);
+        Set<ApplicationId> failingRevision = InstanceList.from(deploymentStatuses.failingApplicationChangeSince(failureThreshold)).asSet();
+
+        List<Version> targetAndNewer = new ArrayList<>();
+        UnaryOperator<InstanceList> cancellationCriterion = policy == UpgradePolicy.canary ? i -> i.not().upgradingTo(targetAndNewer)
+                                                                                           : i -> i.failing()
+                                                                                                   .not().upgradingTo(targetAndNewer);
+
+        Map<ApplicationId, Version> targets = new LinkedHashMap<>();
+        for (Version version : DeploymentStatus.targetsForPolicy(versionStatus, controller().systemVersion(versionStatus), policy)) {
+            targetAndNewer.add(version);
+            InstanceList eligible = eligibleForVersion(remaining, version, versionStatus);
+            InstanceList outdated = cancellationCriterion.apply(eligible);
+            cancelUpgradesOf(outdated.upgrading(), "Upgrading to outdated versions");
+
+            // Prefer the newest target for each instance.
+            remaining = remaining.not().matching(eligible.asList()::contains)
+                                 .not().hasCompleted(Change.of(version));
+            for (ApplicationId id : outdated.and(eligible.not().upgrading()))
+                targets.put(id, version);
+        }
+
+        int numberToUpgrade = policy == UpgradePolicy.canary ? instances.size() : numberOfApplicationsToUpgrade();
+        for (ApplicationId id : instances.matching(targets.keySet()::contains)) {
+            if (failingRevision.contains(id)) {
+                log.log(Level.INFO, "Cancelling failing revision for " + id);
+                controller().applications().deploymentTrigger().cancelChange(id, ChangesToCancel.APPLICATION);
+            }
+
+            if (controller().applications().requireInstance(id).change().isEmpty()) {
+                log.log(Level.INFO, "Triggering upgrade to " + targets.get(id) + " for " + id);
+                controller().applications().deploymentTrigger().forceChange(id, Change.of(targets.get(id)));
+                --numberToUpgrade;
+            }
+            if (numberToUpgrade <= 0) break;
+        }
+    }
+
+    private InstanceList eligibleForVersion(InstanceList instances, Version version, VersionStatus versionStatus) {
+        Change change = Change.of(version);
+        return instances.not().failingOn(version)
+                        .allowingMajorVersion(version.getMajor(), versionStatus)
+                        .compatibleWithPlatform(version, controller().applications()::versionCompatibility)
+                        .not().hasCompleted(change) // Avoid rescheduling change for instances without production steps.
+                        .onLowerVersionThan(version)
+                        .canUpgradeAt(version, controller().clock().instant());
     }
 
     private void cancelUpgradesOf(InstanceList instances, String reason) {
         instances = instances.unpinned();
         if (instances.isEmpty()) return;
-        log.info("Cancelling upgrading of " + instances.asList().size() + " instances: " + reason);
+        log.info("Cancelling upgrading of " + instances.asList() + " instances: " + reason);
         for (ApplicationId instance : instances.asList())
             controller().applications().deploymentTrigger().cancelChange(instance, PLATFORM);
     }
@@ -162,19 +181,14 @@ public class Upgrader extends ControllerMaintainer {
         curator.writeUpgradesPerMinute(n);
     }
 
-    /** Returns the target major version for applications not specifying one */
-    public Optional<Integer> targetMajorVersion() {
-        return curator.readTargetMajorVersion();
-    }
-
-    /** Sets the default target major version. Set to empty to determine target version normally (by confidence) */
-    public void setTargetMajorVersion(Optional<Integer> targetMajorVersion) {
-        curator.writeTargetMajorVersion(targetMajorVersion);
-    }
-
     /** Override confidence for given version. This will cause the computed confidence to be ignored */
     public void overrideConfidence(Version version, Confidence confidence) {
-        try (Lock lock = curator.lockConfidenceOverrides()) {
+        if (confidence == Confidence.aborted && !version.isAfter(controller().readSystemVersion())) {
+            throw new IllegalArgumentException("Cannot override confidence to " + confidence +
+                                               " for version " + version.toFullString() +
+                                               ": Version may be in use by applications");
+        }
+        try (Mutex lock = curator.lockConfidenceOverrides()) {
             Map<Version, Confidence> overrides = new LinkedHashMap<>(curator.readConfidenceOverrides());
             overrides.put(version, confidence);
             curator.writeConfidenceOverrides(overrides);

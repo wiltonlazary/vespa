@@ -23,10 +23,21 @@ public class QueryPropertyAliases extends PropertyAliases {
 
     @Override
     protected CompoundName unalias(CompoundName nameOrAlias) {
-        if (nameOrAlias.first().equalsIgnoreCase("rankfeature"))
-            return nameOrAlias.rest().prepend("ranking", "features");
-        else if (nameOrAlias.first().equalsIgnoreCase("rankproperty"))
-            return nameOrAlias.rest().prepend("ranking", "properties");
+        if (nameOrAlias.first().equalsIgnoreCase("rankfeature")
+            || nameOrAlias.first().equalsIgnoreCase("input")) {
+            if (nameOrAlias.size() > 1) // only alias the prefix
+                return nameOrAlias.rest().prepend("ranking", "features");
+            else
+                return nameOrAlias;
+        }
+        else if (nameOrAlias.first().equalsIgnoreCase("rankproperty")) {
+            if (nameOrAlias.size() > 1) // only alias the prefix
+                return nameOrAlias.rest().prepend("ranking", "properties");
+            else
+                return nameOrAlias;
+        }
+
+        // No special handling
         return super.unalias(nameOrAlias);
     }
 

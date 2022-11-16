@@ -2,11 +2,10 @@
 package com.yahoo.config.model.producer;
 
 import com.yahoo.cloud.config.log.LogdConfig;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Verifies some of the logic in the abstract config producer that is not tested in other classes.
@@ -17,7 +16,7 @@ import static org.junit.Assert.assertThat;
 public class AbstractConfigProducerTest {
 
     @Test
-    public void require_that_interface_is_found_if_directly_implemented() throws ReflectiveOperationException {
+    void require_that_interface_is_found_if_directly_implemented() throws ReflectiveOperationException {
         MockLogdProducer producer = new MockLogdProducer("mocky");
         ClassLoader loader = producer.getConfigClassLoader(LogdConfig.Producer.class.getName());
         assertNotNull(loader);
@@ -25,12 +24,12 @@ public class AbstractConfigProducerTest {
         LogdConfig.Builder builder = (LogdConfig.Builder) clazz.getDeclaredConstructor().newInstance();
         producer.getConfig(builder);
         LogdConfig config = new LogdConfig(builder);
-        assertThat(config.logserver().host(), is("bar"));
-        assertThat(config.logserver().port(), is(1338));
+        assertEquals("bar", config.logserver().host());
+        assertEquals(1338, config.logserver().rpcport());
     }
 
     @Test
-    public void require_that_interface_is_found_if_inherited() throws ReflectiveOperationException {
+    void require_that_interface_is_found_if_inherited() throws ReflectiveOperationException {
         MockLogdProducerSubclass producer = new MockLogdProducerSubclass("mocky");
         ClassLoader loader = producer.getConfigClassLoader(LogdConfig.Producer.class.getName());
         assertNotNull(loader);
@@ -38,8 +37,8 @@ public class AbstractConfigProducerTest {
         LogdConfig.Builder builder = (LogdConfig.Builder) clazz.getDeclaredConstructor().newInstance();
         producer.getConfig(builder);
         LogdConfig config = new LogdConfig(builder);
-        assertThat(config.logserver().host(), is("foo"));
-        assertThat(config.logserver().port(), is(1337));
+        assertEquals("foo", config.logserver().host());
+        assertEquals(1337, config.logserver().rpcport());
     }
 
     private static class MockLogdProducer extends AbstractConfigProducer implements LogdConfig.Producer {
@@ -50,7 +49,7 @@ public class AbstractConfigProducerTest {
 
         @Override
         public void getConfig(LogdConfig.Builder builder) {
-            builder.logserver(new LogdConfig.Logserver.Builder().host("bar").port(1338));
+            builder.logserver(new LogdConfig.Logserver.Builder().host("bar").rpcport(1338));
         }
     }
 
@@ -68,7 +67,7 @@ public class AbstractConfigProducerTest {
 
         @Override
         public void getConfig(LogdConfig.Builder builder) {
-            builder.logserver(new LogdConfig.Logserver.Builder().host("foo").port(1337));
+            builder.logserver(new LogdConfig.Logserver.Builder().host("foo").rpcport(1337));
         }
     }
 }

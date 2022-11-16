@@ -1,6 +1,5 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "postinglistsearchcontext.h"
 #include "postinglistsearchcontext.hpp"
 #include "attributeiterators.hpp"
 #include "diversity.hpp"
@@ -20,8 +19,8 @@ PostingListSearchContext(const IEnumStoreDictionary& dictionary,
                          const ISearchContext &baseSearchCtx)
     : _dictionary(dictionary),
       _frozenDictionary(_dictionary.get_has_btree_dictionary() ? _dictionary.get_posting_dictionary().getFrozenView() : FrozenDictionary()),
-      _lowerDictItr(BTreeNode::Ref(), _frozenDictionary.getAllocator()),
-      _upperDictItr(BTreeNode::Ref(), _frozenDictionary.getAllocator()),
+      _lowerDictItr(_dictionary.get_has_btree_dictionary() ? DictionaryConstIterator(BTreeNode::Ref(), _frozenDictionary.getAllocator()) : DictionaryConstIterator()),
+      _upperDictItr(_dictionary.get_has_btree_dictionary() ? DictionaryConstIterator(BTreeNode::Ref(), _frozenDictionary.getAllocator()) : DictionaryConstIterator()),
       _uniqueValues(0u),
       _docIdLimit(docIdLimit),
       _dictSize(_frozenDictionary.size()),
@@ -33,7 +32,7 @@ PostingListSearchContext(const IEnumStoreDictionary& dictionary,
       _FSTC(0.0),
       _PLSTC(0.0),
       _minBvDocFreq(minBvDocFreq),
-      _gbv(nullptr),
+      _bv(nullptr),
       _baseSearchCtx(baseSearchCtx)
 {
 }
@@ -61,10 +60,10 @@ PostingListSearchContext::lookupRange(const vespalib::datastore::EntryComparator
         _uniqueValues = 2; // Avoid zero and single value optimizations, use filtering
         return;
     }
-    _lowerDictItr.lower_bound(_frozenDictionary.getRoot(), EnumIndex(), low);
+    _lowerDictItr.lower_bound(_frozenDictionary.getRoot(), AtomicEntryRef(), low);
     _upperDictItr = _lowerDictItr;
-    if (_upperDictItr.valid() && !high.less(EnumIndex(), _upperDictItr.getKey())) {
-        _upperDictItr.seekPast(EnumIndex(), high);
+    if (_upperDictItr.valid() && !high.less(EnumIndex(), _upperDictItr.getKey().load_acquire())) {
+        _upperDictItr.seekPast(AtomicEntryRef(), high);
     }
     _uniqueValues = _upperDictItr - _lowerDictItr;
 }
@@ -74,7 +73,7 @@ void
 PostingListSearchContext::lookupSingle()
 {
     if (_lowerDictItr.valid()) {
-        _pidx = vespalib::datastore::EntryRef(_lowerDictItr.getData());
+        _pidx = _lowerDictItr.getData().load_acquire();
     }
 }
 

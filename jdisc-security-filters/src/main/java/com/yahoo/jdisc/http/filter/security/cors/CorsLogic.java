@@ -18,10 +18,11 @@ class CorsLogic {
 
     static final Map<String, String> ACCESS_CONTROL_HEADERS = Map.of(
             "Access-Control-Max-Age", CORS_PREFLIGHT_REQUEST_CACHE_TTL,
-            "Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Yahoo-Principal-Auth,Okta-Identity-Token,Okta-Access-Token,Okta-Refresh-Token",
+            "Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Yahoo-Principal-Auth,Okta-Identity-Token," +
+                    "Okta-Access-Token,Okta-Refresh-Token,Vespa-Csrf-Token",
             "Access-Control-Allow-Methods", "OPTIONS,GET,PUT,DELETE,POST,PATCH",
             "Access-Control-Allow-Credentials", "true",
-            "Vary", "Origin"
+            "Vary", "*"
     );
 
     static Map<String, String> createCorsResponseHeaders(String requestOriginHeader,
@@ -41,6 +42,6 @@ class CorsLogic {
     }
 
     private static boolean requestOriginMatchesAnyAllowed(String requestOrigin, Set<String> allowedUrls) {
-        return allowedUrls.stream().anyMatch(requestOrigin::startsWith) || allowedUrls.contains("*");
+        return allowedUrls.stream().anyMatch(requestOrigin::equals) || allowedUrls.contains("*");
     }
 }

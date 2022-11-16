@@ -9,35 +9,25 @@ import java.time.Duration;
 import java.util.logging.Level;
 
 /**
- * Removes expired sessions and locks
+ * Removes expired sessions
  * <p>
  * Note: Unit test is in ApplicationRepositoryTest
  *
  * @author hmusum
  */
 public class SessionsMaintainer extends ConfigServerMaintainer {
-    private final boolean hostedVespa;
-    private int iteration = 0;
 
     SessionsMaintainer(ApplicationRepository applicationRepository, Curator curator, Duration interval, FlagSource flagSource) {
-        super(applicationRepository, curator, flagSource, applicationRepository.clock().instant(), interval);
-        this.hostedVespa = applicationRepository.configserverConfig().hostedVespa();
+        super(applicationRepository, curator, flagSource, applicationRepository.clock().instant(), interval, true);
     }
 
     @Override
     protected double maintain() {
-        if (iteration % 10 == 0)
-            log.log(Level.INFO, () -> "Running " + SessionsMaintainer.class.getSimpleName() + ", iteration "  + iteration);
-
         applicationRepository.deleteExpiredLocalSessions();
 
-        if (hostedVespa) {
-            Duration expiryTime = Duration.ofMinutes(90);
-            int deleted = applicationRepository.deleteExpiredRemoteSessions(expiryTime);
-            log.log(Level.FINE, () -> "Deleted " + deleted + " expired remote sessions older than " + expiryTime);
-        }
+        int deleted = applicationRepository.deleteExpiredRemoteSessions(applicationRepository.clock());
+        log.log(Level.FINE, () -> "Deleted " + deleted + " expired remote sessions");
 
-        iteration++;
         return 1.0;
     }
 

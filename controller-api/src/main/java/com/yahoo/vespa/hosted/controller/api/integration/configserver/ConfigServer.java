@@ -1,10 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.configserver;
 
+import ai.vespa.http.HttpURL.Query;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
-import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.ZoneId;
+import ai.vespa.http.DomainName;
+import ai.vespa.http.HttpURL.Path;
 import com.yahoo.vespa.flags.json.FlagData;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.ClusterMetrics;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.DeploymentData;
@@ -16,7 +18,6 @@ import com.yahoo.vespa.hosted.controller.api.integration.deployment.TestReport;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TesterCloud;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.RestartFilter;
 import com.yahoo.vespa.hosted.controller.api.integration.secrets.TenantSecretStore;
-import com.yahoo.vespa.serviceview.bindings.ApplicationView;
 
 import java.io.InputStream;
 import java.net.URI;
@@ -32,12 +33,12 @@ import java.util.Optional;
 public interface ConfigServer {
 
     interface PreparedApplication {
-        PrepareResponse prepareResponse();
+        DeploymentResult deploymentResult();
     }
 
     PreparedApplication deploy(DeploymentData deployment);
 
-    void reindex(DeploymentId deployment, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly);
+    void reindex(DeploymentId deployment, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly, Double speed);
 
     ApplicationReindexing getReindexing(DeploymentId deployment);
 
@@ -51,11 +52,11 @@ public interface ConfigServer {
 
     boolean isSuspended(DeploymentId deployment);
 
-    ApplicationView getApplicationView(String tenantName, String applicationName, String instanceName, String environment, String region);
+    /** Returns a proxied response from a given path running on a given service and node */
+    ProxyResponse getServiceNodePage(DeploymentId deployment, String serviceName, DomainName node, Path subPath, Query query);
 
-    Map<?,?> getServiceApiResponse(DeploymentId deployment, String serviceName, String restPath);
-
-    String getServiceStatusPage(DeploymentId deployment, String serviceName, String node, String subPath);
+    /** Returns health status for the services of an application */
+    ProxyResponse getServiceNodes(DeploymentId deployment);
 
     /**
      * Gets the Vespa logs of the given deployment.
@@ -74,7 +75,7 @@ public interface ConfigServer {
      * @param path path within package to get
      * @param requestUri request URI on the controller, used to rewrite paths in response from config server
      */
-    ProxyResponse getApplicationPackageContent(DeploymentId deployment, String path, URI requestUri);
+    ProxyResponse getApplicationPackageContent(DeploymentId deployment, Path path, URI requestUri);
 
     List<ClusterMetrics> getDeploymentMetrics(DeploymentId deployment);
 
@@ -85,12 +86,12 @@ public interface ConfigServer {
     /**
      * Set new status for a endpoint of a single deployment.
      *
-     * @param deployment   The deployment to change
-     * @param upstreamName The upstream to modify. Upstream name is a unique identifier for the global route of a
-     *                     deployment in the shared routing layer
-     * @param status       The new status
+     * @param deployment    The deployment to change
+     * @param upstreamNames The upstream names to modify. Upstream name is a unique identifier for the routing status
+     *                      of a cluster in a deployment
+     * @param status        The new status
      */
-    void setGlobalRotationStatus(DeploymentId deployment, String upstreamName, EndpointStatus status);
+    void setGlobalRotationStatus(DeploymentId deployment, List<String> upstreamNames, EndpointStatus status);
 
     /**
      * Set the new status for an entire zone.

@@ -1,25 +1,25 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
+import com.yahoo.container.logging.AccessLogEntry;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.Request;
 import com.yahoo.jdisc.handler.BufferedContentChannel;
 import com.yahoo.jdisc.handler.CompletionHandler;
 import com.yahoo.jdisc.handler.ContentChannel;
-import com.yahoo.jdisc.handler.UnsafeContentInputStream;
 import com.yahoo.jdisc.handler.ResponseHandler;
-
-import java.io.InterruptedIOException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import com.yahoo.jdisc.handler.UnsafeContentInputStream;
+import com.yahoo.jdisc.http.server.jetty.AccessLoggingRequestHandler;
+import com.yahoo.yolean.Exceptions;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -48,6 +48,11 @@ public abstract class ThreadedHttpRequestHandler extends ThreadedRequestHandler 
     @Inject
     public ThreadedHttpRequestHandler(Executor executor, Metric metric) {
         this(executor, metric, false);
+    }
+
+    // TODO: deprecate this and the Context class. The context component set up in the model does not get a dedicated thread pool.
+    public ThreadedHttpRequestHandler(Context context) {
+        this(context.executor, context.metric);
     }
 
     public ThreadedHttpRequestHandler(Executor executor, Metric metric, boolean allowAsyncResponse) {
@@ -241,7 +246,7 @@ public abstract class ThreadedHttpRequestHandler extends ThreadedRequestHandler 
                                                                       HttpResponse response,
                                                                       HttpRequest httpRequest,
                                                                       ContentChannelOutputStream rendererWiring) {
-        return null;
+        return new ResponseLogger(httpRequest, response);
     }
 
     protected com.yahoo.jdisc.http.HttpRequest asHttpRequest(Request request) {
@@ -252,82 +257,64 @@ public abstract class ThreadedHttpRequestHandler extends ThreadedRequestHandler 
         return (com.yahoo.jdisc.http.HttpRequest) request;
     }
 
+    public static Context testContext() {
+        return new Context(Runnable::run, null);
+    }
 
-    /**
-     * @author baldersheim
-     */
-    static class MaxPendingContentChannelOutputStream extends ContentChannelOutputStream {
-        private final long maxPending;
-        private final AtomicLong sent = new AtomicLong(0);
-        private final AtomicLong acked = new AtomicLong(0);
+    public static class Context {
 
-        public MaxPendingContentChannelOutputStream(ContentChannel endpoint, long maxPending) {
-            super(endpoint);
-            this.maxPending = maxPending;
+        final Executor executor;
+        final Metric metric;
+
+        @Inject
+        public Context(Executor executor, Metric metric) {
+            this.executor = executor;
+            this.metric = metric;
         }
 
-        private long pendingBytes() {
-            return sent.get() - acked.get();
+        public Context(Context other) {
+            this.executor = other.executor;
+            this.metric = other.metric;
         }
 
-        private class TrackCompletion implements CompletionHandler {
+        public Executor getExecutor() { return executor; }
+        public Metric getMetric() { return metric; }
 
-            private final long written;
-            private final AtomicBoolean replied = new AtomicBoolean(false);
+    }
 
-            TrackCompletion(long written) {
-                this.written = written;
-                sent.addAndGet(written);
-            }
 
-            @Override
-            public void completed() {
-                if ( ! replied.getAndSet(true)) {
-                    acked.addAndGet(written);
-                }
-            }
+    private class ResponseLogger implements LoggingCompletionHandler {
 
-            @Override
-            public void failed(Throwable t) {
-                if ( ! replied.getAndSet(true)) {
-                    acked.addAndGet(written);
-                }
-            }
+        private final com.yahoo.jdisc.http.HttpRequest jdiscRequest;
+        private final HttpResponse httpResponse;
+
+        ResponseLogger(HttpRequest httpRequest, HttpResponse httpResponse) {
+            this.jdiscRequest = httpRequest.getJDiscRequest();
+            this.httpResponse = httpResponse;
         }
 
         @Override
-        public void send(ByteBuffer src) throws IOException {
-            try {
-                stallWhilePendingAbove(maxPending);
-            } catch (InterruptedException ignored) {
-                throw new InterruptedIOException("Interrupted waiting for IO");
-            }
-            CompletionHandler pendingTracker = new TrackCompletion(src.remaining());
-            try {
-                send(src, pendingTracker);
-            } catch (Throwable throwable) {
-                pendingTracker.failed(throwable);
-                throw throwable;
-            }
-        }
+        public void markCommitStart() { }
 
-        private void stallWhilePendingAbove(long pending) throws InterruptedException {
-            while (pendingBytes() > pending) {
-                Thread.sleep(1);
-            }
+        @Override
+        public void completed() {
+            writeToAccessLog();
         }
 
         @Override
-        public void flush() throws IOException {
-            super.flush();
-            try {
-                stallWhilePendingAbove(0);
-            }
-            catch (InterruptedException e) {
-                throw new InterruptedIOException("Interrupted waiting for IO");
-            }
+        public void failed(Throwable throwable) {
+            writeToAccessLog();
+            log.log(Level.FINE, () -> "Got exception when writing to client: " + Exceptions.toMessageString(throwable));
         }
 
+        private void writeToAccessLog() {
+            Optional<AccessLogEntry> jdiscReqAccessLogEntry = AccessLoggingRequestHandler.getAccessLogEntry(jdiscRequest);
+            AccessLogEntry entry;
+            if (jdiscReqAccessLogEntry.isPresent()) {
+                entry = jdiscReqAccessLogEntry.get();
+                httpResponse.populateAccessLogEntry(entry);
+            }
+        }
     }
 
 }

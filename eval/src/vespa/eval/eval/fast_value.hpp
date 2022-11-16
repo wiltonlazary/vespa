@@ -1,6 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "value.h"
+#include "value_builder_factory.h"
 #include "fast_addr_map.h"
 #include "inline_operation.h"
 #include <vespa/eval/instruction/generic_join.h>
@@ -12,134 +12,11 @@ namespace vespalib::eval {
 
 //-----------------------------------------------------------------------------
 
-namespace {
-
-//-----------------------------------------------------------------------------
-
-// look up a full address in the map directly
-struct FastLookupView : public Value::Index::View {
-
-    const FastAddrMap &map;
-    size_t             subspace;
-
-    FastLookupView(const FastAddrMap &map_in)
-        : map(map_in), subspace(FastAddrMap::npos()) {}
-
-    void lookup(ConstArrayRef<const string_id*> addr) override {
-        subspace = map.lookup(addr);
-    }
-
-    bool next_result(ConstArrayRef<string_id*>, size_t &idx_out) override {
-        if (subspace == FastAddrMap::npos()) {
-            return false;
-        }
-        idx_out = subspace;
-        subspace = FastAddrMap::npos();
-        return true;
-    }
-};
-
-//-----------------------------------------------------------------------------
-
-// find matching mappings for a partial address with brute force filtering
-struct FastFilterView : public Value::Index::View {
-
-    const FastAddrMap        &map;
-    SmallVector<size_t>       match_dims;
-    SmallVector<size_t>       extract_dims;
-    SmallVector<string_id>    query;
-    size_t                    pos;
-
-    bool is_match(ConstArrayRef<string_id> addr) const {
-        for (size_t i = 0; i < query.size(); ++i) {
-            if (query[i] != addr[match_dims[i]]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    FastFilterView(const FastAddrMap &map_in, ConstArrayRef<size_t> match_dims_in)
-      : map(map_in), match_dims(match_dims_in.begin(), match_dims_in.end()),
-        extract_dims(), query(match_dims.size()), pos(FastAddrMap::npos())
-    {
-        auto my_pos = match_dims.begin();
-        for (size_t i = 0; i < map.addr_size(); ++i) {
-            if ((my_pos == match_dims.end()) || (*my_pos != i)) {
-                extract_dims.push_back(i);
-            } else {
-                ++my_pos;
-            }
-        }
-        assert(my_pos == match_dims.end());
-        assert((match_dims.size() + extract_dims.size()) == map.addr_size());
-    }
-
-    void lookup(ConstArrayRef<const string_id*> addr) override {
-        assert(addr.size() == query.size());
-        for (size_t i = 0; i < addr.size(); ++i) {
-            query[i] = *addr[i];
-        }
-        pos = 0;
-    }
-
-    bool next_result(ConstArrayRef<string_id*> addr_out, size_t &idx_out) override {
-        while (pos < map.size()) {
-            auto addr = map.get_addr(pos);            
-            if (is_match(addr)) {
-                assert(addr_out.size() == extract_dims.size());
-                for (size_t i = 0; i < extract_dims.size(); ++i) {
-                    *addr_out[i] = addr[extract_dims[i]];
-                }
-                idx_out = pos++;
-                return true;
-            }
-            ++pos;
-        }
-        return false;
-    }
-};
-
-//-----------------------------------------------------------------------------
-
-// iterate all mappings
-struct FastIterateView : public Value::Index::View {
-
-    const FastAddrMap &map;
-    size_t             pos;
-
-    FastIterateView(const FastAddrMap &map_in)
-        : map(map_in), pos(FastAddrMap::npos()) {}
-
-    void lookup(ConstArrayRef<const string_id*>) override {
-        pos = 0;
-    }
-
-    bool next_result(ConstArrayRef<string_id*> addr_out, size_t &idx_out) override {
-        if (pos >= map.size()) {
-            return false;
-        }
-        auto addr = map.get_addr(pos);
-        assert(addr.size() == addr_out.size());
-        for (size_t i = 0; i < addr.size(); ++i) {
-            *addr_out[i] = addr[i];
-        }
-        idx_out = pos++;
-        return true;
-    }
-};
-
-//-----------------------------------------------------------------------------
-
-} // namespace <unnamed>
-
-//-----------------------------------------------------------------------------
-
 // This is the class instructions will look for when optimizing sparse
 // operations by calling inline functions directly.
 struct FastValueIndex final : Value::Index {
     FastAddrMap map;
-    FastValueIndex(size_t num_mapped_dims_in, const std::vector<string_id> &labels, size_t expected_subspaces_in)
+    FastValueIndex(size_t num_mapped_dims_in, const StringIdVector &labels, size_t expected_subspaces_in)
         : map(num_mapped_dims_in, labels, expected_subspaces_in) {}
     size_t size() const override { return map.size(); }
     std::unique_ptr<View> create_view(ConstArrayRef<size_t> dims) const override;
@@ -149,8 +26,12 @@ inline bool is_fast(const Value::Index &index) {
     return (std::type_index(typeid(index)) == std::type_index(typeid(FastValueIndex)));
 }
 
-inline bool are_fast(const Value::Index &a, const Value::Index &b) {
+__attribute__((always_inline)) inline bool are_fast(const Value::Index &a, const Value::Index &b) {
     return (is_fast(a) && is_fast(b));
+}
+
+inline bool are_fast(const Value::Index &a, const Value::Index &b, const Value::Index &c) {
+    return (is_fast(a) && is_fast(b) && is_fast(c));
 }
 
 constexpr const FastValueIndex &as_fast(const Value::Index &index) {
@@ -164,29 +45,19 @@ struct FastCells {
     static constexpr size_t elem_size = sizeof(T);
     size_t capacity;
     size_t size;
-    void *memory;
-    FastCells(size_t initial_capacity)
-        : capacity(roundUp2inN(initial_capacity)),
-          size(0),
-          memory(malloc(elem_size * capacity))
-    {
-        static_assert(std::is_trivially_copyable_v<T>);
-        static_assert(can_skip_destruction<T>::value);
-    }
-    ~FastCells() {
-        free(memory);
-    }
+    mutable alloc::Alloc memory;
+    FastCells(size_t initial_capacity);
+    FastCells(const FastCells &) = delete;
+    FastCells & operator = (const FastCells &) = delete;
+    ~FastCells();
     void ensure_free(size_t need) {
         if (__builtin_expect((size + need) > capacity, false)) {
-            capacity = roundUp2inN(size + need);
-            void *new_memory = malloc(elem_size * capacity);
-            memcpy(new_memory, memory, elem_size * size);
-            free(memory);
-            memory = new_memory;
+            reallocate(need);
         }
     }
+    void reallocate(size_t need);
     constexpr T *get(size_t offset) const {
-        return reinterpret_cast<T*>(memory) + offset;
+        return reinterpret_cast<T*>(memory.get()) + offset;
     }
     void push_back_fast(T value) {
         *get(size++) = value;
@@ -205,17 +76,40 @@ struct FastCells {
     }
 };
 
+template <typename T>
+FastCells<T>::FastCells(size_t initial_capacity)
+    : capacity(roundUp2inN(initial_capacity)),
+      size(0),
+      memory(alloc::Alloc::alloc(elem_size * capacity))
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    static_assert(can_skip_destruction<T>);
+}
+
+template <typename T>
+void
+FastCells<T>::reallocate(size_t need) {
+    capacity = roundUp2inN(size + need);
+    alloc::Alloc new_memory = alloc::Alloc::alloc(elem_size * capacity);
+    if (memory.get()) {
+        memcpy(new_memory.get(), memory.get(), elem_size * size);
+    }
+    memory = std::move(new_memory);
+}
+
+template <typename T>
+FastCells<T>::~FastCells() = default;
+
 //-----------------------------------------------------------------------------
 
 template <typename T, bool transient>
 struct FastValue final : Value, ValueBuilder<T> {
-
     using Handles = typename std::conditional<transient,
-                                     std::vector<string_id>,
+                                     StringIdVector,
                                      SharedStringRepo::Handles>::type;
 
-    static const std::vector<string_id> &get_view(const std::vector<string_id> &handles) { return handles; }
-    static const std::vector<string_id> &get_view(const SharedStringRepo::Handles &handles) { return handles.view(); }
+    static const StringIdVector &get_view(const StringIdVector &handles) { return handles; }
+    static const StringIdVector &get_view(const SharedStringRepo::Handles &handles) { return handles.view(); }
 
     ValueType my_type;
     size_t my_subspace_size;
@@ -223,18 +117,20 @@ struct FastValue final : Value, ValueBuilder<T> {
     FastValueIndex my_index;
     FastCells<T> my_cells;
 
-    FastValue(const ValueType &type_in, size_t num_mapped_dims_in, size_t subspace_size_in, size_t expected_subspaces_in)
-        : my_type(type_in), my_subspace_size(subspace_size_in),
-          my_handles(),
-          my_index(num_mapped_dims_in, get_view(my_handles), expected_subspaces_in),
-          my_cells(subspace_size_in * expected_subspaces_in)
-    {
-        my_handles.reserve(expected_subspaces_in * num_mapped_dims_in);
-    }
+    FastValue(const ValueType &type_in, size_t num_mapped_dims_in, size_t subspace_size_in, size_t expected_subspaces_in);
     ~FastValue() override;
     const ValueType &type() const override { return my_type; }
     const Value::Index &index() const override { return my_index; }
-    TypedCells cells() const override { return TypedCells(my_cells.memory, get_cell_type<T>(), my_cells.size); }
+    TypedCells cells() const override {
+        if constexpr (std::is_same_v<T, uint32_t>) {
+            // allow use of FastValue templated on types that do not
+            // have a corresponding cell type as long as cells() is
+            // not called
+            abort();
+        } else {
+            return TypedCells(my_cells.memory.get(), get_cell_type<T>(), my_cells.size);
+        }
+    }
     void add_mapping(ConstArrayRef<vespalib::stringref> addr) {
         if constexpr (transient) {
             (void) addr;
@@ -273,6 +169,12 @@ struct FastValue final : Value, ValueBuilder<T> {
         add_mapping(addr);
         return my_cells.add_cells(my_subspace_size);        
     }
+    ArrayRef<T> get_subspace(size_t subspace) {
+        return {my_cells.get(subspace * my_subspace_size), my_subspace_size};
+    }
+    ConstArrayRef<T> get_raw_cells() const {
+        return {my_cells.get(0), my_cells.size};
+    }
     std::unique_ptr<Value> build(std::unique_ptr<ValueBuilder<T>> self) override {
         if (my_index.map.addr_size() == 0) {
             assert(my_index.map.size() == 1);
@@ -291,7 +193,20 @@ struct FastValue final : Value, ValueBuilder<T> {
         return usage;
     }
 };
-template <typename T,bool transient> FastValue<T,transient>::~FastValue() = default;
+
+template <typename T,bool transient>
+FastValue<T,transient>::FastValue(const ValueType &type_in, size_t num_mapped_dims_in,
+                                  size_t subspace_size_in, size_t expected_subspaces_in)
+    : my_type(type_in), my_subspace_size(subspace_size_in),
+      my_handles(),
+      my_index(num_mapped_dims_in, get_view(my_handles), expected_subspaces_in),
+      my_cells(subspace_size_in * expected_subspaces_in)
+{
+    my_handles.reserve(expected_subspaces_in * num_mapped_dims_in);
+}
+
+template <typename T,bool transient>
+FastValue<T,transient>::~FastValue() = default;
 
 //-----------------------------------------------------------------------------
 
@@ -309,7 +224,7 @@ struct FastDenseValue final : Value, ValueBuilder<T> {
     ~FastDenseValue() override;
     const ValueType &type() const override { return my_type; }
     const Value::Index &index() const override { return TrivialIndex::get(); }
-    TypedCells cells() const override { return TypedCells(my_cells.memory, get_cell_type<T>(), my_cells.size); }
+    TypedCells cells() const override { return TypedCells(my_cells.memory.get(), get_cell_type<T>(), my_cells.size); }
     ArrayRef<T> add_subspace(ConstArrayRef<vespalib::stringref>) override {
         return ArrayRef<T>(my_cells.get(0), my_cells.size);
     }

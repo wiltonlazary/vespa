@@ -8,6 +8,9 @@ import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.SystemName;
+import com.yahoo.net.HostName;
+import com.yahoo.vespa.flags.FetchVector;
+import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
@@ -80,6 +83,7 @@ class NodeAllocation {
 
     private final NodeRepository nodeRepository;
     private final NodeResourceLimits nodeResourceLimits;
+    private final Optional<String> requiredHostFlavor;
 
     NodeAllocation(NodesAndHosts<? extends NodeList> allNodesAndHosts, ApplicationId application, ClusterSpec cluster, NodeSpec requestedNodes,
                    Supplier<Integer> nextIndex, NodeRepository nodeRepository) {
@@ -89,39 +93,45 @@ class NodeAllocation {
         this.requestedNodes = requestedNodes;
         this.nextIndex = nextIndex;
         this.nodeRepository = nodeRepository;
-        nodeResourceLimits = new NodeResourceLimits(nodeRepository);
+        this.nodeResourceLimits = new NodeResourceLimits(nodeRepository);
+        this.requiredHostFlavor = Optional.of(PermanentFlags.HOST_FLAVOR.bindTo(nodeRepository.flagSource())
+                        .with(FetchVector.Dimension.APPLICATION_ID, application.serializedForm())
+                        .with(FetchVector.Dimension.CLUSTER_TYPE, cluster.type().name())
+                        .value())
+                .filter(s -> !s.isBlank());
     }
 
     /**
      * Offer some nodes to this. The nodes may have an allocation to a different application or cluster,
      * an allocation to this cluster, or no current allocation (in which case one is assigned).
-     * 
+     *
      * Note that if unallocated nodes are offered before allocated nodes, this will unnecessarily
      * reject allocated nodes due to index duplicates.
      *
-     * @param nodesPrioritized the nodes which are potentially on offer. These may belong to a different application etc.
-     * @return the subset of offeredNodes which was accepted, with the correct allocation assigned
+     * @param candidates the nodes which are potentially on offer. These may belong to a different application etc.
      */
-    List<Node> offer(List<NodeCandidate> nodesPrioritized) {
-        List<Node> accepted = new ArrayList<>();
-        for (NodeCandidate candidate : nodesPrioritized) {
+    void offer(List<NodeCandidate> candidates) {
+        for (NodeCandidate candidate : candidates) {
             if (candidate.allocation().isPresent()) {
                 Allocation allocation = candidate.allocation().get();
                 ClusterMembership membership = allocation.membership();
                 if ( ! allocation.owner().equals(application)) continue; // wrong application
                 if ( ! membership.cluster().satisfies(cluster)) continue; // wrong cluster id/type
-                if ((! candidate.isSurplus || saturated()) && ! membership.cluster().group().equals(cluster.group())) continue; // wrong group and we can't or have no reason to change it
-                if ( candidate.state() == Node.State.active && allocation.isRemovable()) continue; // don't accept; causes removal
+                if ((! candidate.isSurplus || saturated()) && ! membership.cluster().group().equals(cluster.group())) continue; // wrong group, and we can't or have no reason to change it
+                if ( candidate.state() == Node.State.active && allocation.removable()) continue; // don't accept; causes removal
                 if ( candidate.state() == Node.State.active && candidate.wantToFail()) continue; // don't accept; causes failing
                 if ( indexes.contains(membership.index())) continue; // duplicate index (just to be sure)
+                if ( requiredHostFlavor.isPresent() && ! candidate.parent.map(node -> node.flavor().name()).equals(requiredHostFlavor)) continue;
+                if ( candidate.parent.isPresent() && ! candidate.parent.get().cloudAccount().equals(requestedNodes.cloudAccount())) continue; // wrong account
 
                 boolean resizeable = requestedNodes.considerRetiring() && candidate.isResizable;
                 boolean acceptToRetire = acceptToRetire(candidate);
 
                 if ((! saturated() && hasCompatibleFlavor(candidate) && requestedNodes.acceptable(candidate)) || acceptToRetire) {
                     candidate = candidate.withNode();
-                    if (candidate.isValid())
-                        accepted.add(acceptNode(candidate, shouldRetire(candidate, nodesPrioritized), resizeable));
+                    if (candidate.isValid()) {
+                        acceptNode(candidate, shouldRetire(candidate, candidates), resizeable);
+                    }
                 }
             }
             else if (! saturated() && hasCompatibleFlavor(candidate)) {
@@ -144,12 +154,11 @@ class NodeAllocation {
                                                ClusterMembership.from(cluster, nextIndex.get()),
                                                requestedNodes.resources().orElse(candidate.resources()),
                                                nodeRepository.clock().instant());
-                if (candidate.isValid())
-                    accepted.add(acceptNode(candidate, Retirement.none, false));
+                if (candidate.isValid()) {
+                    acceptNode(candidate, Retirement.none, false);
+                }
             }
         }
-
-        return accepted;
     }
 
     /** Returns the cause of retirement for given candidate */
@@ -162,7 +171,7 @@ class NodeAllocation {
         if (violatesParentHostPolicy(candidate)) return Retirement.violatesParentHostPolicy;
         if ( ! hasCompatibleFlavor(candidate)) return Retirement.incompatibleFlavor;
         if (candidate.wantToRetire()) return Retirement.hardRequest;
-        if (candidate.preferToRetire() && candidate.replacableBy(candidates)) return Retirement.softRequest;
+        if (candidate.preferToRetire() && candidate.replaceableBy(candidates)) return Retirement.softRequest;
         if (violatesExclusivity(candidate)) return Retirement.violatesExclusivity;
         return Retirement.none;
     }
@@ -190,15 +199,16 @@ class NodeAllocation {
     private boolean violatesExclusivity(NodeCandidate candidate) {
         if (candidate.parentHostname().isEmpty()) return false;
 
-        // In dynamic provisioned zones, exclusivity is violated if...
-        if (nodeRepository.zone().getCloud().dynamicProvisioning()) {
-                    // If either the parent is dedicated to a cluster type different from this cluster
+        // In nodes which does not allow host sharing, exclusivity is violated if...
+        if ( ! nodeRepository.zone().cloud().allowHostSharing()) {
+            // TODO: Write this in a way that is simple to read
+            // If either the parent is dedicated to a cluster type different from this cluster
             return  ! candidate.parent.flatMap(Node::exclusiveToClusterType).map(cluster.type()::equals).orElse(true) ||
                     // or this cluster is requiring exclusivity, but the host is exclusive to a different owner
                     (requestedNodes.isExclusive() && !candidate.parent.flatMap(Node::exclusiveToApplicationId).map(application::equals).orElse(false));
         }
 
-        // In non-dynamic provisioned zones we require that if either of the nodes on the host requires exclusivity,
+        // In zones with shared hosts we require that if either of the nodes on the host requires exclusivity,
         // then all the nodes on the host must have the same owner
         for (Node nodeOnHost : allNodesAndHosts.childrenOf(candidate.parentHostname().get())) {
             if (nodeOnHost.allocation().isEmpty()) continue;
@@ -277,7 +287,8 @@ class NodeAllocation {
         NodeResources hostResources = allNodesAndHosts.parentOf(node).get().flavor().resources();
         return node.with(new Flavor(requestedNodes.resources().get()
                                                   .with(hostResources.diskSpeed())
-                                                  .with(hostResources.storageType())),
+                                                  .with(hostResources.storageType())
+                                                  .with(hostResources.architecture())),
                 Agent.application, nodeRepository.clock().instant());
     }
 
@@ -345,7 +356,7 @@ class NodeAllocation {
         // - cfg1 is starting and redeploys its infrastructure application during bootstrap. A deficit is detected
         //   (itself, because cfg1 is only added to the repository *after* it is up)
         // - cfg1 tries to provision a new host for itself
-        Integer myIndex = parseIndex(com.yahoo.net.HostName.getLocalhost());
+        Integer myIndex = parseIndex(HostName.getLocalhost());
         indices.remove(myIndex);
         return indices;
     }
@@ -441,7 +452,7 @@ class NodeAllocation {
                          .collect(Collectors.toList());
     }
 
-    public String outOfCapacityDetails() {
+    public String allocationFailureDetails() {
         List<String> reasons = new ArrayList<>();
         if (rejectedDueToExclusivity > 0)
             reasons.add("host exclusivity constraints");
@@ -453,7 +464,7 @@ class NodeAllocation {
             reasons.add("insufficient real resources on hosts");
 
         if (reasons.isEmpty()) return "";
-        return ": Not enough nodes available due to " + String.join(", ", reasons);
+        return ": Not enough suitable nodes available due to " + String.join(", ", reasons);
     }
 
     private static Integer parseIndex(String hostname) {

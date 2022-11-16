@@ -45,8 +45,8 @@ public abstract class IntermediateOperation {
     protected final List<IntermediateOperation> outputs = new ArrayList<>();
 
     protected OrderedTensorType type;
-    protected TensorFunction function;
-    protected TensorFunction rankingExpressionFunction = null;
+    protected TensorFunction<Reference> function;
+    protected TensorFunction<Reference> rankingExpressionFunction = null;
     protected boolean exportAsRankingFunction = false;
 
     private boolean hasRenamedDimensions = false;
@@ -65,7 +65,7 @@ public abstract class IntermediateOperation {
     }
 
     protected abstract OrderedTensorType lazyGetType();
-    protected abstract TensorFunction lazyGetFunction();
+    protected abstract TensorFunction<Reference> lazyGetFunction();
 
     public String modelName() { return modelName; }
 
@@ -78,14 +78,14 @@ public abstract class IntermediateOperation {
     }
 
     /** Returns the Vespa tensor function implementing all operations from this node with inputs */
-    public Optional<TensorFunction> function() {
+    public Optional<TensorFunction<Reference>> function() {
         if (function == null) {
             if (isConstant()) {
                 ExpressionNode constant = new ReferenceNode(Reference.simple("constant", vespaName()));
                 function = new TensorFunctionNode.ExpressionTensorFunction(constant);
             } else if (outputs.size() > 1 || exportAsRankingFunction) {
                 rankingExpressionFunction = lazyGetFunction();
-                function = new VariableTensor(rankingExpressionFunctionName(), type.type());
+                function = new VariableTensor<Reference>(rankingExpressionFunctionName(), type.type());
             } else {
                 function = lazyGetFunction();
             }
@@ -103,7 +103,7 @@ public abstract class IntermediateOperation {
     public List<IntermediateOperation> outputs() { return Collections.unmodifiableList(outputs); }
 
     /** Returns a function that should be added as a ranking expression function */
-    public Optional<TensorFunction> rankingExpressionFunction() {
+    public Optional<TensorFunction<Reference>> rankingExpressionFunction() {
         return Optional.ofNullable(rankingExpressionFunction);
     }
 
@@ -280,13 +280,13 @@ public abstract class IntermediateOperation {
     public void insert(IntermediateOperation operationToInsert, int inputNumber) {
         if ( operationToInsert.inputs.size() > 0 ) {
             throw new IllegalArgumentException("Operation to insert to '" + name + "' has " +
-                    "existing inputs which is not supported.");
+                                               "existing inputs which is not supported.");
         }
         IntermediateOperation previousInputOperation = inputs.get(inputNumber);
         int outputNumber = findOutputNumber(previousInputOperation, this);
         if (outputNumber == -1) {
             throw new IllegalArgumentException("Input '" + previousInputOperation.name + "' to '" +
-                    name + "' does not have '" + name + "' as output.");
+                                               name + "' does not have '" + name + "' as output.");
         }
         previousInputOperation.outputs.set(outputNumber, operationToInsert);
         operationToInsert.inputs.add(previousInputOperation);

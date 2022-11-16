@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.deployment;
 
 import com.yahoo.collections.AbstractFilteringList;
@@ -26,7 +26,7 @@ public class RunList extends AbstractFilteringList<Run, RunList> {
         return from(job.runs().descendingMap().values());
     }
 
-    /** Returns the jobs with runs matching the given versions — targets only for system test, everything present otherwise. */
+    /** Returns the jobs with runs matching the given versions — targets only for system test, everything present otherwise. */
     public RunList on(Versions versions) {
         return matching(run -> matchingVersions(run, versions));
     }
@@ -38,7 +38,7 @@ public class RunList extends AbstractFilteringList<Run, RunList> {
 
     private static boolean matchingVersions(Run run, Versions versions) {
         return    versions.targetsMatch(run.versions())
-               && (versions.sourcesMatchIfPresent(run.versions()) || run.id().type() == JobType.systemTest);
+               && (versions.sourcesMatchIfPresent(run.versions()) || run.id().type().isSystemTest());
     }
 
 }

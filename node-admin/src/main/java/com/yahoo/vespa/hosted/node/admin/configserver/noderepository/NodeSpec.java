@@ -26,7 +26,7 @@ import static com.yahoo.config.provision.NodeResources.DiskSpeed.slow;
 public class NodeSpec {
 
     private final String hostname;
-    private final Optional<String> id;
+    private final String id;
     private final NodeState state;
     private final NodeType type;
     private final String flavor;
@@ -70,9 +70,11 @@ public class NodeSpec {
 
     private final List<TrustStoreItem> trustStore;
 
+    private final boolean wantToRebuild;
+
     public NodeSpec(
             String hostname,
-            Optional<String> id,
+            String id,
             Optional<DockerImage> wantedDockerImage,
             Optional<DockerImage> currentDockerImage,
             NodeState state,
@@ -101,7 +103,9 @@ public class NodeSpec {
             Optional<String> parentHostname,
             Optional<URI> archiveUri,
             Optional<ApplicationId> exclusiveTo,
-            List<TrustStoreItem> trustStore) {
+            List<TrustStoreItem> trustStore,
+            boolean wantToRebuild) {
+
         if (state == NodeState.active) {
             requireOptional(owner, "owner");
             requireOptional(membership, "membership");
@@ -142,14 +146,15 @@ public class NodeSpec {
         this.archiveUri = Objects.requireNonNull(archiveUri);
         this.exclusiveTo = Objects.requireNonNull(exclusiveTo);
         this.trustStore = Objects.requireNonNull(trustStore);
+        this.wantToRebuild = wantToRebuild;
     }
 
     public String hostname() {
         return hostname;
     }
 
-    /** Returns the cloud-specific ID of the host. */
-    public Optional<String> id() {
+    /** Returns unique node ID */
+    public String id() {
         return id;
     }
 
@@ -291,12 +296,14 @@ public class NodeSpec {
         return trustStore;
     }
 
+    public boolean wantToRebuild() {
+        return wantToRebuild;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (!(o instanceof NodeSpec)) return false;
-
-        NodeSpec that = (NodeSpec) o;
+        if (!(o instanceof NodeSpec that)) return false;
 
         return Objects.equals(hostname, that.hostname) &&
                 Objects.equals(id, that.id) &&
@@ -328,7 +335,8 @@ public class NodeSpec {
                 Objects.equals(parentHostname, that.parentHostname) &&
                 Objects.equals(archiveUri, that.archiveUri) &&
                 Objects.equals(exclusiveTo, that.exclusiveTo) &&
-                Objects.equals(trustStore, that.trustStore);
+                Objects.equals(trustStore, that.trustStore) &&
+                Objects.equals(wantToRebuild, that.wantToRebuild);
     }
 
     @Override
@@ -364,7 +372,8 @@ public class NodeSpec {
                 parentHostname,
                 archiveUri,
                 exclusiveTo,
-                trustStore);
+                trustStore,
+                wantToRebuild);
     }
 
     @Override
@@ -401,12 +410,13 @@ public class NodeSpec {
                 + " archiveUri=" + archiveUri
                 + " exclusiveTo=" + exclusiveTo
                 + " trustStore=" + trustStore
+                + " wantToRebuild=" + wantToRebuild
                 + " }";
     }
 
     public static class Builder {
         private String hostname;
-        private Optional<String> id = Optional.empty();
+        private String id;
         private NodeState state;
         private NodeType type;
         private String flavor;
@@ -436,11 +446,13 @@ public class NodeSpec {
         private Optional<URI> archiveUri = Optional.empty();
         private Optional<ApplicationId> exclusiveTo = Optional.empty();
         private List<TrustStoreItem> trustStore = List.of();
+        private boolean wantToRebuild = false;
 
         public Builder() {}
 
         public Builder(NodeSpec node) {
             hostname(node.hostname);
+            id(node.id);
             state(node.state);
             type(node.type);
             flavor(node.flavor);
@@ -469,6 +481,7 @@ public class NodeSpec {
             node.archiveUri.ifPresent(this::archiveUri);
             node.exclusiveTo.ifPresent(this::exclusiveTo);
             trustStore(node.trustStore);
+            wantToRebuild(node.wantToRebuild);
         }
 
         public Builder hostname(String hostname) {
@@ -477,7 +490,7 @@ public class NodeSpec {
         }
 
         public Builder id(String id) {
-            this.id = Optional.of(id);
+            this.id = id;
             return this;
         }
 
@@ -651,6 +664,11 @@ public class NodeSpec {
             return this;
         }
 
+        public Builder wantToRebuild(boolean wantToRebuild) {
+            this.wantToRebuild = wantToRebuild;
+            return this;
+        }
+
         public Builder updateFromNodeAttributes(NodeAttributes attributes) {
             attributes.getHostId().ifPresent(this::id);
             attributes.getDockerImage().ifPresent(this::currentDockerImage);
@@ -766,13 +784,13 @@ public class NodeSpec {
 
         public NodeSpec build() {
             return new NodeSpec(hostname, id, wantedDockerImage, currentDockerImage, state, type, flavor,
-                    wantedVespaVersion, currentVespaVersion, wantedOsVersion, currentOsVersion, orchestratorStatus,
-                    owner, membership,
-                    wantedRestartGeneration, currentRestartGeneration,
-                    wantedRebootGeneration, currentRebootGeneration,
-                    wantedFirmwareCheck, currentFirmwareCheck, modelName,
-                    resources, realResources, ipAddresses, additionalIpAddresses,
-                    reports, events, parentHostname, archiveUri, exclusiveTo, trustStore);
+                                wantedVespaVersion, currentVespaVersion, wantedOsVersion, currentOsVersion, orchestratorStatus,
+                                owner, membership,
+                                wantedRestartGeneration, currentRestartGeneration,
+                                wantedRebootGeneration, currentRebootGeneration,
+                                wantedFirmwareCheck, currentFirmwareCheck, modelName,
+                                resources, realResources, ipAddresses, additionalIpAddresses,
+                                reports, events, parentHostname, archiveUri, exclusiveTo, trustStore, wantToRebuild);
         }
 
 
@@ -786,12 +804,14 @@ public class NodeSpec {
          */
         public static Builder testSpec(String hostname, NodeState state) {
             Builder builder = new Builder()
+                    .id(hostname)
                     .hostname(hostname)
                     .state(state)
                     .type(NodeType.tenant)
                     .flavor("d-2-8-50")
                     .resources(new NodeResources(2, 8, 50, 10))
-                    .realResources(new NodeResources(2, 8, 50, 10));
+                    .realResources(new NodeResources(2, 8, 50, 10))
+                    .events(List.of(new Event("operator", "rebooted", Instant.EPOCH)));
 
             // Set the required allocated fields
             if (EnumSet.of(NodeState.active, NodeState.inactive, NodeState.reserved).contains(state)) {

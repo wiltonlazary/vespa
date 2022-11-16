@@ -4,6 +4,7 @@
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/searchlib/docstore/chunkformats.h>
 #include <vespa/searchlib/docstore/logdocumentstore.h>
@@ -12,16 +13,21 @@
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/test/directory_handler.h>
 #include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/vespalib/stllike/cache_stats.h>
 #include <vespa/vespalib/test/insertion_operators.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/memory.h>
+#include <filesystem>
 #include <iomanip>
 
 using document::BucketId;
+using document::StringFieldValue;
 using namespace search::docstore;
 using namespace search;
 using namespace vespalib::alloc;
+using vespalib::CacheStats;
 using search::index::DummyFileHeaderContext;
 using search::test::DirectoryHandler;
 
@@ -236,7 +242,7 @@ void verifyGrowing(const LogDataStore::Config & config, uint32_t minFiles, uint3
             datastore.remove(i + 20000, i);
         }
         datastore.flush(datastore.initFlush(lastSyncToken));
-        datastore.compact(30000);
+        datastore.compactBloat(30000);
         datastore.remove(31000, 0);
         checkStats(datastore, 31000, 30000);
         EXPECT_LESS_EQUAL(minFiles, datastore.getAllActiveFiles().size());
@@ -252,7 +258,7 @@ void verifyGrowing(const LogDataStore::Config & config, uint32_t minFiles, uint3
 }
 TEST("testGrowingChunkedBySize") {
     LogDataStore::Config config;
-    config.setMaxFileSize(100000).setMaxDiskBloatFactor(0.1).setMaxBucketSpread(3.0).setMinFileSizeFactor(0.2)
+    config.setMaxFileSize(100000).setMaxBucketSpread(3.0).setMinFileSizeFactor(0.2)
             .compactCompression({CompressionConfig::LZ4})
             .setFileConfig({{CompressionConfig::LZ4, 9, 60}, 1000});
     verifyGrowing(config, 40, 120);
@@ -260,7 +266,7 @@ TEST("testGrowingChunkedBySize") {
 
 TEST("testGrowingChunkedByNumLids") {
     LogDataStore::Config config;
-    config.setMaxNumLids(1000).setMaxDiskBloatFactor(0.1).setMaxBucketSpread(3.0).setMinFileSizeFactor(0.2)
+    config.setMaxNumLids(1000).setMaxBucketSpread(3.0).setMinFileSizeFactor(0.2)
             .compactCompression({CompressionConfig::LZ4})
             .setFileConfig({{CompressionConfig::LZ4, 9, 60}, 1000});
     verifyGrowing(config,10, 10);
@@ -271,7 +277,7 @@ void fetchAndTest(IDataStore & datastore, uint32_t lid, const void *a, size_t sz
     vespalib::DataBuffer buf;
     EXPECT_EQUAL(static_cast<ssize_t>(sz), datastore.read(lid, buf));
     EXPECT_EQUAL(buf.getDataLen(), sz);
-    EXPECT_TRUE(memcmp(a, buf.getData(), sz) == 0);
+    EXPECT_TRUE(vespalib::memcmp_safe(a, buf.getData(), sz) == 0);
 }
 
 TEST("testTruncatedIdxFile"){
@@ -287,8 +293,7 @@ TEST("testTruncatedIdxFile"){
     }
     const char * magic = "mumbo jumbo";
     {
-        int truncate_result = truncate("bug-7257706-truncated/1422358701368384000.idx", 3830);
-        EXPECT_EQUAL(0, truncate_result);
+        std::filesystem::resize_file(std::filesystem::path("bug-7257706-truncated/1422358701368384000.idx"), 3830);
         LogDataStore datastore(executor, "bug-7257706-truncated", config, GrowStrategy(),
                                TuneFileSummary(), fileHeaderContext, tlSyncer, nullptr);
         EXPECT_EQUAL(331ul, datastore.lastSyncToken());
@@ -399,7 +404,7 @@ const string doc_type_name = "test";
 const string header_name = doc_type_name + ".header";
 const string body_name = doc_type_name + ".body";
 
-document::DocumenttypesConfig
+document::config::DocumenttypesConfig
 makeDocTypeRepoConfig()
 {
     const int32_t doc_type_id = 787121340;
@@ -429,9 +434,9 @@ makeDoc(const DocumentTypeRepo &repo, uint32_t i, bool extra_field, size_t numRe
         mainstr << (j + i * 1000) << " ";
     }
     mainstr << " and end field";
-    doc->set("main", mainstr.c_str());
+    doc->setValue("main", StringFieldValue::make(mainstr.str()));
     if (extra_field) {
-        doc->set("extra", "foo");
+        doc->setValue("extra", StringFieldValue::make("foo"));
     }
     return doc;
 }
@@ -662,13 +667,13 @@ TEST("test that the integrated visit cache works.") {
 }
 
 TEST("testWriteRead") {
-    FastOS_File::RemoveDirectory("empty");
+    std::filesystem::remove_all(std::filesystem::path("empty"));
     const char * bufA = "aaaaaaaaaaaaaaaaaaaaa";
     const char * bufB = "bbbbbbbbbbbbbbbb";
     const vespalib::ConstBufferRef a[2] = { vespalib::ConstBufferRef(bufA, strlen(bufA)), vespalib::ConstBufferRef(bufB, strlen(bufB))};
     LogDataStore::Config config;
     {
-        EXPECT_TRUE(FastOS_File::MakeDirectory("empty"));
+        std::filesystem::create_directory(std::filesystem::path("empty"));
         DummyFileHeaderContext fileHeaderContext;
         vespalib::ThreadStackExecutor executor(1, 128_Ki);
         MyTlSyncer tlSyncer;
@@ -679,7 +684,7 @@ TEST("testWriteRead") {
         EXPECT_LESS(0u, headerFootprint);
         EXPECT_EQUAL(datastore.getDiskFootprint(), headerFootprint);
         EXPECT_EQUAL(datastore.getDiskBloat(), 0ul);
-        EXPECT_EQUAL(datastore.getMaxCompactGain(), 0ul);
+        EXPECT_EQUAL(datastore.getMaxSpreadAsBloat(), 0ul);
         datastore.write(1, 0, a[0].c_str(), a[0].size());
         fetchAndTest(datastore, 0, a[0].c_str(), a[0].size());
         datastore.write(2, 0, a[1].c_str(), a[1].size());
@@ -701,7 +706,7 @@ TEST("testWriteRead") {
         EXPECT_EQUAL(datastore.getDiskFootprint(),
                      2711ul + headerFootprint);
         EXPECT_EQUAL(datastore.getDiskBloat(), 0ul);
-        EXPECT_EQUAL(datastore.getMaxCompactGain(), 0ul);
+        EXPECT_EQUAL(datastore.getMaxSpreadAsBloat(), 0ul);
         datastore.flush(datastore.initFlush(lastSyncToken));
     }
     {
@@ -715,7 +720,7 @@ TEST("testWriteRead") {
         EXPECT_LESS(0u, headerFootprint);
         EXPECT_EQUAL(4944ul + headerFootprint, datastore.getDiskFootprint());
         EXPECT_EQUAL(0ul, datastore.getDiskBloat());
-        EXPECT_EQUAL(0ul, datastore.getMaxCompactGain());
+        EXPECT_EQUAL(0ul, datastore.getMaxSpreadAsBloat());
 
         for(size_t i=0; i < 100; i++) {
             fetchAndTest(datastore, i, a[i%2].c_str(), a[i%2].size());
@@ -730,9 +735,9 @@ TEST("testWriteRead") {
 
         EXPECT_EQUAL(7594ul + headerFootprint, datastore.getDiskFootprint());
         EXPECT_EQUAL(0ul, datastore.getDiskBloat());
-        EXPECT_EQUAL(0ul, datastore.getMaxCompactGain());
+        EXPECT_EQUAL(0ul, datastore.getMaxSpreadAsBloat());
     }
-    FastOS_File::EmptyAndRemoveDirectory("empty");
+    std::filesystem::remove_all(std::filesystem::path("empty"));
 }
 
 TEST("requireThatSyncTokenIsUpdatedAfterFlush") {
@@ -1050,7 +1055,6 @@ TEST("require that config equality operator detects inequality") {
     using C = LogDataStore::Config;
     EXPECT_TRUE(C() == C());
     EXPECT_FALSE(C() == C().setMaxFileSize(1));
-    EXPECT_FALSE(C() == C().setMaxDiskBloatFactor(0.3));
     EXPECT_FALSE(C() == C().setMaxBucketSpread(0.3));
     EXPECT_FALSE(C() == C().setMinFileSizeFactor(0.3));
     EXPECT_FALSE(C() == C().setFileConfig(WriteableFileChunk::Config({}, 70)));

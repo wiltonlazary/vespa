@@ -39,7 +39,6 @@ public class AllocatedHostsSerializer {
     private static final String mappingKey = "mapping";
     private static final String hostSpecKey = "hostSpec";
     private static final String hostSpecHostNameKey = "hostName";
-    private static final String aliasesKey = "aliases";
     private static final String hostSpecMembershipKey = "membership";
 
     private static final String realResourcesKey = "realResources";
@@ -51,6 +50,7 @@ public class AllocatedHostsSerializer {
     private static final String bandwidthKey = "bandwidth";
     private static final String diskSpeedKey = "diskSpeed";
     private static final String storageTypeKey = "storageType";
+    private static final String architectureKey = "architecture";
 
     /** Wanted version */
     private static final String hostSpecVespaVersionKey = "vespaVersion";
@@ -77,26 +77,16 @@ public class AllocatedHostsSerializer {
 
     private static void toSlime(HostSpec host, Cursor object) {
         object.setString(hostSpecHostNameKey, host.hostname());
-        aliasesToSlime(host, object);
         host.membership().ifPresent(membership -> {
             object.setString(hostSpecMembershipKey, membership.stringValue());
             object.setString(hostSpecVespaVersionKey, membership.cluster().vespaVersion().toFullString());
-            membership.cluster().dockerImageRepo().ifPresent(repo -> {
-                object.setString(hostSpecDockerImageRepoKey, repo.untagged());
-            });
+            membership.cluster().dockerImageRepo().ifPresent(repo -> object.setString(hostSpecDockerImageRepoKey, repo.untagged()));
         });
         toSlime(host.realResources(), object.setObject(realResourcesKey));
         toSlime(host.advertisedResources(), object.setObject(advertisedResourcesKey));
         host.requestedResources().ifPresent(resources -> toSlime(resources, object.setObject(requestedResourcesKey)));
         host.version().ifPresent(version -> object.setString(hostSpecCurrentVespaVersionKey, version.toFullString()));
         host.networkPorts().ifPresent(ports -> NetworkPortsSerializer.toSlime(ports, object.setArray(hostSpecNetworkPortsKey)));
-    }
-
-    private static void aliasesToSlime(HostSpec spec, Cursor cursor) {
-        if (spec.aliases().isEmpty()) return;
-        Cursor aliases = cursor.setArray(aliasesKey);
-        for (String alias : spec.aliases())
-            aliases.addString(alias);
     }
 
     private static void toSlime(NodeResources resources, Cursor resourcesObject) {
@@ -106,6 +96,7 @@ public class AllocatedHostsSerializer {
         resourcesObject.setDouble(bandwidthKey, resources.bandwidthGbps());
         resourcesObject.setString(diskSpeedKey, diskSpeedToString(resources.diskSpeed()));
         resourcesObject.setString(storageTypeKey, storageTypeToString(resources.storageType()));
+        resourcesObject.setString(architectureKey, architectureToString(resources.architecture()));
     }
 
     public static AllocatedHosts fromJson(byte[] json) {
@@ -135,16 +126,8 @@ public class AllocatedHostsSerializer {
         }
         else {
             return new HostSpec(object.field(hostSpecHostNameKey).asString(),
-                                aliasesFromSlime(object),
                                 NetworkPortsSerializer.fromSlime(object.field(hostSpecNetworkPortsKey)));
         }
-    }
-
-    private static List<String> aliasesFromSlime(Inspector object) {
-        if ( ! object.field(aliasesKey).valid()) return List.of();
-        List<String> aliases = new ArrayList<>();
-        object.field(aliasesKey).traverse((ArrayTraverser)(index, alias) -> aliases.add(alias.asString()));
-        return aliases;
     }
 
     private static NodeResources nodeResourcesFromSlime(Inspector resources) {
@@ -153,7 +136,8 @@ public class AllocatedHostsSerializer {
                                  resources.field(diskKey).asDouble(),
                                  resources.field(bandwidthKey).asDouble(),
                                  diskSpeedFromSlime(resources.field(diskSpeedKey)),
-                                 storageTypeFromSlime(resources.field(storageTypeKey)));
+                                 storageTypeFromSlime(resources.field(storageTypeKey)),
+                                 architectureFromSlime(resources.field(architectureKey)));
     }
 
     private static NodeResources optionalNodeResourcesFromSlime(Inspector resources) {
@@ -194,6 +178,25 @@ public class AllocatedHostsSerializer {
             case local : return "local";
             case any : return "any";
             default: throw new IllegalStateException("Illegal storage-type value '" + storageType + "'");
+        }
+    }
+
+    private static NodeResources.Architecture architectureFromSlime(Inspector architecture) {
+        if ( ! architecture.valid()) return NodeResources.Architecture.x86_64;
+        switch (architecture.asString()) {
+            case "x86_64" : return NodeResources.Architecture.x86_64;
+            case "arm64" : return NodeResources.Architecture.arm64;
+            case "any" : return NodeResources.Architecture.any;
+            default: throw new IllegalStateException("Illegal architecture value '" + architecture.asString() + "'");
+        }
+    }
+
+    private static String architectureToString(NodeResources.Architecture architecture) {
+        switch (architecture) {
+            case x86_64: return "x86_64";
+            case arm64: return "arm64";
+            case any : return "any";
+            default: throw new IllegalStateException("Illegal architecture value '" + architecture + "'");
         }
     }
 

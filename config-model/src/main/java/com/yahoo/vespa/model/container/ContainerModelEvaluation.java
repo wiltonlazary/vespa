@@ -3,7 +3,7 @@ package com.yahoo.vespa.model.container;
 
 import ai.vespa.models.evaluation.ModelsEvaluator;
 import com.yahoo.osgi.provider.model.ComponentModel;
-import com.yahoo.searchdefinition.derived.RankProfileList;
+import com.yahoo.schema.derived.RankProfileList;
 import com.yahoo.vespa.config.search.RankProfilesConfig;
 import com.yahoo.vespa.config.search.core.OnnxModelsConfig;
 import com.yahoo.vespa.config.search.core.RankingConstantsConfig;
@@ -12,7 +12,6 @@ import com.yahoo.vespa.model.container.component.Handler;
 import com.yahoo.vespa.model.container.component.SystemBindingPattern;
 
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -45,10 +44,6 @@ public class ContainerModelEvaluation implements
         cluster.addComponent(ContainerModelEvaluation.getHandler());
     }
 
-    public void prepare(List<ApplicationContainer> containers) {
-        rankProfileList.sendTo(containers);
-    }
-
     @Override
     public void getConfig(RankProfilesConfig.Builder builder) {
         rankProfileList.getConfig(builder);
@@ -68,8 +63,8 @@ public class ContainerModelEvaluation implements
         rankProfileList.getConfig(builder);
     }
 
-    public static Handler<?> getHandler() {
-        Handler<?> handler = new Handler<>(new ComponentModel(REST_HANDLER_NAME, null, EVALUATION_BUNDLE_NAME));
+    public static Handler getHandler() {
+        Handler handler = new Handler(new ComponentModel(REST_HANDLER_NAME, null, EVALUATION_BUNDLE_NAME));
         handler.addServerBindings(
                 SystemBindingPattern.fromHttpPath(REST_BINDING_PATH),
                 SystemBindingPattern.fromHttpPath(REST_BINDING_PATH + "/*"));

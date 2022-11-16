@@ -17,7 +17,8 @@ import java.util.logging.Logger;
 public class Group {
 
     private static final Logger log = Logger.getLogger(Group.class.getName());
-    private final static double maxContentSkew = 0.10; // If documents on a node is more than 10% off from the average the group is unbalanced
+
+    private final static double maxContentSkew = 0.10;
     private final static int minDocsPerNodeToRequireLowSkew = 100;
 
     private final int id;
@@ -25,6 +26,7 @@ public class Group {
     private final AtomicBoolean hasSufficientCoverage = new AtomicBoolean(true);
     private final AtomicBoolean hasFullCoverage = new AtomicBoolean(true);
     private final AtomicLong activeDocuments = new AtomicLong(0);
+    private final AtomicLong targetActiveDocuments = new AtomicLong(0);
     private final AtomicBoolean isBlockingWrites = new AtomicBoolean(false);
     private final AtomicBoolean isBalanced = new AtomicBoolean(true);
 
@@ -39,7 +41,10 @@ public class Group {
         }
     }
 
-    /** Returns the unique identity of this group */
+    /**
+     * Returns the unique identity of this group.
+     * NOTE: This is a contiguous index from 0, NOT necessarily the group id assigned by the user or node repo.
+     */
     public int id() { return id; }
 
     /** Returns the nodes in this group as an immutable list */
@@ -64,17 +69,20 @@ public class Group {
     public void aggregateNodeValues() {
         long activeDocs = nodes.stream().filter(node -> node.isWorking() == Boolean.TRUE).mapToLong(Node::getActiveDocuments).sum();
         activeDocuments.set(activeDocs);
+        long targetActiveDocs = nodes.stream().filter(node -> node.isWorking() == Boolean.TRUE).mapToLong(Node::getTargetActiveDocuments).sum();
+        targetActiveDocuments.set(targetActiveDocs);
         isBlockingWrites.set(nodes.stream().anyMatch(Node::isBlockingWrites));
         int numWorkingNodes = workingNodes();
         if (numWorkingNodes > 0) {
             long average = activeDocs / numWorkingNodes;
             long skew = nodes.stream().filter(node -> node.isWorking() == Boolean.TRUE).mapToLong(node -> Math.abs(node.getActiveDocuments() - average)).sum();
             boolean balanced = skew <= activeDocs * maxContentSkew;
-            if (!isBalanced.get() || balanced != isBalanced.get()) {
+            if (balanced != isBalanced.get()) {
                 if (!isSparse())
-                    log.info("Content is " + (balanced ? "" : "not ") + "well balanced. Current deviation = " +
-                             skew * 100 / activeDocs + " %. activeDocs = " + activeDocs + ", skew = " + skew +
-                             ", average = " + average);
+                    log.info("Content in " + this + ", with " + numWorkingNodes + "/" + nodes.size() + " working nodes, is " +
+                             (balanced ? "" : "not ") + "well balanced. Current deviation: " + skew * 100 / activeDocs +
+                             "%. Active documents: " + activeDocs + ", skew: " + skew + ", average: " + average +
+                             (balanced ? "" : ". Top-k summary fetch optimization is deactivated."));
                 isBalanced.set(balanced);
             }
         } else {
@@ -85,6 +93,9 @@ public class Group {
     /** Returns the active documents on this group. If unknown, 0 is returned. */
     long activeDocuments() { return activeDocuments.get(); }
 
+    /** Returns the target active documents on this group. If unknown, 0 is returned. */
+    long targetActiveDocuments() { return targetActiveDocuments.get(); }
+
     /** Returns whether any node in this group is currently blocking write operations */
     public boolean isBlockingWrites() { return isBlockingWrites.get(); }
 
@@ -94,7 +105,7 @@ public class Group {
     /** Returns whether this group has too few documents per node to expect it to be balanced */
     public boolean isSparse() {
         if (nodes.isEmpty()) return false;
-        return activeDocuments.get() / nodes.size() < minDocsPerNodeToRequireLowSkew;
+        return activeDocuments() / nodes.size() < minDocsPerNodeToRequireLowSkew;
     }
 
     public boolean fullCoverageStatusChanged(boolean hasFullCoverageNow) {

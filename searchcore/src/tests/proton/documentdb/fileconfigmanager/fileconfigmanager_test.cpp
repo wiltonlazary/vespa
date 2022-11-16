@@ -6,16 +6,19 @@
 #include <vespa/config-indexschema.h>
 #include <vespa/config-rank-profiles.h>
 #include <vespa/config-summary.h>
-#include <vespa/config-summarymap.h>
 #include <vespa/config/helper/configgetter.hpp>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/searchcore/proton/server/bootstrapconfig.h>
 #include <vespa/searchcore/proton/server/fileconfigmanager.h>
+#include <vespa/searchcore/proton/server/documentdbconfigmanager.h>
 #include <vespa/searchcore/proton/test/documentdb_config_builder.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/config-bucketspaces.h>
 #include <vespa/vespalib/testkit/test_kit.h>
+
 
 using namespace cloud::config::filedistribution;
 using namespace config;
@@ -38,12 +41,12 @@ using vespalib::nbostream;
 vespalib::string myId("myconfigid");
 
 DocumentDBConfig::SP
-makeBaseConfigSnapshot()
+makeBaseConfigSnapshot(FNET_Transport & transport)
 {
-    config::DirSpec spec(TEST_PATH("cfg"));
+    ::config::DirSpec spec(TEST_PATH("cfg"));
 
     DBCM dbcm(spec, "test");
-    DocumenttypesConfigSP dtcfg(config::ConfigGetter<DocumenttypesConfig>::getConfig("", spec).release());
+    DocumenttypesConfigSP dtcfg(::config::ConfigGetter<DocumenttypesConfig>::getConfig("", spec).release());
     auto b = std::make_shared<BootstrapConfig>(1, dtcfg,
                                                std::make_shared<DocumentTypeRepo>(*dtcfg),
                                                std::make_shared<ProtonConfig>(),
@@ -51,7 +54,7 @@ makeBaseConfigSnapshot()
                                                std::make_shared<BucketspacesConfig>(),
                                                std::make_shared<TuneFileDocumentDB>(), HwInfo());
     dbcm.forwardConfig(b);
-    dbcm.nextGeneration(0ms);
+    dbcm.nextGeneration(transport, 0ms);
     DocumentDBConfig::SP snap = dbcm.getConfig();
     snap->setConfigId(myId);
     ASSERT_TRUE(snap);
@@ -59,9 +62,9 @@ makeBaseConfigSnapshot()
 }
 
 void
-saveBaseConfigSnapshot(const DocumentDBConfig &snap, SerialNum num)
+saveBaseConfigSnapshot(FNET_Transport & transport, const DocumentDBConfig &snap, SerialNum num)
 {
-    FileConfigManager cm("out", myId, snap.getDocTypeName());
+    FileConfigManager cm(transport, "out", myId, snap.getDocTypeName());
     cm.saveConfig(snap, num);
 }
 
@@ -85,19 +88,18 @@ assertEqualSnapshot(const DocumentDBConfig &exp, const DocumentDBConfig &act)
     EXPECT_TRUE(exp.getIndexschemaConfig() == act.getIndexschemaConfig());
     EXPECT_TRUE(exp.getAttributesConfig() == act.getAttributesConfig());
     EXPECT_TRUE(exp.getSummaryConfig() == act.getSummaryConfig());
-    EXPECT_TRUE(exp.getSummarymapConfig() == act.getSummarymapConfig());
     EXPECT_TRUE(exp.getJuniperrcConfig() == act.getJuniperrcConfig());
     EXPECT_TRUE(exp.getImportedFieldsConfig() == act.getImportedFieldsConfig());
     EXPECT_EQUAL(0u, exp.getImportedFieldsConfig().attribute.size());
 
     int expTypeCount = 0;
     int actTypeCount = 0;
-    exp.getDocumentTypeRepoSP()->forEachDocumentType(*DocumentTypeRepo::makeLambda([&expTypeCount](const DocumentType &) {
+    exp.getDocumentTypeRepoSP()->forEachDocumentType([&expTypeCount](const DocumentType &) noexcept {
         expTypeCount++;
-    }));
-    act.getDocumentTypeRepoSP()->forEachDocumentType(*DocumentTypeRepo::makeLambda([&actTypeCount](const DocumentType &) {
+    });
+    act.getDocumentTypeRepoSP()->forEachDocumentType([&actTypeCount](const DocumentType &) noexcept {
         actTypeCount++;
-    }));
+    });
     EXPECT_EQUAL(expTypeCount, actTypeCount);
     EXPECT_TRUE(*exp.getSchemaSP() == *act.getSchemaSP());
     EXPECT_EQUAL(expTypeCount, actTypeCount);
@@ -111,11 +113,13 @@ addConfigsThatAreNotSavedToDisk(const DocumentDBConfig &cfg)
     RankingConstants::Vector constants = {{"my_name", "my_type", "my_path"}};
     builder.rankingConstants(std::make_shared<RankingConstants>(constants));
 
-    auto expr_list = RankingExpressions().add("my_expr", "my_file");
-    builder.rankingExpressions(std::make_shared<RankingExpressions>(expr_list));
+    auto expr_list = std::make_shared<RankingExpressions>();
+    expr_list->add("my_expr", "my_file");
+    builder.rankingExpressions(expr_list);
 
-    OnnxModels::Vector models = {{"my_model_name", "my_model_file"}};
-    builder.onnxModels(std::make_shared<OnnxModels>(models));
+    OnnxModels::Vector models;
+    models.emplace_back("my_model_name", "my_model_file");
+    builder.onnxModels(std::make_shared<OnnxModels>(std::move(models)));
 
     ImportedFieldsConfigBuilder importedFields;
     importedFields.attribute.resize(1);
@@ -124,55 +128,55 @@ addConfigsThatAreNotSavedToDisk(const DocumentDBConfig &cfg)
     return builder.build();
 }
 
-TEST_F("requireThatConfigCanBeSavedAndLoaded", DocumentDBConfig::SP(makeBaseConfigSnapshot()))
+TEST_FF("requireThatConfigCanBeSavedAndLoaded", Transport(), DocumentDBConfig::SP(makeBaseConfigSnapshot(f1.transport())))
 {
 
-    DocumentDBConfig::SP fullCfg = addConfigsThatAreNotSavedToDisk(*f);
-    saveBaseConfigSnapshot(*fullCfg, 20);
+    DocumentDBConfig::SP fullCfg = addConfigsThatAreNotSavedToDisk(*f2);
+    saveBaseConfigSnapshot(f1.transport(), *fullCfg, 20);
     DocumentDBConfig::SP esnap(makeEmptyConfigSnapshot());
     {
-        FileConfigManager cm("out", myId, "dummy");
+        FileConfigManager cm(f1.transport(), "out", myId, "dummy");
         cm.loadConfig(*esnap, 20, esnap);
     }
-    assertEqualSnapshot(*f, *esnap);
+    assertEqualSnapshot(*f2, *esnap);
 }
 
-TEST_F("requireThatConfigCanBeSerializedAndDeserialized", DocumentDBConfig::SP(makeBaseConfigSnapshot()))
+TEST_FF("requireThatConfigCanBeSerializedAndDeserialized", Transport(), DocumentDBConfig::SP(makeBaseConfigSnapshot(f1.transport())))
 {
-    saveBaseConfigSnapshot(*f, 30);
+    saveBaseConfigSnapshot(f1.transport(), *f2, 30);
     nbostream stream;
     {
-        FileConfigManager cm("out", myId, "dummy");
+        FileConfigManager cm(f1.transport(), "out", myId, "dummy");
         cm.serializeConfig(30, stream);
     }
     {
-        FileConfigManager cm("out", myId, "dummy");
+        FileConfigManager cm(f1.transport(), "out", myId, "dummy");
         cm.deserializeConfig(40, stream);
     }
     DocumentDBConfig::SP fsnap(makeEmptyConfigSnapshot());
     {
-        FileConfigManager cm("out", myId, "dummy");
+        FileConfigManager cm(f1.transport(), "out", myId, "dummy");
         cm.loadConfig(*fsnap, 40, fsnap);
     }
-    assertEqualSnapshot(*f, *fsnap);
+    assertEqualSnapshot(*f2, *fsnap);
     EXPECT_EQUAL("dummy", fsnap->getDocTypeName());
 }
 
-TEST_F("requireThatConfigCanBeLoadedWithoutExtraConfigsDataFile", DocumentDBConfig::SP(makeBaseConfigSnapshot()))
+TEST_FF("requireThatConfigCanBeLoadedWithoutExtraConfigsDataFile", Transport(), DocumentDBConfig::SP(makeBaseConfigSnapshot(f1.transport())))
 {
-    saveBaseConfigSnapshot(*f, 70);
+    saveBaseConfigSnapshot(f1.transport(), *f2, 70);
     EXPECT_FALSE(vespalib::unlink("out/config-70/extraconfigs.dat"));
     DocumentDBConfig::SP esnap(makeEmptyConfigSnapshot());
     {
-        FileConfigManager cm("out", myId, "dummy");
+        FileConfigManager cm(f1.transport(), "out", myId, "dummy");
         cm.loadConfig(*esnap, 70, esnap);
     }
 }
 
 
-TEST_F("requireThatVisibilityDelayIsPropagated", DocumentDBConfig::SP(makeBaseConfigSnapshot()))
+TEST_FF("requireThatVisibilityDelayIsPropagated", Transport(), DocumentDBConfig::SP(makeBaseConfigSnapshot(f1.transport())))
 {
-    saveBaseConfigSnapshot(*f, 80);
+    saveBaseConfigSnapshot(f1.transport(), *f2, 80);
     DocumentDBConfig::SP esnap(makeEmptyConfigSnapshot());
     {
         ProtonConfigBuilder protonConfigBuilder;
@@ -181,7 +185,7 @@ TEST_F("requireThatVisibilityDelayIsPropagated", DocumentDBConfig::SP(makeBaseCo
         ddb.visibilitydelay = 61.0;
         protonConfigBuilder.documentdb.push_back(ddb);
         protonConfigBuilder.maxvisibilitydelay = 100.0;
-        FileConfigManager cm("out", myId, "dummy");
+        FileConfigManager cm(f1.transport(), "out", myId, "dummy");
         cm.setProtonConfig(std::make_shared<ProtonConfig>(protonConfigBuilder));
         cm.loadConfig(*esnap, 70, esnap);
     }

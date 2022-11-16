@@ -3,14 +3,13 @@ package com.yahoo.vespa.model.container.http;
 
 import com.yahoo.component.ComponentId;
 import com.yahoo.component.ComponentSpecification;
-import com.yahoo.component.chain.Phase;
 import com.yahoo.component.chain.model.ChainSpecification;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.model.container.component.SimpleComponent;
 import com.yahoo.vespa.model.container.component.chain.Chain;
 import com.yahoo.vespa.model.container.component.chain.Chains;
 
-import java.util.Collections;
+import java.util.Set;
 
 /**
  * @author Tony Vaagenes
@@ -44,8 +43,8 @@ public class FilterChains extends Chains<Chain<Filter>>  {
     public static ChainSpecification emptyChainSpec(ComponentId chainId) {
         return new ChainSpecification(chainId,
                                       new ChainSpecification.Inheritance(null, null),
-                                      Collections.<Phase>emptySet(),
-                                      Collections.<ComponentSpecification>emptySet());
+                                      Set.of(),
+                                      Set.of());
     }
 
 }

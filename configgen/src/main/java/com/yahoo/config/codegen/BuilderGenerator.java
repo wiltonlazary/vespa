@@ -4,6 +4,7 @@ package com.yahoo.config.codegen;
 import com.yahoo.config.codegen.LeafCNode.FileLeaf;
 import com.yahoo.config.codegen.LeafCNode.PathLeaf;
 import com.yahoo.config.codegen.LeafCNode.UrlLeaf;
+import com.yahoo.config.codegen.LeafCNode.ModelLeaf;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -142,7 +143,19 @@ public class BuilderGenerator {
             return "public Builder " + n.getName() + "(" + builderType(n) + " " + INTERNAL_PREFIX + "builder) {\n" + //
                     "  " + n.getName() + " = " + INTERNAL_PREFIX + "builder;\n" + //
                     "  return this;\n" + //
+                    "}\n" + //
+                    "/**\n" + //
+                    " * Make a new builder and run the supplied function on it before adding it to the list\n" + //
+                    " * @param __func lambda that modifies the given builder\n" + //
+                    " * @return this builder\n" + //
+                    " */\n" + //
+                    "public Builder " + n.getName() + "(java.util.function.Consumer<" + builderType(n) + "> __func) {\n" + //
+                    "  " + builderType(n) + " __inner = new " + builderType(n) +"();\n" + //
+                    "  __func.accept(__inner);\n" + //
+                    "  " + n.getName() + " = __inner;\n" + //
+                    "  return this;\n" + //
                     "}";
+
         }
 
         private static String innerArraySetters(InnerCNode n) {
@@ -153,6 +166,18 @@ public class BuilderGenerator {
                     " */\n" + //
                     "public Builder " + n.getName() + "(" + builderType(n) + " " + INTERNAL_PREFIX + "builder) {\n" + //
                     "  " + n.getName() + ".add(" + INTERNAL_PREFIX + "builder);\n" + //
+                    "  return this;\n" + //
+                    "}\n" + //
+                    "\n" + //
+                    "/**\n" + //
+                    " * Make a new builder and run the supplied function on it before adding it to the list\n" + //
+                    " * @param __func lambda that modifies the given builder\n" + //
+                    " * @return this builder\n" + //
+                    " */\n" + //
+                    "public Builder " + n.getName() + "(java.util.function.Consumer<" + builderType(n) + "> __func) {\n" + //
+                    "  " + builderType(n) + " __inner = new " + builderType(n) +"();\n" + //
+                    "  __func.accept(__inner);\n" + //
+                    "  " + n.getName() + ".add(__inner);\n" + //
                     "  return this;\n" + //
                     "}\n" + //
                     "\n" + //
@@ -180,7 +205,7 @@ public class BuilderGenerator {
         }
 
         private static String privateLeafNodeSetter(LeafCNode n) {
-            if ("String".equals(builderType(n)) || "FileReference".equals(builderType(n)) || "UrlReference".equals(builderType(n))) {
+            if ("String".equals(builderType(n)) || "FileReference".equals(builderType(n))) {
                 return "";
             } else {
                 return "\n\n" + //
@@ -195,8 +220,7 @@ public class BuilderGenerator {
         }
 
         private static String innerMapSetters(CNode n) {
-            return "public Builder " + n.getName() + "(String " + INTERNAL_PREFIX + "key, " + builderType(n) + " " + INTERNAL_PREFIX
-                    + "value) {\n" + //
+            String r = "public Builder " + n.getName() + "(String " + INTERNAL_PREFIX + "key, " + builderType(n) + " " + INTERNAL_PREFIX + "value) {\n" + //
                     "  " + n.getName() + ".put(" + INTERNAL_PREFIX + "key, " + INTERNAL_PREFIX + "value);\n" + //
                     "  return this;\n" + //
                     "}\n" + //
@@ -205,10 +229,26 @@ public class BuilderGenerator {
                     "  " + n.getName() + ".putAll(" + INTERNAL_PREFIX + "values);\n" + //
                     "  return this;\n" + //
                     "}";
+            if (n instanceof InnerCNode) {
+                r = r +
+                    "\n\n" + //
+                    "/**\n" + //
+                    " * Make a new builder and run the supplied function on it before using it as the value\n" + //
+                    " * @param __func lambda that modifies the given builder\n" + //
+                    " * @return this builder\n" + //
+                    " */\n" + //
+                    "public Builder " + n.getName() + "(String __key, java.util.function.Consumer<" + builderType(n) + "> __func) {\n" + //
+                    "  " + builderType(n) + " __inner = new " + builderType(n) +"();\n" + //
+                    "  __func.accept(__inner);\n" + //
+                    "  " + n.getName() + ".put(__key, __inner);\n" + //
+                    "  return this;\n" + //
+                    "}";
+            }
+            return r;
         }
 
         private static String privateLeafMapSetter(CNode n) {
-            if ("String".equals(builderType(n)) || "FileReference".equals(builderType(n)) || "UrlReference".equals(builderType(n))) {
+            if ("String".equals(builderType(n)) || "FileReference".equals(builderType(n))) {
                 return "";
             } else {
                 return "\n\n" + //
@@ -230,17 +270,22 @@ public class BuilderGenerator {
                     : "";
 
             String bType = builderType(n);
-            String stringSetter = "String".equals(bType) || "FileReference".equals(bType)  || "UrlReference".equals(bType) ? ""
-                    : String.format("\nprivate Builder %s(String %svalue) {\n" + //
-                            "  return %s(%s.valueOf(%svalue));\n" + //
-                            "}", name, INTERNAL_PREFIX, name, boxedDataType(n), INTERNAL_PREFIX);
+            String stringSetter = "";
+            if ( ! "String".equals(bType) &&  ! "FileReference".equals(bType) && ! "ModelReference".equals(bType)) {
+                String type = boxedDataType(n);
+                if ("UrlReference".equals(bType))
+                    type = bType;
+                stringSetter = String.format("\nprivate Builder %s(String %svalue) {\n" +
+                        "  return %s(%s.valueOf(%svalue));\n" + //
+                        "}", name, INTERNAL_PREFIX, name, type, INTERNAL_PREFIX);
+            }
 
             String getNullGuard = bType.equals(boxedBuilderType(n)) ? String.format(
                     "\nif (%svalue == null) throw new IllegalArgumentException(\"Null value is not allowed.\");", INTERNAL_PREFIX) : "";
 
-            return String.format("public Builder %s(%s %svalue) {%s\n" + //
+            return String.format("public Builder %s(%s %svalue) {%s\n" +
                     "  %s = %svalue;\n" + //
-                    "%s", name, bType, INTERNAL_PREFIX, getNullGuard, name, INTERNAL_PREFIX, signalInitialized) + //
+                    "%s", name, bType, INTERNAL_PREFIX, getNullGuard, name, INTERNAL_PREFIX, signalInitialized) +
                     "  return this;" + "\n}\n" + stringSetter;
         }
     }
@@ -268,6 +313,12 @@ public class BuilderGenerator {
             return name + "(" + nodeClass(child) + ".toUrlReferenceMap(config." + name + "));";
         } else if (child instanceof UrlLeaf) {
             return name + "(config." + name + ".getUrlReference());";
+        } else if (child instanceof ModelLeaf && isArray) {
+            return name + "(" + nodeClass(child) + ".toModelReferences(config." + name + "));";
+        } else if (child instanceof ModelLeaf && isMap) {
+            return name + "(" + nodeClass(child) + ".toModelReferenceMap(config." + name + "));";
+        } else if (child instanceof ModelLeaf) {
+            return name + "(config." + name + ".getModelReference());";
         } else if (child instanceof LeafCNode) {
             return name + "(config." + name + "());";
         } else if (child instanceof InnerCNode && isArray) {
@@ -359,6 +410,8 @@ public class BuilderGenerator {
             return "FileReference";
         } else if (node instanceof UrlLeaf) {
             return "UrlReference";
+        } else if (node instanceof ModelLeaf) {
+            return "ModelReference";
         } else if (node instanceof LeafCNode && (node.isArray || node.isMap)) {
             return boxedDataType(node);
         } else {
@@ -373,6 +426,8 @@ public class BuilderGenerator {
             return "FileReference";
         } else if (node instanceof UrlLeaf) {
             return "UrlReference";
+        } else if (node instanceof ModelLeaf) {
+            return "ModelReference";
         } else {
             return boxedDataType(node);
         }

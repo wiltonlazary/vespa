@@ -7,11 +7,10 @@ import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.config.model.test.MockRoot;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.not;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 /**
  * @author Ulf Lilleengen
@@ -19,7 +18,7 @@ import static org.junit.Assert.assertThat;
 public class ConfigModelContextTest {
 
     @Test
-    public void testConfigModelContext() {
+    void testConfigModelContext() {
         MockRoot root = new MockRoot();
         String id = "foobar";
         ApplicationPackage pkg = new MockApplicationPackage.Builder()
@@ -28,18 +27,18 @@ public class ConfigModelContextTest {
         DeployState deployState = DeployState.createTestState(pkg);
         DeployLogger logger = deployState.getDeployLogger();
         ConfigModelContext ctx = ConfigModelContext.create(deployState, null, null, root, id);
-        assertThat(ctx.getApplicationPackage(), is(pkg));
-        assertThat(ctx.getProducerId(), is(id));
-        assertThat(ctx.getParentProducer(), is(root));
-        assertThat(ctx.getDeployLogger(), is(logger));
+        assertEquals(pkg, ctx.getApplicationPackage());
+        assertEquals(id, ctx.getProducerId());
+        assertEquals(root, ctx.getParentProducer());
+        assertEquals(logger, ctx.getDeployLogger());
         ctx = ConfigModelContext.create(root.getDeployState(), null, null, root, id);
-        assertThat(ctx.getProducerId(), is(id));
-        assertThat(ctx.getParentProducer(), is(root));
+        assertEquals(id, ctx.getProducerId());
+        assertEquals(root, ctx.getParentProducer());
         AbstractConfigProducer newRoot = new MockRoot("bar");
         ctx = ctx.withParent(newRoot);
-        assertThat(ctx.getProducerId(), is(id));
-        assertThat(ctx.getParentProducer(), is(not(root)));
-        assertThat(ctx.getParentProducer(), is(newRoot));
+        assertEquals(id, ctx.getProducerId());
+        assertNotEquals(root, ctx.getParentProducer());
+        assertEquals(newRoot, ctx.getParentProducer());
     }
 
 }

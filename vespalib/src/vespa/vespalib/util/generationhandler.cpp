@@ -111,10 +111,10 @@ GenerationHandler::Guard::operator=(Guard &&rhs)
 }
 
 void
-GenerationHandler::updateFirstUsedGeneration()
+GenerationHandler::update_oldest_used_generation()
 {
     for (;;) {
-        if (_first == _last)
+        if (_first == _last.load(std::memory_order_relaxed))
             break;			// No elements can be freed
         if (!_first->setInvalid()) {
             break;			// First element still in use
@@ -122,18 +122,15 @@ GenerationHandler::updateFirstUsedGeneration()
         GenerationHold *toFree = _first;
         assert(toFree->_next != nullptr);
         _first = toFree->_next;
-        // Must ensure _first is updated before changing next pointer to
-        // avoid temporarily inconsistent state (breaks hasReaders())
-        std::atomic_thread_fence(std::memory_order_release);
         toFree->_next = _free;
         _free = toFree;
     }
-    _firstUsedGeneration = _first->_generation;
+    _oldest_used_generation.store(_first->_generation, std::memory_order_relaxed);
 }
 
 GenerationHandler::GenerationHandler()
     : _generation(0),
-      _firstUsedGeneration(0),
+      _oldest_used_generation(0),
       _last(nullptr),
       _first(nullptr),
       _free(nullptr),
@@ -141,14 +138,14 @@ GenerationHandler::GenerationHandler()
 {
     _last = _first = new GenerationHold;
     ++_numHolds;
-    _last->_generation = _generation;
-    _last->setValid();
+    _first->_generation.store(getCurrentGeneration(), std::memory_order_relaxed);
+    _first->setValid();
 }
 
 GenerationHandler::~GenerationHandler(void)
 {
-    updateFirstUsedGeneration();
-    assert(_first == _last);
+    update_oldest_used_generation();
+    assert(_first == _last.load(std::memory_order_relaxed));
     while (_free != nullptr) {
         GenerationHold *toFree = _free;
         _free = toFree->_next;
@@ -162,17 +159,16 @@ GenerationHandler::~GenerationHandler(void)
 GenerationHandler::Guard
 GenerationHandler::takeGuard() const
 {
-    Guard guard(_last);
+    Guard guard(_last.load(std::memory_order_acquire));
     for (;;) {
         // Must check valid() after increasing refcount
-        std::atomic_thread_fence(std::memory_order_acquire);
         if (guard.valid())
             break;		// Might still be marked invalid, that's OK
         /*
          * Clashed with writer freeing entry.  Must abandon current
          * guard and try again.
          */
-        guard = Guard(_last);
+        guard = Guard(_last.load(std::memory_order_acquire));
     }
     // Guard has been valid after bumping refCount
     return guard;
@@ -183,14 +179,18 @@ GenerationHandler::incGeneration()
 {
     generation_t ngen = getNextGeneration();
 
+    // Make pending writes visible to other threads before checking for readers
+    // present in last generation.
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    if (_last->getRefCount() == 0) {
+    auto last = _last.load(std::memory_order_relaxed);
+    if (last->getRefCount() == 0) {
         // Last generation is unused, morph it to new generation.  This is
         // the typical case when no readers are present.
-        _generation = ngen;
-        _last->_generation = ngen;
-        std::atomic_thread_fence(std::memory_order_release);
-        updateFirstUsedGeneration();
+        // Note: atomic thread fence above is needed to avoid stale data in
+        // reader
+        set_generation(ngen);
+        last->_generation.store(ngen, std::memory_order_relaxed);
+        update_oldest_used_generation();
         return;
     }
     GenerationHold *nhold = nullptr;
@@ -201,33 +201,24 @@ GenerationHandler::incGeneration()
         nhold = _free;
         _free = nhold->_next;
     }
-    nhold->_generation = ngen;
+    nhold->_generation.store(ngen, std::memory_order_relaxed);
     nhold->_next = nullptr;
     nhold->setValid();
-
-    // new hold must be updated before next pointer is updated
-    std::atomic_thread_fence(std::memory_order_release);
-    _last->_next = nhold;
-
-    // next pointer must be updated before _last is updated
-    std::atomic_thread_fence(std::memory_order_release);
-    _generation = ngen;
-    _last = nhold;
-
-    // _last must be updated before _first is changed
-    std::atomic_thread_fence(std::memory_order_release);
-    updateFirstUsedGeneration();
+    last->_next = nhold;
+    set_generation(ngen);
+    _last.store(nhold, std::memory_order_release);
+    update_oldest_used_generation();
 }
 
 uint32_t
 GenerationHandler::getGenerationRefCount(generation_t gen) const
 {
-    if (static_cast<sgeneration_t>(gen - _generation) > 0)
+    if (static_cast<sgeneration_t>(gen - getCurrentGeneration()) > 0)
         return 0u;
-    if (static_cast<sgeneration_t>(_firstUsedGeneration - gen) > 0)
+    if (static_cast<sgeneration_t>(get_oldest_used_generation() - gen) > 0)
         return 0u;
     for (GenerationHold *hold = _first; hold != nullptr; hold = hold->_next) {
-        if (hold->_generation == gen)
+        if (hold->_generation.load(std::memory_order_relaxed) == gen)
             return hold->getRefCount();
     }
     return 0u;
@@ -241,12 +232,6 @@ GenerationHandler::getGenerationRefCount(void) const
         ret += hold->getRefCount();
     }
     return ret;
-}
-
-bool
-GenerationHandler::hasReaders(void) const
-{
-    return (_first != _last) ? true : (_first->getRefCount() > 0);
 }
 
 }

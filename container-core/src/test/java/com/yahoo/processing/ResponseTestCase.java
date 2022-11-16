@@ -5,11 +5,11 @@ import com.yahoo.processing.response.ArrayDataList;
 import com.yahoo.processing.response.DataList;
 import com.yahoo.processing.test.ProcessorLibrary;
 import com.yahoo.processing.test.Responses;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ExecutionException;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author  bratseth
@@ -22,9 +22,9 @@ public class ResponseTestCase {
      * Check the recursive toString printing along the way.
      * List variable names ends by numbers specifying the index of the list at each level.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked"})
     @Test
-    public void testRecursiveCompletionAndToString() throws InterruptedException, ExecutionException {
+    void testRecursiveCompletionAndToString() throws InterruptedException, ExecutionException {
         // create lists
         Request request = new Request();
         DataList list1 = ArrayDataList.create(request);
@@ -48,32 +48,32 @@ public class ResponseTestCase {
         list123.add(list1231);
         list123.add(list1232);
         // add sync data elements
-        list1.add(new ProcessorLibrary.StringData(request,"list1"));
-        list12.add(new ProcessorLibrary.StringData(request,"list12"));
-        list14.add(new ProcessorLibrary.StringData(request,"list14"));
-        list122.add(new ProcessorLibrary.StringData(request,"list122"));
-        list1231.add(new ProcessorLibrary.StringData(request,"list1231"));
+        list1.add(new ProcessorLibrary.StringData(request, "list1"));
+        list12.add(new ProcessorLibrary.StringData(request, "list12"));
+        list14.add(new ProcessorLibrary.StringData(request, "list14"));
+        list122.add(new ProcessorLibrary.StringData(request, "list122"));
+        list1231.add(new ProcessorLibrary.StringData(request, "list1231"));
 
-        assertEqualsIgnoreObjectNumbers("Uncompleted tree, no incoming",uncompletedTreeUncompletedIncoming,Responses.recursiveToString(list1));
+        assertEqualsIgnoreObjectNumbers("Uncompleted tree, no incoming", uncompletedTreeUncompletedIncoming, Responses.recursiveToString(list1));
 
         // provide all async incoming data
         list12.incoming().markComplete();
-        list121.incoming().addLast(new ProcessorLibrary.StringData(request,"list121async1"));
+        list121.incoming().addLast(new ProcessorLibrary.StringData(request, "list121async1"));
         list123.incoming().markComplete();
-        list1231.incoming().add(new ProcessorLibrary.StringData(request,"list13231async1"));
-        list1231.incoming().addLast(new ProcessorLibrary.StringData(request,"list1231async2"));
-        list13.incoming().add(new ProcessorLibrary.StringData(request,"list13async1"));
-        list13.incoming().addLast(new ProcessorLibrary.StringData(request,"list13async2"));
+        list1231.incoming().add(new ProcessorLibrary.StringData(request, "list13231async1"));
+        list1231.incoming().addLast(new ProcessorLibrary.StringData(request, "list1231async2"));
+        list13.incoming().add(new ProcessorLibrary.StringData(request, "list13async1"));
+        list13.incoming().addLast(new ProcessorLibrary.StringData(request, "list13async2"));
 
         assertEqualsIgnoreObjectNumbers("Uncompleted tree, incoming complete", uncompletedTreeCompletedIncoming, Responses.recursiveToString(list1));
 
         // complete all
-        Response.recursiveComplete(list1).get();
+        Response.recursiveFuture(list1).get();
         assertEqualsIgnoreObjectNumbers("Completed tree", completedTree, Responses.recursiveToString(list1));
     }
 
     private void assertEqualsIgnoreObjectNumbers(String explanation,String expected,String actual) {
-        assertEquals(explanation,expected,removeObjectNumbers(actual));
+        assertEquals(expected,removeObjectNumbers(actual),explanation);
     }
 
     /** Removes all object numbers (occurrences of @hexnumber) */

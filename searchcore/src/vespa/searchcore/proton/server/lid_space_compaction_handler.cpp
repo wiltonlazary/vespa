@@ -1,8 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "lid_space_compaction_handler.h"
 #include "document_scan_iterator.h"
 #include "ifeedview.h"
-#include "lid_space_compaction_handler.h"
 #include "maintenancedocumentsubdb.h"
 #include <vespa/searchcore/proton/feedoperation/moveoperation.h>
 #include <vespa/searchcore/proton/feedoperation/compact_lid_space_operation.h>
@@ -75,7 +75,7 @@ LidSpaceCompactionHandler::createMoveOperation(const search::DocumentMetaData &d
         return MoveOperation::UP();
     }
     auto doc = _subDb.retriever()->getFullDocument(moveFromLid);
-    auto op = std::make_unique<MoveOperation>(document.bucketId, document.timestamp,
+    auto op = std::make_unique<MoveOperation>(document.bucketId, storage::spi::Timestamp(document.timestamp),
                                               std::move(doc),
                                               DbDocumentId(_subDb.sub_db_id(), moveFromLid),
                                               _subDb.sub_db_id());
@@ -93,7 +93,7 @@ void
 LidSpaceCompactionHandler::handleCompactLidSpace(const CompactLidSpaceOperation &op, std::shared_ptr<IDestructorCallback> compact_done_context)
 {
     assert(_subDb.sub_db_id() == op.getSubDbId());
-    _subDb.feed_view()->handleCompactLidSpace(op);
+    _subDb.feed_view()->handleCompactLidSpace(op, compact_done_context);
     _subDb.feed_view()->forceCommit(CommitParam(op.getSerialNum()), std::move(compact_done_context));
 }
 

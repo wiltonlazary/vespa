@@ -1,8 +1,9 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.rankingexpression.importer.operations;
 
 import ai.vespa.rankingexpression.importer.DimensionRenamer;
 import ai.vespa.rankingexpression.importer.OrderedTensorType;
+import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.tensor.TensorType;
 import com.yahoo.tensor.functions.TensorFunction;
 
@@ -43,9 +44,9 @@ public class Rename extends IntermediateOperation {
     }
 
     @Override
-    protected TensorFunction lazyGetFunction() {
+    protected TensorFunction<Reference> lazyGetFunction() {
         if ( ! allInputFunctionsPresent(1)) return null;
-        return new com.yahoo.tensor.functions.Rename(inputs.get(0).function().orElse(null), from, to);
+        return new com.yahoo.tensor.functions.Rename<>(inputs.get(0).function().orElse(null), from, to);
     }
 
     @Override

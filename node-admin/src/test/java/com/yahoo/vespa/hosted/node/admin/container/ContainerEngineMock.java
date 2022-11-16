@@ -6,9 +6,13 @@ import com.yahoo.vespa.hosted.node.admin.component.TaskContext;
 import com.yahoo.vespa.hosted.node.admin.container.image.Image;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.ContainerData;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
+import com.yahoo.vespa.hosted.node.admin.task.util.file.UnixUser;
+import com.yahoo.vespa.hosted.node.admin.task.util.fs.ContainerPath;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.CommandResult;
 
+import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -64,8 +68,34 @@ public class ContainerEngineMock implements ContainerEngine {
     }
 
     @Override
-    public void createContainer(NodeAgentContext context, ContainerData containerData, ContainerResources containerResources) {
+    public ContainerData createContainer(NodeAgentContext context, ContainerResources containerResources) {
         addContainer(createContainer(context, PartialContainer.State.created, containerResources));
+        return new ContainerData() {
+            @Override
+            public void addFile(ContainerPath path, String data) {
+                throw new UnsupportedOperationException("addFile not implemented");
+            }
+
+            @Override
+            public void addFile(ContainerPath path, String data, String permissions) {
+                throw new UnsupportedOperationException("addFile not implemented");
+            }
+
+            @Override
+            public void addDirectory(ContainerPath path, String... permissions) {
+                throw new UnsupportedOperationException("addDirectory not implemented");
+            }
+
+            @Override
+            public void addSymlink(ContainerPath symlink, Path target) {
+                throw new UnsupportedOperationException("addSymlink not implemented");
+            }
+
+            @Override
+            public void converge(NodeAgentContext context) {
+                throw new UnsupportedOperationException("converge not implemented");
+            }
+        };
     }
 
     @Override
@@ -84,7 +114,7 @@ public class ContainerEngineMock implements ContainerEngine {
     @Override
     public void updateContainer(NodeAgentContext context, ContainerId containerId, ContainerResources containerResources) {
         Container container = requireContainer(context.containerName());
-        containers.put(container.name(), new Container(containerId, container.name(), container.state(),
+        containers.put(container.name(), new Container(containerId, container.name(), container.createdAt(), container.state(),
                                                        container.imageId(), container.image(),
                                                        container.labels(), container.pid(),
                                                        container.conmonPid(), container.hostname(),
@@ -108,7 +138,7 @@ public class ContainerEngineMock implements ContainerEngine {
     }
 
     @Override
-    public CommandResult executeAsRoot(NodeAgentContext context, Duration timeout, String... command) {
+    public CommandResult execute(NodeAgentContext context, UnixUser user, Duration timeout, String... command) {
         return new CommandResult(null, 0, "");
     }
 
@@ -120,7 +150,7 @@ public class ContainerEngineMock implements ContainerEngine {
     @Override
     public void pullImage(TaskContext context, DockerImage image, RegistryCredentials registryCredentials) {
         String imageId = image.asString();
-        ImageDownload imageDownload = images.computeIfAbsent(imageId, (ignored) -> new ImageDownload(new Image(imageId, Optional.empty(), List.of(imageId))));
+        ImageDownload imageDownload = images.computeIfAbsent(imageId, (ignored) -> new ImageDownload(new Image(imageId, List.of(imageId))));
         if (!asyncImageDownload) {
             imageDownload.complete();
         }
@@ -160,6 +190,7 @@ public class ContainerEngineMock implements ContainerEngine {
     public Container createContainer(NodeAgentContext context, PartialContainer.State state, ContainerResources containerResources) {
         return new Container(new ContainerId("id-of-" + context.containerName()),
                              context.containerName(),
+                             Instant.EPOCH,
                              state,
                              "image-id",
                              context.node().wantedDockerImage().get(),

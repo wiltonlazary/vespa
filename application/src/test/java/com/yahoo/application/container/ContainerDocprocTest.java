@@ -13,14 +13,13 @@ import com.yahoo.document.Document;
 import com.yahoo.document.DocumentPut;
 import com.yahoo.document.DocumentType;
 import com.yahoo.processing.execution.chain.ChainRegistry;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.sameInstance;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author Einar M R Rosenvinge
@@ -49,16 +48,16 @@ public class ContainerDocprocTest {
         return xml;
     }
 
-    @Before
+    @BeforeEach
     public void resetContainer() {
         Container.resetInstance();
     }
 
     @Test
-    public void requireThatBasicDocumentProcessingWorks() throws Exception {
+    void requireThatBasicDocumentProcessingWorks() throws Exception {
         try (Application app = new ApplicationBuilder()
-                        .servicesXml(getXML(CHAIN_NAME, Rot13DocumentProcessor.class.getCanonicalName()))
-                        .documentType("music", DOCUMENT).build()) {
+                .servicesXml(getXML(CHAIN_NAME, Rot13DocumentProcessor.class.getCanonicalName()))
+                .documentType("music", DOCUMENT).build()) {
 
             JDisc container = app.getJDisc("container");
             DocumentProcessing docProc = container.documentProcessing();
@@ -75,22 +74,22 @@ public class ContainerDocprocTest {
 
             processing = com.yahoo.docproc.Processing.of(put);
             progress = docProc.process(ComponentSpecification.fromString(CHAIN_NAME), processing);
-            assertThat(progress, sameInstance(DocumentProcessor.Progress.DONE));
-            assertThat(doc.getFieldValue("title").toString(), equalTo("Terng Nyohz!"));
+            assertSame(progress, DocumentProcessor.Progress.DONE);
+            assertEquals("Terng Nyohz!", doc.getFieldValue("title").toString());
 
             processing = com.yahoo.docproc.Processing.of(put);
             progress = docProc.process(ComponentSpecification.fromString(CHAIN_NAME), processing);
-            assertThat(progress, sameInstance(DocumentProcessor.Progress.DONE));
-            assertThat(doc.getFieldValue("title").toString(), equalTo("Great Album!"));
+            assertSame(progress, DocumentProcessor.Progress.DONE);
+            assertEquals("Great Album!", doc.getFieldValue("title").toString());
         }
     }
 
     @Test
-    public void requireThatLaterDocumentProcessingWorks() throws Exception {
+    void requireThatLaterDocumentProcessingWorks() throws Exception {
         try (Application app = new ApplicationBuilder()
-                        .servicesXml(getXML(CHAIN_NAME, Rot13DocumentProcessor.class.getCanonicalName()))
-                        .networking(Networking.disable)
-                        .documentType("music", DOCUMENT).build()) {
+                .servicesXml(getXML(CHAIN_NAME, Rot13DocumentProcessor.class.getCanonicalName()))
+                .networking(Networking.disable)
+                .documentType("music", DOCUMENT).build()) {
             JDisc container = app.getJDisc("container");
             DocumentProcessing docProc = container.documentProcessing();
             DocumentType type = docProc.getDocumentTypes().get("music");
@@ -107,48 +106,57 @@ public class ContainerDocprocTest {
             processing = com.yahoo.docproc.Processing.of(put);
 
             progress = docProc.processOnce(ComponentSpecification.fromString(CHAIN_NAME), processing);
-            assertThat(progress, instanceOf(DocumentProcessor.LaterProgress.class));
-            assertThat(doc.getFieldValue("title").toString(), equalTo("Great Album!"));
+            assertTrue(progress instanceof  DocumentProcessor.LaterProgress);
+            assertEquals("Great Album!", doc.getFieldValue("title").toString());
 
             progress = docProc.processOnce(ComponentSpecification.fromString(CHAIN_NAME), processing);
-            assertThat(progress, instanceOf(DocumentProcessor.LaterProgress.class));
-            assertThat(doc.getFieldValue("title").toString(), equalTo("Great Album!"));
+            assertTrue(progress instanceof DocumentProcessor.LaterProgress);
+            assertEquals("Great Album!", doc.getFieldValue("title").toString());
 
             progress = docProc.processOnce(ComponentSpecification.fromString(CHAIN_NAME), processing);
-            assertThat(progress, sameInstance(DocumentProcessor.Progress.DONE));
-            assertThat(doc.getFieldValue("title").toString(), equalTo("Terng Nyohz!"));
+            assertSame(progress, DocumentProcessor.Progress.DONE);
+            assertEquals("Terng Nyohz!", doc.getFieldValue("title").toString());
         }
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void requireThatUnknownChainThrows() {
-        try (JDisc container = JDisc.fromServicesXml(
-                getXML("foo", Rot13DocumentProcessor.class.getCanonicalName()),
-                Networking.disable)) {
-            container.documentProcessing().process(ComponentSpecification.fromString("unknown"),
-                    new com.yahoo.docproc.Processing());
-        }
+    @Test
+    void requireThatUnknownChainThrows() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            try (JDisc container = JDisc.fromServicesXml(
+                    getXML("foo", Rot13DocumentProcessor.class.getCanonicalName()),
+                    Networking.disable)) {
+                container.documentProcessing().process(ComponentSpecification.fromString("unknown"),
+                        new com.yahoo.docproc.Processing());
+            }
+
+        });
 
     }
 
 
-    @Test(expected = UnsupportedOperationException.class)
-    public void requireThatProcessingFails() {
-        try (JDisc container = JDisc.fromServicesXml(
-                getXML("foo", Rot13DocumentProcessor.class.getCanonicalName()),
-                Networking.disable)) {
-            container.processing();
-        }
+    @Test
+    void requireThatProcessingFails() {
+        assertThrows(UnsupportedOperationException.class, () -> {
+            try (JDisc container = JDisc.fromServicesXml(
+                    getXML("foo", Rot13DocumentProcessor.class.getCanonicalName()),
+                    Networking.disable)) {
+                container.processing();
+            }
+
+        });
 
     }
 
-    @Test(expected = UnsupportedOperationException.class)
-    public void requireThatSearchFails() {
-        try (JDisc container = JDisc.fromServicesXml(
-                getXML("foo", Rot13DocumentProcessor.class.getCanonicalName()),
-                Networking.disable)) {
-            container.search();
-        }
+    @Test
+    void requireThatSearchFails() {
+        assertThrows(UnsupportedOperationException.class, () -> {
+            try (JDisc container = JDisc.fromServicesXml(
+                    getXML("foo", Rot13DocumentProcessor.class.getCanonicalName()),
+                    Networking.disable)) {
+                container.search();
+            }
+
+        });
 
     }
 

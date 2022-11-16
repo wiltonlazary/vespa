@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.deployment;
 
-import com.google.common.collect.ImmutableList;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.RunId;
 
 import java.security.cert.X509Certificate;
@@ -14,6 +13,7 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.aborted;
+import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.noTests;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.running;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.success;
 import static com.yahoo.vespa.hosted.controller.deployment.Step.Status.succeeded;
@@ -33,6 +33,7 @@ public class Run {
     private final boolean isRedeployment;
     private final Instant start;
     private final Optional<Instant> end;
+    private final Optional<Instant> sleepUntil;
     private final RunStatus status;
     private final long lastTestRecord;
     private final Instant lastVespaLogTimestamp;
@@ -40,17 +41,20 @@ public class Run {
     private final Optional<ConvergenceSummary> convergenceSummary;
     private final Optional<X509Certificate> testerCertificate;
     private final boolean dryRun;
+    private final Optional<String> reason;
 
     // For deserialisation only -- do not use!
     public Run(RunId id, Map<Step, StepInfo> steps, Versions versions, boolean isRedeployment, Instant start, Optional<Instant> end,
-               RunStatus status, long lastTestRecord, Instant lastVespaLogTimestamp, Optional<Instant> noNodesDownSince,
-               Optional<ConvergenceSummary> convergenceSummary, Optional<X509Certificate> testerCertificate, boolean dryRun) {
+               Optional<Instant> sleepUntil, RunStatus status, long lastTestRecord, Instant lastVespaLogTimestamp,
+               Optional<Instant> noNodesDownSince, Optional<ConvergenceSummary> convergenceSummary,
+               Optional<X509Certificate> testerCertificate, boolean dryRun, Optional<String> reason) {
         this.id = id;
         this.steps = Collections.unmodifiableMap(new EnumMap<>(steps));
         this.versions = versions;
         this.isRedeployment = isRedeployment;
         this.start = start;
         this.end = end;
+        this.sleepUntil = sleepUntil;
         this.status = status;
         this.lastTestRecord = lastTestRecord;
         this.lastVespaLogTimestamp = lastVespaLogTimestamp;
@@ -58,13 +62,15 @@ public class Run {
         this.convergenceSummary = convergenceSummary;
         this.testerCertificate = testerCertificate;
         this.dryRun = dryRun;
+        this.reason = reason;
     }
 
-    public static Run initial(RunId id, Versions versions, boolean isRedeployment, Instant now, JobProfile profile) {
+    public static Run initial(RunId id, Versions versions, boolean isRedeployment, Instant now, JobProfile profile, Optional<String> triggeredBy) {
         EnumMap<Step, StepInfo> steps = new EnumMap<>(Step.class);
         profile.steps().forEach(step -> steps.put(step, StepInfo.initial(step)));
-        return new Run(id, steps, requireNonNull(versions), isRedeployment, requireNonNull(now), Optional.empty(), running,
-                       -1, Instant.EPOCH, Optional.empty(), Optional.empty(), Optional.empty(), profile == JobProfile.developmentDryRun);
+        return new Run(id, steps, requireNonNull(versions), isRedeployment, requireNonNull(now), Optional.empty(),
+                       Optional.empty(), running, -1, Instant.EPOCH, Optional.empty(), Optional.empty(),
+                       Optional.empty(), profile == JobProfile.developmentDryRun, triggeredBy);
     }
 
     /** Returns a new Run with the status of the given completed step set accordingly. */
@@ -77,8 +83,9 @@ public class Run {
 
         EnumMap<Step, StepInfo> steps = new EnumMap<>(this.steps);
         steps.put(step.get(), stepInfo.with(Step.Status.of(status)));
-        return new Run(id, steps, versions, isRedeployment, start, end, this.status == running ? status : this.status,
-                       lastTestRecord, lastVespaLogTimestamp, noNodesDownSince, convergenceSummary, testerCertificate, dryRun);
+        RunStatus newStatus = hasFailed() || status == running ? this.status : status;
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, newStatus, lastTestRecord,
+                       lastVespaLogTimestamp, noNodesDownSince, convergenceSummary, testerCertificate, dryRun, reason);
     }
 
     /** Returns a new Run with a new start time*/
@@ -92,50 +99,64 @@ public class Run {
         EnumMap<Step, StepInfo> steps = new EnumMap<>(this.steps);
         steps.put(step.get(), stepInfo.with(startTime));
 
-        return new Run(id, steps, versions, isRedeployment, start, end, status, lastTestRecord, lastVespaLogTimestamp,
-                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, status, lastTestRecord, lastVespaLogTimestamp,
+                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun, reason);
     }
 
     public Run finished(Instant now) {
         requireActive();
-        return new Run(id, steps, versions, isRedeployment, start, Optional.of(now), status == running ? success : status,
-                       lastTestRecord, lastVespaLogTimestamp, noNodesDownSince, convergenceSummary, Optional.empty(), dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, Optional.of(now), sleepUntil, status == running ? success : status,
+                       lastTestRecord, lastVespaLogTimestamp, noNodesDownSince, convergenceSummary, Optional.empty(), dryRun, reason);
     }
 
     public Run aborted() {
         requireActive();
-        return new Run(id, steps, versions, isRedeployment, start, end, aborted, lastTestRecord, lastVespaLogTimestamp,
-                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, aborted, lastTestRecord, lastVespaLogTimestamp,
+                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun, reason);
+    }
+
+    public Run reset() {
+        requireActive();
+        Map<Step, StepInfo> reset = new EnumMap<>(steps);
+        reset.replaceAll((step, __) -> StepInfo.initial(step));
+        return new Run(id, reset, versions, isRedeployment, start, end, sleepUntil, running, -1, lastVespaLogTimestamp,
+                       Optional.empty(), Optional.empty(), testerCertificate, dryRun, reason);
     }
 
     public Run with(long lastTestRecord) {
         requireActive();
-        return new Run(id, steps, versions, isRedeployment, start, end, status, lastTestRecord, lastVespaLogTimestamp,
-                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, status, lastTestRecord, lastVespaLogTimestamp,
+                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun, reason);
     }
 
     public Run with(Instant lastVespaLogTimestamp) {
         requireActive();
-        return new Run(id, steps, versions, isRedeployment, start, end, status, lastTestRecord, lastVespaLogTimestamp,
-                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, status, lastTestRecord, lastVespaLogTimestamp,
+                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun, reason);
     }
 
     public Run noNodesDownSince(Instant noNodesDownSince) {
         requireActive();
-        return new Run(id, steps, versions, isRedeployment, start, end, status, lastTestRecord, lastVespaLogTimestamp,
-                       Optional.ofNullable(noNodesDownSince), convergenceSummary, testerCertificate, dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, status, lastTestRecord, lastVespaLogTimestamp,
+                       Optional.ofNullable(noNodesDownSince), convergenceSummary, testerCertificate, dryRun, reason);
     }
 
     public Run withSummary(ConvergenceSummary convergenceSummary) {
         requireActive();
-        return new Run(id, steps, versions, isRedeployment, start, end, status, lastTestRecord, lastVespaLogTimestamp,
-                       noNodesDownSince, Optional.ofNullable(convergenceSummary), testerCertificate, dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, status, lastTestRecord, lastVespaLogTimestamp,
+                       noNodesDownSince, Optional.ofNullable(convergenceSummary), testerCertificate, dryRun, reason);
     }
 
     public Run with(X509Certificate testerCertificate) {
         requireActive();
-        return new Run(id, steps, versions, isRedeployment, start, end, status, lastTestRecord, lastVespaLogTimestamp,
-                       noNodesDownSince, convergenceSummary, Optional.of(testerCertificate), dryRun);
+        return new Run(id, steps, versions, isRedeployment, start, end, sleepUntil, status, lastTestRecord, lastVespaLogTimestamp,
+                       noNodesDownSince, convergenceSummary, Optional.of(testerCertificate), dryRun, reason);
+    }
+
+    public Run sleepingUntil(Instant instant) {
+        requireActive();
+        return new Run(id, steps, versions, isRedeployment, start, end, Optional.of(instant), status, lastTestRecord, lastVespaLogTimestamp,
+                       noNodesDownSince, convergenceSummary, testerCertificate, dryRun, reason);
     }
 
     /** Returns the id of this run. */
@@ -186,15 +207,22 @@ public class Run {
         return end;
     }
 
+    /** Returns the instant until which this should sleep. */
+    public Optional<Instant> sleepUntil() {
+        return sleepUntil;
+    }
+
     /** Returns whether the run has failed, and should switch to its run-always steps. */
     public boolean hasFailed() {
-        return status != running && status != success;
+        return status != running && status != success && status != noTests;
     }
 
     /** Returns whether the run has ended, i.e., has become inactive, and can no longer be updated. */
     public boolean hasEnded() {
         return end.isPresent();
     }
+
+    public boolean hasSucceeded() { return hasEnded() && ! hasFailed(); }
 
     /** Returns the target, and possibly source, versions for this run. */
     public Versions versions() {
@@ -211,7 +239,7 @@ public class Run {
         return lastVespaLogTimestamp;
     }
 
-    /** Returns the timestamp of the last time no nodes were allowed to be down. */
+    /** Returns since when no nodes have been allowed to be down. */
     public Optional<Instant> noNodesDownSince() {
         return noNodesDownSince;
     }
@@ -233,6 +261,11 @@ public class Run {
 
     /** Whether this is a dry run deployment. */
     public boolean isDryRun() { return dryRun; }
+
+    /** The specific reason for triggering this run, if any. This should be empty for jobs triggered bvy deployment orchestration. */
+    public Optional<String> reason() {
+        return reason;
+    }
 
     @Override
     public boolean equals(Object o) {
@@ -267,26 +300,26 @@ public class Run {
 
     /** Returns the list of unfinished steps whose prerequisites have all succeeded. */
     private List<Step> normalSteps() {
-        return ImmutableList.copyOf(steps.entrySet().stream()
-                                         .filter(entry ->    entry.getValue().status() == unfinished
-                                                          && entry.getKey().prerequisites().stream()
-                                                                  .allMatch(step ->    steps.get(step) == null
-                                                                                    || steps.get(step).status() == succeeded))
-                                         .map(Map.Entry::getKey)
-                                         .iterator());
+        return steps.entrySet().stream()
+                    .filter(entry -> entry.getValue().status() == unfinished
+                                     && entry.getKey().prerequisites().stream()
+                                             .allMatch(step ->    steps.get(step) == null
+                                                               || steps.get(step).status() == succeeded))
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toUnmodifiableList());
     }
 
     /** Returns the list of not-yet-run run-always steps whose run-always prerequisites have all run. */
     private List<Step> forcedSteps() {
-        return ImmutableList.copyOf(steps.entrySet().stream()
-                                         .filter(entry ->    entry.getValue().status() == unfinished
-                                                          && entry.getKey().alwaysRun()
-                                                          && entry.getKey().prerequisites().stream()
-                                                                  .filter(Step::alwaysRun)
-                                                                  .allMatch(step ->    steps.get(step) == null
-                                                                                    || steps.get(step).status() != unfinished))
-                                         .map(Map.Entry::getKey)
-                                         .iterator());
+        return steps.entrySet().stream()
+                    .filter(entry -> entry.getValue().status() == unfinished
+                                     && entry.getKey().alwaysRun()
+                                     && entry.getKey().prerequisites().stream()
+                                             .filter(Step::alwaysRun)
+                                             .allMatch(step ->    steps.get(step) == null
+                                                               || steps.get(step).status() != unfinished))
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toUnmodifiableList());
     }
 
     private void requireActive() {

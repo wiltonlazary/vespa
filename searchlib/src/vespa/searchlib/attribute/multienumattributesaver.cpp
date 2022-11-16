@@ -2,7 +2,7 @@
 
 #include "multienumattributesaver.h"
 #include "multivalueattributesaverutils.h"
-#include "multivalue.h"
+#include <vespa/searchcommon/attribute/multivalue.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.attribute.multi_enum_attribute_saver");
@@ -68,7 +68,7 @@ public:
             if (_indexes.size() >= _indexes.capacity()) {
                 flush();
             }
-            _indexes.push_back(valueRef.value());
+            _indexes.push_back(multivalue::get_value_ref(valueRef).load_acquire());
         }
     }
 };
@@ -107,7 +107,7 @@ onSave(IAttributeSaveTarget &saveTarget)
 {
     bool compaction_broke_save = false;
     CountWriter countWriter(saveTarget);
-    WeightWriter<MultiValueType::_hasWeight> weightWriter(saveTarget);
+    WeightWriter<multivalue::is_WeightedValue_v<MultiValueType>> weightWriter(saveTarget);
     DatWriter datWriter(saveTarget, _enumSaver.get_enumerator(),
                         [this]() { return compaction_interferred(); });
     _enumSaver.writeUdat(saveTarget);
@@ -134,8 +134,8 @@ onSave(IAttributeSaveTarget &saveTarget)
     return !compaction_broke_save;
 }
 
-using EnumIdxArray = multivalue::Value<IEnumStore::Index>;
-using EnumIdxWset = multivalue::WeightedValue<IEnumStore::Index>;
+using EnumIdxArray = vespalib::datastore::AtomicEntryRef;
+using EnumIdxWset = multivalue::WeightedValue<vespalib::datastore::AtomicEntryRef>;
 
 template class MultiValueEnumAttributeSaver<EnumIdxArray>;
 template class MultiValueEnumAttributeSaver<EnumIdxWset>;

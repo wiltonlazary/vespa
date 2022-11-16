@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.streamingvisitors;
 
-import com.yahoo.config.subscription.ConfigGetter;
 import com.yahoo.document.select.parser.TokenMgrException;
 import com.yahoo.messagebus.Trace;
 import com.yahoo.messagebus.routing.Route;
@@ -13,6 +12,8 @@ import com.yahoo.prelude.fastsearch.TimeoutException;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.search.result.Hit;
+import com.yahoo.search.schema.Schema;
+import com.yahoo.search.schema.SchemaInfo;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.searchlib.aggregation.Grouping;
 import com.yahoo.vdslib.DocumentSummary;
@@ -22,7 +23,7 @@ import com.yahoo.vespa.streamingvisitors.tracing.MockUtils;
 import com.yahoo.vespa.streamingvisitors.tracing.MonotonicNanoClock;
 import com.yahoo.vespa.streamingvisitors.tracing.SamplingStrategy;
 import com.yahoo.vespa.streamingvisitors.tracing.TraceExporter;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -30,11 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -45,6 +42,7 @@ import static org.mockito.Mockito.when;
  * @author Ulf Carlin
  */
 public class VdsStreamingSearcherTestCase {
+
     public static final String USERDOC_ID_PREFIX = "id:namespace:mytype:n=1:userspecific";
     public static final String GROUPDOC_ID_PREFIX = "id:namespace:mytype:g=group1:userspecific";
 
@@ -169,10 +167,10 @@ public class VdsStreamingSearcherTestCase {
             } else if (i == 1) {
                 query.getPresentation().setSummary("summary");
             } else if (i == 2) {
-                query.setTraceLevel(100);
+                query.getTrace().setLevel(100);
             } else if (i == 3) {
                 query.getPresentation().setSummary("summary");
-                query.setTraceLevel(100);
+                query.getTrace().setLevel(100);
             }
             queries[i] = query;
         }
@@ -183,12 +181,12 @@ public class VdsStreamingSearcherTestCase {
         for (Query query : generateTestQueries(queryString)) {
             Result result = executeQuery(searcher, query);
             assertNotNull(result.hits().getError());
-            assertTrue("Expected '" + message + "' to be contained in '"
-                    + result.hits().getErrorHit().errors().iterator().next().getMessage() + "'",
-                    result.hits().getErrorHit().errors().iterator().next().getMessage().contains(message));
-            assertTrue("Expected '" + detailedMessage + "' to be contained in '"
-                    + result.hits().getErrorHit().errors().iterator().next().getDetailedMessage() + "'",
-                    result.hits().getErrorHit().errors().iterator().next().getDetailedMessage().contains(detailedMessage));
+            assertTrue(result.hits().getErrorHit().errors().iterator().next().getMessage().contains(message),
+                    "Expected '" + message + "' to be contained in '"
+                    + result.hits().getErrorHit().errors().iterator().next().getMessage() + "'");
+            assertTrue(result.hits().getErrorHit().errors().iterator().next().getDetailedMessage().contains(detailedMessage),
+                    "Expected '" + detailedMessage + "' to be contained in '"
+                    + result.hits().getErrorHit().errors().iterator().next().getDetailedMessage() + "'");
         }
     }
 
@@ -215,16 +213,17 @@ public class VdsStreamingSearcherTestCase {
     }
 
     @Test
-    public void testBasics() {
+    void testBasics() {
         MockVisitorFactory factory = new MockVisitorFactory();
         VdsStreamingSearcher searcher = new VdsStreamingSearcher(factory);
 
-        ConfigGetter<DocumentdbInfoConfig> getter = new ConfigGetter<>(DocumentdbInfoConfig.class);
-        DocumentdbInfoConfig config = getter.getConfig("file:src/test/java/com/yahoo/prelude/fastsearch/test/documentdb-info.cfg");
+        var schema = new Schema.Builder("test");
+        schema.add(new com.yahoo.search.schema.DocumentSummary.Builder("default").build());
         searcher.init("container.0",
-                      new SummaryParameters("default"),
-                      new ClusterParams("clusterName"),
-                      config);
+                new SummaryParameters("default"),
+                new ClusterParams("clusterName"),
+                new DocumentdbInfoConfig.Builder().documentdb(new DocumentdbInfoConfig.Documentdb.Builder().name("test")).build(),
+                new SchemaInfo(List.of(schema.build()), Map.of()));
 
         // Magic query values are used to trigger specific behaviors from mock visitor.
         checkError(searcher, "/?query=noselection",
@@ -253,7 +252,7 @@ public class VdsStreamingSearcherTestCase {
     }
 
     @Test
-    public void testVerifyDocId() {
+    void testVerifyDocId() {
         Query generalQuery = new Query("/?streaming.selection=true&query=test");
         Query user1Query = new Query("/?streaming.userid=1&query=test");
         Query group1Query = new Query("/?streaming.groupname=group1&query=test");
@@ -318,7 +317,7 @@ public class VdsStreamingSearcherTestCase {
     }
 
     @Test
-    public void trace_level_set_if_sampling_strategy_returns_true() {
+    void trace_level_set_if_sampling_strategy_returns_true() {
         var f = TraceFixture.withSampledTrace(true);
         executeQuery(f.searcher, new Query("/?streaming.userid=1&query=timeoutexception"));
 
@@ -327,7 +326,7 @@ public class VdsStreamingSearcherTestCase {
     }
 
     @Test
-    public void trace_level_not_set_if_sampling_strategy_returns_false() {
+    void trace_level_not_set_if_sampling_strategy_returns_false() {
         var f = TraceFixture.withSampledTrace(false);
         executeQuery(f.searcher, new Query("/?streaming.userid=1&query=timeoutexception"));
 
@@ -336,7 +335,7 @@ public class VdsStreamingSearcherTestCase {
     }
 
     @Test
-    public void trace_is_exported_if_timed_out_beyond_threshold() {
+    void trace_is_exported_if_timed_out_beyond_threshold() {
         // Default mock timeout threshold is 2x timeout
         var f = TraceFixture.withTracingAndClockSampledAt(1000, 3001);
         executeQuery(f.searcher, new Query("/?streaming.userid=1&query=timeoutexception&timeout=1.0"));
@@ -345,7 +344,7 @@ public class VdsStreamingSearcherTestCase {
     }
 
     @Test
-    public void trace_is_not_exported_if_timed_out_less_than_threshold() {
+    void trace_is_not_exported_if_timed_out_less_than_threshold() {
         // Default mock timeout threshold is 2x timeout
         var f = TraceFixture.withTracingAndClockSampledAt(1000, 2999);
         executeQuery(f.searcher, new Query("/?streaming.userid=1&query=timeoutexception&timeout=1.0"));

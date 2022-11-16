@@ -1,8 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.persistence;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import ai.vespa.http.DomainName;
 import com.yahoo.component.Version;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationLockException;
 import com.yahoo.config.provision.ApplicationTransaction;
@@ -43,8 +44,8 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.yahoo.stream.CustomCollectors.toLinkedMap;
 import static java.util.stream.Collectors.collectingAndThen;
-import static java.util.stream.Collectors.toMap;
 
 /**
  * Client which reads and writes nodes to a curator database.
@@ -66,10 +67,10 @@ public class CuratorDatabaseClient {
     private static final Path inactiveJobsPath = root.append("inactiveJobs");
     private static final Path infrastructureVersionsPath = root.append("infrastructureVersions");
     private static final Path osVersionsPath = root.append("osVersions");
-    private static final Path containerImagesPath = root.append("dockerImages"); // TODO(mpolden): Delete this path from ZK after 2021-11-01
     private static final Path firmwareCheckPath = root.append("firmwareCheck");
     private static final Path archiveUrisPath = root.append("archiveUris");
 
+    // TODO: Explain reasoning behind timeout value (why its it as high as 10 minutes?)
     private static final Duration defaultLockTimeout = Duration.ofMinutes(10);
 
     private final NodeSerializer nodeSerializer;
@@ -86,7 +87,7 @@ public class CuratorDatabaseClient {
     }
 
     public List<String> cluster() {
-        return db.cluster().stream().map(HostName::value).collect(Collectors.toUnmodifiableList());
+        return db.cluster().stream().map(HostName::value).toList();
     }
 
     private void initZK() {
@@ -161,7 +162,7 @@ public class CuratorDatabaseClient {
     }
 
     /**
-     * Writes the given nodes to the given state (whether or not they are already in this state or another),
+     * Writes the given nodes to the given state (whether they are already in this state or another),
      * and returns a copy of the incoming nodes in their persisted state.
      *
      * @param  toState the state to write the nodes to
@@ -208,7 +209,8 @@ public class CuratorDatabaseClient {
                                     toState.isAllocated() ? node.allocation() : Optional.empty(),
                                     node.history().recordStateTransition(node.state(), toState, agent, clock.instant()),
                                     node.type(), node.reports(), node.modelName(), node.reservedTo(),
-                                    node.exclusiveToApplicationId(), node.exclusiveToClusterType(), node.switchHostname(), node.trustedCertificates());
+                                    node.exclusiveToApplicationId(), node.exclusiveToClusterType(), node.switchHostname(),
+                                    node.trustedCertificates(), node.cloudAccount(), node.wireguardPubKey());
             writeNode(toState, curatorTransaction, node, newNode);
             writtenNodes.add(newNode);
         }
@@ -303,24 +305,28 @@ public class CuratorDatabaseClient {
     }
 
     private String toDir(Node.State state) {
-        switch (state) {
-            case active: return "allocated"; // legacy name
-            case dirty: return "dirty";
-            case failed: return "failed";
-            case inactive: return "deallocated"; // legacy name
-            case parked : return "parked";
-            case provisioned: return "provisioned";
-            case ready: return "ready";
-            case reserved: return "reserved";
-            case deprovisioned: return "deprovisioned";
-            case breakfixed: return "breakfixed";
-            default: throw new RuntimeException("Node state " + state + " does not map to a directory name");
-        }
+        return switch (state) {
+            case active -> "allocated"; // legacy name
+            case dirty -> "dirty";
+            case failed -> "failed";
+            case inactive -> "deallocated"; // legacy name
+            case parked -> "parked";
+            case provisioned -> "provisioned";
+            case ready -> "ready";
+            case reserved -> "reserved";
+            case deprovisioned -> "deprovisioned";
+            case breakfixed -> "breakfixed";
+        };
     }
 
     /** Acquires the single cluster-global, reentrant lock for all non-active nodes */
     public Lock lockInactive() {
-        return db.lock(lockPath.append("unallocatedLock"), defaultLockTimeout);
+        return lockInactive(defaultLockTimeout);
+    }
+
+    /** Acquires the single cluster-global, reentrant lock for all non-active nodes */
+    public Lock lockInactive(Duration timeout) {
+        return db.lock(lockPath.append("unallocatedLock"), timeout);
     }
 
     /** Acquires the single cluster-global, reentrant lock for active nodes of this application */
@@ -454,7 +460,8 @@ public class CuratorDatabaseClient {
                                           .map(this::readLoadBalancer)
                                           .filter(Optional::isPresent)
                                           .map(Optional::get)
-                                          .collect(collectingAndThen(toMap(LoadBalancer::id, Function.identity()),
+                                          .collect(collectingAndThen(toLinkedMap(LoadBalancer::id,
+                                                                                 Function.identity()),
                                                                      Collections::unmodifiableMap));
     }
 
@@ -477,15 +484,12 @@ public class CuratorDatabaseClient {
         transaction.onCommitted(() -> {
             for (var lb : loadBalancers) {
                 if (lb.state() == fromState) continue;
+                Optional<String> target = lb.instance().flatMap(instance -> instance.hostname().map(DomainName::value).or(instance::ipAddress));
                 if (fromState == null) {
-                    log.log(Level.INFO, () -> "Creating " + lb.id() + lb.instance()
-                                                                        .map(instance -> " (" +  instance.hostname() + ")")
-                                                                        .orElse("") +
+                    log.log(Level.INFO, () -> "Creating " + lb.id() + target.map(t -> " (" +  t + ")").orElse("") +
                                               " in " + lb.state());
                 } else {
-                    log.log(Level.INFO, () -> "Moving " + lb.id() + lb.instance()
-                                                                      .map(instance -> " (" +  instance.hostname() + ")")
-                                                                      .orElse("") +
+                    log.log(Level.INFO, () -> "Moving " + lb.id() + target.map(t -> " (" +  t + ")").orElse("") +
                                               " from " + fromState +
                                               " to " + lb.state());
                 }
@@ -508,7 +512,7 @@ public class CuratorDatabaseClient {
         return db.getChildren(loadBalancersPath).stream()
                  .map(LoadBalancerId::fromSerializedForm)
                  .filter(predicate)
-                 .collect(Collectors.toUnmodifiableList());
+                 .toList();
     }
 
     /** Returns a given number of unique provision indices */
@@ -519,7 +523,7 @@ public class CuratorDatabaseClient {
         int firstIndex = (int) provisionIndexCounter.add(count) - count;
         return IntStream.range(0, count)
                         .mapToObj(i -> firstIndex + i)
-                        .collect(Collectors.toList());
+                        .toList();
     }
 
     public CacheStats cacheStats() {

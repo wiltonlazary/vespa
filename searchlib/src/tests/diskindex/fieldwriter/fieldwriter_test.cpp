@@ -13,13 +13,15 @@
 #include <vespa/searchlib/index/schemautil.h>
 #include <vespa/searchlib/test/fakedata/fakeword.h>
 #include <vespa/searchlib/test/fakedata/fakewordset.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/rand48.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/time.h>
-#include <openssl/sha.h>
-#include <vespa/fastos/app.h>
+#include <openssl/evp.h>
+#include <vespa/fastos/file.h>
+#include <vespa/vespalib/util/signalhandler.h>
+#include <unistd.h>
+#include <filesystem>
 #include <vespa/log/log.h>
 LOG_SETUP("fieldwriter_test");
 
@@ -52,6 +54,18 @@ using namespace search::index;
 
 // needed to resolve external symbol from httpd.h on AIX
 void FastS_block_usr2() { }
+
+namespace {
+
+struct EvpMdCtxDeleter {
+    void operator()(EVP_MD_CTX* evp_md_ctx) const noexcept {
+        EVP_MD_CTX_free(evp_md_ctx);
+    }
+};
+
+using EvpMdCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
+
+}
 
 namespace fieldwriter {
 
@@ -90,7 +104,7 @@ makeWordString(uint64_t wordNum)
 }
 
 
-class FieldWriterTest : public FastOS_Application
+class FieldWriterTest
 {
 private:
     bool _verbose;
@@ -108,7 +122,7 @@ private:
 public:
     FieldWriterTest();
     ~FieldWriterTest();
-    int Main() override;
+    int main(int argc, char **argv);
 };
 
 
@@ -283,19 +297,21 @@ WrappedFieldReader::close()
 
 class FileChecksum
 {
-    unsigned char _digest[SHA256_DIGEST_LENGTH];
-
+    unsigned char _digest[EVP_MAX_MD_SIZE];
+    unsigned int  _digest_len;
 public:
     FileChecksum(const vespalib::string &file_name);
     bool operator==(const FileChecksum &rhs) const {
-        return (memcmp(_digest, rhs._digest, SHA256_DIGEST_LENGTH) == 0);
+        return ((_digest_len == rhs._digest_len) &&
+                (memcmp(_digest, rhs._digest, _digest_len) == 0));
     }
 };
 
 
 FileChecksum::FileChecksum(const vespalib::string &file_name)
+    : _digest(),
+      _digest_len(0u)
 {
-    SHA256_CTX c; 
     FastOS_File f;
     Alloc buf = Alloc::alloc(64_Ki);
     vespalib::string full_file_name(dirprefix + file_name);
@@ -306,16 +322,18 @@ FileChecksum::FileChecksum(const vespalib::string &file_name)
     }
     int64_t flen = f.GetSize();
     int64_t remainder = flen;
-    SHA256_Init(&c);
+    EvpMdCtxPtr md_ctx(EVP_MD_CTX_new());
+    const EVP_MD* md = EVP_get_digestbyname("SHA256");
+    EVP_DigestInit_ex(md_ctx.get(), md, nullptr);
     while (remainder > 0) {
         int64_t thistime =
             std::min(remainder, static_cast<int64_t>(buf.size()));
         f.ReadBuf(buf.get(), thistime);
-        SHA256_Update(&c, buf.get(), thistime);
+        EVP_DigestUpdate(md_ctx.get(), buf.get(), thistime);
         remainder -= thistime;
     }
-    f.Close();
-    SHA256_Final(_digest, &c);
+    EVP_DigestFinal_ex(md_ctx.get(), &_digest[0], &_digest_len);
+    assert(_digest_len > 0u && _digest_len <= EVP_MAX_MD_SIZE);
 }
 
 void
@@ -646,32 +664,29 @@ testFieldWriterVariantsWithHighLids(FakeWordSet &wordSet, uint32_t docIdLimit,
 }
 
 int
-FieldWriterTest::Main()
+FieldWriterTest::main(int argc, char **argv)
 {
-    int argi;
     int c;
-    const char *optArg;
 
-    if (_argc > 0) {
-        DummyFileHeaderContext::setCreator(_argv[0]);
+    if (argc > 0) {
+        DummyFileHeaderContext::setCreator(argv[0]);
     }
-    argi = 1;
 
-    while ((c = GetOpt("c:d:vw:", optArg, argi)) != -1) {
+    while ((c = getopt(argc, argv, "c:d:vw:")) != -1) {
         switch(c) {
         case 'c':
-            _commonDocFreq = atoi(optArg);
+            _commonDocFreq = atoi(optarg);
             if (_commonDocFreq == 0)
                 _commonDocFreq = 1;
             break;
         case 'd':
-            _numDocs = atoi(optArg);
+            _numDocs = atoi(optarg);
             break;
         case 'v':
             _verbose = true;
             break;
         case 'w':
-            _numWordsPerClass = atoi(optArg);
+            _numWordsPerClass = atoi(optarg);
             break;
         default:
             Usage();
@@ -687,7 +702,7 @@ FieldWriterTest::Main()
     _wordSet.setupParams(false, false);
     _wordSet.setupWords(_rnd, _numDocs, _commonDocFreq, _numWordsPerClass);
 
-    vespalib::mkdir("index", false);
+    std::filesystem::create_directory(std::filesystem::path("index"));
     testFieldWriterVariants(_wordSet, _numDocs, _verbose);
 
     _wordSet2.setupParams(false, false);
@@ -696,18 +711,18 @@ FieldWriterTest::Main()
     _wordSet2.addDocIdBias(docIdBias);  // Large skip numbers
     testFieldWriterVariantsWithHighLids(_wordSet2, _numDocs + docIdBias,
                                         _verbose);
-    vespalib::rmdir("index", true);
+    std::filesystem::remove_all(std::filesystem::path("index"));
     return 0;
 }
 
 } // namespace fieldwriter
 
 int
-main(int argc, char **argv)
-{
+main(int argc, char **argv) {
+    vespalib::SignalHandler::PIPE.ignore();
     fieldwriter::FieldWriterTest app;
 
     setvbuf(stdout, nullptr, _IOLBF, 32_Ki);
     app._rnd.srand48(32);
-    return app.Entry(argc, argv);
+    return app.main(argc, argv);
 }

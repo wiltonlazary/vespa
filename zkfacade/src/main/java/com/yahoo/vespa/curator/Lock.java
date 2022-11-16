@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.curator;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.path.Path;
 import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.curator.stats.LockStats;
@@ -50,8 +50,9 @@ public class Lock implements Mutex {
         if (!acquired) {
             threadLockStats.acquireTimedOut();
             throw new UncheckedTimeoutException("Timed out after waiting " + timeout +
-                    " to acquire lock '" + lockPath + "'");
+                                                " to acquire lock '" + lockPath + "'");
         }
+
         threadLockStats.lockAcquired();
     }
 
@@ -59,15 +60,24 @@ public class Lock implements Mutex {
     public void close() {
         ThreadLockStats threadLockStats = LockStats.getForCurrentThread();
         // Update metrics now before release() to avoid double-counting time in locked state.
-        threadLockStats.preRelease();
+        // The lockPath must be sent down as close() may be invoked in an order not necessarily
+        // equal to the reverse order of acquires.
+        threadLockStats.preRelease(lockPath);
         try {
             mutex.release();
-            threadLockStats.postRelease();
+            threadLockStats.postRelease(lockPath);
         }
         catch (Exception e) {
-            threadLockStats.releaseFailed();
-            throw new RuntimeException("Exception releasing lock '" + lockPath + "'");
+            threadLockStats.releaseFailed(lockPath);
+            throw new RuntimeException("Exception releasing lock '" + lockPath + "'", e);
         }
+    }
+
+    protected String lockPath() { return lockPath; }
+
+    @Override
+    public String toString() {
+        return "Lock{" + lockPath + "}";
     }
 }
 

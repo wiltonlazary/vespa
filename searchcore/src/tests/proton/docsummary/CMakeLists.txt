@@ -22,13 +22,6 @@ vespa_add_executable(searchcore_docsummary_test_app TEST
     searchcore_grouping
     searchcore_proton_metrics
     searchcore_fconfig
-    searchlib_searchlib_uca
-)
-vespa_add_executable(searchcore_summaryfieldconverter_test_app
-    SOURCES
-    summaryfieldconverter_test.cpp
-    DEPENDS
-    searchcore_docsummary
 )
 vespa_add_test(NAME searchcore_docsummary_test_app COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/docsummary_test.sh
-               DEPENDS searchcore_docsummary_test_app searchcore_summaryfieldconverter_test_app)
+               DEPENDS searchcore_docsummary_test_app)

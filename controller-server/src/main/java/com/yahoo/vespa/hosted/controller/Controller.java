@@ -1,10 +1,10 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller;
 
-import com.google.inject.Inject;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.component.Version;
 import com.yahoo.component.Vtag;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.concurrent.maintenance.JobControl;
 import com.yahoo.config.provision.CloudName;
 import com.yahoo.config.provision.HostName;
@@ -12,7 +12,7 @@ import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.zone.ZoneApi;
 import com.yahoo.container.jdisc.secretstore.SecretStore;
 import com.yahoo.jdisc.Metric;
-import com.yahoo.vespa.curator.Lock;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.flags.FlagSource;
 import com.yahoo.vespa.hosted.controller.api.integration.ServiceRegistry;
 import com.yahoo.vespa.hosted.controller.api.integration.maven.MavenRepository;
@@ -23,22 +23,20 @@ import com.yahoo.vespa.hosted.controller.config.ControllerConfig;
 import com.yahoo.vespa.hosted.controller.deployment.JobController;
 import com.yahoo.vespa.hosted.controller.dns.NameServiceForwarder;
 import com.yahoo.vespa.hosted.controller.notification.NotificationsDb;
+import com.yahoo.vespa.hosted.controller.notification.Notifier;
 import com.yahoo.vespa.hosted.controller.persistence.CuratorDb;
 import com.yahoo.vespa.hosted.controller.persistence.JobControlFlags;
 import com.yahoo.vespa.hosted.controller.security.AccessControl;
 import com.yahoo.vespa.hosted.controller.support.access.SupportAccessControl;
-import com.yahoo.vespa.hosted.controller.versions.ControllerVersion;
 import com.yahoo.vespa.hosted.controller.versions.OsVersion;
 import com.yahoo.vespa.hosted.controller.versions.OsVersionStatus;
 import com.yahoo.vespa.hosted.controller.versions.OsVersionTarget;
 import com.yahoo.vespa.hosted.controller.versions.VersionStatus;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion;
 import com.yahoo.vespa.hosted.rotation.config.RotationsConfig;
-import com.yahoo.vespa.serviceview.bindings.ApplicationView;
 import com.yahoo.yolean.concurrent.Sleeper;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -48,7 +46,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -67,7 +64,6 @@ public class Controller extends AbstractComponent {
 
     private static final Logger log = Logger.getLogger(Controller.class.getName());
 
-    private final Supplier<String> hostnameSupplier;
     private final CuratorDb curator;
     private final JobControl jobControl;
     private final ApplicationController applicationController;
@@ -88,6 +84,8 @@ public class Controller extends AbstractComponent {
     private final CuratorArchiveBucketDb archiveBucketDb;
     private final NotificationsDb notificationsDb;
     private final SupportAccessControl supportAccessControl;
+    private final Notifier notifier;
+    private final MailVerifier mailVerifier;
 
     /**
      * Creates a controller 
@@ -98,40 +96,40 @@ public class Controller extends AbstractComponent {
     public Controller(CuratorDb curator, RotationsConfig rotationsConfig, AccessControl accessControl, FlagSource flagSource,
                       MavenRepository mavenRepository, ServiceRegistry serviceRegistry, Metric metric, SecretStore secretStore,
                       ControllerConfig controllerConfig) {
-        this(curator, rotationsConfig, accessControl, com.yahoo.net.HostName::getLocalhost, flagSource,
+        this(curator, rotationsConfig, accessControl, flagSource,
              mavenRepository, serviceRegistry, metric, secretStore, controllerConfig, Sleeper.DEFAULT);
     }
 
     public Controller(CuratorDb curator, RotationsConfig rotationsConfig, AccessControl accessControl,
-                      Supplier<String> hostnameSupplier, FlagSource flagSource, MavenRepository mavenRepository,
+                      FlagSource flagSource, MavenRepository mavenRepository,
                       ServiceRegistry serviceRegistry, Metric metric, SecretStore secretStore,
                       ControllerConfig controllerConfig, Sleeper sleeper) {
-
-        this.hostnameSupplier = Objects.requireNonNull(hostnameSupplier, "HostnameSupplier cannot be null");
         this.curator = Objects.requireNonNull(curator, "Curator cannot be null");
         this.serviceRegistry = Objects.requireNonNull(serviceRegistry, "ServiceRegistry cannot be null");
         this.zoneRegistry = Objects.requireNonNull(serviceRegistry.zoneRegistry(), "ZoneRegistry cannot be null");
         this.clock = Objects.requireNonNull(serviceRegistry.clock(), "Clock cannot be null");
-        this.sleeper = Objects.requireNonNull(sleeper);
+        this.sleeper = Objects.requireNonNull(sleeper, "Sleeper cannot be null");
         this.flagSource = Objects.requireNonNull(flagSource, "FlagSource cannot be null");
         this.mavenRepository = Objects.requireNonNull(mavenRepository, "MavenRepository cannot be null");
         this.metric = Objects.requireNonNull(metric, "Metric cannot be null");
+        this.controllerConfig = Objects.requireNonNull(controllerConfig, "ControllerConfig cannot be null");
+        this.secretStore = Objects.requireNonNull(secretStore, "SecretStore cannot be null");
 
         nameServiceForwarder = new NameServiceForwarder(curator);
         jobController = new JobController(this);
         applicationController = new ApplicationController(this, curator, accessControl, clock, flagSource, serviceRegistry.billingController());
-        tenantController = new TenantController(this, curator, accessControl, flagSource);
-        routingController = new RoutingController(this, Objects.requireNonNull(rotationsConfig, "RotationsConfig cannot be null"));
+        tenantController = new TenantController(this, curator, accessControl);
+        routingController = new RoutingController(this, rotationsConfig);
         auditLogger = new AuditLogger(curator, clock);
         jobControl = new JobControl(new JobControlFlags(curator, flagSource));
         archiveBucketDb = new CuratorArchiveBucketDb(this);
+        notifier = new Notifier(curator, serviceRegistry.zoneRegistry(), serviceRegistry.mailer(), flagSource);
         notificationsDb = new NotificationsDb(this);
-        this.controllerConfig = controllerConfig;
-        this.secretStore = secretStore;
-        this.supportAccessControl = new SupportAccessControl(this);
+        supportAccessControl = new SupportAccessControl(this);
+        mailVerifier = new MailVerifier(tenantController, serviceRegistry.mailer(), curator, clock);
 
         // Record the version of this controller
-        curator().writeControllerVersion(this.hostname(), ControllerVersion.CURRENT);
+        curator().writeControllerVersion(this.hostname(), serviceRegistry.controllerVersion());
 
         jobController.updateStorage();
     }
@@ -172,11 +170,6 @@ public class Controller extends AbstractComponent {
 
     public ControllerConfig controllerConfig() { return controllerConfig; }
 
-    public ApplicationView getApplicationView(String tenantName, String applicationName, String instanceName,
-                                              String environment, String region) {
-        return serviceRegistry.configServer().getApplicationView(tenantName, applicationName, instanceName, environment, region);
-    }
-
     /** Replace the current version status by a new one */
     public void updateVersionStatus(VersionStatus newStatus) {
         VersionStatus currentStatus = readVersionStatus();
@@ -197,7 +190,7 @@ public class Controller extends AbstractComponent {
 
     /** Remove confidence override for versions matching given filter */
     public void removeConfidenceOverride(Predicate<Version> filter) {
-        try (Lock lock = curator.lockConfidenceOverrides()) {
+        try (Mutex lock = curator.lockConfidenceOverrides()) {
             Map<Version, VespaVersion.Confidence> overrides = new LinkedHashMap<>(curator.readConfidenceOverrides());
             overrides.keySet().removeIf(filter);
             curator.writeConfidenceOverrides(overrides);
@@ -228,7 +221,7 @@ public class Controller extends AbstractComponent {
     }
 
     /** Set the target OS version for given cloud in this system */
-    public void upgradeOsIn(CloudName cloudName, Version version, Duration upgradeBudget, boolean force) {
+    public void upgradeOsIn(CloudName cloudName, Version version, boolean force) {
         if (version.isEmpty()) {
             throw new IllegalArgumentException("Invalid version '" + version.toFullString() + "'");
         }
@@ -236,7 +229,7 @@ public class Controller extends AbstractComponent {
             throw new IllegalArgumentException("Cloud '" + cloudName + "' does not exist in this system");
         }
         Instant scheduledAt = clock.instant();
-        try (Lock lock = curator.lockOsVersions()) {
+        try (Mutex lock = curator.lockOsVersions()) {
             Map<CloudName, OsVersionTarget> targets = curator.readOsVersionTargets().stream()
                                                              .collect(Collectors.toMap(t -> t.osVersion().cloud(),
                                                                                        Function.identity()));
@@ -247,15 +240,26 @@ public class Controller extends AbstractComponent {
                     throw new IllegalArgumentException("Cannot downgrade cloud '" + cloudName.value() + "' to version " +
                                                        version.toFullString());
                 }
-                if (currentTarget.osVersion().version().equals(version) &&
-                    currentTarget.upgradeBudget().equals(upgradeBudget)) return; // Version and budget unchanged
+                if (currentTarget.osVersion().version().equals(version)) return; // Version unchanged
             }
 
-            OsVersionTarget newTarget = new OsVersionTarget(new OsVersion(version, cloudName), upgradeBudget, scheduledAt);
+            OsVersionTarget newTarget = new OsVersionTarget(new OsVersion(version, cloudName), scheduledAt);
             targets.put(cloudName, newTarget);
             curator.writeOsVersionTargets(new TreeSet<>(targets.values()));
-            log.info("Triggered OS upgrade to " + version.toFullString() + " in cloud " +
-                     cloudName.value() + ", with upgrade budget " + upgradeBudget);
+            log.info("Triggered OS upgrade to " + version.toFullString() + " in cloud " + cloudName.value());
+        }
+    }
+
+    /** Clear the target OS version for given cloud in this system */
+    public void cancelOsUpgradeIn(CloudName cloudName) {
+        try (Mutex lock = curator.lockOsVersions()) {
+            Map<CloudName, OsVersionTarget> targets = curator.readOsVersionTargets().stream()
+                                                             .collect(Collectors.toMap(t -> t.osVersion().cloud(),
+                                                                                       Function.identity()));
+            if (targets.remove(cloudName) == null) {
+                throw new IllegalArgumentException("Cloud '" + cloudName.value() + " has no OS upgrade target");
+            }
+            curator.writeOsVersionTargets(new TreeSet<>(targets.values()));
         }
     }
 
@@ -266,7 +270,7 @@ public class Controller extends AbstractComponent {
 
     /** Replace the current OS version status with a new one */
     public void updateOsVersionStatus(OsVersionStatus newStatus) {
-        try (Lock lock = curator.lockOsVersionStatus()) {
+        try (Mutex lock = curator.lockOsVersionStatus()) {
             OsVersionStatus currentStatus = curator.readOsVersionStatus();
             for (CloudName cloud : clouds()) {
                 Set<Version> newVersions = newStatus.versionsIn(cloud);
@@ -281,7 +285,7 @@ public class Controller extends AbstractComponent {
 
     /** Returns the hostname of this controller */
     public HostName hostname() {
-        return HostName.from(hostnameSupplier.get());
+        return serviceRegistry.getHostname();
     }
 
     public SystemName system() {
@@ -331,4 +335,11 @@ public class Controller extends AbstractComponent {
         return supportAccessControl;
     }
 
+    public Notifier notifier() {
+        return notifier;
+    }
+
+    public MailVerifier mailVerifier() {
+        return mailVerifier;
+    }
 }

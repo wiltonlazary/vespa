@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.provision;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.config.provisioning.CloudConfig;
 
@@ -26,8 +26,9 @@ public class Zone {
         this(Cloud.builder()
                   .name(CloudName.from(configserverConfig.cloud()))
                   .dynamicProvisioning(cloudConfig.dynamicProvisioning())
-                  .reprovisionToUpgradeOs(cloudConfig.reprovisionToUpgradeOs())
+                  .allowHostSharing(cloudConfig.allowHostSharing())
                   .requireAccessControl(cloudConfig.requireAccessControl())
+                  .account(CloudAccount.from(cloudConfig.account()))
                   .build(),
              SystemName.from(configserverConfig.system()),
              Environment.from(configserverConfig.environment()),
@@ -52,8 +53,13 @@ public class Zone {
         this.region = region;
     }
 
+    // TODO(mpolden): For compatibility with older config models. Remove when versions < 8.76 are gone
+    public Cloud getCloud() {
+        return cloud();
+    }
+
     /** Returns the current cloud */
-    public Cloud getCloud() { return cloud; }
+    public Cloud cloud() { return cloud; }
 
     /** Returns the current system */
     public SystemName system() { return systemName; }
@@ -67,6 +73,9 @@ public class Zone {
     public RegionName region() {
         return region;
     }
+
+    /** Returns the string "environment.region" */
+    public String systemLocalValue() { return environment + "." + region; }
 
     /** Do not use */
     public static Zone defaultZone() {

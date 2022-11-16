@@ -2,6 +2,7 @@
 package com.yahoo.vespa.hosted.node.admin.maintenance.servicedump;
 
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.CloudName;
 import com.yahoo.text.Lowercase;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeAttributes;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeRepository;
@@ -12,11 +13,12 @@ import com.yahoo.vespa.hosted.node.admin.maintenance.sync.SyncFileInfo;
 import com.yahoo.vespa.hosted.node.admin.maintenance.sync.SyncFileInfo.Compression;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
 import com.yahoo.vespa.hosted.node.admin.task.util.file.UnixPath;
+import com.yahoo.vespa.hosted.node.admin.task.util.fs.ContainerPath;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.CommandResult;
 import com.yahoo.yolean.concurrent.Sleeper;
 
+import java.io.UncheckedIOException;
 import java.net.URI;
-import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -61,10 +63,18 @@ public class VespaServiceDumperImpl implements VespaServiceDumper {
 
     @Override
     public void processServiceDumpRequest(NodeAgentContext context) {
+        if (context.zone().getCloudName().equals(CloudName.GCP)) return;
+
         Instant startedAt = clock.instant();
         NodeSpec nodeSpec = context.node();
-        ServiceDumpReport request = nodeSpec.reports().getReport(ServiceDumpReport.REPORT_ID, ServiceDumpReport.class)
-                .orElse(null);
+        ServiceDumpReport request;
+        try {
+            request = nodeSpec.reports().getReport(ServiceDumpReport.REPORT_ID, ServiceDumpReport.class)
+                    .orElse(null);
+        } catch (IllegalArgumentException | UncheckedIOException e) {
+            handleFailure(context, null, startedAt, e, "Invalid JSON in service dump request");
+            return;
+        }
         if (request == null || request.isCompletedOrFailed()) {
             context.log(log, Level.FINE, "No service dump requested or dump already completed/failed");
             return;
@@ -88,52 +98,50 @@ public class VespaServiceDumperImpl implements VespaServiceDumper {
             handleFailure(context, request, startedAt, "No artifacts requested");
             return;
         }
-        UnixPath directoryInNode = new UnixPath(context.pathInNodeUnderVespaHome("tmp/vespa-service-dump"));
-        UnixPath directoryOnHost = new UnixPath(context.pathOnHostFromPathInNode(directoryInNode.toPath()));
+        ContainerPath directory = context.paths().underVespaHome("var/tmp/vespa-service-dump-" + request.getCreatedMillisOrNull());
+        UnixPath unixPathDirectory = new UnixPath(directory);
         try {
             context.log(log, Level.INFO,
                     "Creating service dump for " + configId + " requested at "
                             + Instant.ofEpochMilli(request.getCreatedMillisOrNull()));
             storeReport(context, ServiceDumpReport.createStartedReport(request, startedAt));
-            if (directoryOnHost.exists()) {
-                context.log(log, Level.INFO, "Removing existing directory '" + directoryOnHost +"'.");
-                directoryOnHost.deleteRecursively();
+            if (unixPathDirectory.exists()) {
+                context.log(log, Level.INFO, "Removing existing directory '" + unixPathDirectory +"'.");
+                unixPathDirectory.deleteRecursively();
             }
-            context.log(log, Level.INFO, "Creating '" + directoryOnHost +"'.");
-            directoryOnHost.createDirectory("rwxrwxrwx");
+            context.log(log, Level.INFO, "Creating '" + unixPathDirectory +"'.");
+            unixPathDirectory.createDirectory("rwxr-x---");
             URI destination = serviceDumpDestination(nodeSpec, createDumpId(request));
-            ProducerContext producerCtx = new ProducerContext(context, directoryInNode.toPath(), request);
+            ProducerContext producerCtx = new ProducerContext(context, directory, request);
             List<Artifact> producedArtifacts = new ArrayList<>();
             for (ArtifactProducer producer : artifactProducers.resolve(requestedArtifacts)) {
                 context.log(log, "Producing artifact of type '" + producer.artifactName() + "'");
                 producedArtifacts.addAll(producer.produceArtifacts(producerCtx));
             }
-            uploadArtifacts(context, destination, producedArtifacts, expiry);
+            uploadArtifacts(context, destination, producedArtifacts);
             storeReport(context, ServiceDumpReport.createSuccessReport(request, startedAt, clock.instant(), destination));
         } catch (Exception e) {
-            handleFailure(context, request, startedAt, e);
+            handleFailure(context, request, startedAt, e, e.getMessage());
         } finally {
-            if (directoryOnHost.exists()) {
-                context.log(log, Level.INFO, "Deleting directory '" + directoryOnHost +"'.");
-                directoryOnHost.deleteRecursively();
+            if (unixPathDirectory.exists()) {
+                context.log(log, Level.INFO, "Deleting directory '" + unixPathDirectory +"'.");
+                unixPathDirectory.deleteRecursively();
             }
         }
     }
 
     private void uploadArtifacts(NodeAgentContext ctx, URI destination,
-                                 List<Artifact> producedArtifacts, Instant expiry) {
+                                 List<Artifact> producedArtifacts) {
         ApplicationId owner = ctx.node().owner().orElseThrow();
         List<SyncFileInfo> filesToUpload = producedArtifacts.stream()
                 .map(a -> {
                     Compression compression = a.compressOnUpload() ? Compression.ZSTD : Compression.NONE;
-                    Path fileInNode = a.fileInNode().orElse(null);
-                    Path fileOnHost = fileInNode != null ? ctx.pathOnHostFromPathInNode(fileInNode) : a.fileOnHost().orElseThrow();
                     String classification = a.classification().map(Artifact.Classification::value).orElse(null);
-                    return SyncFileInfo.forServiceDump(destination, fileOnHost, expiry, compression, owner, classification);
+                    return SyncFileInfo.forServiceDump(destination, a.file(), compression, owner, classification);
                 })
                 .collect(Collectors.toList());
         ctx.log(log, Level.INFO,
-                "Uploading " + filesToUpload.size() + " file(s) with destination " + destination + " and expiry " + expiry);
+                "Uploading " + filesToUpload.size() + " file(s) with destination " + destination);
         if (!syncClient.sync(ctx, filesToUpload, Integer.MAX_VALUE)) {
             throw new RuntimeException("Unable to upload all files");
         }
@@ -146,15 +154,16 @@ public class VespaServiceDumperImpl implements VespaServiceDumper {
                 : Instant.ofEpochMilli(request.expireAt());
     }
 
-    private void handleFailure(NodeAgentContext context, ServiceDumpReport request, Instant startedAt, Exception failure) {
+    private void handleFailure(NodeAgentContext context, ServiceDumpReport requestOrNull, Instant startedAt,
+                               Exception failure, String message) {
         context.log(log, Level.WARNING, failure.toString(), failure);
-        ServiceDumpReport report = ServiceDumpReport.createErrorReport(request, startedAt, clock.instant(), failure.toString());
+        ServiceDumpReport report = ServiceDumpReport.createErrorReport(requestOrNull, startedAt, clock.instant(), message);
         storeReport(context, report);
     }
 
-    private void handleFailure(NodeAgentContext context, ServiceDumpReport request, Instant startedAt, String message) {
+    private void handleFailure(NodeAgentContext context, ServiceDumpReport requestOrNull, Instant startedAt, String message) {
         context.log(log, Level.WARNING, message);
-        ServiceDumpReport report = ServiceDumpReport.createErrorReport(request, startedAt, clock.instant(), message);
+        ServiceDumpReport report = ServiceDumpReport.createErrorReport(requestOrNull, startedAt, clock.instant(), message);
         storeReport(context, report);
     }
 
@@ -179,13 +188,13 @@ public class VespaServiceDumperImpl implements VespaServiceDumper {
     private class ProducerContext implements ArtifactProducer.Context, ArtifactProducer.Context.Options {
 
         final NodeAgentContext nodeAgentCtx;
-        final Path outputDirectoryInNode;
+        final ContainerPath path;
         final ServiceDumpReport request;
         volatile int pid = -1;
 
-        ProducerContext(NodeAgentContext nodeAgentCtx, Path outputDirectoryInNode, ServiceDumpReport request) {
+        ProducerContext(NodeAgentContext nodeAgentCtx, ContainerPath path, ServiceDumpReport request) {
             this.nodeAgentCtx = nodeAgentCtx;
-            this.outputDirectoryInNode = outputDirectoryInNode;
+            this.path = path;
             this.request = request;
         }
 
@@ -194,16 +203,31 @@ public class VespaServiceDumperImpl implements VespaServiceDumper {
         @Override
         public int servicePid() {
             if (pid == -1) {
-                Path findPidBinary = nodeAgentCtx.pathInNodeUnderVespaHome("libexec/vespa/find-pid");
-                CommandResult findPidResult = executeCommandInNode(List.of(findPidBinary.toString(), serviceId()), true);
-                this.pid = Integer.parseInt(findPidResult.getOutput());
+                try {
+                    pid = findServicePid(serviceId());
+                } catch (RuntimeException e1) {
+                    try {
+                        // Workaround for Vespa 7 container clusters having service name 'qrserver'
+                        if (serviceId().equals("container")) pid = findServicePid("qrserver");
+                        else throw e1;
+                    } catch (RuntimeException e2) {
+                        e1.addSuppressed(e2);
+                        throw e1;
+                    }
+                }
             }
             return pid;
         }
 
+        private int findServicePid(String serviceId) {
+            ContainerPath findPidBinary = nodeAgentCtx.paths().underVespaHome("libexec/vespa/find-pid");
+            CommandResult findPidResult = executeCommandInNode(List.of(findPidBinary.pathInContainer(), serviceId), true);
+            return Integer.parseInt(findPidResult.getOutput());
+        }
+
         @Override
         public CommandResult executeCommandInNode(List<String> command, boolean logOutput) {
-            CommandResult result = container.executeCommandInContainerAsRoot(nodeAgentCtx, command.toArray(new String[0]));
+            CommandResult result = container.executeCommandInContainer(nodeAgentCtx, nodeAgentCtx.users().vespa(), command.toArray(new String[0]));
             String cmdString = command.stream().map(s -> "'" + s + "'").collect(Collectors.joining(" ", "\"", "\""));
             int exitCode = result.getExitCode();
             String output = result.getOutput().trim();
@@ -224,16 +248,11 @@ public class VespaServiceDumperImpl implements VespaServiceDumper {
             return result;
         }
 
-        @Override public Path outputDirectoryInNode() { return outputDirectoryInNode; }
+        @Override public ContainerPath outputContainerPath() { return path; }
 
         @Override
-        public Path pathInNodeUnderVespaHome(String relativePath) {
-            return nodeAgentCtx.pathInNodeUnderVespaHome(relativePath);
-        }
-
-        @Override
-        public Path pathOnHostFromPathInNode(Path pathInNode) {
-            return nodeAgentCtx.pathOnHostFromPathInNode(pathInNode);
+        public ContainerPath containerPathUnderVespaHome(String relativePath) {
+            return nodeAgentCtx.paths().underVespaHome(relativePath);
         }
 
         @Override public Options options() { return this; }

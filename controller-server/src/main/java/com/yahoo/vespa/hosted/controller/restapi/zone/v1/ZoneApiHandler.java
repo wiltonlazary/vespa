@@ -6,20 +6,19 @@ import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.zone.ZoneApi;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
+import com.yahoo.restapi.ErrorResponse;
+import com.yahoo.restapi.Path;
+import com.yahoo.restapi.SlimeJsonResponse;
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.Slime;
 import com.yahoo.vespa.hosted.controller.api.integration.ServiceRegistry;
 import com.yahoo.vespa.hosted.controller.api.integration.zone.ZoneRegistry;
-import com.yahoo.restapi.ErrorResponse;
-import com.yahoo.restapi.Path;
-import com.yahoo.restapi.SlimeJsonResponse;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 import com.yahoo.yolean.Exceptions;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
 
 /**
  * Read-only REST API that provides information about zones in hosted Vespa (version 1)
@@ -27,11 +26,11 @@ import java.util.stream.Collectors;
  * @author mpolden
  */
 @SuppressWarnings("unused")
-public class ZoneApiHandler extends LoggingRequestHandler {
+public class ZoneApiHandler extends ThreadedHttpRequestHandler {
 
     private final ZoneRegistry zoneRegistry;
 
-    public ZoneApiHandler(LoggingRequestHandler.Context parentCtx, ServiceRegistry serviceRegistry) {
+    public ZoneApiHandler(ThreadedHttpRequestHandler.Context parentCtx, ServiceRegistry serviceRegistry) {
         super(parentCtx);
         this.zoneRegistry = serviceRegistry.zoneRegistry();
     }
@@ -39,18 +38,14 @@ public class ZoneApiHandler extends LoggingRequestHandler {
     @Override
     public HttpResponse handle(HttpRequest request) {
         try {
-            switch (request.getMethod()) {
-                case GET:
-                    return get(request);
-                default:
-                    return ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is unsupported");
-            }
+            return switch (request.getMethod()) {
+                case GET -> get(request);
+                default -> ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is unsupported");
+            };
         } catch (IllegalArgumentException e) {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
         } catch (RuntimeException e) {
-            log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "', "
-                                   + Exceptions.toMessageString(e));
-            return ErrorResponse.internalServerError(Exceptions.toMessageString(e));
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
 
@@ -69,19 +64,18 @@ public class ZoneApiHandler extends LoggingRequestHandler {
     }
 
     private HttpResponse root(HttpRequest request) {
-        List<Environment> environments = zoneRegistry.zones().all().zones().stream()
+        List<Environment> environments = zoneRegistry.zones().publiclyVisible().zones().stream()
                                                      .map(ZoneApi::getEnvironment)
                                                      .distinct()
                                                      .sorted(Comparator.comparing(Environment::value))
-                                                     .collect(Collectors.toList());
+                                                     .toList();
         Slime slime = new Slime();
         Cursor root = slime.setArray();
         environments.forEach(environment -> {
             Cursor object = root.addObject();
             object.setString("name", environment.value());
-            // Returning /zone/v2 is a bit strange, but that's what the original Jersey implementation did
             object.setString("url", request.getUri()
-                                           .resolve("/zone/v2/environment/")
+                                           .resolve("/zone/v1/environment/")
                                            .resolve(environment.value())
                                            .toString());
         });
@@ -91,13 +85,12 @@ public class ZoneApiHandler extends LoggingRequestHandler {
     private HttpResponse environment(HttpRequest request, Environment environment) {
         Slime slime = new Slime();
         Cursor root = slime.setArray();
-        zoneRegistry.zones().all().in(environment).zones().forEach(zone -> {
+        zoneRegistry.zones().publiclyVisible().all().in(environment).zones().forEach(zone -> {
             Cursor object = root.addObject();
             object.setString("name", zone.getRegionName().value());
             object.setString("url", request.getUri()
-                                           .resolve("/zone/v2/environment/")
+                                           .resolve("/zone/v2/")
                                            .resolve(environment.value() + "/")
-                                           .resolve("region/")
                                            .resolve(zone.getRegionName().value())
                                            .toString());
         });
@@ -111,9 +104,8 @@ public class ZoneApiHandler extends LoggingRequestHandler {
         Cursor root = slime.setObject();
         root.setString("name", region.value());
         root.setString("url", request.getUri()
-                                     .resolve("/zone/v2/environment/")
+                                     .resolve("/zone/v2/")
                                      .resolve(environment.value() + "/")
-                                     .resolve("region/")
                                      .resolve(region.value())
                                      .toString());
         return new SlimeJsonResponse(slime);

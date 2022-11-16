@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "tensor_data_type.h"
 #include <vespa/document/fieldvalue/tensorfieldvalue.h>
@@ -9,31 +9,28 @@ using vespalib::eval::ValueType;
 
 namespace document {
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(TensorDataType, DataType);
-
-TensorDataType::TensorDataType()
-    : TensorDataType(ValueType::error_type())
-{
-}
-
 TensorDataType::TensorDataType(ValueType tensorType)
     : PrimitiveDataType(DataType::T_TENSOR),
       _tensorType(std::move(tensorType))
 {
 }
 
+TensorDataType::TensorDataType(const TensorDataType &) = default;
 TensorDataType::~TensorDataType() = default;
+
+bool
+TensorDataType::equals(const DataType& other) const noexcept
+{
+    if (!DataType::equals(other)) {
+        return false;
+    }
+    return _tensorType == other.cast_tensor()->_tensorType;
+}
 
 FieldValue::UP
 TensorDataType::createFieldValue() const
 {
     return std::make_unique<TensorFieldValue>(*this);
-}
-
-TensorDataType*
-TensorDataType::clone() const
-{
-    return new TensorDataType(*this);
 }
 
 void

@@ -11,10 +11,12 @@ import com.yahoo.config.model.api.ValidationParameters.CheckRouting;
 import com.yahoo.config.model.application.provider.SchemaValidators;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.test.MockApplicationPackage;
+import com.yahoo.path.Path;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.application.validation.Validation;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * For testing purposes only.
@@ -32,7 +34,15 @@ public class VespaModelCreatorWithMockPkg {
     }
 
     public VespaModelCreatorWithMockPkg(String hosts, String services, List<String> schemas) {
-        this(new MockApplicationPackage.Builder().withHosts(hosts).withServices(services).withSchemas(schemas).build());
+        this(hosts, services, schemas, Map.of());
+    }
+
+    public VespaModelCreatorWithMockPkg(String hosts, String services, List<String> schemas, Map<Path, String> files) {
+        this(new MockApplicationPackage.Builder().withHosts(hosts)
+                                                 .withServices(services)
+                                                 .withSchemas(schemas)
+                                                 .withFiles(files)
+                                                 .build());
     }
 
     public VespaModelCreatorWithMockPkg(ApplicationPackage appPkg) {
@@ -75,7 +85,7 @@ public class VespaModelCreatorWithMockPkg {
                 // is constructed in a special way and cannot always be validated in
                 // this step for unit tests)
                 ValidationParameters validationParameters = new ValidationParameters(CheckRouting.FALSE);
-                configChangeActions = Validation.validate(model, validationParameters, deployState);
+                configChangeActions = new Validation().validate(model, validationParameters, deployState);
             }
             return model;
         } catch (Exception e) {

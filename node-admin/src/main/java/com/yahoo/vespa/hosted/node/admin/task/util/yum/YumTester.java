@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.yum;
 
 import com.yahoo.vespa.hosted.node.admin.task.util.process.TestChildProcess2;
@@ -38,6 +38,10 @@ public class YumTester extends Yum {
         return new InstallFixedCommandExpectation(yumPackage);
     }
 
+    public DeleteVersionLockCommandExpectation expectDeleteVersionLock(String yumPackage) {
+        return new DeleteVersionLockCommandExpectation(yumPackage);
+    }
+
     public QueryInstalledExpectation expectQueryInstalled(String packageName) {
         return new QueryInstalledExpectation(packageName);
     }
@@ -61,13 +65,12 @@ public class YumTester extends Yum {
         /** Mock the return value of the converge(TaskContext) method for this operation (true iff system was modified) */
         public YumTester andReturn(boolean value) {
             if (value) return execute("Success");
-            switch (commandType) {
-                case installFixed:
-                case install: return execute("Nothing to do");
-                case upgrade: return execute("No packages marked for update");
-                case remove: return execute("No Packages marked for removal");
-                default: throw new IllegalArgumentException("Unknown command type: " + commandType);
-            }
+            return switch (commandType) {
+                case deleteVersionLock, installFixed, install -> execute("Nothing to do");
+                case upgrade -> execute("No packages marked for update");
+                case remove -> execute("No Packages marked for removal");
+                default -> throw new IllegalArgumentException("Unknown command type: " + commandType);
+            };
         }
 
         private YumTester execute(String output) {
@@ -84,8 +87,11 @@ public class YumTester extends Yum {
             }
 
             StringBuilder cmd = new StringBuilder();
-            cmd.append("yum ").append(commandType.command).append(" --assumeyes");
-            enableRepos.forEach(repo -> cmd.append(" --enablerepo=").append(repo));
+            cmd.append("yum ").append(commandType.command);
+            if (commandType != CommandType.deleteVersionLock) {
+                cmd.append(" --assumeyes");
+                enableRepos.forEach(repo -> cmd.append(" --enablerepo=").append(repo));
+            }
             if (commandType == CommandType.install && packages.size() > 1)
                 cmd.append(" --setopt skip_missing_names_on_install=False");
             if (commandType == CommandType.upgrade && packages.size() > 1)
@@ -118,6 +124,14 @@ public class YumTester extends Yum {
 
     }
 
+    public class DeleteVersionLockCommandExpectation extends GenericYumCommandExpectation {
+
+        private DeleteVersionLockCommandExpectation(String yumPackage) {
+            super(CommandType.deleteVersionLock, yumPackage);
+        }
+
+    }
+
     public class QueryInstalledExpectation {
         private final String packageName;
 
@@ -142,7 +156,7 @@ public class YumTester extends Yum {
     }
 
     private enum CommandType {
-        install("install"), upgrade("upgrade"), remove("remove"), installFixed("install");
+        install("install"), upgrade("upgrade"), remove("remove"), installFixed("install"), deleteVersionLock("versionlock delete");
 
         private final String command;
         CommandType(String command) {

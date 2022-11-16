@@ -1,35 +1,32 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.session;
 
-import com.google.common.collect.ImmutableList;
 import com.yahoo.component.Version;
-import com.yahoo.config.model.api.ApplicationRoles;
 import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.EndpointCertificateMetadata;
 import com.yahoo.config.model.api.Quota;
+import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.AthenzDomain;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.DockerImage;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.security.X509CertificateUtils;
-import com.yahoo.slime.ArrayTraverser;
 import com.yahoo.slime.Inspector;
 import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.config.server.TimeoutBudget;
-import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.vespa.config.server.http.SessionHandler;
+import com.yahoo.vespa.config.server.tenant.CloudAccountSerializer;
 import com.yahoo.vespa.config.server.tenant.ContainerEndpointSerializer;
 import com.yahoo.vespa.config.server.tenant.EndpointCertificateMetadataSerializer;
 import com.yahoo.vespa.config.server.tenant.TenantSecretStoreSerializer;
-import org.eclipse.jetty.util.ssl.X509;
 
 import java.security.cert.X509Certificate;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -45,6 +42,7 @@ public final class PrepareParams {
 
     static final String APPLICATION_NAME_PARAM_NAME = "applicationName";
     static final String INSTANCE_PARAM_NAME = "instance";
+    static final String TAGS_PARAM_NAME = "tags";
     static final String IGNORE_VALIDATION_PARAM_NAME = "ignoreValidationErrors";
     static final String DRY_RUN_PARAM_NAME = "dryRun";
     static final String VERBOSE_PARAM_NAME = "verbose";
@@ -58,8 +56,10 @@ public final class PrepareParams {
     static final String FORCE_PARAM_NAME = "force";
     static final String WAIT_FOR_RESOURCES_IN_PREPARE = "waitForResourcesInPrepare";
     static final String OPERATOR_CERTIFICATES = "operatorCertificates";
+    static final String CLOUD_ACCOUNT = "cloudAccount";
 
     private final ApplicationId applicationId;
+    private final Tags tags;
     private final TimeoutBudget timeoutBudget;
     private final boolean ignoreValidationErrors;
     private final boolean dryRun;
@@ -75,16 +75,29 @@ public final class PrepareParams {
     private final Optional<Quota> quota;
     private final List<TenantSecretStore> tenantSecretStores;
     private final List<X509Certificate> operatorCertificates;
+    private final Optional<CloudAccount> cloudAccount;
 
-    private PrepareParams(ApplicationId applicationId, TimeoutBudget timeoutBudget, boolean ignoreValidationErrors,
-                          boolean dryRun, boolean verbose, boolean isBootstrap, Optional<Version> vespaVersion,
+    private PrepareParams(ApplicationId applicationId,
+                          Tags tags,
+                          TimeoutBudget timeoutBudget,
+                          boolean ignoreValidationErrors,
+                          boolean dryRun,
+                          boolean verbose,
+                          boolean isBootstrap,
+                          Optional<Version> vespaVersion,
                           List<ContainerEndpoint> containerEndpoints,
                           Optional<EndpointCertificateMetadata> endpointCertificateMetadata,
-                          Optional<DockerImage> dockerImageRepository, Optional<AthenzDomain> athenzDomain,
-                          Optional<Quota> quota, List<TenantSecretStore> tenantSecretStores,
-                          boolean force, boolean waitForResourcesInPrepare, List<X509Certificate> operatorCertificates) {
+                          Optional<DockerImage> dockerImageRepository,
+                          Optional<AthenzDomain> athenzDomain,
+                          Optional<Quota> quota,
+                          List<TenantSecretStore> tenantSecretStores,
+                          boolean force,
+                          boolean waitForResourcesInPrepare,
+                          List<X509Certificate> operatorCertificates,
+                          Optional<CloudAccount> cloudAccount) {
         this.timeoutBudget = timeoutBudget;
         this.applicationId = Objects.requireNonNull(applicationId);
+        this.tags = tags;
         this.ignoreValidationErrors = ignoreValidationErrors;
         this.dryRun = dryRun;
         this.verbose = verbose;
@@ -99,6 +112,7 @@ public final class PrepareParams {
         this.force = force;
         this.waitForResourcesInPrepare = waitForResourcesInPrepare;
         this.operatorCertificates = operatorCertificates;
+        this.cloudAccount = Objects.requireNonNull(cloudAccount);
     }
 
     public static class Builder {
@@ -110,21 +124,27 @@ public final class PrepareParams {
         private boolean force = false;
         private boolean waitForResourcesInPrepare = false;
         private ApplicationId applicationId = null;
+        private Tags tags = Tags.empty();
         private TimeoutBudget timeoutBudget = new TimeoutBudget(Clock.systemUTC(), Duration.ofSeconds(60));
         private Optional<Version> vespaVersion = Optional.empty();
         private List<ContainerEndpoint> containerEndpoints = null;
         private Optional<EndpointCertificateMetadata> endpointCertificateMetadata = Optional.empty();
         private Optional<DockerImage> dockerImageRepository = Optional.empty();
         private Optional<AthenzDomain> athenzDomain = Optional.empty();
-        private Optional<ApplicationRoles> applicationRoles = Optional.empty();
         private Optional<Quota> quota = Optional.empty();
         private List<TenantSecretStore> tenantSecretStores = List.of();
         private List<X509Certificate> operatorCertificates = List.of();
+        private Optional<CloudAccount> cloudAccount = Optional.empty();
 
         public Builder() { }
 
         public Builder applicationId(ApplicationId applicationId) {
             this.applicationId = applicationId;
+            return this;
+        }
+
+        public Builder tags(Tags tags) {
+            this.tags = tags;
             return this;
         }
 
@@ -213,11 +233,6 @@ public final class PrepareParams {
             return this;
         }
 
-        public Builder applicationRoles(ApplicationRoles applicationRoles) {
-            this.applicationRoles = Optional.ofNullable(applicationRoles);
-            return this;
-        }
-
         public Builder quota(Quota quota) {
             this.quota = Optional.ofNullable(quota);
             return this;
@@ -252,18 +267,37 @@ public final class PrepareParams {
             return this;
         }
 
-        public Builder withOperatorCertificates(List<X509Certificate> operatorCertificates) {
+        public Builder operatorCertificates(List<X509Certificate> operatorCertificates) {
             this.operatorCertificates = List.copyOf(operatorCertificates);
             return this;
         }
 
-        public PrepareParams build() {
-            return new PrepareParams(applicationId, timeoutBudget, ignoreValidationErrors, dryRun,
-                                     verbose, isBootstrap, vespaVersion, containerEndpoints,
-                                     endpointCertificateMetadata, dockerImageRepository, athenzDomain,
-                                     quota, tenantSecretStores, force, waitForResourcesInPrepare,
-                                     operatorCertificates);
+        public Builder cloudAccount(CloudAccount cloudAccount) {
+            this.cloudAccount = Optional.ofNullable(cloudAccount);
+            return this;
         }
+
+        public PrepareParams build() {
+            return new PrepareParams(applicationId,
+                                     tags,
+                                     timeoutBudget,
+                                     ignoreValidationErrors,
+                                     dryRun,
+                                     verbose,
+                                     isBootstrap,
+                                     vespaVersion,
+                                     containerEndpoints,
+                                     endpointCertificateMetadata,
+                                     dockerImageRepository,
+                                     athenzDomain,
+                                     quota,
+                                     tenantSecretStores,
+                                     force,
+                                     waitForResourcesInPrepare,
+                                     operatorCertificates,
+                                     cloudAccount);
+        }
+
     }
 
     public static PrepareParams fromHttpRequest(HttpRequest request, TenantName tenant, Duration barrierTimeout) {
@@ -272,6 +306,7 @@ public final class PrepareParams {
                             .verbose(request.getBooleanProperty(VERBOSE_PARAM_NAME))
                             .timeoutBudget(SessionHandler.getTimeoutBudget(request, barrierTimeout))
                             .applicationId(createApplicationId(request, tenant))
+                            .tags(Tags.fromString(request.getProperty(TAGS_PARAM_NAME)))
                             .vespaVersion(request.getProperty(VESPA_VERSION_PARAM_NAME))
                             .containerEndpoints(request.getProperty(CONTAINER_ENDPOINTS_PARAM_NAME))
                             .endpointCertificateMetadata(request.getProperty(ENDPOINT_CERTIFICATE_METADATA_PARAM_NAME))
@@ -294,8 +329,9 @@ public final class PrepareParams {
                 .verbose(booleanValue(params, VERBOSE_PARAM_NAME))
                 .timeoutBudget(SessionHandler.getTimeoutBudget(getTimeout(params, barrierTimeout)))
                 .applicationId(createApplicationId(params, tenant))
+                .tags(Tags.fromString(params.field(TAGS_PARAM_NAME).asString()))
                 .vespaVersion(SlimeUtils.optionalString(params.field(VESPA_VERSION_PARAM_NAME)).orElse(null))
-                .containerEndpointList(deserialize(params.field(CONTAINER_ENDPOINTS_PARAM_NAME), ContainerEndpointSerializer::endpointListFromSlime, Collections.emptyList()))
+                .containerEndpointList(deserialize(params.field(CONTAINER_ENDPOINTS_PARAM_NAME), ContainerEndpointSerializer::endpointListFromSlime, List.of()))
                 .endpointCertificateMetadata(deserialize(params.field(ENDPOINT_CERTIFICATE_METADATA_PARAM_NAME), EndpointCertificateMetadataSerializer::fromSlime))
                 .dockerImageRepository(SlimeUtils.optionalString(params.field(DOCKER_IMAGE_REPOSITORY)).orElse(null))
                 .athenzDomain(SlimeUtils.optionalString(params.field(ATHENZ_DOMAIN)).orElse(null))
@@ -303,13 +339,15 @@ public final class PrepareParams {
                 .tenantSecretStores(deserialize(params.field(TENANT_SECRET_STORES_PARAM_NAME), TenantSecretStoreSerializer::listFromSlime, List.of()))
                 .force(booleanValue(params, FORCE_PARAM_NAME))
                 .waitForResourcesInPrepare(booleanValue(params, WAIT_FOR_RESOURCES_IN_PREPARE))
-                .withOperatorCertificates(deserialize(params.field(OPERATOR_CERTIFICATES), PrepareParams::readOperatorCertificates, Collections.emptyList()))
+                .operatorCertificates(deserialize(params.field(OPERATOR_CERTIFICATES), PrepareParams::readOperatorCertificates, List.of()))
+                .cloudAccount(deserialize(params.field(CLOUD_ACCOUNT), CloudAccountSerializer::fromSlime, null))
                 .build();
     }
 
     private static <T> T deserialize(Inspector field, Function<Inspector, T> mapper) {
         return deserialize(field, mapper, null);
     }
+
     private static <T> T deserialize(Inspector field, Function<Inspector, T> mapper, T defaultValue) {
         return field.valid()
                 ? mapper.apply(field)
@@ -318,13 +356,11 @@ public final class PrepareParams {
 
     private static boolean booleanValue(Inspector inspector, String fieldName) {
         Inspector field = inspector.field(fieldName);
-        return field.valid()
-                ? field.asBool()
-                : false;
+        return field.valid() && field.asBool();
     }
 
     private static Duration getTimeout(Inspector params, Duration defaultTimeout) {
-        if(params.field("timeout").valid()) {
+        if (params.field("timeout").valid()) {
             return Duration.ofSeconds(params.field("timeout").asLong());
         } else {
             return defaultTimeout;
@@ -366,9 +402,9 @@ public final class PrepareParams {
         return applicationId.application().value();
     }
 
-    public ApplicationId getApplicationId() {
-        return applicationId;
-    }
+    public ApplicationId getApplicationId() { return applicationId; }
+
+    public Tags tags() { return tags; }
 
     /** Returns the Vespa version the nodes running the prepared system should have, or empty to use the system version */
     public Optional<Version> vespaVersion() { return vespaVersion; }
@@ -419,4 +455,9 @@ public final class PrepareParams {
     public List<X509Certificate> operatorCertificates() {
         return operatorCertificates;
     }
+
+    public Optional<CloudAccount> cloudAccount() {
+        return cloudAccount;
+    }
+
 }

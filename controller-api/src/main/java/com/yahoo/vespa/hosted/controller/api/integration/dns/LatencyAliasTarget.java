@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.dns;
 
-import com.yahoo.config.provision.HostName;
+import ai.vespa.http.DomainName;
 import com.yahoo.config.provision.zone.ZoneId;
 
 import java.util.Objects;
@@ -11,11 +11,13 @@ import java.util.Objects;
  *
  * @author mpolden
  */
-public class LatencyAliasTarget extends AliasTarget {
+public final class LatencyAliasTarget extends AliasTarget {
+
+    static final String TARGET_TYPE = "latency";
 
     private final ZoneId zone;
 
-    public LatencyAliasTarget(HostName name, String dnsZone, ZoneId zone) {
+    public LatencyAliasTarget(DomainName name, String dnsZone, ZoneId zone) {
         super(name, dnsZone, zone.value());
         this.zone = Objects.requireNonNull(zone);
     }
@@ -27,7 +29,7 @@ public class LatencyAliasTarget extends AliasTarget {
 
     @Override
     public RecordData pack() {
-        return RecordData.from("latency/" + name().value() + "/" + dnsZone() + "/" + id());
+        return RecordData.from(String.join("/", TARGET_TYPE, name().value(), dnsZone(), id()));
     }
 
     @Override
@@ -56,10 +58,10 @@ public class LatencyAliasTarget extends AliasTarget {
             throw new IllegalArgumentException("Expected data to be on format type/name/DNS-zone/zone-id, but got " +
                                                data.asString());
         }
-        if (!"latency".equals(parts[0])) {
+        if (!TARGET_TYPE.equals(parts[0])) {
             throw new IllegalArgumentException("Unexpected type '" + parts[0] + "'");
         }
-        return new LatencyAliasTarget(HostName.from(parts[1]), parts[2], ZoneId.from(parts[3]));
+        return new LatencyAliasTarget(DomainName.of(parts[1]), parts[2], ZoneId.from(parts[3]));
     }
 
 }

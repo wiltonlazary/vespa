@@ -44,7 +44,7 @@ class StructuredFieldValue : public FieldValue
     virtual StructuredCache * getCache() const { return nullptr; }
 
 protected:
-    StructuredFieldValue(const DataType &type) : FieldValue(), _type(&type) {}
+    StructuredFieldValue(Type type, const DataType &dataType) : FieldValue(type), _type(&dataType) {}
 
     /** Called from Document when deserializing alters type. */
     virtual void setType(const DataType& type) { _type = &type; }
@@ -106,8 +106,6 @@ protected:
     fieldvalue::ModificationStatus
     onIterateNested(PathRange nested, fieldvalue::IteratorHandler & handler) const override;
 public:
-    DECLARE_IDENTIFIABLE_ABSTRACT(StructuredFieldValue);
-
     StructuredFieldValue* clone() const override = 0;
     const DataType *getDataType() const override { return _type; }
 
@@ -152,6 +150,12 @@ public:
     void setValue(const Field& field, FieldValue::UP value) {
         setFieldValue(field, std::move(value));
     }
+    void setValue(vespalib::stringref fieldName, const FieldValue& value) {
+        setFieldValue(getField(fieldName), value);
+    }
+    void setValue(vespalib::stringref fieldName, FieldValue::UP value) {
+        setFieldValue(getField(fieldName), std::move(value));
+    }
     /** Remove the value of given field if it is set. */
 
     //These are affected by the begin/commitTanasaction
@@ -166,13 +170,6 @@ public:
     void remove(vespalib::stringref fieldName) {
         removeFieldValue(getField(fieldName));
     }
-    void setValue(vespalib::stringref fieldName, const FieldValue& value) {
-        setFieldValue(getField(fieldName), value);
-    }
-    template<typename PrimitiveType>
-    void set(const Field& field, PrimitiveType value);
-    template<typename PrimitiveType>
-    void set(vespalib::stringref fieldName, PrimitiveType value);
 
     size_t getSetFieldCount() const {
         size_t count = 0;

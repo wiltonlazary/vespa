@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "search_context.h"
+#include "documentmetastore.h"
 #include <vespa/searchlib/attribute/attributeiterators.h>
 #include <vespa/searchlib/query/query_term_simple.h>
 #include <vespa/vespalib/util/exceptions.h>
@@ -115,7 +116,7 @@ SearchContext::onFind(DocId, int32_t ) const
 unsigned int
 SearchContext::approximateHits() const
 {
-    return _isWord ? 1 : search::AttributeVector::SearchContext::approximateHits();
+    return _isWord ? 1 : search::attribute::SearchContext::approximateHits();
 }
 
 SearchIterator::UP
@@ -135,7 +136,7 @@ SearchContext::getStore() const
 }
 
 SearchContext::SearchContext(QueryTermSimple::UP qTerm, const DocumentMetaStore &toBeSearched)
-    : search::AttributeVector::SearchContext(toBeSearched),
+    : search::attribute::SearchContext(toBeSearched),
       _isWord(qTerm->isWord())
 {
 }

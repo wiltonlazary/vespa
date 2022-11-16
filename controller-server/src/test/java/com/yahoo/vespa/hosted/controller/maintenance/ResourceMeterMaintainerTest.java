@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.component.Version;
@@ -9,15 +9,16 @@ import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
+import com.yahoo.vespa.hosted.controller.api.integration.billing.PlanRegistryMock;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Node;
+import com.yahoo.vespa.hosted.controller.api.integration.resource.ResourceDatabaseClientMock;
 import com.yahoo.vespa.hosted.controller.api.integration.resource.ResourceSnapshot;
-import com.yahoo.vespa.hosted.controller.api.integration.stubs.MockMeteringClient;
 import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.deployment.ApplicationPackageBuilder;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentTester;
 import com.yahoo.vespa.hosted.controller.integration.MetricsMock;
 import com.yahoo.vespa.hosted.controller.integration.ZoneApiMock;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -28,7 +29,9 @@ import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author olaa
@@ -36,13 +39,13 @@ import static org.junit.Assert.*;
 public class ResourceMeterMaintainerTest {
 
     private final ControllerTester tester = new ControllerTester(SystemName.Public);
-    private final MockMeteringClient snapshotConsumer = new MockMeteringClient();
+    private final ResourceDatabaseClientMock resourceClient = new ResourceDatabaseClientMock(new PlanRegistryMock());
     private final MetricsMock metrics = new MetricsMock();
     private final ResourceMeterMaintainer maintainer =
-            new ResourceMeterMaintainer(tester.controller(), Duration.ofMinutes(5), metrics, snapshotConsumer);
+            new ResourceMeterMaintainer(tester.controller(), Duration.ofMinutes(5), metrics, resourceClient);
 
     @Test
-    public void updates_deployment_costs() {
+    void updates_deployment_costs() {
         ApplicationId app1 = ApplicationId.from("t1", "a1", "default");
         ApplicationId app2 = ApplicationId.from("t2", "a1", "default");
         ZoneId z1 = ZoneId.from("prod.aws-us-east-1c");
@@ -58,30 +61,36 @@ public class ResourceMeterMaintainerTest {
                         .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().cost().getAsDouble())));
 
         List<ResourceSnapshot> resourceSnapshots = List.of(
-                new ResourceSnapshot(app1, 12, 34, 56, Instant.EPOCH, z1),
-                new ResourceSnapshot(app1, 23, 45, 67, Instant.EPOCH, z2),
-                new ResourceSnapshot(app2, 34, 56, 78, Instant.EPOCH, z1));
+                new ResourceSnapshot(app1, 12, 34, 56, NodeResources.Architecture.getDefault(), Instant.EPOCH, z1),
+                new ResourceSnapshot(app1, 23, 45, 67, NodeResources.Architecture.getDefault(), Instant.EPOCH, z2),
+                new ResourceSnapshot(app2, 34, 56, 78, NodeResources.Architecture.getDefault(), Instant.EPOCH, z1));
         maintainer.updateDeploymentCost(resourceSnapshots);
-        assertCost.accept(app1, Map.of(z1, 1.40, z2, 2.50));
-        assertCost.accept(app2, Map.of(z1, 3.59));
+        assertCost.accept(app1, Map.of(z1, 1.72, z2, 3.05));
+        assertCost.accept(app2, Map.of(z1, 4.39));
 
         // Remove a region from app1 and add region to app2
         resourceSnapshots = List.of(
-                new ResourceSnapshot(app1, 23, 45, 67, Instant.EPOCH, z2),
-                new ResourceSnapshot(app2, 34, 56, 78, Instant.EPOCH, z1),
-                new ResourceSnapshot(app2, 45, 67, 89, Instant.EPOCH, z2));
+                new ResourceSnapshot(app1, 23, 45, 67, NodeResources.Architecture.getDefault(), Instant.EPOCH, z2),
+                new ResourceSnapshot(app2, 34, 56, 78, NodeResources.Architecture.getDefault(), Instant.EPOCH, z1),
+                new ResourceSnapshot(app2, 45, 67, 89, NodeResources.Architecture.getDefault(), Instant.EPOCH, z2));
         maintainer.updateDeploymentCost(resourceSnapshots);
-        assertCost.accept(app1, Map.of(z2, 2.50));
-        assertCost.accept(app2, Map.of(z1, 3.59, z2, 4.68));
+        assertCost.accept(app1, Map.of(z2, 3.05));
+        assertCost.accept(app2, Map.of(z1, 4.39, z2, 5.72));
+        assertEquals(1.72,
+                (Double) metrics.getMetric(context ->
+                                z1.value().equals(context.get("zoneId")) &&
+                                        app1.tenant().value().equals(context.get("tenant")),
+                        "metering.cost.hourly").get(),
+                Double.MIN_VALUE);
     }
 
     @Test
-    public void testMaintainer() {
+    void testMaintainer() {
         setUpZones();
         long lastRefreshTime = tester.clock().millis();
         tester.curator().writeMeteringRefreshTime(lastRefreshTime);
         maintainer.maintain();
-        Collection<ResourceSnapshot> consumedResources = snapshotConsumer.consumedResources();
+        Collection<ResourceSnapshot> consumedResources = resourceClient.resourceSnapshots();
 
         // The mocked repository contains two applications, so we should also consume two ResourceSnapshots
         assertEquals(4, consumedResources.size());
@@ -96,17 +105,19 @@ public class ResourceMeterMaintainerTest {
         assertEquals(24, app2.getMemoryGb(), Double.MIN_VALUE);
         assertEquals(500, app2.getDiskGb(), Double.MIN_VALUE);
 
-        assertEquals(tester.clock().millis()/1000, metrics.getMetric("metering_last_reported"));
+        assertEquals(tester.clock().millis() / 1000, metrics.getMetric("metering_last_reported"));
         assertEquals(2224.0d, (Double) metrics.getMetric("metering_total_reported"), Double.MIN_VALUE);
+        assertEquals(24d, (Double) metrics.getMetric(context -> "tenant1".equals(context.get("tenant")), "metering.vcpu").get(), Double.MIN_VALUE);
+        assertEquals(40d, (Double) metrics.getMetric(context -> "tenant2".equals(context.get("tenant")), "metering.vcpu").get(), Double.MIN_VALUE);
 
         // Metering is not refreshed
-        assertFalse(snapshotConsumer.isRefreshed());
+        assertFalse(resourceClient.hasRefreshedMaterializedView());
         assertEquals(lastRefreshTime, tester.curator().readMeteringRefreshTime());
 
         var millisAdvanced = 3600 * 1000;
         tester.clock().advance(Duration.ofMillis(millisAdvanced));
         maintainer.maintain();
-        assertTrue(snapshotConsumer.isRefreshed());
+        assertTrue(resourceClient.hasRefreshedMaterializedView());
         assertEquals(lastRefreshTime + millisAdvanced, tester.curator().readMeteringRefreshTime());
     }
 
@@ -127,8 +138,8 @@ public class ResourceMeterMaintainerTest {
                          Node.State.parked,
                          Node.State.active)
                      .map(state -> Node.builder()
-                                       .hostname(HostName.from("host" + state))
-                                       .parentHostname(HostName.from("parenthost" + state))
+                                       .hostname(HostName.of("host" + state))
+                                       .parentHostname(HostName.of("parenthost" + state))
                                        .state(state)
                                        .type(NodeType.tenant)
                                        .owner(ApplicationId.from("tenant1", "app1", "default"))

@@ -1,16 +1,23 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "bucketdb.h"
+#include "remove_batch_entry.h"
+#include <vespa/vespalib/stllike/hash_map.hpp>
 #include <cassert>
 #include <algorithm>
+#include <optional>
 
 using document::GlobalId;
 using storage::spi::BucketChecksum;
 
 namespace proton {
 
+using bucketdb::RemoveBatchEntry;
+
+
 BucketDB::BucketDB()
     : _map(),
+      _numActiveDocs(0),
       _cachedBucketId(),
       _cachedBucketState()
 {
@@ -22,52 +29,94 @@ BucketDB::~BucketDB()
     clear();
 }
 
+size_t
+BucketDB::countActiveDocs() const {
+    size_t activeDocs = 0;
+    for (const auto & state : _map) {
+        activeDocs += state.second.getActiveDocumentCount();
+    }
+    return activeDocs;
+}
+
 void
-BucketDB::add(const BucketId &bucketId, const BucketState & state) {
-    _map[bucketId] += state;
+BucketDB::add(BucketId bucketId, const BucketState & delta) {
+    auto & state = _map[bucketId];
+    state += delta;
+    if (state.isActive()) {
+        addActive(delta.getDocumentCount());
+    }
 }
 
 bucketdb::BucketState *
-BucketDB::getBucketStatePtr(const BucketId &bucket)
+BucketDB::getBucketStatePtr(BucketId bucket)
 {
     auto it(_map.find(bucket));
-    if (it != _map.end()) {
-        return &it->second;
-    }
-    return nullptr;
+    return (it != _map.end()) ? &it->second : nullptr;
 }
 
 void
-BucketDB::unloadBucket(const BucketId &bucket, const BucketState &delta)
+BucketDB::checkActiveCount() const {
+    assert(getNumActiveDocs() == countActiveDocs());
+}
+
+void
+BucketDB::unloadBucket(BucketId bucket, const BucketState &delta)
 {
+    checkActiveCount();
     BucketState *state = getBucketStatePtr(bucket);
     assert(state);
     *state -= delta;
+    if (state->isActive()) {
+        subActive(delta.getDocumentCount());
+    }
 }
 
 const bucketdb::BucketState &
 BucketDB::add(const GlobalId &gid,
-              const BucketId &bucketId, const Timestamp &timestamp, uint32_t docSize,
+              BucketId bucketId, Timestamp timestamp, uint32_t docSize,
               SubDbType subDbType)
 {
     BucketState &state = _map[bucketId];
     state.add(gid, timestamp, docSize, subDbType);
+    if (state.isActive() && subDbType != SubDbType::REMOVED) {
+        addActive(1);
+    }
     return state;
 }
 
 void
 BucketDB::remove(const GlobalId &gid,
-                 const BucketId &bucketId, const Timestamp &timestamp, uint32_t docSize,
+                 BucketId bucketId, Timestamp timestamp, uint32_t docSize,
                  SubDbType subDbType)
 {
     BucketState &state = _map[bucketId];
     state.remove(gid, timestamp, docSize, subDbType);
+    if (state.isActive() && subDbType != SubDbType::REMOVED) {
+        subActive(1);
+    }
+}
+
+void
+BucketDB::remove_batch(const std::vector<RemoveBatchEntry> &removed, SubDbType sub_db_type)
+{
+    std::optional<BucketId> prev_bucket_id;
+    BucketState* state = nullptr;
+    for (auto &entry : removed) {
+        if (!prev_bucket_id.has_value() || prev_bucket_id.value() != entry.get_bucket_id()) {
+            state = &_map[entry.get_bucket_id()];
+            prev_bucket_id = entry.get_bucket_id();
+        }
+        state->remove(entry.get_gid(), entry.get_timestamp(), entry.get_doc_size(), sub_db_type);
+        if (state->isActive() && sub_db_type != SubDbType::REMOVED) {
+            subActive(1);
+        }
+    }
 }
 
 void
 BucketDB::modify(const GlobalId &gid,
-                 const BucketId &oldBucketId, const Timestamp &oldTimestamp, uint32_t oldDocSize,
-                 const BucketId &newBucketId, const Timestamp &newTimestamp, uint32_t newDocSize,
+                 BucketId oldBucketId, Timestamp oldTimestamp, uint32_t oldDocSize,
+                 BucketId newBucketId, Timestamp newTimestamp, uint32_t newDocSize,
                  SubDbType subDbType)
 {
     if (oldBucketId == newBucketId) {
@@ -79,19 +128,15 @@ BucketDB::modify(const GlobalId &gid,
     }
 }
 
-
 bucketdb::BucketState
-BucketDB::get(const BucketId &bucketId) const
+BucketDB::get(BucketId bucketId) const
 {
     auto itr = _map.find(bucketId);
-    if (itr != _map.end()) {
-        return itr->second;
-    }
-    return BucketState();
+    return (itr != _map.end()) ? itr->second : BucketState();
 }
 
 void
-BucketDB::cacheBucket(const BucketId &bucketId)
+BucketDB::cacheBucket(BucketId bucketId)
 {
     _cachedBucketId = bucketId;
     _cachedBucketState = get(bucketId);
@@ -105,13 +150,13 @@ BucketDB::uncacheBucket()
 }
 
 bool
-BucketDB::isCachedBucket(const BucketId &bucketId) const
+BucketDB::isCachedBucket(BucketId bucketId) const
 {
     return _cachedBucketId == bucketId;
 }
 
 bucketdb::BucketState
-BucketDB::cachedGet(const BucketId &bucketId) const
+BucketDB::cachedGet(BucketId bucketId) const
 {
     if (isCachedBucket(bucketId)) {
         return _cachedBucketState;
@@ -120,51 +165,46 @@ BucketDB::cachedGet(const BucketId &bucketId) const
 }
 
 storage::spi::BucketInfo
-BucketDB::cachedGetBucketInfo(const BucketId &bucketId) const
+BucketDB::cachedGetBucketInfo(BucketId bucketId) const
 {
     if (isCachedBucket(bucketId)) {
         return _cachedBucketState;
     }
-    auto itr = _map.find(bucketId);
-    if (itr != _map.end()) {
-        return itr->second;
-    }
-    return BucketState();
+    return get(bucketId);
 }
 
 bool
-BucketDB::hasBucket(const BucketId &bucketId) const
+BucketDB::hasBucket(BucketId bucketId) const
 {
     return (_map.find(bucketId) != _map.end());
 }
 
 
 bool
-BucketDB::isActiveBucket(const BucketId &bucketId) const
+BucketDB::isActiveBucket(BucketId bucketId) const
 {
     auto itr = _map.find(bucketId);
     return (itr != _map.end()) && itr->second.isActive();
 }
 
-void
-BucketDB::getBuckets(BucketId::List &buckets) const
+document::BucketId::List
+BucketDB::getBuckets() const
 {
+    BucketId::List buckets;
     buckets.reserve(_map.size());
     for (const auto & entry : _map) {
         buckets.push_back(entry.first);
     }
-}
-
-bool
-BucketDB::empty() const
-{
-    return _map.empty();
+    std::sort(buckets.begin(), buckets.end());
+    return buckets;
 }
 
 void
 BucketDB::clear()
 {
+    checkActiveCount();
     _map.clear();
+    _numActiveDocs = 0ul;
 }
 
 void
@@ -175,19 +215,26 @@ BucketDB::checkEmpty() const
         assert(state.empty());
         (void) state;
     }
+    assert(getNumActiveDocs() == 0ul);
 }
 
 
 void
-BucketDB::setBucketState(const BucketId &bucketId, bool active)
+BucketDB::setBucketState(BucketId bucketId, bool active)
 {
     BucketState &state = _map[bucketId];
+    if (active == state.isActive()) return;
     state.setActive(active);
+    if (active) {
+        addActive(state.getDocumentCount());
+    } else {
+        subActive(state.getDocumentCount());
+    }
 }
 
 
 void
-BucketDB::createBucket(const BucketId &bucketId)
+BucketDB::createBucket(BucketId bucketId)
 {
     BucketState &state = _map[bucketId];
     (void) state;
@@ -195,7 +242,7 @@ BucketDB::createBucket(const BucketId &bucketId)
 
 
 void
-BucketDB::deleteEmptyBucket(const BucketId &bucketId)
+BucketDB::deleteEmptyBucket(BucketId bucketId)
 {
     auto itr = _map.find(bucketId);
     if (itr == _map.end()) {
@@ -207,30 +254,34 @@ BucketDB::deleteEmptyBucket(const BucketId &bucketId)
     }
 }
 
-void
-BucketDB::getActiveBuckets(BucketId::List &buckets) const
+document::BucketId::List
+BucketDB::getActiveBuckets() const
 {
+    BucketId::List buckets;
+    buckets.reserve(_map.size());
     for (const auto & entry : _map) {
         if (entry.second.isActive()) {
             buckets.push_back(entry.first);
         }
     }
+    std::sort(buckets.begin(), buckets.end());
+    return buckets;
 }
 
-void
-BucketDB::populateActiveBuckets(const BucketId::List &buckets, BucketId::List &fixupBuckets)
+document::BucketId::List
+BucketDB::populateActiveBuckets(BucketId::List buckets)
 {
-    typedef BucketId::List BIV;
-    BIV sorted(buckets);
-    BIV toAdd;
-    std::sort(sorted.begin(), sorted.end());
-    auto si = sorted.begin();
-    auto se = sorted.end();
-    for (const auto & entry : _map) {
-        for (; si != se && !(entry.first < *si); ++si) {
-            if (*si < entry.first) {
+    BucketId::List toAdd;
+    BucketId::List fixupBuckets;
+    std::sort(buckets.begin(), buckets.end());
+    auto si = buckets.begin();
+    auto se = buckets.end();
+    BucketId::List currentBuckets = getBuckets();
+    for (BucketId bucketId : currentBuckets) {
+        for (; si != se && !(bucketId < *si); ++si) {
+            if (*si < bucketId) {
                 toAdd.push_back(*si);
-            } else if (!entry.second.isActive()) {
+            } else if (!isActiveBucket(bucketId)) {
                 fixupBuckets.push_back(*si);
                 setBucketState(*si, true);
             }
@@ -241,10 +292,23 @@ BucketDB::populateActiveBuckets(const BucketId::List &buckets, BucketId::List &f
     }
     BucketState activeState;
     activeState.setActive(true);
-    for (const BucketId & bucketId : toAdd) {
-        InsertResult ins(_map.emplace(bucketId, activeState));
-        assert(ins.second);
+    for (BucketId  bucketId : toAdd) {
+        auto [itr, inserted] = _map.insert(std::make_pair(bucketId, activeState));
+        assert(inserted);
     }
+    return fixupBuckets;
 }
+
+void BucketDB::restoreIntegrity() {
+    uncacheBucket();
+    _numActiveDocs = countActiveDocs();
+}
+
+bool
+BucketDB::validateIntegrity() const {
+    checkActiveCount();
+    return true;
+}
+
 
 }

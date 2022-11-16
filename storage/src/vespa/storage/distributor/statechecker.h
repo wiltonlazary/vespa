@@ -82,6 +82,7 @@ public:
         const DistributorStripeOperationContext& op_ctx;
         const BucketDatabase& db;
         NodeMaintenanceStatsTracker& stats;
+        const bool merges_inhibited_in_bucket_space;
 
         const BucketDatabase::Entry& getSiblingEntry() const {
             return siblingEntry;
@@ -97,7 +98,7 @@ public:
     class ResultImpl
     {
     public:
-        virtual ~ResultImpl() {}
+        virtual ~ResultImpl() = default;
         virtual IdealStateOperation::UP createOperation() = 0;
         virtual MaintenancePriority getPriority() const = 0;
         virtual MaintenanceOperation::Type getType() const = 0;
@@ -108,19 +109,19 @@ public:
         std::unique_ptr<ResultImpl> _impl;
     public:
         IdealStateOperation::UP createOperation() {
-            return (_impl.get() 
+            return (_impl
                     ? _impl->createOperation()
                     : IdealStateOperation::UP());
         }
 
         MaintenancePriority getPriority() const {
-            return (_impl.get()
+            return (_impl
                     ? _impl->getPriority()
                     : MaintenancePriority());
         }
 
         MaintenanceOperation::Type getType() const {
-            return (_impl.get()
+            return (_impl
                     ? _impl->getType()
                     : MaintenanceOperation::OPERATION_COUNT);
             
@@ -131,17 +132,13 @@ public:
                 IdealStateOperation::UP operation,
                 MaintenancePriority::Priority priority);
     private:
-        Result(std::unique_ptr<ResultImpl> impl)
+        explicit Result(std::unique_ptr<ResultImpl> impl)
             : _impl(std::move(impl))
         {}
     };
 
-    /**
-     * Constructor.
-     */
-    StateChecker();
-
-    virtual ~StateChecker();
+    StateChecker() noexcept = default;
+    virtual ~StateChecker() = default;
 
     /**
      * Calculates if operations need to be scheduled to rectify any issues
@@ -149,16 +146,7 @@ public:
      *
      * @return Returns an operation to perform for the given bucket.
      */
-    virtual Result check(Context& c) = 0;
-
-    /**
-     * Used by status pages to generate human-readable information
-     * about the ideal state.
-
-     * @return Returns a string containing information about the
-     * problems this state checker is intended to solve.
-     */
-    virtual std::string getStatusText() const = 0;
+    virtual Result check(Context& c) const = 0;
 
     /**
      * Returns the name of this state checker.

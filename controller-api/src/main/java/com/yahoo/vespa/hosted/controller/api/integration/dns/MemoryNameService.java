@@ -33,8 +33,8 @@ public class MemoryNameService implements NameService {
     }
 
     @Override
-    public Record createCname(RecordName name, RecordData canonicalName) {
-        var record = new Record(Record.Type.CNAME, name, canonicalName);
+    public Record createRecord(Record.Type type, RecordName name, RecordData canonicalName) {
+        var record = new Record(type, name, canonicalName);
         add(record);
         return record;
     }
@@ -45,6 +45,20 @@ public class MemoryNameService implements NameService {
                              .sorted((a, b) -> Comparator.comparing(AliasTarget::name).compare(a, b))
                              .map(d -> new Record(Record.Type.ALIAS, name, d.pack()))
                              .collect(Collectors.toList());
+        // Satisfy idempotency contract of interface
+        for (var r1 : records) {
+            this.records.removeIf(r2 -> conflicts(r1, r2));
+        }
+        this.records.addAll(records);
+        return records;
+    }
+
+    @Override
+    public List<Record> createDirect(RecordName name, Set<DirectTarget> targets) {
+        var records = targets.stream()
+                .sorted((a, b) -> Comparator.comparing((DirectTarget target) -> target.recordData().asString()).compare(a, b))
+                .map(d -> new Record(Record.Type.DIRECT, name, d.pack()))
+                .collect(Collectors.toList());
         // Satisfy idempotency contract of interface
         for (var r1 : records) {
             this.records.removeIf(r2 -> conflicts(r1, r2));
@@ -108,7 +122,7 @@ public class MemoryNameService implements NameService {
 
     @Override
     public void removeRecords(List<Record> records) {
-        this.records.removeAll(records);
+        records.forEach(this.records::remove);
     }
 
     /**
@@ -121,6 +135,11 @@ public class MemoryNameService implements NameService {
             AliasTarget t1 = AliasTarget.unpack(r1.data());
             AliasTarget t2 = AliasTarget.unpack(r2.data());
             return t1.name().equals(t2.name());                        // ALIAS records require distinct targets
+        }
+        if (r1.type() == Record.Type.DIRECT && r1.type() == r2.type()) {
+            DirectTarget t1 = DirectTarget.unpack(r1.data());
+            DirectTarget t2 = DirectTarget.unpack(r2.data());
+            return t1.id().equals(t2.id());                            // DIRECT records require distinct IDs
         }
         return true;                                                   // Anything else is considered a conflict
     }

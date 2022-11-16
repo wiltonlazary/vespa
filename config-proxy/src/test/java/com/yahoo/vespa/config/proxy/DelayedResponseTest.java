@@ -2,14 +2,13 @@
 package com.yahoo.vespa.config.proxy;
 
 import com.yahoo.vespa.config.protocol.JRTServerConfigRequest;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.Delayed;
 import java.util.concurrent.TimeUnit;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author hmusum
@@ -21,24 +20,24 @@ public class DelayedResponseTest {
     private static final String namespace = "bar";
 
     @Test
-    public void basic() {
+    void basic() {
         ConfigTester tester = new ConfigTester();
         final long returnTime = System.currentTimeMillis();
         final long timeout = 1;
         final String configName = "foo";
         final JRTServerConfigRequest request = tester.createRequest(configName, configId, namespace, timeout);
         DelayedResponse delayedResponse = new DelayedResponse(request, returnTime);
-        assertThat(delayedResponse.getRequest(), is(request));
-        assertThat(delayedResponse.getReturnTime(), is(returnTime));
+        assertEquals(request, delayedResponse.getRequest());
+        assertEquals(returnTime, delayedResponse.getReturnTime().longValue());
         assertTrue(delayedResponse.getDelay(TimeUnit.SECONDS) < returnTime);
 
         DelayedResponse before = new DelayedResponse(request, returnTime - 1000L);
         DelayedResponse after = new DelayedResponse(request, returnTime + 1000L);
 
-        assertThat(delayedResponse.compareTo(delayedResponse), is(0));
-        assertThat(delayedResponse.compareTo(before), is(1));
-        assertThat(delayedResponse.compareTo(after), is(-1));
-        assertThat(delayedResponse.compareTo(new Delayed() {
+        assertEquals(0, delayedResponse.compareTo(delayedResponse));
+        assertEquals(1, delayedResponse.compareTo(before));
+        assertEquals(-1, delayedResponse.compareTo(after));
+        assertEquals(0, delayedResponse.compareTo(new Delayed() {
             @Override
             public long getDelay(TimeUnit unit) {
                 return 0;
@@ -48,11 +47,11 @@ public class DelayedResponseTest {
             public int compareTo(Delayed o) {
                 return 0;
             }
-        }), is(0));
+        }));
     }
 
     @Test
-    public void testDelayedResponse() {
+    void testDelayedResponse() {
         ConfigTester tester = new ConfigTester();
         final long timeout = 20000;
         JRTServerConfigRequest request1 = tester.createRequest("baz", configId, namespace, timeout);
@@ -70,14 +69,14 @@ public class DelayedResponseTest {
         // New request, should have larger delay than the first
         JRTServerConfigRequest request2 = tester.createRequest("baz", configId, namespace, timeout);
         DelayedResponse delayed2 = new DelayedResponse(request2);
-        assertTrue("delayed1=" + delayed1.getReturnTime() + ", delayed2=" +
-                delayed2.getReturnTime() + ": delayed2 should be greater than delayed1",
-                delayed2.getReturnTime() > delayed1.getReturnTime());
+        assertTrue(delayed2.getReturnTime() > delayed1.getReturnTime(),
+                                 "delayed1=" + delayed1.getReturnTime() + ", delayed2=" +
+                                                          delayed2.getReturnTime() + ": delayed2 should be greater than delayed1");
 
         // Test compareTo() method
-        assertThat(delayed1.compareTo(delayed1), is(0));
-        assertThat(delayed1.compareTo(delayed2), is(-1));
-        assertThat(delayed2.compareTo(delayed1), is(1));
+        assertEquals(0, delayed1.compareTo(delayed1));
+        assertEquals(-1, delayed1.compareTo(delayed2));
+        assertEquals(1, delayed2.compareTo(delayed1));
     }
 
 }

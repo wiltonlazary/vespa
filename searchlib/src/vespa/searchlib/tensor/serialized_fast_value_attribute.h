@@ -3,7 +3,7 @@
 #pragma once
 
 #include "tensor_attribute.h"
-#include "streamed_value_store.h"
+#include "tensor_buffer_store.h"
 
 namespace search::tensor {
 
@@ -17,16 +17,14 @@ namespace search::tensor {
  *
  */
 class SerializedFastValueAttribute : public TensorAttribute {
-    vespalib::eval::ValueType _tensor_type;
-    StreamedValueStore _streamedValueStore; // data store for serialized tensors
+    TensorBufferStore _tensorBufferStore; // data store for serialized tensors
 public:
     SerializedFastValueAttribute(vespalib::stringref baseFileName, const Config &cfg);
     ~SerializedFastValueAttribute() override;
-    void setTensor(DocId docId, const vespalib::eval::Value &tensor) override;
-    std::unique_ptr<vespalib::eval::Value> getTensor(DocId docId) const override;
-    bool onLoad(vespalib::Executor *executor) override;
-    std::unique_ptr<AttributeSaver> onInitSave(vespalib::stringref fileName) override;
-    void compactWorst() override;
+
+    // Implements DocVectorAccess
+    vespalib::eval::TypedCells get_vector(uint32_t docid, uint32_t subspace) const override;
+    VectorBundle get_vectors(uint32_t docid) const override;
 };
 
 }

@@ -7,6 +7,8 @@
 #include <vespa/searchlib/query/tree/querybuilder.h>
 #include <vespa/searchlib/query/tree/simplequery.h>
 #include <vespa/searchlib/query/tree/stackdumpcreator.h>
+#include <vespa/searchlib/query/query_term_decoder.h>
+#include <vespa/searchlib/query/query_term_simple.h>
 #include <vespa/vespalib/testkit/test_kit.h>
 
 #include <vespa/log/log.h>
@@ -47,7 +49,7 @@ PredicateQueryTerm::UP getPredicateQueryTerm() {
 template <class NodeTypes>
 Node::UP createQueryTree() {
     QueryBuilder<NodeTypes> builder;
-    builder.addAnd(11);
+    builder.addAnd(13);
     {
         builder.addRank(2);
         {
@@ -110,6 +112,12 @@ Node::UP createQueryTree() {
             builder.addStringTerm(str[6], view[6], id[6], weight[7]);
         }
         builder.add_nearest_neighbor_term("query_tensor", "doc_tensor", id[3], weight[5], 7, true, 33, 100100.25);
+        builder.addAndNot(2);
+        {
+            builder.add_true_node();
+            builder.add_false_node();
+        }
+        builder.addFuzzyTerm(str[5], view[5], id[5], weight[5], 3, 1);
     }
     Node::UP node = builder.build();
     ASSERT_TRUE(node.get());
@@ -130,13 +138,29 @@ template <class Term>
 bool checkTerm(const Term *term, const typename Term::Type &t, const string &f,
                int32_t i, Weight w, bool ranked = true,
                bool use_position_data = true) {
-    return EXPECT_TRUE(term != 0) &&
-        (EXPECT_TRUE(compareTerms(t, term->getTerm())) &
-         EXPECT_EQUAL(f, term->getView()) &
-         EXPECT_EQUAL(i, term->getId()) &
-         EXPECT_EQUAL(w.percent(), term->getWeight().percent()) &
-         EXPECT_EQUAL(ranked, term->isRanked()) &
-         EXPECT_EQUAL(use_position_data, term->usePositionData()));
+    if (!EXPECT_TRUE(term != nullptr)) {
+        return false;
+    }
+    bool result = true;
+    if (!EXPECT_TRUE(compareTerms(t, term->getTerm()))) {
+        result = false;
+    }
+    if (!EXPECT_EQUAL(f, term->getView())) {
+        result = false;
+    }
+    if (!EXPECT_EQUAL(i, term->getId())) {
+        result = false;
+    }
+    if (!EXPECT_EQUAL(w.percent(), term->getWeight().percent())) {
+        result = false;
+    }
+    if (!EXPECT_EQUAL(ranked, term->isRanked())) {
+        result = false;
+    }
+    if (!EXPECT_EQUAL(use_position_data, term->usePositionData())) {
+        result = false;
+    }
+    return result;
 }
 
 template <class NodeType>
@@ -172,10 +196,13 @@ void checkQueryTreeTypes(Node *node) {
     typedef typename NodeTypes::WeakAnd WeakAnd;
     typedef typename NodeTypes::PredicateQuery PredicateQuery;
     typedef typename NodeTypes::RegExpTerm RegExpTerm;
+    typedef typename NodeTypes::TrueQueryNode TrueNode;
+    typedef typename NodeTypes::FalseQueryNode FalseNode;
+    typedef typename NodeTypes::FuzzyTerm FuzzyTerm;
 
     ASSERT_TRUE(node);
     auto* and_node = as_node<And>(node);
-    EXPECT_EQUAL(11u, and_node->getChildren().size());
+    EXPECT_EQUAL(13u, and_node->getChildren().size());
 
     auto* rank = as_node<Rank>(and_node->getChildren()[0]);
     EXPECT_EQUAL(2u, rank->getChildren().size());
@@ -292,6 +319,18 @@ void checkQueryTreeTypes(Node *node) {
     EXPECT_EQUAL(id[3], nearest_neighbor->getId());
     EXPECT_EQUAL(weight[5].percent(), nearest_neighbor->getWeight().percent());
     EXPECT_EQUAL(7u, nearest_neighbor->get_target_num_hits());
+
+    and_not = as_node<AndNot>(and_node->getChildren()[11]);
+    EXPECT_EQUAL(2u, and_not->getChildren().size());
+    auto* true_node = as_node<TrueNode>(and_not->getChildren()[0]);
+    auto* false_node = as_node<FalseNode>(and_not->getChildren()[1]);
+    EXPECT_TRUE(true_node);
+    EXPECT_TRUE(false_node);
+
+    auto* fuzzy_term = as_node<FuzzyTerm>(and_node->getChildren()[12]);
+    EXPECT_TRUE(checkTerm(fuzzy_term, str[5], view[5], id[5], weight[5]));
+    EXPECT_EQUAL(3u, fuzzy_term->getMaxEditDistance());
+    EXPECT_EQUAL(1u, fuzzy_term->getPrefixLength());
 }
 
 struct AbstractTypes {
@@ -316,6 +355,9 @@ struct AbstractTypes {
     typedef search::query::WeakAnd WeakAnd;
     typedef search::query::PredicateQuery PredicateQuery;
     typedef search::query::RegExpTerm RegExpTerm;
+    typedef search::query::TrueQueryNode TrueQueryNode;
+    typedef search::query::FalseQueryNode FalseQueryNode;
+    typedef search::query::FuzzyTerm FuzzyTerm;
 };
 
 // Builds a tree with simplequery and checks that the results have the
@@ -409,6 +451,14 @@ struct MyNearestNeighborTerm : NearestNeighborTerm {
       : NearestNeighborTerm(query_tensor_name, field_name, i, w, target_num_hits, allow_approximate, explore_additional_hits, distance_threshold)
     {}
 };
+struct MyTrue : TrueQueryNode {};
+struct MyFalse : FalseQueryNode {};
+struct MyFuzzyTerm : FuzzyTerm {
+    MyFuzzyTerm(const Type &t, const string &f, int32_t i, Weight w,
+                uint32_t m, uint32_t p)
+            : FuzzyTerm(t, f, i, w, m, p) {
+    }
+};
 
 struct MyQueryNodeTypes {
     typedef MyAnd And;
@@ -434,6 +484,9 @@ struct MyQueryNodeTypes {
     typedef MyPredicateQuery PredicateQuery;
     typedef MyRegExpTerm RegExpTerm;
     typedef MyNearestNeighborTerm NearestNeighborTerm;
+    typedef MyTrue TrueQueryNode;
+    typedef MyFalse FalseQueryNode;
+    typedef MyFuzzyTerm FuzzyTerm;
 };
 
 TEST("require that Custom Query Trees Can Be Built") {
@@ -546,6 +599,7 @@ TEST("require that Query Tree Creator Can Replicate Queries") {
 TEST("require that Query Tree Creator Can Create Queries From Stack") {
     Node::UP node = createQueryTree<MyQueryNodeTypes>();
     string stackDump = StackDumpCreator::create(*node);
+
     SimpleQueryStackDumpIterator iterator(stackDump);
 
     Node::UP new_node = QueryTreeCreator<SimpleQueryNodeTypes>::create(iterator);
@@ -584,6 +638,26 @@ TEST("require that All Range Syntaxes Work") {
     range_term = dynamic_cast<RangeTerm *>(and_node->getChildren()[2]);
     ASSERT_TRUE(range_term);
     EXPECT_TRUE(range2 == range_term->getTerm());
+}
+
+TEST("require that fuzzy node can be created") {
+    QueryBuilder<SimpleQueryNodeTypes> builder;
+    builder.addFuzzyTerm("term", "view", 0, Weight(0), 3, 1);
+    Node::UP node = builder.build();
+
+    string stackDump = StackDumpCreator::create(*node);
+    {
+        SimpleQueryStackDumpIterator iterator(stackDump);
+        Node::UP new_node = QueryTreeCreator<SimpleQueryNodeTypes>::create(iterator);
+        FuzzyTerm *fuzzy_node = as_node<FuzzyTerm>(new_node.get());
+        EXPECT_EQUAL(3u, fuzzy_node->getMaxEditDistance());
+        EXPECT_EQUAL(1u, fuzzy_node->getPrefixLength());
+    }
+    {
+        search::QueryTermSimple::UP queryTermSimple = search::QueryTermDecoder::decodeTerm(stackDump);
+        EXPECT_EQUAL(3u, queryTermSimple->getFuzzyMaxEditDistance());
+        EXPECT_EQUAL(1u, queryTermSimple->getFuzzyPrefixLength());
+    }
 }
 
 TEST("require that empty intermediate node can be added") {

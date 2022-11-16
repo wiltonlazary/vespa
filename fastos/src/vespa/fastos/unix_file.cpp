@@ -128,24 +128,6 @@ int FastOS_UNIX_File::GetMaximumPathLength(const char *pathName)
     return pathconf(pathName, _PC_PATH_MAX);
 }
 
-bool
-FastOS_UNIX_File::MakeDirectory (const char *name)
-{
-    return (mkdir(name, 0775) == 0);
-}
-
-
-void
-FastOS_UNIX_File::RemoveDirectory (const char *name)
-{
-    if ((rmdir(name) != 0) && (ERR_ENOENT != GetLastError())) {
-        std::ostringstream os;
-        os << "Remove of directory '" << name << "' failed with error :'" << getLastErrorString() << "'";
-        throw std::runtime_error(os.str());
-    }
-}
-
-
 std::string
 FastOS_UNIX_File::getCurrentDirectory(void)
 {
@@ -258,7 +240,7 @@ FastOS_UNIX_File::Open(unsigned int openFlags, const char *filename)
         }
         unsigned int accessFlags = CalcAccessFlags(openFlags);
 
-        _filedes = open(_filename, accessFlags, 0664);
+        _filedes = open(_filename.c_str(), accessFlags, 0664);
 
         rc = (_filedes != -1);
 
@@ -386,10 +368,9 @@ FastOS_UNIX_File::Delete(const char *name)
 bool
 FastOS_UNIX_File::Delete(void)
 {
-    assert(!IsOpened());
-    assert(_filename != nullptr);
+    assert( ! IsOpened());
 
-    return (unlink(_filename) == 0);
+    return (unlink(_filename.c_str()) == 0);
 }
 
 bool FastOS_UNIX_File::Rename (const char *currentFileName, const char *newFileName)
@@ -408,7 +389,7 @@ bool FastOS_UNIX_File::Rename (const char *currentFileName, const char *newFileN
 }
 
 bool
-FastOS_UNIX_File::Sync(void)
+FastOS_UNIX_File::Sync()
 {
     assert(IsOpened());
 

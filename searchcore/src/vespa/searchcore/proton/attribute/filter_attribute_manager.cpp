@@ -78,7 +78,7 @@ FilterAttributeManager::createContext() const {
 }
 
 IAttributeManager::SP
-FilterAttributeManager::create(const AttributeCollectionSpec &) const {
+FilterAttributeManager::create(AttributeCollectionSpec &&) const {
     throw vespalib::IllegalArgumentException("Not implemented");
 }
 
@@ -167,12 +167,6 @@ FilterAttributeManager::getAttributeFieldWriter() const
     return _mgr->getAttributeFieldWriter();
 }
 
-vespalib::ThreadExecutor&
-FilterAttributeManager::get_shared_executor() const
-{
-    return _mgr->get_shared_executor();
-}
-
 search::AttributeVector *
 FilterAttributeManager::getWritableAttribute(const vespalib::string &name) const
 {
@@ -202,6 +196,25 @@ FilterAttributeManager::asyncForEachAttribute(std::shared_ptr<IConstAttributeFun
         // writer thread
         attributeFieldWriter.execute(attributeFieldWriter.getExecutorIdFromName(attrsp->getNamePrefix()),
                                      [attrsp, func]() { (*func)(*attrsp); });
+    }
+}
+
+void
+FilterAttributeManager::asyncForEachAttribute(std::shared_ptr<IAttributeFunctor> func, OnDone onDone) const
+{
+    // Run by document db master thread
+    std::vector<AttributeGuard> completeList;
+    _mgr->getAttributeList(completeList);
+    vespalib::ISequencedTaskExecutor &attributeFieldWriter = getAttributeFieldWriter();
+    for (auto &guard : completeList) {
+        search::AttributeVector::SP attrsp = guard.getSP();
+        // Name must be extracted in document db master thread or attribute
+        // writer thread
+        attributeFieldWriter.execute(attributeFieldWriter.getExecutorIdFromName(attrsp->getNamePrefix()),
+                                     [attrsp, func, onDone]() {
+            (void) onDone;
+            (*func)(*attrsp);
+        });
     }
 }
 

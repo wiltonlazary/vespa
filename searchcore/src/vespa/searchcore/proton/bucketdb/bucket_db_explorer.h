@@ -3,7 +3,7 @@
 #pragma once
 
 #include "bucket_db_owner.h"
-#include <vespa/vespalib/net/state_explorer.h>
+#include <vespa/vespalib/net/http/state_explorer.h>
 
 namespace proton {
 
@@ -16,7 +16,7 @@ private:
     bucketdb::Guard _bucketDb;
 
 public:
-    BucketDBExplorer(bucketdb::Guard bucketDb);
+    explicit BucketDBExplorer(bucketdb::Guard bucketDb);
     ~BucketDBExplorer() override;
 
     void get_state(const vespalib::slime::Inserter &inserter, bool full) const override;

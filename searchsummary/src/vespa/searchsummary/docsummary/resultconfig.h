@@ -2,13 +2,15 @@
 
 #pragma once
 
-#include "resultclass.h"
-#include "general_result.h"
-#include <vespa/config-summary.h>
-#include <vespa/searchlib/util/rawbuf.h>
-#include <vespa/searchlib/util/stringenum.h>
+#include <vespa/vespalib/stllike/hash_map.h>
 
+namespace vespa::config::search::internal {
+    class InternalSummaryType;
+}
 namespace search::docsummary {
+
+class IDocsumFieldWriterFactory;
+class ResultClass;
 
 /**
  * This class represents the overall result configuration. A result
@@ -27,20 +29,16 @@ namespace search::docsummary {
 class ResultConfig
 {
 private:
-    ResultConfig(const ResultConfig &);
-    ResultConfig& operator=(const ResultConfig &);
-
-    typedef vespalib::hash_map<vespalib::string, uint32_t> NameMap;
-    typedef vespalib::hash_map<uint32_t, ResultClass::UP> IdMap;
+    using NameMap = vespalib::hash_map<vespalib::string, uint32_t>;
+    using IdMap = vespalib::hash_map<uint32_t, std::unique_ptr<ResultClass>>;
     uint32_t                    _defaultSummaryId;
-    search::util::StringEnum    _fieldEnum;
     IdMap                       _classLookup;
     NameMap                     _nameLookup; // name -> class id
 
     void Clean();
-    void Init();
 
 public:
+    using SummaryConfig = const vespa::config::search::internal::InternalSummaryType;
     class iterator {
     public:
         iterator(IdMap::iterator it) : _it(it) { }
@@ -67,16 +65,18 @@ public:
         IdMap::const_iterator _it;
     };
 
-    iterator begin() { return iterator(_classLookup.begin()); }
-    iterator   end() { return iterator(_classLookup.end()); }
-    const_iterator begin() const { return const_iterator(_classLookup.begin()); }
-    const_iterator   end() const { return const_iterator(_classLookup.end()); }
+    iterator begin() { return { _classLookup.begin() }; }
+    iterator   end() { return { _classLookup.end() }; }
+    const_iterator begin() const { return { _classLookup.begin() }; }
+    const_iterator   end() const { return { _classLookup.end() }; }
 
     /**
      * Constructor. Create an initially empty result configuration.
      * NOTE: This method simply calls the Init method.
      **/
     ResultConfig();
+    ResultConfig(const ResultConfig &) = delete;
+    ResultConfig& operator=(const ResultConfig &) = delete;
 
     /**
      * Destructor. Delete all internal structures. NOTE: This method
@@ -88,97 +88,13 @@ public:
     /**
      * @return value denoting an undefined class id.
      **/
-    static uint32_t NoClassID() { return static_cast<uint32_t>(-1); }
+    static uint32_t noClassID() { return static_cast<uint32_t>(-1); }
 
+    // whether last config seen wanted useV8geoPositions = true
+    static bool wantedV8geoPositions();
 
-    /**
-     * Determine if a result field type is of variable size.
-     *
-     * @return true for variable size field types, false for fixed
-     * size field types
-     **/
-    static bool IsVariableSize(ResType t) { return (t >= RES_STRING); }
-
-
-    /**
-     * Determine if a pair of result field types are binary
-     * compatible. A pair of types are binary compatible if the packed
-     * representation is identical.
-     *
-     * @return true if the given types are binary compatible.
-     * @param a enum value of a result field type.
-     * @param b enum value of a result field type.
-     **/
-    static bool IsBinaryCompatible(ResType a, ResType b)
-    {
-        if (a == b) {
-            return true;
-        }
-        switch (a) {
-        case RES_BYTE:
-        case RES_BOOL:
-            return (b == RES_BYTE || b == RES_BOOL);
-        case RES_STRING:
-        case RES_DATA:
-            return (b == RES_STRING || b == RES_DATA);
-        case RES_LONG_STRING:
-        case RES_LONG_DATA:
-        case RES_XMLSTRING:
-        case RES_FEATUREDATA:
-        case RES_JSONSTRING:
-            return (b == RES_LONG_STRING || b == RES_LONG_DATA ||
-                    b == RES_XMLSTRING || b == RES_FEATUREDATA || b == RES_JSONSTRING);
-        default:
-            return false;
-        }
-        return false;
-    }
-
-
-    /**
-     * Determine if a pair of result field types are runtime
-     * compatible. A pair of types are runtime compatible if the
-     * unpacked (@ref ResEntry) representation is identical.
-     *
-     * @return true if the given types are runtime compatible.
-     * @param a enum value of a result field type.
-     * @param b enum value of a result field type.
-     **/
-    static bool IsRuntimeCompatible(ResType a, ResType b)
-    {
-        switch (a) {
-        case RES_INT:
-        case RES_SHORT:
-        case RES_BYTE:
-        case RES_BOOL:
-            return (b == RES_INT || b == RES_SHORT || b == RES_BYTE || b == RES_BOOL);
-        case RES_FLOAT:
-        case RES_DOUBLE:
-            return (b == RES_FLOAT || b == RES_DOUBLE);
-        case RES_INT64:
-            return b == RES_INT64;
-        case RES_STRING:
-        case RES_LONG_STRING:
-        case RES_XMLSTRING:
-        case RES_JSONSTRING:
-            return (b == RES_STRING || b == RES_LONG_STRING || b == RES_XMLSTRING || b == RES_JSONSTRING);
-        case RES_DATA:
-        case RES_LONG_DATA:
-            return (b == RES_DATA || b == RES_LONG_DATA);
-        case RES_TENSOR:
-            return (b == RES_TENSOR);
-        case RES_FEATUREDATA:
-            return (b == RES_FEATUREDATA);
-        }
-        return false;
-    }
-
-
-    /**
-     * @return the name of the given result field type.
-     * @param resType enum value of a result field type.
-     **/
-    static const char *GetResTypeName(ResType type);
+    // This function should only be called by unit tests.
+    static void set_wanted_v8_geo_positions(bool value);
 
     /**
      * Discard the current configuration and start over. After this
@@ -186,7 +102,7 @@ public:
      * state right after it was created. This method may call both Clean
      * and Init.
      **/
-    void Reset();
+    void reset();
 
 
     /**
@@ -199,8 +115,12 @@ public:
      * @param name name of result class to add.
      * @param classID id of result class to add.
      **/
-    ResultClass *AddResultClass(const char *name, uint32_t classID);
+    ResultClass *addResultClass(const char *name, uint32_t classID);
 
+    /*
+     * Set default result class id.
+     */
+    void set_default_result_class_id(uint32_t id);
 
     /**
      * Obtain result class from the result class id. This method is used
@@ -209,17 +129,8 @@ public:
      * @return result class with the given id or NULL if not found.
      * @param classID the id of the result class to look up.
      **/
-    const ResultClass *LookupResultClass(uint32_t classID) const;
+    const ResultClass *lookupResultClass(uint32_t classID) const;
 
-
-    /**
-     * Obtain result class id from the result class name.
-     *
-     * @return result class id or 'def' if not found
-     * @param name the name of the result class
-     * @param def default return value if not found
-     **/
-    uint32_t LookupResultClassId(const vespalib::string &name, uint32_t def) const;
 
     /**
      * Obtain result class id from the result class name.
@@ -227,33 +138,7 @@ public:
      * @return result class id or configured default if empty or "default".
      * @param name the name of the result class, NoClassId(-1) meaning undefined
      **/
-    uint32_t LookupResultClassId(const vespalib::string &name) const;
-
-
-    /**
-     * Obtain the number of result classes held by this result
-     * configuration.
-     *
-     * @return number of result classes.
-     **/
-    uint32_t GetNumResultClasses() const { return _classLookup.size(); }
-
-
-    /**
-     * Obtain the string enumeration object that holds the mapping from
-     * field name to field name enumerated value.
-     *
-     * @return field name enumeration.
-     **/
-    const search::util::StringEnum & GetFieldNameEnum() const { return _fieldEnum; }
-
-
-    /**
-     * This method calls the CreateEnumMap on all result classes held by
-     * this object. This is needed in order to look up fields by field
-     * name enumerated value.
-     **/
-    void CreateEnumMaps();
+    uint32_t lookupResultClassId(const vespalib::string &name) const;
 
     /**
      * Read config that has been fetched from configserver.
@@ -261,18 +146,7 @@ public:
      * @return true(success)/false(fail)
      * @param configId reference on server
      **/
-    bool ReadConfig(const vespa::config::search::SummaryConfig &cfg, const char *configId);
-
-    /**
-     * Inspect a docsum blob and return the class id of the docsum
-     * contained within it. This method is useful if you want to know
-     * what it is before deciding whether to unpack it.
-     *
-     * @return docsum blob class id.
-     * @param buf docsum blob.
-     * @param buflen length of docsum blob.
-     **/
-    uint32_t GetClassID(const char *buf, uint32_t buflen);
+    bool readConfig(const SummaryConfig &cfg, const char *configId, IDocsumFieldWriterFactory& docsum_field_writer_factory);
 };
 
 }

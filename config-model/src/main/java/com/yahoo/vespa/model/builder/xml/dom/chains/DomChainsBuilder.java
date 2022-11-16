@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.builder.xml.dom.chains;
 
-import com.yahoo.config.application.Xml;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.model.builder.xml.dom.VespaDomBuilder;
@@ -26,25 +25,19 @@ class DomChainsBuilder<COMPONENT extends ChainedComponent<?>, CHAIN extends Chai
         extends VespaDomBuilder.DomConfigProducerBuilder<CHAINS> {
 
     private final Collection<ComponentType<COMPONENT>> allowedComponentTypes;
-    private final String appPkgChainsDir;
-    private final Element outerChainsElem;
 
-    protected DomChainsBuilder(Element outerChainsElem,
-                               Collection<ComponentType<COMPONENT>> allowedComponentTypes,
-                               String appPkgChainsDir) {
+    protected DomChainsBuilder(Collection<ComponentType<COMPONENT>> allowedComponentTypes) {
 
-        this.outerChainsElem = outerChainsElem;
         this.allowedComponentTypes = new ArrayList<>(allowedComponentTypes);
-        this.appPkgChainsDir = appPkgChainsDir;
     }
 
-    protected abstract CHAINS newChainsInstance(AbstractConfigProducer parent);
+    protected abstract CHAINS newChainsInstance(AbstractConfigProducer<?> parent);
 
     @Override
-    protected final CHAINS doBuild(DeployState deployState, AbstractConfigProducer parent, Element chainsElement) {
+    protected final CHAINS doBuild(DeployState deployState, AbstractConfigProducer<?> parent, Element chainsElement) {
         CHAINS chains = newChainsInstance(parent);
 
-        List<Element> allChainElements = allChainElements(deployState, parent, chainsElement);
+        List<Element> allChainElements = allChainElements(deployState, chainsElement);
         if (! allChainElements.isEmpty()) {
             ComponentsBuilder<COMPONENT> outerComponentsBuilder = readOuterComponents(deployState, chains, allChainElements);
             ChainsBuilder<COMPONENT, CHAIN> chainsBuilder = readChains(deployState, chains, allChainElements,
@@ -56,30 +49,25 @@ class DomChainsBuilder<COMPONENT extends ChainedComponent<?>, CHAIN extends Chai
         return chains;
     }
 
-    private List<Element> allChainElements(DeployState deployState, AbstractConfigProducer ancestor, Element chainsElement) {
+    private List<Element> allChainElements(DeployState deployState, Element chainsElement) {
         List<Element> chainsElements = new ArrayList<>();
-        if (outerChainsElem != null)
-            chainsElements.add(outerChainsElem);
         chainsElements.add(chainsElement);
-
-        if (appPkgChainsDir != null)
-            chainsElements.addAll(Xml.allElemsFromPath(deployState.getApplicationPackage(), appPkgChainsDir));
 
         return chainsElements;
     }
 
-    private ComponentsBuilder<COMPONENT> readOuterComponents(DeployState deployState, AbstractConfigProducer ancestor, List<Element> chainsElems) {
+    private ComponentsBuilder<COMPONENT> readOuterComponents(DeployState deployState, AbstractConfigProducer<?> ancestor, List<Element> chainsElems) {
         return new ComponentsBuilder<>(deployState, ancestor, allowedComponentTypes, chainsElems, null);
     }
 
     protected abstract
-    ChainsBuilder<COMPONENT, CHAIN> readChains(DeployState deployState, AbstractConfigProducer ancestor, List<Element> allChainsElems,
-                                               Map<String, ComponentsBuilder.ComponentType> outerComponentTypeByComponentName);
+    ChainsBuilder<COMPONENT, CHAIN> readChains(DeployState deployState, AbstractConfigProducer<?> ancestor, List<Element> allChainsElems,
+                                               Map<String, ComponentsBuilder.ComponentType<?>> outerComponentTypeByComponentName);
 
     private void addOuterComponents(CHAINS chains, ComponentsBuilder<COMPONENT> outerComponentsBuilder) {
         assert (outerComponentsBuilder.getOuterComponentReferences().isEmpty());
 
-        for (ChainedComponent outerComponent : outerComponentsBuilder.getComponentDefinitions()) {
+        for (ChainedComponent<?> outerComponent : outerComponentsBuilder.getComponentDefinitions()) {
             chains.add(outerComponent);
         }
     }

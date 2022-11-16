@@ -8,6 +8,7 @@
 #include <vespa/searchlib/attribute/attributefactory.h>
 #include <vespa/searchlib/attribute/attributevector.h>
 #include <vespa/searchlib/attribute/integerbase.h>
+#include <vespa/searchcommon/attribute/config.h>
 
 #include <vespa/searchlib/fef/blueprint.h>
 #include <vespa/searchlib/fef/blueprintfactory.h>
@@ -503,6 +504,8 @@ void RankSetupTest::testRankSetup()
     IndexEnvironment env;
     env.getProperties().add(rank::FirstPhase::NAME, "firstphase");
     env.getProperties().add(rank::SecondPhase::NAME, "secondphase");
+    env.getProperties().add(match::Feature::NAME, "match_foo");
+    env.getProperties().add(match::Feature::NAME, "match_bar");
     env.getProperties().add(dump::Feature::NAME, "foo");
     env.getProperties().add(dump::Feature::NAME, "bar");
     env.getProperties().add(matching::NumThreadsPerSearch::NAME, "3");
@@ -522,17 +525,24 @@ void RankSetupTest::testRankSetup()
     env.getProperties().add(hitcollector::EstimatePoint::NAME, "70");
     env.getProperties().add(hitcollector::EstimateLimit::NAME, "80");
     env.getProperties().add(hitcollector::RankScoreDropLimit::NAME, "90.5");
-    env.getProperties().add(execute::onmatch::Attribute::NAME, "a");
-    env.getProperties().add(execute::onmatch::Operation::NAME, "++");
-    env.getProperties().add(execute::onrerank::Attribute::NAME, "b");
-    env.getProperties().add(execute::onrerank::Operation::NAME, "=7");
-    env.getProperties().add(execute::onsummary::Attribute::NAME, "c");
-    env.getProperties().add(execute::onsummary::Operation::NAME, "--");
+    env.getProperties().add(mutate::on_match::Attribute::NAME, "a");
+    env.getProperties().add(mutate::on_match::Operation::NAME, "+=3");
+    env.getProperties().add(mutate::on_first_phase::Attribute::NAME, "b");
+    env.getProperties().add(mutate::on_first_phase::Operation::NAME, "=3");
+    env.getProperties().add(mutate::on_second_phase::Attribute::NAME, "b");
+    env.getProperties().add(mutate::on_second_phase::Operation::NAME, "=7");
+    env.getProperties().add(mutate::on_summary::Attribute::NAME, "c");
+    env.getProperties().add(mutate::on_summary::Operation::NAME, "-=2");
 
     RankSetup rs(_factory, env);
+    EXPECT_FALSE(rs.has_match_features());
     rs.configure();
     EXPECT_EQUAL(rs.getFirstPhaseRank(), vespalib::string("firstphase"));
     EXPECT_EQUAL(rs.getSecondPhaseRank(), vespalib::string("secondphase"));
+    EXPECT_TRUE(rs.has_match_features());
+    ASSERT_TRUE(rs.get_match_features().size() == 2);
+    EXPECT_EQUAL(rs.get_match_features()[0], vespalib::string("match_foo"));
+    EXPECT_EQUAL(rs.get_match_features()[1], vespalib::string("match_bar"));
     ASSERT_TRUE(rs.getDumpFeatures().size() == 2);
     EXPECT_EQUAL(rs.getDumpFeatures()[0], vespalib::string("foo"));
     EXPECT_EQUAL(rs.getDumpFeatures()[1], vespalib::string("bar"));
@@ -553,12 +563,14 @@ void RankSetupTest::testRankSetup()
     EXPECT_EQUAL(rs.getEstimatePoint(), 70u);
     EXPECT_EQUAL(rs.getEstimateLimit(), 80u);
     EXPECT_EQUAL(rs.getRankScoreDropLimit(), 90.5);
-    EXPECT_EQUAL(rs.getExecuteOnMatch()._attribute, "a");
-    EXPECT_EQUAL(rs.getExecuteOnMatch()._operation, "++");
-    EXPECT_EQUAL(rs.getExecuteOnReRank()._attribute, "b");
-    EXPECT_EQUAL(rs.getExecuteOnReRank()._operation, "=7");
-    EXPECT_EQUAL(rs.getExecuteOnSummary()._attribute, "c");
-    EXPECT_EQUAL(rs.getExecuteOnSummary()._operation, "--");
+    EXPECT_EQUAL(rs.getMutateOnMatch()._attribute, "a");
+    EXPECT_EQUAL(rs.getMutateOnMatch()._operation, "+=3");
+    EXPECT_EQUAL(rs.getMutateOnFirstPhase()._attribute, "b");
+    EXPECT_EQUAL(rs.getMutateOnFirstPhase()._operation, "=3");
+    EXPECT_EQUAL(rs.getMutateOnSecondPhase()._attribute, "b");
+    EXPECT_EQUAL(rs.getMutateOnSecondPhase()._operation, "=7");
+    EXPECT_EQUAL(rs.getMutateOnSummary()._attribute, "c");
+    EXPECT_EQUAL(rs.getMutateOnSummary()._operation, "-=2");
 
 }
 
@@ -800,6 +812,8 @@ RankSetupTest::testFeatureNormalization()
 
     rankSetup.setFirstPhaseRank(" mysum ( value ( 1 ) , value ( 1 ) ) ");
     rankSetup.setSecondPhaseRank(" mysum ( value ( 2 ) , value ( 2 ) ) ");
+    rankSetup.add_match_feature(" mysum ( value ( 3 ) , value ( 3 ) ) ");
+    rankSetup.add_match_feature(" mysum ( \"value( 3 )\" , \"value( 3 )\" ) ");
     rankSetup.addSummaryFeature(" mysum ( value ( 5 ) , value ( 5 ) ) ");
     rankSetup.addSummaryFeature(" mysum ( \"value( 5 )\" , \"value( 5 )\" ) ");
     rankSetup.addDumpFeature(" mysum ( value ( 10 ) , value ( 10 ) ) ");
@@ -813,9 +827,11 @@ RankSetupTest::testFeatureNormalization()
         MatchData::UP match_data = layout.createMatchData();
         RankProgram::UP firstPhaseProgram = rankSetup.create_first_phase_program();
         RankProgram::UP secondPhaseProgram = rankSetup.create_second_phase_program();
+        RankProgram::UP match_program = rankSetup.create_match_program();
         RankProgram::UP summaryProgram = rankSetup.create_summary_program();
         firstPhaseProgram->setup(*match_data, queryEnv);
         secondPhaseProgram->setup(*match_data, queryEnv);
+        match_program->setup(*match_data, queryEnv);
         summaryProgram->setup(*match_data, queryEnv);
 
         EXPECT_APPROX(2.0, Utils::getScoreFeature(*firstPhaseProgram, 1), 0.001);
@@ -844,6 +860,17 @@ RankSetupTest::testFeatureNormalization()
             exp["value(2).0"] = 2.0;
             exp["mysum(value(2),value(2))"] = 4.0;
             exp["mysum(value(2),value(2)).out"] = 4.0;
+            TEST_DO(checkFeatures(exp, actual));
+        }
+        { // all match features
+            std::map<vespalib::string, feature_t> actual = Utils::getAllFeatures(*match_program, 1);
+            std::map<vespalib::string, feature_t> exp;
+            exp["value(3)"] = 3.0;
+            exp["value(3).0"] = 3.0;
+            exp["mysum(value(3),value(3))"] = 6.0;
+            exp["mysum(value(3),value(3)).out"] = 6.0;
+            exp["mysum(\"value( 3 )\",\"value( 3 )\")"] = 6.0;
+            exp["mysum(\"value( 3 )\",\"value( 3 )\").out"] = 6.0;
             TEST_DO(checkFeatures(exp, actual));
         }
         { // all rank features (summary)

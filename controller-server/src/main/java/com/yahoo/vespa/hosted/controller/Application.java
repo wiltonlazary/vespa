@@ -7,13 +7,14 @@ import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.zone.ZoneId;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationVersion;
+import com.yahoo.vespa.hosted.controller.api.integration.deployment.RevisionId;
 import com.yahoo.vespa.hosted.controller.api.integration.organization.IssueId;
 import com.yahoo.vespa.hosted.controller.api.integration.organization.User;
 import com.yahoo.vespa.hosted.controller.application.ApplicationActivity;
 import com.yahoo.vespa.hosted.controller.application.Deployment;
 import com.yahoo.vespa.hosted.controller.application.QuotaUsage;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
+import com.yahoo.vespa.hosted.controller.deployment.RevisionHistory;
 import com.yahoo.vespa.hosted.controller.metric.ApplicationMetrics;
 import com.yahoo.vespa.hosted.controller.tenant.Tenant;
 
@@ -32,6 +33,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * An application. Belongs to a {@link Tenant}, and may have multiple {@link Instance}s.
@@ -46,7 +48,7 @@ public class Application {
     private final Instant createdAt;
     private final DeploymentSpec deploymentSpec;
     private final ValidationOverrides validationOverrides;
-    private final Optional<ApplicationVersion> latestVersion;
+    private final RevisionHistory revisions;
     private final OptionalLong projectId;
     private final Optional<IssueId> deploymentIssueId;
     private final Optional<IssueId> ownershipIssueId;
@@ -58,16 +60,16 @@ public class Application {
 
     /** Creates an empty application. */
     public Application(TenantAndApplicationId id, Instant now) {
-        this(id, now, DeploymentSpec.empty, ValidationOverrides.empty,
-             Optional.empty(), Optional.empty(), Optional.empty(), OptionalInt.empty(),
-             new ApplicationMetrics(0, 0), Set.of(), OptionalLong.empty(), Optional.empty(), List.of());
+        this(id, now, DeploymentSpec.empty, ValidationOverrides.empty, Optional.empty(),
+             Optional.empty(), Optional.empty(), OptionalInt.empty(), new ApplicationMetrics(0, 0),
+             Set.of(), OptionalLong.empty(), RevisionHistory.empty(), List.of());
     }
 
-    // DO NOT USE! For serialization purposes, only.
+    // Do not use directly - edit through LockedApplication.
     public Application(TenantAndApplicationId id, Instant createdAt, DeploymentSpec deploymentSpec, ValidationOverrides validationOverrides,
                        Optional<IssueId> deploymentIssueId, Optional<IssueId> ownershipIssueId, Optional<User> owner,
                        OptionalInt majorVersion, ApplicationMetrics metrics, Set<PublicKey> deployKeys, OptionalLong projectId,
-                       Optional<ApplicationVersion> latestVersion, Collection<Instance> instances) {
+                       RevisionHistory revisions, Collection<Instance> instances) {
         this.id = Objects.requireNonNull(id, "id cannot be null");
         this.createdAt = Objects.requireNonNull(createdAt, "instant of creation cannot be null");
         this.deploymentSpec = Objects.requireNonNull(deploymentSpec, "deploymentSpec cannot be null");
@@ -79,12 +81,12 @@ public class Application {
         this.metrics = Objects.requireNonNull(metrics, "metrics cannot be null");
         this.deployKeys = Objects.requireNonNull(deployKeys, "deployKeys cannot be null");
         this.projectId = Objects.requireNonNull(projectId, "projectId cannot be null");
-        this.latestVersion = requireNotUnknown(latestVersion);
+        this.revisions = revisions;
         this.instances = instances.stream().collect(
                 Collectors.collectingAndThen(Collectors.toMap(Instance::name,
                                                               Function.identity(),
                                                               (i1, i2) -> {
-                                                                  throw new IllegalArgumentException("Duplicate key " + i1);
+                                                                  throw new IllegalArgumentException("Duplicate instance " + i1.id());
                                                               },
                                                               TreeMap::new),
                                              Collections::unmodifiableMap)
@@ -104,8 +106,8 @@ public class Application {
     /** Returns the project id of this application, if it has any. */
     public OptionalLong projectId() { return projectId; }
 
-    /** Returns the last submitted version of this application. */
-    public Optional<ApplicationVersion> latestVersion() { return latestVersion; }
+    /** Returns the known revisions for this application. */
+    public RevisionHistory revisions() { return revisions; }
 
     /**
      * Returns the last deployed validation overrides of this application,
@@ -160,7 +162,7 @@ public class Application {
     public ApplicationActivity activity() {
         return ApplicationActivity.from(instances.values().stream()
                                                  .flatMap(instance -> instance.deployments().values().stream())
-                                                 .collect(Collectors.toUnmodifiableList()));
+                                                 .toList());
     }
 
     public Map<InstanceName, List<Deployment>> productionDeployments() {
@@ -171,7 +173,7 @@ public class Application {
     /**
      * Returns the oldest platform version this has deployed in a permanent zone (not test or staging).
      *
-     * This is unfortunately quite similar to {@link ApplicationController#oldestInstalledPlatform(TenantAndApplicationId)},
+     * This is unfortunately quite similar to {@link ApplicationController#oldestInstalledPlatform(Application)},
      * but this checks only what the controller has deployed to the production zones, while that checks the node repository
      * to see what's actually installed on each node. Thus, this is the right choice for, e.g., target Vespa versions for
      * new deployments, while that is the right choice for version to compile against.
@@ -182,48 +184,54 @@ public class Application {
                                       .min(Comparator.naturalOrder());
     }
 
-    /**
-     * Returns the oldest application version this has deployed in a permanent zone (not test or staging).
-     */
-    public Optional<ApplicationVersion> oldestDeployedApplication() {
+    /** Returns the oldest application version this has deployed in a permanent zone (not test or staging) */
+    public Optional<RevisionId> oldestDeployedRevision() {
+        return productionRevisions().min(Comparator.naturalOrder());
+    }
+
+    /** Returns the latest application version this has deployed in a permanent zone (not test or staging) */
+    public Optional<RevisionId> latestDeployedRevision() {
+        return productionRevisions().max(Comparator.naturalOrder());
+    }
+
+    private Stream<RevisionId> productionRevisions() {
         return productionDeployments().values().stream().flatMap(List::stream)
-                                      .map(Deployment::applicationVersion)
-                                      .min(Comparator.naturalOrder());
+                                      .map(Deployment::revision)
+                                      .filter(RevisionId::isProduction);
     }
 
     /** Returns the total quota usage for this application, excluding temporary deployments */
     public QuotaUsage quotaUsage() {
         return instances().values().stream()
-                          .map(Instance::quotaUsage).reduce(QuotaUsage::add).orElse(QuotaUsage.none);
+                          .map(Instance::quotaUsage)
+                          .reduce(QuotaUsage::add)
+                          .orElse(QuotaUsage.none);
+    }
+
+    /** Returns the total quota usage for manual deployments for this application */
+    public QuotaUsage manualQuotaUsage() {
+        return instances().values().stream()
+                          .map(Instance::manualQuotaUsage)
+                          .reduce(QuotaUsage::add)
+                          .orElse(QuotaUsage.none);
     }
 
     /** Returns the total quota usage for this application, excluding one specific deployment (and temporary deployments) */
     public QuotaUsage quotaUsage(ApplicationId application, ZoneId zone) {
         return instances().values().stream()
                           .map(instance -> instance.quotaUsageExcluding(application, zone))
-                          .reduce(QuotaUsage::add).orElse(QuotaUsage.none);
+                          .reduce(QuotaUsage::add)
+                          .orElse(QuotaUsage.none);
     }
 
     /** Returns the set of deploy keys for this application. */
     public Set<PublicKey> deployKeys() { return deployKeys; }
 
-    private static Optional<ApplicationVersion> requireNotUnknown(Optional<ApplicationVersion> latestVersion) {
-        Objects.requireNonNull(latestVersion, "latestVersion cannot be null");
-        latestVersion.ifPresent(version -> {
-            if (version.isUnknown())
-                throw new IllegalArgumentException("latestVersion cannot be unknown");
-        });
-        return latestVersion;
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (! (o instanceof Application)) return false;
-
-        Application that = (Application) o;
-
-        return id.equals(that.id);
+        if (! (o instanceof Application other)) return false;
+        return id.equals(other.id);
     }
 
     @Override

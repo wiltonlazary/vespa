@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -16,7 +16,7 @@ public:
     static std::unique_ptr<NnsIndexIterator> create(
             fef::TermFieldMatchData &tfmd,
             const std::vector<Hit> &hits,
-            const search::tensor::DistanceFunction *dist_fun);
+            const search::tensor::DistanceFunction &dist_fun);
 };
 
 } // namespace

@@ -5,7 +5,6 @@
 #include "summarymanager.h"
 #include <vespa/searchcore/proton/initializer/initializer_task.h>
 #include <vespa/searchcommon/common/growstrategy.h>
-#include <vespa/vespalib/stllike/string.h>
 
 namespace proton {
 
@@ -19,8 +18,7 @@ class SummaryManagerInitializer : public initializer::InitializerTask
     const search::GrowStrategy               _grow;
     const vespalib::string                   _baseDir;
     const vespalib::string                   _subDbName;
-    const DocTypeName                        _docTypeName;
-    vespalib::ThreadExecutor                &_summaryExecutor;
+    vespalib::Executor                      &_shared_executor;
     const search::LogDocumentStore::Config   _storeCfg;
     const search::TuneFileSummary            _tuneFile;
     const search::common::FileHeaderContext &_fileHeaderContext;
@@ -35,8 +33,7 @@ public:
     SummaryManagerInitializer(const search::GrowStrategy &grow,
                               const vespalib::string & baseDir,
                               const vespalib::string &subDbName,
-                              const DocTypeName &docTypeName,
-                              vespalib::ThreadExecutor & summaryExecutor,
+                              vespalib::Executor &shared_executor,
                               const search::LogDocumentStore::Config & storeCfg,
                               const search::TuneFileSummary &tuneFile,
                               const search::common::FileHeaderContext & fileHeaderContext,

@@ -6,12 +6,12 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../parent/pom.xml</relativePath>
     </parent>
     <artifactId>application-model</artifactId>
     <packaging>container-plugin</packaging>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <name>${project.artifactId}</name>
     <description>Model classes for Vespa application entities such as host name, application id etc.</description>
     <dependencies>
@@ -23,8 +23,21 @@
         </dependency>
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
+            <artifactId>vespajlib</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.yahoo.vespa</groupId>
+            <artifactId>config-provisioning</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.yahoo.vespa</groupId>
             <artifactId>annotations</artifactId>
             <version>${project.version}</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
     <build>

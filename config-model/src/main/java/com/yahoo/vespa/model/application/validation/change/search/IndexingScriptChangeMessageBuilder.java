@@ -1,11 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.application.validation.change.search;
 
-import com.yahoo.searchdefinition.Search;
-import com.yahoo.searchdefinition.document.ImmutableSDField;
-import com.yahoo.searchdefinition.document.Matching;
-import com.yahoo.searchdefinition.document.NormalizeLevel;
-import com.yahoo.searchdefinition.document.Stemming;
+import com.yahoo.schema.Schema;
+import com.yahoo.schema.document.ImmutableSDField;
+import com.yahoo.schema.document.Matching;
+import com.yahoo.schema.document.MatchType;
+import com.yahoo.schema.document.NormalizeLevel;
+import com.yahoo.schema.document.Stemming;
 import com.yahoo.vespa.documentmodel.SummaryField;
 import com.yahoo.vespa.documentmodel.SummaryTransform;
 
@@ -14,20 +15,19 @@ import com.yahoo.vespa.documentmodel.SummaryTransform;
  * This message should be more descriptive for the end-user than just seeing the changed indexing script.
  *
  * @author geirst
- * @since 2014-12-09
  */
 public class IndexingScriptChangeMessageBuilder {
 
-    private final Search currentSearch;
+    private final Schema currentSchema;
     private final ImmutableSDField currentField;
-    private final Search nextSearch;
+    private final Schema nextSchema;
     private final ImmutableSDField nextField;
 
-    public IndexingScriptChangeMessageBuilder(Search currentSearch, ImmutableSDField currentField,
-                                              Search nextSearch, ImmutableSDField nextField) {
-        this.currentSearch = currentSearch;
+    public IndexingScriptChangeMessageBuilder(Schema currentSchema, ImmutableSDField currentField,
+                                              Schema nextSchema, ImmutableSDField nextField) {
+        this.currentSchema = currentSchema;
         this.currentField = currentField;
-        this.nextSearch = nextSearch;
+        this.nextSchema = nextSchema;
         this.nextField = nextField;
     }
 
@@ -55,9 +55,9 @@ public class IndexingScriptChangeMessageBuilder {
     }
 
     private void checkStemming(ChangeMessageBuilder builder) {
-        Stemming currentStemming = currentField.getStemming(currentSearch);
-        Stemming nextStemming = nextField.getStemming(nextSearch);
-        if (!currentStemming.equals(nextStemming)) {
+        Stemming currentStemming = currentField.getStemming(currentSchema);
+        Stemming nextStemming = nextField.getStemming(nextSchema);
+        if (currentStemming != nextStemming) {
             builder.addChange("stemming", currentStemming.getName(), nextStemming.getName());
         }
     }
@@ -65,7 +65,7 @@ public class IndexingScriptChangeMessageBuilder {
     private void checkNormalizing(ChangeMessageBuilder builder) {
         NormalizeLevel.Level currentLevel = currentField.getNormalizing().getLevel();
         NormalizeLevel.Level nextLevel = nextField.getNormalizing().getLevel();
-        if (!currentLevel.equals(nextLevel)) {
+        if (currentLevel != nextLevel) {
             builder.addChange("normalizing", currentLevel.toString(), nextLevel.toString());
         }
     }
@@ -77,7 +77,7 @@ public class IndexingScriptChangeMessageBuilder {
             if (currentSummaryField != null) {
                 SummaryTransform currentTransform = currentSummaryField.getTransform();
                 SummaryTransform nextTransform = nextSummaryField.getTransform();
-                if (!currentSummaryField.getTransform().equals(nextSummaryField.getTransform())) {
+                if (currentSummaryField.getTransform() != nextSummaryField.getTransform()) {
                     builder.addChange("summary field '" + fieldName + "' transform",
                             currentTransform.getName(), nextTransform.getName());
                 }
@@ -86,9 +86,9 @@ public class IndexingScriptChangeMessageBuilder {
     }
 
     private static String toString(Matching matching) {
-        Matching.Type type = matching.getType();
+        MatchType type = matching.getType();
         String retval = type.getName();
-        if (type.equals(Matching.Type.GRAM)) {
+        if (type == MatchType.GRAM) {
             retval += " (size " + matching.getGramSize() + ")";
         }
         return retval;

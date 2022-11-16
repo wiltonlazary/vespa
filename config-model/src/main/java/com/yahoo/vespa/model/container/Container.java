@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container;
 
-import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.api.container.ContainerServiceType;
 import com.yahoo.config.model.deploy.DeployState;
@@ -74,10 +73,11 @@ public abstract class Container extends AbstractService implements
     private final boolean retired;
     /** The unique index of this node */
     private final int index;
+    private final boolean useOldStartupScript;
     private final boolean dumpHeapOnShutdownTimeout;
     private final double shutdownTimeoutS;
 
-    private final ComponentGroup<Handler<?>> handlers = new ComponentGroup<>(this, "handler");
+    private final ComponentGroup<Handler> handlers = new ComponentGroup<>(this, "handler");
     private final ComponentGroup<Component<?, ?>> components = new ComponentGroup<>(this, "components");
 
     private final JettyHttpServer defaultHttpServer;
@@ -92,9 +92,10 @@ public abstract class Container extends AbstractService implements
         this.parent = parent;
         this.retired = retired;
         this.index = index;
+        useOldStartupScript = deployState.featureFlags().useOldJdiscContainerStartup();
         dumpHeapOnShutdownTimeout = deployState.featureFlags().containerDumpHeapOnShutdownTimeout();
         shutdownTimeoutS = deployState.featureFlags().containerShutdownTimeout();
-        this.defaultHttpServer = new JettyHttpServer("DefaultHttpServer", containerClusterOrNull(parent), deployState.isHosted());
+        this.defaultHttpServer = new JettyHttpServer("DefaultHttpServer", containerClusterOrNull(parent), deployState);
         if (getHttp() == null) {
             addChild(defaultHttpServer);
         }
@@ -114,7 +115,7 @@ public abstract class Container extends AbstractService implements
     /** True if this container is retired (slated for removal) */
     public boolean isRetired() { return retired; }
 
-    public ComponentGroup<Handler<?>> getHandlers() {
+    public ComponentGroup<Handler> getHandlers() {
         return handlers;
     }
 
@@ -130,7 +131,7 @@ public abstract class Container extends AbstractService implements
         addComponent(new SimpleComponent(new ComponentModel(idSpec, classSpec, bundleSpec)));
     }
 
-    public final void addHandler(Handler<?> h) {
+    public final void addHandler(Handler h) {
         handlers.addComponent(h);
     }
     
@@ -148,17 +149,9 @@ public abstract class Container extends AbstractService implements
         return (parent instanceof ContainerCluster) ? ((ContainerCluster<?>) parent).getHttp() : null;
     }
 
+    @SuppressWarnings("unused") // used by amenders
     public JettyHttpServer getDefaultHttpServer() {
         return defaultHttpServer;
-    }
-
-    public JettyHttpServer getHttpServer() {
-        Http http = getHttp();
-        if (http == null) {
-            return defaultHttpServer;
-        } else {
-            return http.getHttpServer().orElse(null);
-        }
     }
 
     /** Returns the index of this node. The index of a given node is stable through changes with best effort. */
@@ -168,11 +161,11 @@ public abstract class Container extends AbstractService implements
     public void addBuiltinHandlers() { }
 
     @Override
-    public void initService(DeployLogger deployLogger) {
+    public void initService(DeployState deployState) {
         if (isInitialized()) return;
 
         // XXX: Must be called first, to set the baseport
-        super.initService(deployLogger);
+        super.initService(deployState);
 
         if (getHttp() == null) {
             initDefaultJettyConnector();
@@ -216,7 +209,7 @@ public abstract class Container extends AbstractService implements
     }
 
     /**
-     * First Qrserver or container must run on ports familiar to the user.
+     * First container must run on ports familiar to the user.
      */
     @Override
     public boolean requiresWantedPort() {
@@ -281,7 +274,7 @@ public abstract class Container extends AbstractService implements
     }
 
     protected int allocatedRpcPort = 0;
-    private int getRpcPort() {
+    protected int getRpcPort() {
         return allocatedRpcPort;
     }
     protected int numRpcPorts() { return rpcServerEnabled() ? 1 : 0; }
@@ -307,8 +300,11 @@ public abstract class Container extends AbstractService implements
         }
     }
 
-    public String getStartupCommand() {
-        return "PRELOAD=" + getPreLoad() + " exec vespa-start-container-daemon " + getJvmOptions() + " ";
+    public Optional<String> getStartupCommand() {
+        if (useOldStartupScript) {
+            return Optional.of("PRELOAD=" + getPreLoad() + " exec vespa-start-container-daemon " + getJvmOptions() + " ");
+        }
+        return Optional.of("PRELOAD=" + getPreLoad() + " exec ${VESPA_HOME}/libexec/vespa/script-utils vespa-start-container-daemon " + getJvmOptions() + " ");
     }
 
     @Override
@@ -319,6 +315,7 @@ public abstract class Container extends AbstractService implements
                             .slobrokId(serviceSlobrokId()))
                 .filedistributor(filedistributorConfig())
                 .discriminator((clusterName != null ? clusterName + "." : "" ) + name)
+                .clustername(clusterName != null ? clusterName : "")
                 .nodeIndex(index)
                 .shutdown.dumpHeapOnTimeout(dumpHeapOnShutdownTimeout)
                          .timeout(shutdownTimeoutS);
@@ -381,7 +378,7 @@ public abstract class Container extends AbstractService implements
 
     @Override
     public void getConfig(ContainerMbusConfig.Builder builder) {
-        builder.enabled(messageBusEnabled()).port(getMessagingPort());
+        builder.port(getMessagingPort());
     }
 
     @Override

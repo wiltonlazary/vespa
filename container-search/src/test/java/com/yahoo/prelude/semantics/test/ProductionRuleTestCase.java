@@ -1,6 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.prelude.semantics.test;
 
+import com.yahoo.language.simple.SimpleLinguistics;
+import com.yahoo.prelude.semantics.engine.RuleBaseLinguistics;
 import com.yahoo.search.Query;
 import com.yahoo.prelude.semantics.RuleBase;
 import com.yahoo.prelude.semantics.engine.Evaluation;
@@ -13,10 +15,10 @@ import com.yahoo.prelude.semantics.rule.ReferenceTermProduction;
 import com.yahoo.prelude.semantics.rule.ReplacingProductionRule;
 import com.yahoo.prelude.semantics.rule.TermCondition;
 import com.yahoo.prelude.semantics.rule.TermProduction;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author bratseth
@@ -24,12 +26,13 @@ import static org.junit.Assert.assertTrue;
 public class ProductionRuleTestCase {
 
     @Test
-    public void testProductionRule() {
-        TermCondition term = new TermCondition("sony");
+    void testProductionRule() {
+        var linguistics = new RuleBaseLinguistics(new SimpleLinguistics());
+        TermCondition term = new TermCondition("sony", linguistics);
         NamedCondition named = new NamedCondition("brand", term);
         ConditionReference reference = new ConditionReference("brand");
 
-        TermProduction termProduction = new ReferenceTermProduction("brand", "brand");
+        TermProduction termProduction = new ReferenceTermProduction("brand", "brand", false);
         ProductionList productionList = new ProductionList();
         productionList.addProduction(termProduction);
 
@@ -38,19 +41,18 @@ public class ProductionRuleTestCase {
         rule.setProduction(productionList);
 
         // To initialize the condition reference...
-        RuleBase ruleBase = new RuleBase();
-        ruleBase.setName("test");
+        RuleBase ruleBase = new RuleBase("test");
         ruleBase.addCondition(named);
         ruleBase.addRule(rule);
         ruleBase.initialize();
 
-        assertTrue("Brand is referenced", rule.matchReferences().contains("brand"));
+        assertTrue(rule.matchReferences().contains("brand"), "Brand is referenced");
 
         Query query = new Query("?query=sony");
-        RuleEvaluation e = new Evaluation(query).freshRuleEvaluation();
+        RuleEvaluation e = new Evaluation(query, null).freshRuleEvaluation();
         assertTrue(rule.matches(e));
         rule.produce(e);
-        assertEquals("AND brand:sony", query.getModel().getQueryTree().getRoot().toString());
+        assertEquals("WEAKAND(100) brand:sony", query.getModel().getQueryTree().getRoot().toString());
     }
 
 }

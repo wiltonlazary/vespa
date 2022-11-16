@@ -3,9 +3,9 @@ package com.yahoo.vespa.config.server.deploy;
 
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.config.FileReference;
 import com.yahoo.config.application.api.DeployLogger;
-import com.yahoo.config.model.api.ServiceInfo;
 import com.yahoo.config.provision.ActivationContext;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationTransaction;
@@ -19,13 +19,16 @@ import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.ApplicationRepository.ActionTimer;
 import com.yahoo.vespa.config.server.ApplicationRepository.Activation;
 import com.yahoo.vespa.config.server.TimeoutBudget;
+import com.yahoo.vespa.config.server.application.Application;
+import com.yahoo.vespa.config.server.application.ConfigConvergenceChecker;
+import com.yahoo.vespa.config.server.application.ConfigNotConvergedException;
 import com.yahoo.vespa.config.server.configchange.ConfigChangeActions;
 import com.yahoo.vespa.config.server.configchange.ReindexActions;
 import com.yahoo.vespa.config.server.configchange.RestartActions;
 import com.yahoo.vespa.config.server.session.PrepareParams;
 import com.yahoo.vespa.config.server.session.Session;
+import com.yahoo.vespa.config.server.session.SessionRepository;
 import com.yahoo.vespa.config.server.tenant.Tenant;
-
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Optional;
@@ -35,10 +38,12 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
+import static com.yahoo.vespa.config.server.application.ConfigConvergenceChecker.ServiceListResponse;
+
 /**
  * The process of deploying an application.
  * Deployments are created by an {@link ApplicationRepository}.
- * Instances of this are not multithread safe.
+ * Instances of this are not multi-thread safe.
  *
  * @author Ulf Lilleengen
  * @author bratseth
@@ -98,11 +103,15 @@ public class Deployment implements com.yahoo.config.provision.Deployment {
     @Override
     public void prepare() {
         if (prepared) return;
+
         PrepareParams params = this.params.get();
-        ApplicationId applicationId = params.getApplicationId();
-        try (ActionTimer timer = applicationRepository.timerFor(applicationId, "deployment.prepareMillis")) {
-            this.configChangeActions = tenant.getSessionRepository().prepareLocalSession(session, deployLogger, params, clock.instant());
+        try (ActionTimer timer = applicationRepository.timerFor(params.getApplicationId(), "deployment.prepareMillis")) {
+            this.configChangeActions = sessionRepository().prepareLocalSession(session, deployLogger, params, clock.instant());
             this.prepared = true;
+        } catch (Exception e) {
+            log.log(Level.FINE, "Preparing session " + session.getSessionId() + " failed, deleting it");
+            deleteSession();
+            throw e;
         }
 
         waitForResourcesOrTimeout(params, session, provisioner);
@@ -114,26 +123,31 @@ public class Deployment implements com.yahoo.config.provision.Deployment {
         prepare();
 
         validateSessionStatus(session);
+
         PrepareParams params = this.params.get();
         ApplicationId applicationId = session.getApplicationId();
         try (ActionTimer timer = applicationRepository.timerFor(applicationId, "deployment.activateMillis")) {
             TimeoutBudget timeoutBudget = params.getTimeoutBudget();
             timeoutBudget.assertNotTimedOut(() -> "Timeout exceeded when trying to activate '" + applicationId + "'");
 
-            Activation activation = applicationRepository.activate(session, applicationId, tenant, params.force());
-            activation.awaitCompletion(timeoutBudget.timeLeft());
-            logActivatedMessage(applicationId, activation);
+            try {
+                Activation activation = applicationRepository.activate(session, applicationId, tenant, params.force());
+                waitForActivation(applicationId, timeoutBudget, activation);
+            } catch (Exception e) {
+                log.log(Level.FINE, "Activating session " + session.getSessionId() + " failed, deleting it");
+                deleteSession();
+                throw e;
+            }
 
-            if (provisioner.isPresent() && configChangeActions != null)
-                restartServices(applicationId);
-
+            restartServicesIfNeeded(applicationId);
             storeReindexing(applicationId, session.getMetaData().getGeneration());
 
             return session.getMetaData().getGeneration();
         }
     }
 
-    private void logActivatedMessage(ApplicationId applicationId, Activation activation) {
+    private void waitForActivation(ApplicationId applicationId, TimeoutBudget timeoutBudget, Activation activation) {
+        activation.awaitCompletion(timeoutBudget.timeLeft());
         Set<FileReference> fileReferences = applicationRepository.getFileReferences(applicationId);
         String fileReferencesText = fileReferences.size() > 10
                 ? " " + fileReferences.size() + " file references"
@@ -145,23 +159,52 @@ public class Deployment implements com.yahoo.config.provision.Deployment {
                 ". " + fileReferencesText);
     }
 
-    private void restartServices(ApplicationId applicationId) {
+    private void deleteSession() {
+        sessionRepository().deleteLocalSession(session.getSessionId());
+    }
+
+    private SessionRepository sessionRepository() {
+        return tenant.getSessionRepository();
+    }
+
+    private void restartServicesIfNeeded(ApplicationId applicationId) {
+        if (provisioner.isEmpty() || configChangeActions == null) return;
+
         RestartActions restartActions = configChangeActions.getRestartActions().useForInternalRestart(internalRedeploy);
+        if (restartActions.isEmpty()) return;
 
-        if ( ! restartActions.isEmpty()) {
-            Set<String> hostnames = restartActions.getEntries().stream()
-                                                  .flatMap(entry -> entry.getServices().stream())
-                                                  .map(ServiceInfo::getHostName)
-                                                  .collect(Collectors.toUnmodifiableSet());
+        waitForConfigToConverge(applicationId);
 
-            provisioner.get().restart(applicationId, HostFilter.from(hostnames, Set.of(), Set.of(), Set.of()));
-            deployLogger.log(Level.INFO, String.format("Scheduled service restart of %d nodes: %s",
-                                                       hostnames.size(), hostnames.stream().sorted().collect(Collectors.joining(", "))));
-            log.info(String.format("%sScheduled service restart of %d nodes: %s",
-                                   session.logPre(), hostnames.size(), restartActions.format()));
+        Set<String> hostnames = restartActions.hostnames();
+        provisioner.get().restart(applicationId, HostFilter.from(hostnames));
+        deployLogger.log(Level.INFO, String.format("Scheduled service restart of %d nodes: %s",
+                                                   hostnames.size(), hostnames.stream().sorted().collect(Collectors.joining(", "))));
+        log.info(String.format("%sScheduled service restart of %d nodes: %s",
+                               session.logPre(), hostnames.size(), restartActions.format()));
+        this.configChangeActions = configChangeActions.withRestartActions(new RestartActions());
+    }
 
-            this.configChangeActions = new ConfigChangeActions(
-                    new RestartActions(), configChangeActions.getRefeedActions(), configChangeActions.getReindexActions());
+    private void waitForConfigToConverge(ApplicationId applicationId) {
+        deployLogger.log(Level.INFO, "Wait for all services to use new config generation before restarting");
+        while (true) {
+            try {
+                params.get().getTimeoutBudget().assertNotTimedOut(
+                        () -> "Timeout exceeded while waiting for config convergence for " + applicationId);
+            } catch (UncheckedTimeoutException e) {
+                throw new ConfigNotConvergedException(e);
+            }
+
+            ConfigConvergenceChecker convergenceChecker = applicationRepository.configConvergenceChecker();
+            Application app = applicationRepository.getActiveApplication(applicationId);
+            ServiceListResponse response = convergenceChecker.checkConvergenceUnlessDeferringChangesUntilRestart(app);
+            if (response.converged) {
+                deployLogger.log(Level.INFO, "Services converged on new config generation " + response.currentGeneration);
+                return;
+            } else {
+                deployLogger.log(Level.INFO, "Services did not converge on new config generation " +
+                        response.wantedGeneration + ", current generation: " + response.currentGeneration + ", will retry");
+                try { Thread.sleep(5_000); } catch (InterruptedException e) { /* ignore */ }
+            }
         }
     }
 
@@ -218,8 +261,8 @@ public class Deployment implements com.yahoo.config.provision.Deployment {
             Clock clock, Duration timeout, Session session,
             boolean isBootstrap, boolean ignoreValidationErrors, boolean force, boolean waitForResourcesInPrepare) {
 
-        // Supplier because shouldn't/cant create this before validateSessionStatus() for prepared deployments
-        // memoized because we want to create this once for unprepared deployments
+        // Use supplier because we shouldn't/can't create this before validateSessionStatus() for prepared deployments,
+        // memoize because we want to create this once for unprepared deployments
         return Suppliers.memoize(() -> {
             TimeoutBudget timeoutBudget = new TimeoutBudget(clock, timeout);
 
@@ -234,6 +277,7 @@ public class Deployment implements com.yahoo.config.provision.Deployment {
                     .tenantSecretStores(session.getTenantSecretStores());
             session.getDockerImageRepository().ifPresent(params::dockerImageRepository);
             session.getAthenzDomain().ifPresent(params::athenzDomain);
+            session.getCloudAccount().ifPresent(params::cloudAccount);
 
             return params.build();
         });

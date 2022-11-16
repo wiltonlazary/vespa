@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc.state;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -9,9 +9,8 @@ import com.yahoo.container.core.ApplicationMetadataConfig;
 import com.yahoo.container.jdisc.RequestHandlerTestDriver;
 import com.yahoo.container.jdisc.config.HealthMonitorConfig;
 import com.yahoo.jdisc.Timer;
-import com.yahoo.metrics.MetricsPresentationConfig;
-import org.junit.Before;
-import org.junit.BeforeClass;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -39,7 +38,7 @@ public class StateHandlerTestBase {
     MockSnapshotProvider snapshotProvider;
     ComponentRegistry<SnapshotProvider> snapshotProviderRegistry;
 
-    @BeforeClass
+    @BeforeAll
     public static void setupClass() {
         healthMonitorConfig = new HealthMonitorConfig(new HealthMonitorConfig.Builder()
                                                               .initialStatus("up"));
@@ -47,7 +46,7 @@ public class StateHandlerTestBase {
                                                                           .generation(META_GENERATION));
     }
 
-    @Before
+    @BeforeEach
     public void setupSnapshotProvider() {
         timer = currentTimeMillis::get;
         snapshotProvider = new MockSnapshotProvider();

@@ -1,10 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.lb;
 
+import ai.vespa.http.DomainName;
 import com.google.common.collect.ImmutableSet;
-import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ClusterSpec;
-import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.NodeType;
 
 import java.util.Collections;
@@ -56,18 +55,20 @@ public class LoadBalancerServiceMock implements LoadBalancerService {
             throw new IllegalArgumentException("Refusing to remove all reals from load balancer " + id);
         }
         var instance = new LoadBalancerInstance(
-                HostName.from("lb-" + spec.application().toShortString() + "-" + spec.cluster().value()),
+                Optional.of(DomainName.of("lb-" + spec.application().toShortString() + "-" + spec.cluster().value())),
+                Optional.empty(),
                 Optional.of(new DnsZone("zone-id-1")),
                 Collections.singleton(4443),
                 ImmutableSet.of("10.2.3.0/24", "10.4.5.0/24"),
-                spec.reals());
+                spec.reals(),
+                spec.cloudAccount());
         instances.put(id, instance);
         return instance;
     }
 
     @Override
-    public void remove(ApplicationId application, ClusterSpec.Id cluster) {
-        instances.remove(new LoadBalancerId(application, cluster));
+    public void remove(LoadBalancer loadBalancer) {
+        instances.remove(loadBalancer.id());
     }
 
 }

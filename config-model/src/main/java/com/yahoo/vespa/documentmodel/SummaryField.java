@@ -3,7 +3,7 @@ package com.yahoo.vespa.documentmodel;
 
 import com.yahoo.document.DataType;
 import com.yahoo.document.Field;
-import com.yahoo.searchdefinition.document.TypedKey;
+import com.yahoo.schema.document.TypedKey;
 
 import java.io.Serializable;
 import java.util.*;
@@ -22,7 +22,7 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
      */
     public static class Source implements Serializable {
 
-        private String name;
+        private final String name;
         private boolean override = false;
         public Source(String name) {
             this.name = name;
@@ -53,32 +53,8 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
 
     }
 
-    /** A name-value property (used for smart summary) */
-    public static class Property implements Serializable {
-        private String name;
-        private String value;
-        public Property(String name, String value) {
-            this.name = name;
-            this.value = value;
-        }
-        public String getName() { return name; }
-        public String getValue() { return value; }
-        @Override
-        public int hashCode() {
-            return name.hashCode() + 17*value.hashCode();
-        }
-        @Override
-        public boolean equals(Object obj) {
-            if (!(obj instanceof Property)) {
-                return false;
-            }
-            Property other = (Property)obj;
-            return name.equals(other.name) && value.equals(other.value);
-        }
-    }
-
     /** The transform to perform on the stored source */
-    private SummaryTransform transform=SummaryTransform.NONE;
+    private SummaryTransform transform;
 
     /** The command used per field in vsmsummary */
     private VsmCommand vsmCommand = VsmCommand.NONE;
@@ -95,9 +71,6 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
 
     /** True if this field was defined implicitly */
     private boolean implicit=false;
-
-    /** The list of properties for this summary field */
-    private List<Property> properties = new ArrayList<>();
 
     /** Creates a summary field with NONE as transform */
     public SummaryField(String name, DataType type) {
@@ -183,7 +156,7 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
         return destinations;
     }
 
-    private String toString(Collection<?> collection) {
+    public String toString(Collection<?> collection) {
         StringBuilder buffer=new StringBuilder();
         for (Iterator<?> i=collection.iterator(); i.hasNext(); ) {
             buffer.append(i.next().toString());
@@ -197,32 +170,30 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
      * Returns a summary field which merges the settings in the given field
      * into this field
      *
-     * @param  merge the field to merge with this, if null, the merged field is
-     *         <code>this</code> field
+     * @param  merge the field to merge with this, if null, the merged field is *this* field
      * @throws RuntimeException if the two fields can not be merged
      */
     public SummaryField mergeWith(SummaryField merge) {
-        if (merge==null) return this;
+        if (merge == null) return this;
         if (this.isImplicit()) return merge;
         if (merge.isImplicit()) return this;
 
         if (!merge.getName().equals(getName()))
             throw new IllegalArgumentException(merge + " conflicts with " + this + ": different names");
 
-        if (!merge.getTransform().equals(getTransform()))
+        if (merge.getTransform() != getTransform())
             throw new IllegalArgumentException(merge + " conflicts with " + this + ": different transforms");
 
         if (!merge.getDataType().equals(getDataType()))
             throw new IllegalArgumentException(merge + " conflicts with " + this + ": different types");
 
-        if (!merge.isImplicit())
-            setImplicit(false);
+        setImplicit(false);
 
-        if (isHeadOf(this.sourceIterator(),merge.sourceIterator())) {
+        if (isHeadOf(this.sourceIterator(), merge.sourceIterator())) {
             // Ok
         }
-        else if (isHeadOf(merge.sourceIterator(),this.sourceIterator())) {
-            sources=new LinkedHashSet<>(merge.sources);
+        else if (isHeadOf(merge.sourceIterator(), this.sourceIterator())) {
+            sources = new LinkedHashSet<>(merge.sources);
         }
         else {
             throw new IllegalArgumentException(merge + " conflicts with " + this +
@@ -277,18 +248,35 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
         return "'summary " + getName() + " type " + toLowerCase(getDataType().getName()) + "' in '" + getDestinationString() + "'";
     }
 
+    @Override
     public SummaryField clone() {
         try {
-            SummaryField clone=(SummaryField)super.clone();
-            if (this.sources!=null)
-                clone.sources=new LinkedHashSet<>(this.sources);
-            if (this.destinations!=null)
-                clone.destinations=new LinkedHashSet<>(destinations);
+            SummaryField clone = (SummaryField)super.clone();
+            if (this.sources != null)
+                clone.sources = new LinkedHashSet<>(this.sources);
+            if (this.destinations != null)
+                clone.destinations = new LinkedHashSet<>(destinations);
             return clone;
         }
         catch (CloneNotSupportedException e) {
             throw new RuntimeException("Programming error");
         }
+    }
+
+    /**
+     * Returns true if the summary field uses an explicit source, i.e.
+     * a field with different name that is not a nested field.
+     */
+    public boolean hasExplicitSingleSource() {
+        String fieldName = getName();
+        String sourceName = getSingleSource();
+        if (fieldName.equals(sourceName)) {
+            return false;
+        }
+        if (sourceName.contains(".")) {
+            return false;
+        }
+        return true;
     }
 
     public VsmCommand getVsmCommand() {
@@ -297,15 +285,6 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
 
     public void setVsmCommand(VsmCommand vsmCommand) {
         this.vsmCommand = vsmCommand;
-    }
-
-    /** Adds a property to this summary field */
-    public void addProperty(String name, String value) {
-        properties.add(new Property(name, value));
-    }
-
-    public List<Property> getProperties() {
-        return properties;
     }
 
     /**
@@ -320,8 +299,8 @@ public class SummaryField extends Field implements Cloneable, TypedKey {
         FLATTENSPACE("FLATTENSPACE"),
         FLATTENJUNIPER("FLATTENJUNIPER");
 
-        private String cmd="";
-        private VsmCommand(String cmd) {
+        private final String cmd;
+        VsmCommand(String cmd) {
             this.cmd=cmd;
         }
         @Override

@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/searchlib/features/bm25_feature.h>
 #include <vespa/searchlib/features/setup.h>
@@ -92,6 +92,12 @@ TEST_F(Bm25BlueprintTest, blueprint_can_prepare_shared_state_with_average_field_
     ObjectStore store;
     blueprint->prepareSharedState(query_env, store);
     EXPECT_DOUBLE_EQ(10, as_value<double>(*store.get("bm25.afl.is")));
+}
+
+TEST_F(Bm25BlueprintTest, dump_features_for_all_index_fields)
+{
+    FtTestApp::FT_DUMP(factory, "bm25", index_env,
+                       StringList().add("bm25(is)").add("bm25(ia)").add("bm25(iws)"));
 }
 
 struct Scorer {

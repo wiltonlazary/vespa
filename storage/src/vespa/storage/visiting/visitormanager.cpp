@@ -7,8 +7,11 @@
 #include "testvisitor.h"
 #include "recoveryvisitor.h"
 #include "reindexing_visitor.h"
-#include <vespa/storage/common/statusmessages.h>
+#include <vespa/config/subscription/configuri.h>
 #include <vespa/config/common/exceptions.h>
+#include <vespa/config/helper/configfetcher.hpp>
+#include <vespa/storage/common/statusmessages.h>
+#include <vespa/vespalib/util/string_escape.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <cassert>
 
@@ -20,7 +23,8 @@ namespace storage {
 VisitorManager::VisitorManager(const config::ConfigUri & configUri,
                                StorageComponentRegister& componentRegister,
                                VisitorMessageSessionFactory& messageSF,
-                               const VisitorFactory::Map& externalFactories)
+                               const VisitorFactory::Map& externalFactories,
+                               bool defer_manager_thread_start)
     : StorageLink("Visitor Manager"),
       framework::HtmlStatusReporter("visitorman", "Visitor Manager"),
       _componentRegister(componentRegister),
@@ -30,8 +34,8 @@ VisitorManager::VisitorManager(const config::ConfigUri & configUri,
       _visitorLock(),
       _visitorCond(),
       _visitorCounter(0),
-      _configFetcher(configUri.getContext()),
-      _metrics(new VisitorMetrics),
+      _configFetcher(std::make_unique<config::ConfigFetcher>(configUri.getContext())),
+      _metrics(std::make_shared<VisitorMetrics>()),
       _maxFixedConcurrentVisitors(1),
       _maxVariableConcurrentVisitors(0),
       _maxVisitorQueueSize(1024),
@@ -46,16 +50,18 @@ VisitorManager::VisitorManager(const config::ConfigUri & configUri,
       _enforceQueueUse(false),
       _visitorFactories(externalFactories)
 {
-    _configFetcher.subscribe<vespa::config::content::core::StorVisitorConfig>(configUri.getConfigId(), this);
-    _configFetcher.start();
+    _configFetcher->subscribe<vespa::config::content::core::StorVisitorConfig>(configUri.getConfigId(), this);
+    _configFetcher->start();
     _component.registerMetric(*_metrics);
-    _thread = _component.startThread(*this, 30s, 1s);
+    if (!defer_manager_thread_start) {
+        create_and_start_manager_thread();
+    }
     _component.registerMetricUpdateHook(*this, framework::SecondTime(5));
-    _visitorFactories["dumpvisitor"] = std::make_shared<DumpVisitorSingleFactory>();
+    _visitorFactories["dumpvisitor"]       = std::make_shared<DumpVisitorSingleFactory>();
     _visitorFactories["dumpvisitorsingle"] = std::make_shared<DumpVisitorSingleFactory>();
-    _visitorFactories["testvisitor"] = std::make_shared<TestVisitorFactory>();
-    _visitorFactories["countvisitor"] = std::make_shared<CountVisitorFactory>();
-    _visitorFactories["recoveryvisitor"] = std::make_shared<RecoveryVisitorFactory>();
+    _visitorFactories["testvisitor"]       = std::make_shared<TestVisitorFactory>();
+    _visitorFactories["countvisitor"]      = std::make_shared<CountVisitorFactory>();
+    _visitorFactories["recoveryvisitor"]   = std::make_shared<RecoveryVisitorFactory>();
     _visitorFactories["reindexingvisitor"] = std::make_shared<ReindexingVisitorFactory>();
     _component.registerStatusPage(*this);
 }
@@ -63,7 +69,7 @@ VisitorManager::VisitorManager(const config::ConfigUri & configUri,
 VisitorManager::~VisitorManager() {
     closeNextLink();
     LOG(debug, "Deleting link %s.", toString().c_str());
-    if (_thread.get() != 0) {
+    if (_thread) {
         _thread->interrupt();
         _visitorCond.notify_all();
         _thread->join();
@@ -72,29 +78,34 @@ VisitorManager::~VisitorManager() {
 }
 
 void
+VisitorManager::create_and_start_manager_thread()
+{
+    assert(!_thread);
+    _thread = _component.startThread(*this, 30s, 1s, 1, vespalib::CpuUsage::Category::READ);
+}
+
+void
 VisitorManager::updateMetrics(const MetricLockGuard &)
 {
-    _metrics->queueSize.addValue(_visitorQueue.size());
+    _metrics->queueSize.addValue(static_cast<int64_t>(_visitorQueue.relaxed_atomic_size()));
 }
 
 void
 VisitorManager::onClose()
 {
         // Avoid getting config during shutdown
-    _configFetcher.close();
+    _configFetcher->close();
     {
         std::lock_guard sync(_visitorLock);
-        for (CommandQueue<api::CreateVisitorCommand>::iterator it
-                = _visitorQueue.begin(); it != _visitorQueue.end(); ++it)
-        {
-            auto reply = std::make_shared<api::CreateVisitorReply>(*it->_command);
+        for (auto& enqueued : _visitorQueue) {
+            auto reply = std::make_shared<api::CreateVisitorReply>(*enqueued._command);
             reply->setResult(api::ReturnCode(api::ReturnCode::ABORTED, "Shutting down storage node."));
             sendUp(reply);
         }
         _visitorQueue.clear();
     }
-    for (uint32_t i=0; i<_visitorThread.size(); ++i) {
-        _visitorThread[i].first->shutdown();
+    for (auto& visitor_thread : _visitorThread) {
+        visitor_thread.first->shutdown();
     }
 }
 
@@ -143,7 +154,7 @@ VisitorManager::configure(std::unique_ptr<vespa::config::content::core::StorVisi
        maxConcurrentVisitorsVariable = 0;
     }
 
-    bool liveUpdate = (_visitorThread.size() > 0);
+    bool liveUpdate = !_visitorThread.empty();
     if (liveUpdate) {
         if (_visitorThread.size() != static_cast<uint32_t>(config->visitorthreads)) {
             LOG(warning, "Ignoring config change requesting %u visitor "
@@ -175,7 +186,10 @@ VisitorManager::configure(std::unique_ptr<vespa::config::content::core::StorVisi
         _metrics->initThreads(config->visitorthreads);
         for (int32_t i=0; i<config->visitorthreads; ++i) {
             _visitorThread.emplace_back(
-                    new VisitorThread(i, _componentRegister, _messageSessionFactory, _visitorFactories, *_metrics->threads[i], *this),
+                    // Naked new due to a lot of private inheritance in VisitorThread and VisitorManager
+                    std::shared_ptr<VisitorThread>(
+                            new VisitorThread(i, _componentRegister, _messageSessionFactory,
+                                              _visitorFactories, *_metrics->threads[i], *this)),
                     std::map<api::VisitorId, std::string>());
         }
     }
@@ -194,8 +208,8 @@ VisitorManager::run(framework::ThreadHandle& thread)
 {
     LOG(debug, "Started visitor manager thread with pid %d.", getpid());
     typedef CommandQueue<api::CreateVisitorCommand> CQ;
-    std::list<CQ::CommandEntry> timedOut;
-        // Run forever, dump messages in the visitor queue that times out.
+    std::vector<CQ::CommandEntry> timedOut;
+    // Run forever, dump messages in the visitor queue that times out.
     while (true) {
         thread.registerTick(framework::PROCESS_CYCLE);
         {
@@ -205,13 +219,12 @@ VisitorManager::run(framework::ThreadHandle& thread)
             }
             timedOut = _visitorQueue.releaseTimedOut();
         }
-        framework::MicroSecTime currentTime(_component.getClock().getTimeInMicros());
-        for (std::list<CQ::CommandEntry>::iterator it = timedOut.begin();
-             it != timedOut.end(); ++it)
-        {
-            _metrics->queueTimeoutWaitTime.addValue(currentTime.getTime() - it->_time);
-            std::shared_ptr<api::StorageReply> reply(it->_command->makeReply());
-            reply->setResult(api::ReturnCode(api::ReturnCode::BUSY,"Visitor timed out in visitor queue"));
+        const auto currentTime = _component.getClock().getMonotonicTime();
+        for (auto& timed_out_entry : timedOut) {
+            // TODO is this really tracking what the metric description implies it's tracking...?
+            _metrics->queueTimeoutWaitTime.addValue(vespalib::to_s(currentTime - timed_out_entry._deadline) * 1000.0); // Double metric in millis
+            std::shared_ptr<api::StorageReply> reply(timed_out_entry._command->makeReply());
+            reply->setResult(api::ReturnCode(api::ReturnCode::BUSY, "Visitor timed out in visitor queue"));
             sendUp(reply);
         }
         {
@@ -222,10 +235,10 @@ VisitorManager::run(framework::ThreadHandle& thread)
                 _visitorCond.wait_for(waiter, 1000ms);
                 thread.registerTick(framework::WAIT_CYCLE);
             } else {
-                uint64_t timediff = (_visitorQueue.tbegin()->_time- currentTime.getTime()) / 1000000;
-                timediff = std::min(timediff, uint64_t(1000));
-                if (timediff > 0) {
-                    _visitorCond.wait_for(waiter, std::chrono::milliseconds(timediff));
+                auto time_diff = _visitorQueue.tbegin()->_deadline - currentTime;
+                time_diff = (time_diff < 1000ms) ? time_diff : 1000ms;
+                if (time_diff.count() > 0) {
+                    _visitorCond.wait_for(waiter, time_diff);
                     thread.registerTick(framework::WAIT_CYCLE);
                 }
             }
@@ -254,8 +267,8 @@ VisitorManager::getActiveVisitorCount() const
 {
     std::lock_guard sync(_visitorLock);
     uint32_t totalCount = 0;
-    for (uint32_t i=0; i<_visitorThread.size(); ++i) {
-        totalCount += _visitorThread[i].second.size();
+    for (const auto& visitor_thread : _visitorThread) {
+        totalCount += visitor_thread.second.size();
     }
     return totalCount;
 }
@@ -272,8 +285,8 @@ void
 VisitorManager::setTimeBetweenTicks(uint32_t time)
 {
     std::lock_guard sync(_visitorLock);
-    for (uint32_t i=0; i<_visitorThread.size(); ++i) {
-        _visitorThread[i].first->setTimeBetweenTicks(time);
+    for (auto& visitor_thread : _visitorThread) {
+        visitor_thread.first->setTimeBetweenTicks(time);
     }
 }
 
@@ -283,8 +296,8 @@ VisitorManager::scheduleVisitor(
         MonitorGuard& visitorLock)
 {
     api::VisitorId id;
-    typedef std::map<std::string, api::VisitorId> NameToIdMap;
-    typedef std::pair<std::string, api::VisitorId> NameIdPair;
+    using NameToIdMap = std::map<std::string, api::VisitorId>;
+    using NameIdPair  = std::pair<std::string, api::VisitorId>;
     std::pair<NameToIdMap::iterator, bool> newEntry;
     {
         uint32_t totCount;
@@ -305,12 +318,13 @@ VisitorManager::scheduleVisitor(
                         std::shared_ptr<api::CreateVisitorCommand> tail(_visitorQueue.peekLowestPriorityCommand());
                             // Lower int ==> higher pri
                         if (cmd->getPriority() < tail->getPriority()) {
-                            std::pair<api::CreateVisitorCommand::SP, time_t> evictCommand(_visitorQueue.releaseLowestPriorityCommand());
+                            auto evictCommand = _visitorQueue.releaseLowestPriorityCommand();
                             assert(tail == evictCommand.first);
                             _visitorQueue.add(cmd);
                             _visitorCond.notify_one();
-                            framework::MicroSecTime t(_component.getClock().getTimeInMicros());
-                            _metrics->queueEvictedWaitTime.addValue(t.getTime() - evictCommand.second);
+                            auto now = _component.getClock().getMonotonicTime();
+                            // TODO is this really tracking what the metric description implies it's tracking...?
+                            _metrics->queueEvictedWaitTime.addValue(vespalib::to_s(now - evictCommand.second) * 1000.0); // Double metric in millis
                             failCommand = evictCommand.first;
                         } else {
                             failCommand = cmd;
@@ -443,8 +457,7 @@ VisitorManager::send(const std::shared_ptr<api::StorageCommand>& cmd,
     // Only add to internal state if not destroy iterator command, as
     // these are considered special-cased fire-and-forget commands
     // that don't have replies.
-    if (static_cast<const api::InternalCommand&>(*cmd).getType() != DestroyIteratorCommand::ID)
-    {
+    if (static_cast<const api::InternalCommand&>(*cmd).getType() != DestroyIteratorCommand::ID) {
         MessageInfo inf;
         inf.id = visitor.getVisitorId();
         inf.timestamp = _component.getClock().getTimeInSeconds().getTime();
@@ -486,14 +499,15 @@ VisitorManager::attemptScheduleQueuedVisitor(MonitorGuard& visitorLock)
 
     uint32_t totCount;
     getLeastLoadedThread(_visitorThread, totCount);
-    std::shared_ptr<api::CreateVisitorCommand> cmd(_visitorQueue.peekNextCommand());
+    auto cmd = _visitorQueue.peekNextCommand();
     assert(cmd.get());
     if (totCount < maximumConcurrent(*cmd)) {
-        std::pair<api::CreateVisitorCommand::SP, time_t> cmd2(_visitorQueue.releaseNextCommand());
+        auto cmd2 = _visitorQueue.releaseNextCommand();
         assert(cmd == cmd2.first);
         scheduleVisitor(cmd, true, visitorLock);
-        framework::MicroSecTime time(_component.getClock().getTimeInMicros());
-        _metrics->queueWaitTime.addValue(time.getTime() - cmd2.second);
+        auto now = _component.getClock().getMonotonicTime();
+        // TODO is this really tracking what the metric description implies it's tracking...?
+        _metrics->queueWaitTime.addValue(vespalib::to_s(now - cmd2.second) * 1000.0); // Double metric in millis
         // visitorLock is unlocked at this point
         return true;
     }
@@ -504,9 +518,9 @@ void
 VisitorManager::closed(api::VisitorId id)
 {
     std::unique_lock sync(_visitorLock);
-    std::map<api::VisitorId, std::string>& usedIds(_visitorThread[id % _visitorThread.size()].second);
+    auto& usedIds(_visitorThread[id % _visitorThread.size()].second);
 
-    std::map<api::VisitorId, std::string>::iterator it = usedIds.find(id);
+    auto it = usedIds.find(id);
     if (it == usedIds.end()) {
         LOG(warning, "VisitorManager::closed() called multiple times for the "
                      "same visitor. This was not intended.");
@@ -544,18 +558,21 @@ void
 VisitorManager::reportHtmlStatus(std::ostream& out,
                                  const framework::HttpUrlPath& path) const
 {
+    using vespalib::xml_attribute_escaped;
+    using vespalib::xml_content_escaped;
+
     bool showStatus = !path.hasAttribute("visitor");
     bool verbose = path.hasAttribute("verbose");
     bool showAll = path.hasAttribute("allvisitors");
 
         // Print menu
-    out << "<font size=\"-1\">[ <a href=\"/\">Back to top</a>"
+    out << "<font size=\"-1\">[ <a href=\"../\">Back to top</a>"
         << " | <a href=\"?" << (verbose ? "verbose" : "")
         << "\">Main visitor manager status page</a>"
         << " | <a href=\"?allvisitors" << (verbose ? "&verbose" : "")
         << "\">Show all visitors</a>"
         << " | <a href=\"?" << (verbose ? "notverbose" : "verbose");
-    if (!showStatus) out << "&visitor=" << path.get("visitor", std::string(""));
+    if (!showStatus) out << "&visitor=" << xml_attribute_escaped(path.get("visitor", std::string("")));
     if (showAll) out << "&allvisitors";
     out << "\">" << (verbose ? "Less verbose" : "More verbose") << "</a>\n"
         << " ]</font><br><br>\n";
@@ -568,35 +585,32 @@ VisitorManager::reportHtmlStatus(std::ostream& out,
             for (uint32_t i=0; i<_visitorThread.size(); ++i) {
                 visitorCount += _visitorThread[i].second.size();
                 out << "Thread " << i << ":";
-                if (_visitorThread[i].second.size() == 0) {
+                if (_visitorThread[i].second.empty()) {
                     out << " none";
                 } else {
-                    for (std::map<api::VisitorId,std::string>::const_iterator it
-                             = _visitorThread[i].second.begin();
-                         it != _visitorThread[i].second.end(); it++)
-                    {
-                        out << " " << it->second << " (" << it->first << ")";
+                    for (const auto& id_and_visitor : _visitorThread[i].second) {
+                        out << " " << xml_content_escaped(id_and_visitor.second)
+                            << " (" << id_and_visitor.first << ")";
                     }
                 }
                 out << "<br>\n";
             }
             out << "<h3>Queued visitors</h3>\n<ul>\n";
 
-            framework::MicroSecTime time(_component.getClock().getTimeInMicros());
-            for (CommandQueue<api::CreateVisitorCommand>::const_iterator it
-                    = _visitorQueue.begin(); it != _visitorQueue.end(); ++it)
-            {
-                std::shared_ptr<api::CreateVisitorCommand> cmd(it->_command);
+            const auto now = _component.getClock().getMonotonicTime();
+            for (const auto& enqueued : _visitorQueue) {
+                auto& cmd = enqueued._command;
                 assert(cmd);
-                out << "<li>" << cmd->getInstanceId() << " - "
+                out << "<li>"
+                    << xml_content_escaped(cmd->getInstanceId()) << " - "
                     << vespalib::count_ms(cmd->getQueueTimeout()) << ", remaining timeout "
-                    << (it->_time - time.getTime()) / 1000000 << " ms\n";
+                    << vespalib::count_ms(enqueued._deadline - now) << " ms\n";
             }
             if (_visitorQueue.empty()) {
                 out << "None\n";
             }
             out << "</ul>\n";
-            if (_visitorMessages.size() > 0) {
+            if (!_visitorMessages.empty()) {
                 out << "<h3>Waiting for the following visitor replies</h3>"
                     << "\n<table><tr>"
                     << "<th>Storage API message id</th>"
@@ -611,7 +625,7 @@ VisitorManager::reportHtmlStatus(std::ostream& out,
                         << "<td>" << entry.second.id << "</td>"
                         << "<td>" << entry.second.timestamp << "</td>"
                         << "<td>" << vespalib::count_ms(entry.second.timeout) << "</td>"
-                        << "<td>" << entry.second.destination << "</td>"
+                        << "<td>" << xml_content_escaped(entry.second.destination) << "</td>"
                         << "</tr>\n";
                 }
                 out << "</table>\n";
@@ -624,13 +638,13 @@ VisitorManager::reportHtmlStatus(std::ostream& out,
             << ", variable = " << _maxVariableConcurrentVisitors
             << ", waiting visitors " << _visitorQueue.size() << "<br>\n";
     }
-        // Only one can access status at a time as _statusRequest only holds
-        // answers from one request at a time
+    // Only one can access status at a time as _statusRequest only holds
+    // answers from one request at a time
     std::unique_lock sync(_statusLock);
-        // Send all subrequests
+    // Send all sub-requests
     uint32_t parts = _visitorThread.size();
     for (uint32_t i=0; i<parts; ++i) {
-        std::shared_ptr<RequestStatusPage> cmd(new RequestStatusPage(path));
+        auto cmd = std::make_shared<RequestStatusPage>(path);
         std::ostringstream token;
         token << "Visitor thread " << i;
         cmd->setSortToken(token.str());
@@ -640,7 +654,7 @@ VisitorManager::reportHtmlStatus(std::ostream& out,
     _statusCond.wait(sync, [&]() { return (_statusRequest.size() >= parts);});
     std::sort(_statusRequest.begin(), _statusRequest.end(), StatusReqSorter());
 
-        // Create output
+    // Create output
     for (uint32_t i=0; i<_statusRequest.size(); ++i) {
         out << "<h2>" << _statusRequest[i]->getSortToken()
             << "</h2>\n" << _statusRequest[i]->getStatus() << "\n";

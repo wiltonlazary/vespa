@@ -5,8 +5,7 @@
 #include "searchiterator.h"
 #include <vespa/searchlib/common/bitvector.h>
 
-namespace search {
-namespace queryeval {
+namespace search::queryeval {
 
 /** Search iterator that never yields any hits. */
 class EmptySearch : public SearchIterator
@@ -22,11 +21,11 @@ protected:
         setAtEnd();
     }
     virtual Trinary is_strict() const override;
+    Trinary matches_any() const override { return Trinary::False; }
 
 public:
     EmptySearch();
     ~EmptySearch();
 };
 
-} // namespace queryeval
-} // namespace search
+}

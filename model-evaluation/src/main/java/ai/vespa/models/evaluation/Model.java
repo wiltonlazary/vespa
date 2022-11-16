@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.models.evaluation;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.yahoo.searchlib.rankingexpression.ExpressionFunction;
@@ -194,7 +194,7 @@ public class Model {
 
             // Check if the name is a signature
             List<ExpressionFunction> functionsStartingByName =
-                    functions.stream().filter(f -> f.getName().startsWith(name + ".")).collect(Collectors.toList());
+                    functions.stream().filter(f -> f.getName().startsWith(name + ".")).toList();
             if (functionsStartingByName.size() == 1)
                 return evaluatorOf(functionsStartingByName.get(0));
             if (functionsStartingByName.size() > 1)
@@ -202,7 +202,7 @@ public class Model {
 
             // Check if the name is unambiguous as an output
             List<ExpressionFunction> functionsEndingByName =
-                    functions.stream().filter(f -> f.getName().endsWith("." + name)).collect(Collectors.toList());
+                    functions.stream().filter(f -> f.getName().endsWith("." + name)).toList();
             if (functionsEndingByName.size() == 1)
                 return evaluatorOf(functionsEndingByName.get(0));
             if (functionsEndingByName.size() > 1)
@@ -213,7 +213,7 @@ public class Model {
                 return evaluatorOf("default" + name.substring("serving_default".length()));
             }
 
-            // To handle backward compatibility with ONNX conversion to native Vespa rank expressions
+            // To handle backward compatibility with ONNX conversion to native Vespa ranking expressions
             if (name.startsWith("default.")) {
                 return evaluatorOf(name.substring("default.".length()));
             }

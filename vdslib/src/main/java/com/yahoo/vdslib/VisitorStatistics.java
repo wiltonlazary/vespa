@@ -7,8 +7,6 @@ public class VisitorStatistics {
     long bytesVisited = 0;
     long documentsReturned = 0;
     long bytesReturned = 0;
-    long secondPassDocumentsReturned = 0;
-    long secondPassBytesReturned = 0;
 
     public void add(VisitorStatistics other) {
         bucketsVisited += other.bucketsVisited;
@@ -16,30 +14,31 @@ public class VisitorStatistics {
         bytesVisited += other.bytesVisited;
         documentsReturned += other.documentsReturned;
         bytesReturned += other.bytesReturned;
-        secondPassDocumentsReturned += other.secondPassDocumentsReturned;
-        secondPassBytesReturned += other.secondPassBytesReturned;
     }
 
     public int getBucketsVisited() { return bucketsVisited; }
     public void setBucketsVisited(int bucketsVisited) { this.bucketsVisited = bucketsVisited; }
 
+    /**
+     * @return the number of documents matching the document selection in the backend and that
+     *   has been passed to the client-specified visitor instance (dumpvisitor, searchvisitor etc).
+     */
     public long getDocumentsVisited() { return documentsVisited; }
     public void setDocumentsVisited(long documentsVisited) { this.documentsVisited = documentsVisited; }
 
     public long getBytesVisited() { return bytesVisited; }
     public void setBytesVisited(long bytesVisited) { this.bytesVisited = bytesVisited; }
 
+    /**
+     * @return Number of documents returned to the visitor client by the backend. This number may
+     *   be lower than that returned by getDocumentsVisited() since the client-specified visitor
+     *   instance may further have filtered the set of documents returned by the backend.
+     */
     public long getDocumentsReturned() { return documentsReturned; }
     public void setDocumentsReturned(long documentsReturned) { this.documentsReturned = documentsReturned; }
 
     public long getBytesReturned() { return bytesReturned; }
     public void setBytesReturned(long bytesReturned) { this.bytesReturned = bytesReturned; }
-
-    public long getSecondPassDocumentsReturned() { return secondPassDocumentsReturned; }
-    public void setSecondPassDocumentsReturned(long secondPassDocumentsReturned) { this.secondPassDocumentsReturned = secondPassDocumentsReturned; }
-
-    public long getSecondPassBytesReturned() { return secondPassBytesReturned; }
-    public void setSecondPassBytesReturned(long secondPassBytesReturned) { this.secondPassBytesReturned = secondPassBytesReturned; }
 
     public String toString() {
         String out =
@@ -47,9 +46,7 @@ public class VisitorStatistics {
             "Documents visited: " + documentsVisited + "\n" +
             "Bytes visited: " + bytesVisited + "\n" +
             "Documents returned: " + documentsReturned + "\n" +
-            "Bytes returned: " + bytesReturned + "\n" +
-            "Documents returned (2nd pass): " + secondPassDocumentsReturned + "\n" +
-            "Bytes returned (2nd pass): " + secondPassBytesReturned + "\n";
+            "Bytes returned: " + bytesReturned + "\n";
 
         return out;
     }

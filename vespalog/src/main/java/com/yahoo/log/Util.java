@@ -9,8 +9,9 @@ import static com.yahoo.vespa.defaults.Defaults.getDefaults;
  * @author arnej27959
  * @author bjorncs
  *
+ * Should only be used internally in the log library
  */
-public class Util {
+class Util {
 
     public static String getHostName () {
         return getDefaults().vespaHostname();

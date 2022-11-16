@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.jdisc.test;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.google.inject.AbstractModule;
 import com.google.inject.Key;
 import com.google.inject.Module;
@@ -153,7 +153,7 @@ public abstract class ServerProviderConformanceTest {
             final Module... config)
             throws Throwable {
         runTest(adapter,
-                Modules.override(Modules.combine()).with(newBindingSetSelector("unknown")),
+                Modules.override(Modules.EMPTY_MODULE).with(newBindingSetSelector("unknown")),
                 RequestType.WITHOUT_CONTENT,
                 new TestRequestHandler() {
 
@@ -170,7 +170,7 @@ public abstract class ServerProviderConformanceTest {
             final Module... config)
             throws Throwable {
         runTest(adapter,
-                Modules.override(Modules.combine()).with(newBindingSetSelector(null)),
+                Modules.override(Modules.EMPTY_MODULE).with(newBindingSetSelector(null)),
                 RequestType.WITHOUT_CONTENT,
                 new TestRequestHandler() {
 

@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -67,6 +67,10 @@ constexpr duration from_timeval(const timeval & tv) {
     return duration(tv.tv_sec*1000000000L + tv.tv_usec*1000L);
 }
 
+constexpr duration from_timespec(const timespec & ts) {
+    return duration(ts.tv_sec*1000000000L + ts.tv_nsec);
+}
+
 vespalib::string to_string(system_time time);
 
 /**
@@ -83,5 +87,12 @@ public:
     duration elapsed() const { return (steady_clock::now() - _start); }
     static void waitAtLeast(duration dur, bool busyWait);
 };
+
+/**
+ * The default frequency (1000hz) for vespa timer, with environment override VESPA_TIMER_HZ capped to [1..1000]
+ */
+uint32_t getVespaTimerHz();
+duration adjustTimeoutByDetectedHz(duration timeout);
+duration adjustTimeoutByHz(duration timeout, long hz);
 
 }

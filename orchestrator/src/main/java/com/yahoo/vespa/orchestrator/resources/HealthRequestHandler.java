@@ -1,9 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.orchestrator.resources;
 
-import com.google.inject.Inject;
+import ai.vespa.http.HttpURL.Path;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.config.provision.ApplicationId;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.restapi.RestApi;
 import com.yahoo.restapi.RestApiRequestHandler;
 import com.yahoo.vespa.applicationmodel.ServiceStatusInfo;
@@ -27,7 +28,7 @@ public class HealthRequestHandler extends RestApiRequestHandler<HealthRequestHan
     private final HealthMonitorApi healthMonitorApi;
 
     @Inject
-    public HealthRequestHandler(LoggingRequestHandler.Context context,
+    public HealthRequestHandler(ThreadedHttpRequestHandler.Context context,
                                 HealthMonitorApi healthMonitorApi) {
         super(context, HealthRequestHandler::createRestApiDefinition);
         this.healthMonitorApi = healthMonitorApi;
@@ -51,8 +52,8 @@ public class HealthRequestHandler extends RestApiRequestHandler<HealthRequestHan
         ApplicationReferenceList list = new ApplicationReferenceList();
         list.applicationList = applications.stream().map(applicationId -> {
             UrlReference reference = new UrlReference();
-            reference.url = context.uriBuilder()
-                    .withPath("/orchestrator/v1/health/" + applicationId.serializedForm())
+            reference.url = context.baseRequestURL()
+                    .withPath(Path.parse("/orchestrator/v1/health/" + applicationId.serializedForm()))
                     .toString();
             return reference;
         }).collect(Collectors.toList());

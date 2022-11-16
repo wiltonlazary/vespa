@@ -3,6 +3,7 @@ package com.yahoo.jdisc.http.server.jetty;
 
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.http.ConnectorConfig;
+import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.io.ConnectionStatistics;
 import org.eclipse.jetty.server.ConnectionFactory;
 import org.eclipse.jetty.server.Server;
@@ -40,7 +41,7 @@ class JDiscServerConnector extends ServerConnector {
         this.metric = metric;
         this.connectorName = config.name();
         this.listenPort = config.listenPort();
-        this.metricCtx = metric.createContext(createConnectorDimensions(listenPort, connectorName));
+        this.metricCtx = metric.createContext(createConnectorDimensions(listenPort, connectorName, 0));
 
         this.statistics = new ConnectionStatistics();
         addBean(statistics);
@@ -50,6 +51,12 @@ class JDiscServerConnector extends ServerConnector {
         }
         addBean(connectionLogger);
         addBean(connectionMetricAggregator);
+        setPort(config.listenPort());
+        setName(config.name());
+        setAcceptQueueSize(config.acceptQueueSize());
+        setReuseAddress(config.reuseAddress());
+        setIdleTimeout((long) (config.idleTimeout() * 1000));
+        addBean(HttpCompliance.RFC7230);
     }
 
     @Override
@@ -73,8 +80,8 @@ class JDiscServerConnector extends ServerConnector {
     public Metric.Context createRequestMetricContext(HttpServletRequest request, Map<String, String> extraDimensions) {
         String method = request.getMethod();
         String scheme = request.getScheme();
-        boolean clientAuthenticated = request.getAttribute(com.yahoo.jdisc.http.servlet.ServletRequest.SERVLET_REQUEST_X509CERT) != null;
-        Map<String, Object> dimensions = createConnectorDimensions(listenPort, connectorName);
+        boolean clientAuthenticated = request.getAttribute(RequestUtils.SERVLET_REQUEST_X509CERT) != null;
+        Map<String, Object> dimensions = createConnectorDimensions(listenPort, connectorName, extraDimensions.size() + 5);
         dimensions.put(MetricDefinitions.METHOD_DIMENSION, method);
         dimensions.put(MetricDefinitions.SCHEME_DIMENSION, scheme);
         dimensions.put(MetricDefinitions.CLIENT_AUTHENTICATED_DIMENSION, Boolean.toString(clientAuthenticated));
@@ -97,8 +104,8 @@ class JDiscServerConnector extends ServerConnector {
         return listenPort;
     }
 
-    private static Map<String, Object> createConnectorDimensions(int listenPort, String connectorName) {
-        Map<String, Object> props = new HashMap<>();
+    private static Map<String, Object> createConnectorDimensions(int listenPort, String connectorName, int reservedSize) {
+        Map<String, Object> props = new HashMap<>(reservedSize + 2);
         props.put(MetricDefinitions.NAME_DIMENSION, connectorName);
         props.put(MetricDefinitions.PORT_DIMENSION, listenPort);
         return props;

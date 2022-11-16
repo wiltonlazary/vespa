@@ -11,18 +11,17 @@ import com.yahoo.jrt.Supervisor;
 import com.yahoo.jrt.Target;
 import com.yahoo.jrt.Transport;
 import com.yahoo.vespa.config.RawConfig;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
 import java.time.Duration;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
  * @author hmusum
@@ -35,16 +34,16 @@ public class ConfigProxyRpcServerTest {
     private static TestServer server;
     private static TestClient client;
 
-    @Rule
-    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir
+    public File temporaryFolder;
 
-    @BeforeClass
+    @BeforeAll
     public static void setup() throws ListenFailedException {
         server = new TestServer();
         client = new TestClient(server.listenPort());
     }
 
-    @AfterClass
+    @AfterAll
     public static void teardown() {
         client.close();
         server.close();
@@ -56,158 +55,141 @@ public class ConfigProxyRpcServerTest {
     }
 
     @Test
-    public void basic() {
+    void basic() {
         ProxyServer proxy = createTestServer(new MockConfigSource());
         Spec spec = new Spec("localhost", 12345);
         ConfigProxyRpcServer server = new ConfigProxyRpcServer(proxy, new Supervisor(new Transport()), spec);
-        assertThat(server.getSpec(), is(spec));
+        assertEquals(spec, server.getSpec());
     }
 
     /**
      * Tests ping RPC command
      */
     @Test
-    public void testRpcMethodPing() {
+    void testRpcMethodPing() {
         Request req = new Request("ping");
         client.invoke(req);
 
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(req.returnValues().get(0).asInt32(), is(0));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
+        assertEquals(0, req.returnValues().get(0).asInt32());
     }
 
     /**
      * Tests listCachedConfig RPC command
      */
     @Test
-    public void testRpcMethodListCachedConfig() throws ListenFailedException {
+    void testRpcMethodListCachedConfig() throws ListenFailedException {
         reset();
 
         Request req = new Request("listCachedConfig");
         client.invoke(req);
 
-        assertFalse(req.errorMessage(), req.isError());
+        assertFalse(req.isError(), req.errorMessage());
         String[] ret = req.returnValues().get(0).asStringArray();
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(ret.length, is(0));
+        assertEquals(1, req.returnValues().size());
+        assertEquals(0, ret.length);
 
         final RawConfig config = ProxyServerTest.fooConfig;
-        server.proxyServer().getMemoryCache().update(config);
+        server.proxyServer().memoryCache().update(config);
         req = new Request("listCachedConfig");
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
         ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(1));
-        assertThat(ret[0], is(config.getNamespace() + "." + config.getName() + "," +
-                config.getConfigId() + "," +
-                config.getGeneration() + "," +
-                config.getPayloadChecksums()));
+        assertEquals(1, ret.length);
+        assertEquals(config.getNamespace() + "." + config.getName() + "," + config.getConfigId() + "," +
+                                 config.getGeneration() + "," + config.getPayloadChecksums(),
+                                 ret[0]);
     }
 
     /**
      * Tests listCachedConfig RPC command
      */
     @Test
-    public void testRpcMethodListCachedConfigFull() {
+    void testRpcMethodListCachedConfigFull() {
         Request req = new Request("listCachedConfigFull");
         client.invoke(req);
 
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
         String[] ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(0));
+        assertEquals(0, ret.length);
 
         final RawConfig config = ProxyServerTest.fooConfig;
-        server.proxyServer().getMemoryCache().update(config);
+        server.proxyServer().memoryCache().update(config);
         req = new Request("listCachedConfigFull");
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
+        assertFalse(req.isError(), req.errorMessage());
         ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(1));
-        assertThat(ret[0], is(config.getNamespace() + "." + config.getName() + "," +
-                config.getConfigId() + "," +
-                config.getGeneration() + "," +
-                config.getPayloadChecksums() + "," +
-                config.getPayload().getData()));
+        assertEquals(1, ret.length);
+        assertEquals(config.getNamespace() + "." + config.getName() + "," + config.getConfigId() + "," +
+                                 config.getGeneration() + "," + config.getPayloadChecksums() + "," + config.getPayload().getData(),
+                                 ret[0]);
     }
 
     /**
-     * Tests printStatistics RPC command
+     * Tests listSourceConnections RPC command
      */
     @Test
-    public void testRpcMethodListSourceConnections() throws ListenFailedException {
+    void testRpcMethodListSourceConnections() throws ListenFailedException {
         reset();
 
         Request req = new Request("listSourceConnections");
         client.invoke(req);
 
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
         final String[] ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(2));
-        assertThat(ret[0], is("Current source: " + configSourceAddress));
-        assertThat(ret[1], is("All sources:\n" + configSourceAddress + "\n"));
-    }
-
-    /**
-     * Tests printStatistics RPC command
-     */
-    @Test
-    public void testRpcMethodPrintStatistics() {
-        Request req = new Request("printStatistics");
-        client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(req.returnValues().get(0).asString(), is("\n" +
-                "Delayed responses queue size: 0\n" +
-                "Contents: "));
+        assertEquals(2, ret.length);
+        assertEquals("Current source: " + configSourceAddress, ret[0]);
+        assertEquals("All sources:\n" + configSourceAddress + "\n", ret[1]);
     }
 
     /**
      * Tests invalidateCache RPC command
      */
     @Test
-    public void testRpcMethodInvalidateCache() {
+    void testRpcMethodInvalidateCache() {
         Request req = new Request("invalidateCache");
         client.invoke(req);
 
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
         final String[] ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(2));
-        assertThat(ret[0], is("0"));
-        assertThat(ret[1], is("success"));
+        assertEquals(2, ret.length);
+        assertEquals("0", ret[0]);
+        assertEquals("success", ret[1]);
     }
 
     /**
      * Tests getMode and setMode RPC commands
      */
     @Test
-    public void testRpcMethodGetModeAndSetMode() {
+    void testRpcMethodGetModeAndSetMode() {
         Request req = new Request("getMode");
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(req.returnValues().get(0).asString(), is("default"));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
+        assertEquals("default", req.returnValues().get(0).asString());
 
         req = new Request("setMode");
         String mode = "memorycache";
         req.parameters().add(new StringValue(mode));
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
         String[] ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(2));
-        assertThat(ret[0], is("0"));
-        assertThat(ret[1], is("success"));
-        assertThat(server.proxyServer().getMode().name(), is(mode));
+        assertEquals(2, ret.length);
+        assertEquals("0", ret[0]);
+        assertEquals("success", ret[1]);
+        assertEquals(mode, server.proxyServer().getMode().name());
 
         req = new Request("getMode");
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(req.returnValues().get(0).asString(), is(mode));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
+        assertEquals(mode, req.returnValues().get(0).asString());
 
         req = new Request("setMode");
         String oldMode = mode;
@@ -215,19 +197,19 @@ public class ConfigProxyRpcServerTest {
         req.parameters().add(new StringValue(mode));
         client.invoke(req);
 
-        assertFalse(req.errorMessage(), req.isError());
+        assertFalse(req.isError(), req.errorMessage());
         ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(2));
-        assertThat(ret[0], is("1"));
-        assertThat(ret[1], is("Unrecognized mode '" + mode + "' supplied. Legal modes are '" + Mode.modes() + "'"));
-        assertThat(server.proxyServer().getMode().name(), is(oldMode));
+        assertEquals(2, ret.length);
+        assertEquals("1", ret[0]);
+        assertEquals("Unrecognized mode '" + mode + "' supplied. Legal modes are '" + Mode.modes() + "'", ret[1]);
+        assertEquals(oldMode, server.proxyServer().getMode().name());
     }
 
     /**
      * Tests updateSources RPC command
      */
     @Test
-    public void testRpcMethodUpdateSources() throws ListenFailedException {
+    void testRpcMethodUpdateSources() throws ListenFailedException {
         reset();
 
         Request req = new Request("updateSources");
@@ -235,9 +217,9 @@ public class ConfigProxyRpcServerTest {
         String spec2 = "tcp/b:19070";
         req.parameters().add(new StringValue(spec1 + "," + spec2));
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(req.returnValues().get(0).asString(), is("Updated config sources to: " + spec1 + "," + spec2));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
+        assertEquals("Updated config sources to: " + spec1 + "," + spec2, req.returnValues().get(0).asString());
 
 
         server.proxyServer().setMode(Mode.ModeName.MEMORYCACHE.name());
@@ -245,18 +227,18 @@ public class ConfigProxyRpcServerTest {
         req = new Request("updateSources");
         req.parameters().add(new StringValue(spec1 + "," + spec2));
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(req.returnValues().get(0).asString(), is("Cannot update sources when in '" + Mode.ModeName.MEMORYCACHE.name().toLowerCase() + "' mode"));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
+        assertEquals("Cannot update sources when in '" + Mode.ModeName.MEMORYCACHE.name().toLowerCase() + "' mode", req.returnValues().get(0).asString());
 
         // TODO source connections needs to have deterministic order to work
         /*req = new Request("listSourceConnections");
         rpcServer.listSourceConnections(req);
         assertFalse(req.errorMessage(), req.isError());
         final String[] ret = req.returnValues().get(0).asStringArray();
-        assertThat(ret.length, is(2));
-        assertThat(ret[0], is("Current source: " + spec1));
-        assertThat(ret[1], is("All sources:\n" + spec2 + "\n" + spec1 + "\n"));
+        assertEquals(ret.length, is(2));
+        assertEquals(ret[0], is("Current source: " + spec1));
+        assertEquals(ret[1], is("All sources:\n" + spec2 + "\n" + spec1 + "\n"));
         */
     }
 
@@ -264,18 +246,18 @@ public class ConfigProxyRpcServerTest {
      * Tests dumpCache RPC command
      */
     @Test
-    public void testRpcMethodDumpCache() throws IOException {
+    void testRpcMethodDumpCache() throws IOException {
         Request req = new Request("dumpCache");
-        String path = temporaryFolder.newFolder().getAbsolutePath();
+        String path = temporaryFolder.getAbsolutePath();
         req.parameters().add(new StringValue(path));
         client.invoke(req);
-        assertFalse(req.errorMessage(), req.isError());
-        assertThat(req.returnValues().size(), is(1));
-        assertThat(req.returnValues().get(0).asString(), is("success"));
+        assertFalse(req.isError(), req.errorMessage());
+        assertEquals(1, req.returnValues().size());
+        assertEquals("success", req.returnValues().get(0).asString());
     }
 
     private static ProxyServer createTestServer(ConfigSourceSet source) {
-        return new ProxyServer(null, source, new MemoryCache(), null);
+        return new ProxyServer(null, source, new RpcConfigSourceClient(new ResponseHandler(), source));
     }
 
     private static class TestServer implements AutoCloseable {
@@ -305,6 +287,15 @@ public class ConfigProxyRpcServerTest {
             supervisor.transport().shutdown().join();
             rpcServer.shutdown();
         }
+
+        private static File newFolder(File root, String... subDirs) throws IOException {
+            String subFolder = String.join("/", subDirs);
+            File result = new File(root, subFolder);
+            if (!result.mkdirs()) {
+                throw new IOException("Couldn't create folders " + root);
+            }
+            return result;
+        }
     }
 
     private static class TestClient implements AutoCloseable {
@@ -318,7 +309,7 @@ public class ConfigProxyRpcServerTest {
         }
 
         void invoke(Request request) {
-            target.invokeSync(request, Duration.ofMinutes(10).getSeconds());
+            target.invokeSync(request, Duration.ofMinutes(10));
         }
 
         @Override
@@ -326,5 +317,23 @@ public class ConfigProxyRpcServerTest {
             target.close();
             supervisor.transport().shutdown().join();
         }
+
+        private static File newFolder(File root, String... subDirs) throws IOException {
+            String subFolder = String.join("/", subDirs);
+            File result = new File(root, subFolder);
+            if (!result.mkdirs()) {
+                throw new IOException("Couldn't create folders " + root);
+            }
+            return result;
+        }
+    }
+
+    private static File newFolder(File root, String... subDirs) throws IOException {
+        String subFolder = String.join("/", subDirs);
+        File result = new File(root, subFolder);
+        if (!result.mkdirs()) {
+            throw new IOException("Couldn't create folders " + root);
+        }
+        return result;
     }
 }

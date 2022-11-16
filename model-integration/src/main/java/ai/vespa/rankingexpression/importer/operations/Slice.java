@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.rankingexpression.importer.operations;
 
 import ai.vespa.rankingexpression.importer.DimensionRenamer;
@@ -6,8 +6,8 @@ import ai.vespa.rankingexpression.importer.OrderedTensorType;
 import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.searchlib.rankingexpression.evaluation.DoubleValue;
 import com.yahoo.searchlib.rankingexpression.evaluation.Value;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticNode;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticOperator;
+import com.yahoo.searchlib.rankingexpression.rule.OperationNode;
+import com.yahoo.searchlib.rankingexpression.rule.Operator;
 import com.yahoo.searchlib.rankingexpression.rule.ConstantNode;
 import com.yahoo.searchlib.rankingexpression.rule.EmbracedNode;
 import com.yahoo.searchlib.rankingexpression.rule.ExpressionNode;
@@ -143,7 +143,7 @@ public class Slice extends IntermediateOperation {
     }
 
     @Override
-    protected TensorFunction lazyGetFunction() {
+    protected TensorFunction<Reference> lazyGetFunction() {
         if (inputs.size() < 1 || inputs.get(0).function().isEmpty()) {
             return null;
         }
@@ -166,8 +166,8 @@ public class Slice extends IntermediateOperation {
 
             // step * (d0 + start)
             ExpressionNode reference = new ReferenceNode(outputDimensionName);
-            ExpressionNode plus = new EmbracedNode(new ArithmeticNode(reference, ArithmeticOperator.PLUS, startIndex));
-            ExpressionNode mul = new ArithmeticNode(stepSize, ArithmeticOperator.MULTIPLY, plus);
+            ExpressionNode plus = new EmbracedNode(new OperationNode(reference, Operator.plus, startIndex));
+            ExpressionNode mul = new OperationNode(stepSize, Operator.multiply, plus);
 
             dimensionValues.add(new com.yahoo.tensor.functions.Slice.DimensionValue<>(Optional.of(inputDimensionName), wrapScalar(new EmbracedNode(mul))));
         }

@@ -1,14 +1,18 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.codegen;
 
-import static org.junit.Assert.*;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.StringReader;
 import java.util.List;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 
 /**
@@ -17,14 +21,13 @@ import static org.hamcrest.CoreMatchers.is;
 public class NormalizedDefinitionTest {
 
     @Test
-    public void testNormalizingFromReader() {
+    void testNormalizingFromReader() {
         String def =
-                "version=1\n" +
                 "aString string \n" +
-                "anInt int #comment \n" +
-                "aStringCommentCharacterAfter string default=\"ab\" #foo\n" +
-                "aStringWithCommentCharacter string default=\"a#b\"\n" +
-                "aStringWithEscapedQuote string default=\"a\"b\"\n";
+                        "anInt int #comment \n" +
+                        "aStringCommentCharacterAfter string default=\"ab\" #foo\n" +
+                        "aStringWithCommentCharacter string default=\"a#b\"\n" +
+                        "aStringWithEscapedQuote string default=\"a\"b\"\n";
 
         StringReader reader = new StringReader(def);
 
@@ -38,19 +41,18 @@ public class NormalizedDefinitionTest {
         }
 
         assertNotNull(out);
-        assertThat(out.size(), is(6));
-        assertThat(out.get(0), is ("version=1\n"));
-        assertThat(out.get(1), is ("aString string\n"));
-        assertThat(out.get(2), is ("anInt int\n"));
-        assertThat(out.get(3), is ("aStringCommentCharacterAfter string default=\"ab\"\n"));
-        assertThat(out.get(4), is ("aStringWithCommentCharacter string default=\"a#b\"\n"));
-        assertThat(out.get(5), is ("aStringWithEscapedQuote string default=\"a\"b\"\n"));
+        assertEquals(5, out.size());
+        assertEquals("aString string\n", out.get(0));
+        assertEquals("anInt int\n", out.get(1));
+        assertEquals("aStringCommentCharacterAfter string default=\"ab\"\n", out.get(2));
+        assertEquals("aStringWithCommentCharacter string default=\"a#b\"\n", out.get(3));
+        assertEquals("aStringWithEscapedQuote string default=\"a\"b\"\n", out.get(4));
 
         reader.close();
     }
 
     @Test
-    public void testNormalizingFromFile() throws IOException {
+    void testNormalizingFromFile() throws IOException {
         FileReader fileReader = null;
         try {
             fileReader = new FileReader("src/test/resources/configgen.allfeatures.def");
@@ -68,7 +70,7 @@ public class NormalizedDefinitionTest {
         }
 
         assertNotNull(out);
-        assertThat(out.size(), is(72));
+        assertEquals(75, out.size());
 
         assertNotNull(fileReader);
         fileReader.close();

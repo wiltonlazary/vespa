@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "ddbstate.h"
 #include "feedhandler.h"
+#include "ddbstate.h"
 #include "feedstates.h"
 #include "i_feed_handler_owner.h"
 #include "ifeedview.h"
@@ -20,10 +20,11 @@
 #include <vespa/searchcorespi/index/ithreadingservice.h>
 #include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/searchlib/transactionlog/client_session.h>
+#include <vespa/vespalib/util/atomic.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/util/lambdatask.h>
 #include <cassert>
-#include <unistd.h>
+#include <thread>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.server.feedhandler");
@@ -34,7 +35,6 @@ using document::DocumentTypeRepo;
 using storage::spi::RemoveResult;
 using storage::spi::Result;
 using storage::spi::Timestamp;
-using storage::spi::Timestamp;
 using storage::spi::UpdateResult;
 using vespalib::Executor;
 using vespalib::IllegalStateException;
@@ -43,6 +43,7 @@ using vespalib::make_string;
 using std::make_unique;
 using std::make_shared;
 using search::CommitParam;
+using namespace vespalib::atomic;
 
 namespace proton {
 
@@ -99,7 +100,7 @@ TlsMgrWriter::sync(SerialNum syncTo)
         bool res = _tls_mgr.getSession()->sync(syncTo, syncedTo);
         if (!res) {
             LOG(debug, "Tls sync failed, retrying");
-            sleep(1);
+            std::this_thread::sleep_for(100ms);
             continue;
         }
         if (syncedTo >= syncTo) {
@@ -130,12 +131,15 @@ private:
 class DaisyChainedFeedToken : public feedtoken::ITransport {
 public:
     DaisyChainedFeedToken(FeedToken token) : _token(std::move(token)) {}
+    ~DaisyChainedFeedToken() override;
     void send(ResultUP, bool ) override {
         _token.reset();
     }
 private:
     FeedToken _token;
 };
+
+DaisyChainedFeedToken::~DaisyChainedFeedToken() = default;
 
 }  // namespace
 
@@ -204,7 +208,7 @@ FeedHandler::performInternalUpdate(FeedToken token, UpdateOperation &op)
 {
     appendOperation(op, token);
     if (token) {
-        token->setResult(make_unique<UpdateResult>(op.getPrevTimestamp()), true);
+        token->setResult(make_unique<UpdateResult>(Timestamp(op.getPrevTimestamp())), true);
     }
     _activeFeedView->handleUpdate(std::move(token), op);
 }
@@ -221,7 +225,7 @@ FeedHandler::createNonExistingDocument(FeedToken token, const UpdateOperation &o
     _activeFeedView->preparePut(putOp);
     appendOperation(putOp, token);
     if (token) {
-        token->setResult(make_unique<UpdateResult>(putOp.getTimestamp()), true);
+        token->setResult(make_unique<UpdateResult>(Timestamp(putOp.getTimestamp())), true);
     }
 
     _activeFeedView->handlePut(feedtoken::make(std::make_unique<DaisyChainedFeedToken>(std::move(token))), putOp);
@@ -281,10 +285,10 @@ FeedHandler::performDeleteBucket(FeedToken token, DeleteBucketOperation &op) {
     _activeFeedView->prepareDeleteBucket(op);
     appendOperation(op, token);
     // Delete documents in bucket
-    _activeFeedView->handleDeleteBucket(op);
+    _activeFeedView->handleDeleteBucket(op, token);
     // Delete bucket itself, should no longer have documents.
     _bucketDBHandler->handleDeleteBucket(op.getBucketId());
-
+    initiateCommit(vespalib::steady_clock::now());
 }
 
 void
@@ -300,23 +304,16 @@ FeedHandler::performJoin(FeedToken token, JoinBucketsOperation &op) {
 }
 
 void
-FeedHandler::performSync()
-{
-    assert(_writeService.master().isCurrentThread());
-    _activeFeedView->sync();
-}
-
-void
 FeedHandler::performEof()
 {
     assert(_writeService.master().isCurrentThread());
-    _writeService.sync();
+    _activeFeedView->forceCommitAndWait(CommitParam(load_relaxed(_serialNum)));
     LOG(debug, "Visiting done for transaction log domain '%s', eof received", _tlsMgr.getDomainName().c_str());
     // Replay must be complete
-    if (_replay_end_serial_num != _serialNum) {
+    if (_replay_end_serial_num != load_relaxed(_serialNum)) {
         LOG(warning, "Expected replay end serial number %" PRIu64 ", got serial number %" PRIu64,
-            _replay_end_serial_num, _serialNum);
-        assert(_replay_end_serial_num == _serialNum);
+            _replay_end_serial_num, load_relaxed(_serialNum));
+        assert(_replay_end_serial_num == load_relaxed(_serialNum));
     }
     _owner.onTransactionLogReplayDone();
     _tlsMgr.replayDone();
@@ -382,7 +379,9 @@ FeedHandler::changeFeedState(FeedStateSP newState)
     if (_writeService.master().isCurrentThread()) {
         doChangeFeedState(std::move(newState));
     } else {
-        _writeService.master().execute(makeLambdaTask([this, newState=std::move(newState)] () { doChangeFeedState(std::move(newState));}));
+        _writeService.master().execute(makeLambdaTask([this, newState=std::move(newState)] () {
+            doChangeFeedState(std::move(newState));
+        }));
         _writeService.master().sync();
     }
 }
@@ -414,18 +413,16 @@ FeedHandler::FeedHandler(IThreadingService &writeService,
       _owner(owner),
       _writeFilter(writeFilter),
       _replayConfig(replayConfig),
-      _tlsMgr(tlsSpec, docTypeName.getName()),
+      _tlsMgr(writeService.transport(), tlsSpec, docTypeName.getName()),
       _tlsWriterfactory(tlsWriterFactory),
       _tlsMgrWriter(),
       _tlsWriter(tlsWriter),
       _tlsReplayProgress(),
       _serialNum(0),
       _prunedSerialNum(0),
-      _replay_end_serial_num(0u),
-      _prepare_serial_num(0u),
-      _numOperationsPendingCommit(0),
-      _numOperationsCompleted(0),
-      _numCommitsCompleted(0),
+      _replay_end_serial_num(0),
+      _prepare_serial_num(0),
+      _numOperations(),
       _delayedPrune(false),
       _feedLock(),
       _feedState(make_shared<InitState>(getDocTypeName())),
@@ -436,7 +433,9 @@ FeedHandler::FeedHandler(IThreadingService &writeService,
       _syncLock(),
       _syncedSerialNum(0),
       _allowSync(false),
-      _heart_beat_time(vespalib::steady_time())
+      _heart_beat_time(vespalib::steady_time()),
+      _stats_lock(),
+      _stats()
 { }
 
 
@@ -447,7 +446,7 @@ void
 FeedHandler::init(SerialNum oldestConfigSerial)
 {
     _tlsMgr.init(oldestConfigSerial, _prunedSerialNum, _replay_end_serial_num);
-    _serialNum = _prunedSerialNum;
+    store_relaxed(_serialNum, _prunedSerialNum);
     if (_tlsWriter == nullptr) {
         _tlsMgrWriter = std::make_unique<TlsMgrWriter>(_tlsMgr, _tlsWriterfactory);
         _tlsWriter = _tlsMgrWriter.get();
@@ -461,7 +460,7 @@ void
 FeedHandler::close()
 {
     if (_allowSync) {
-        syncTls(_serialNum);
+        syncTls(load_relaxed(_serialNum));
     }
     _allowSync = false;
     _tlsMgr.close();
@@ -470,13 +469,14 @@ FeedHandler::close()
 void
 FeedHandler::replayTransactionLog(SerialNum flushedIndexMgrSerial, SerialNum flushedSummaryMgrSerial,
                                   SerialNum oldestFlushedSerial, SerialNum newestFlushedSerial,
-                                  ConfigStore &config_store)
+                                  ConfigStore &config_store,
+                                  const ReplayThrottlingPolicy& replay_throttling_policy)
 {
     (void) newestFlushedSerial;
     assert(_activeFeedView);
     assert(_bucketDBHandler);
     auto state = make_shared<ReplayTransactionLogState>
-                          (getDocTypeName(), _activeFeedView, *_bucketDBHandler, _replayConfig, config_store, *this);
+                          (getDocTypeName(), _activeFeedView, *_bucketDBHandler, _replayConfig, config_store, replay_throttling_policy, *this);
     changeFeedState(state);
     // Resurrected attribute vector might cause oldestFlushedSerial to
     // be lower than _prunedSerialNum, so don't warn for now.
@@ -486,8 +486,8 @@ FeedHandler::replayTransactionLog(SerialNum flushedIndexMgrSerial, SerialNum flu
     TransactionLogManager::prepareReplay(_tlsMgr.getClient(), _docTypeName.getName(),
                                          flushedIndexMgrSerial, flushedSummaryMgrSerial, config_store);
 
-    _tlsReplayProgress = _tlsMgr.make_replay_progress(_serialNum, _replay_end_serial_num);
-    _tlsMgr.startReplay(_serialNum, _replay_end_serial_num, *this);
+    _tlsReplayProgress = _tlsMgr.make_replay_progress(load_relaxed(_serialNum), _replay_end_serial_num);
+    _tlsMgr.startReplay(load_relaxed(_serialNum), _replay_end_serial_num, *this);
 }
 
 void
@@ -522,34 +522,36 @@ FeedHandler::getTransactionLogReplayDone() const {
 }
 
 void
-FeedHandler::onCommitDone(size_t numPendingAtStart) {
-    assert(numPendingAtStart <= _numOperationsPendingCommit);
-    _numOperationsPendingCommit -= numPendingAtStart;
-    _numOperationsCompleted += numPendingAtStart;
-    _numCommitsCompleted++;
-    if (_numOperationsPendingCommit > 0) {
+FeedHandler::onCommitDone(size_t numOperations, vespalib::steady_time start_time) {
+    _numOperations.commitCompleted(numOperations);
+    if (_numOperations.shouldScheduleCommit()) {
         enqueCommitTask();
     }
-    LOG(spam, "%zu: onCommitDone(%zu) total=%zu left=%zu",
-        _numCommitsCompleted, numPendingAtStart, _numOperationsCompleted, _numOperationsPendingCommit);
+    vespalib::steady_time now = vespalib::steady_clock::now();
+    auto latency = vespalib::to_s(now - start_time);
+    std::lock_guard guard(_stats_lock);
+    _stats.add_commit(numOperations, latency);
 }
 
 void FeedHandler::enqueCommitTask() {
-    _writeService.master().execute(makeLambdaTask([this]() { initiateCommit(); }));
+    _writeService.master().execute(makeLambdaTask([this, start_time(vespalib::steady_clock::now())]() {
+        initiateCommit(start_time);
+    }));
 }
 
 void
-FeedHandler::initiateCommit() {
+FeedHandler::initiateCommit(vespalib::steady_time start_time) {
     auto onCommitDoneContext = std::make_shared<OnCommitDone>(
             _writeService.master(),
-            makeLambdaTask([this, numPendingAtStart=_numOperationsPendingCommit]() {
-                onCommitDone(numPendingAtStart);
+            makeLambdaTask([this, operations=_numOperations.operationsSinceLastCommitStart(), start_time]() {
+                onCommitDone(operations, start_time);
             }));
     auto commitResult = _tlsWriter->startCommit(onCommitDoneContext);
+    _numOperations.startCommit();
     if (_activeFeedView) {
         using KeepAlivePair = vespalib::KeepAlive<std::pair<CommitResult, DoneCallback>>;
         auto pair = std::make_pair(std::move(commitResult), std::move(onCommitDoneContext));
-        _activeFeedView->forceCommit(CommitParam(_serialNum, CommitParam::UpdateStats::SKIP), std::make_shared<KeepAlivePair>(std::move(pair)));
+        _activeFeedView->forceCommit(CommitParam(load_relaxed(_serialNum), CommitParam::UpdateStats::SKIP), std::make_shared<KeepAlivePair>(std::move(pair)));
     }
 }
 
@@ -559,7 +561,8 @@ FeedHandler::appendOperation(const FeedOperation &op, TlsWriter::DoneCallback on
         const_cast<FeedOperation &>(op).setSerialNum(inc_serial_num());
     }
     _tlsWriter->appendOperation(op, std::move(onDone));
-    if (++_numOperationsPendingCommit == 1) {
+    _numOperations.startOperation();
+    if (_numOperations.operationsInFlight() == 1) {
         enqueCommitTask();
     }
 }
@@ -743,13 +746,19 @@ FeedHandler::performOperation(FeedToken token, FeedOperation::UP op)
 void
 FeedHandler::handleOperation(FeedToken token, FeedOperation::UP op)
 {
-    _writeService.master().execute(makeLambdaTask([this, token = std::move(token), op = std::move(op)]() mutable {
+    // This function is only called when handling external feed operations (see PersistenceHandlerProxy),
+    // and ensures that the calling thread (persistence thread) is blocked until the master thread has capacity to handle more tasks.
+    // This helps keeping feed operation latencies and memory usage in check.
+    // NOTE: Tasks that are created and executed from the master thread itself or some of its helpers
+    //       cannot use blocking_master_execute() as that could lead to deadlocks.
+    //       See FeedHandler::initiateCommit() for a concrete example.
+    _writeService.blocking_master_execute(makeLambdaTask([this, token = std::move(token), op = std::move(op)]() mutable {
         doHandleOperation(std::move(token), std::move(op));
     }));
 }
 
 void
-FeedHandler::handleMove(MoveOperation &op, std::shared_ptr<vespalib::IDestructorCallback> moveDoneCtx)
+FeedHandler::handleMove(MoveOperation &op, vespalib::IDestructorCallback::SP moveDoneCtx)
 {
     assert(_writeService.master().isCurrentThread());
     op.set_prepare_serial_num(inc_prepare_serial_num());
@@ -766,14 +775,7 @@ FeedHandler::heartBeat()
 {
     assert(_writeService.master().isCurrentThread());
     _heart_beat_time.store(vespalib::steady_clock::now());
-    _activeFeedView->heartBeat(_serialNum);
-}
-
-void
-FeedHandler::sync()
-{
-    _writeService.master().execute(makeLambdaTask([this]() { performSync(); }));
-    _writeService.sync();
+    _activeFeedView->heartBeat(load_relaxed(_serialNum), vespalib::IDestructorCallback::SP());
 }
 
 FeedHandler::RPC::Result
@@ -795,13 +797,13 @@ FeedHandler::eof()
 }
 
 void
-FeedHandler::
-performPruneRemovedDocuments(PruneRemovedDocumentsOperation &pruneOp)
+FeedHandler::performPruneRemovedDocuments(PruneRemovedDocumentsOperation &pruneOp)
 {
     const LidVectorContext::SP lids_to_remove = pruneOp.getLidsToRemove();
+    vespalib::IDestructorCallback::SP onDone;
     if (lids_to_remove && lids_to_remove->getNumLids() != 0) {
-        appendOperation(pruneOp, DoneCallback());
-        _activeFeedView->handlePruneRemovedDocuments(pruneOp);
+        appendOperation(pruneOp, onDone);
+        _activeFeedView->handlePruneRemovedDocuments(pruneOp, onDone);
     }
 }
 
@@ -828,6 +830,16 @@ vespalib::steady_time
 FeedHandler::get_heart_beat_time() const
 {
     return _heart_beat_time.load(std::memory_order_relaxed);
+}
+
+FeedHandlerStats
+FeedHandler::get_stats(bool reset_min_max) const {
+    std::lock_guard guard(_stats_lock);
+    auto result = _stats;
+    if (reset_min_max) {
+        _stats.reset_min_max();
+    }
+    return result;
 }
 
 } // namespace proton

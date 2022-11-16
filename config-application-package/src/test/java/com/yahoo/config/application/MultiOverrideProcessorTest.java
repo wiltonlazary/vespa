@@ -4,6 +4,7 @@ package com.yahoo.config.application;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.RegionName;
+import com.yahoo.config.provision.Tags;
 import org.custommonkey.xmlunit.XMLUnit;
 import org.junit.Test;
 import org.w3c.dom.Document;
@@ -25,7 +26,7 @@ public class MultiOverrideProcessorTest {
     private static final String input =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
             "<services version=\"1.0\" xmlns:deploy=\"vespa\">\n" +
-            "    <container id='qrserver' version='1.0'>\n" +
+            "    <container id='default' version='1.0'>\n" +
             "        <component id=\"comp-B\" class=\"com.yahoo.ls.MyComponent\" bundle=\"lsbe-hv\">\n" +
             "            <config name=\"ls.config.resource-pool\">\n" +
             "                <resource>\n" +
@@ -50,7 +51,7 @@ public class MultiOverrideProcessorTest {
     private static final String inputWithIds =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
             "<services version=\"1.0\" xmlns:deploy=\"vespa\">\n" +
-            "    <container id='qrserver' version='1.0'>\n" +
+            "    <container id='default' version='1.0'>\n" +
             "        <component id=\"comp-B\" class=\"com.yahoo.ls.MyComponent\" bundle=\"lsbe-hv\">\n" +
             "            <config name=\"ls.config.resource-pool\">\n" +
             "                <resource>\n" +
@@ -77,7 +78,7 @@ public class MultiOverrideProcessorTest {
         String expected =
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<services version=\"1.0\" xmlns:deploy=\"vespa\">\n" +
-                "    <container id='qrserver' version='1.0'>\n" +
+                "    <container id='default' version='1.0'>\n" +
                 "        <component id=\"comp-B\" class=\"com.yahoo.ls.MyComponent\" bundle=\"lsbe-hv\">\n" +
                 "            <config name=\"ls.config.resource-pool\">\n" +
                 "                <resource>\n" +
@@ -98,7 +99,7 @@ public class MultiOverrideProcessorTest {
         String expected =
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                 "<services version=\"1.0\" xmlns:deploy=\"vespa\">\n" +
-                "    <container id='qrserver' version='1.0'>\n" +
+                "    <container id='default' version='1.0'>\n" +
                 "        <component id=\"comp-B\" class=\"com.yahoo.ls.MyComponent\" bundle=\"lsbe-hv\">\n" +
                 "            <config name=\"ls.config.resource-pool\">\n" +
                 "                <resource>\n" +
@@ -124,13 +125,13 @@ public class MultiOverrideProcessorTest {
 
     private void assertOverride(Environment environment, RegionName region, String expected) throws TransformerException {
         Document inputDoc = Xml.getDocument(new StringReader(input));
-        Document newDoc = new OverrideProcessor(InstanceName.from("default"), environment, region).process(inputDoc);
+        Document newDoc = new OverrideProcessor(InstanceName.from("default"), environment, region, Tags.empty()).process(inputDoc);
         TestBase.assertDocument(expected, newDoc);
     }
 
     private void assertOverrideWithIds(Environment environment, RegionName region, String expected) throws TransformerException {
         Document inputDoc = Xml.getDocument(new StringReader(inputWithIds));
-        Document newDoc = new OverrideProcessor(InstanceName.from("default"), environment, region).process(inputDoc);
+        Document newDoc = new OverrideProcessor(InstanceName.from("default"), environment, region, Tags.empty()).process(inputDoc);
         TestBase.assertDocument(expected, newDoc);
     }
 

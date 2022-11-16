@@ -9,8 +9,9 @@ import java.util.List;
  *
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
-public class RejectFilter {
+class RejectFilter {
     private final List<String> rejectedMessages = new ArrayList<>();
 
     public boolean shouldReject(String message) {

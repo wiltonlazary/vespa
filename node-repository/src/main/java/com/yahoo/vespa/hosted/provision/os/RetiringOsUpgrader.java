@@ -2,6 +2,7 @@
 package com.yahoo.vespa.hosted.provision.os;
 
 import com.yahoo.component.Version;
+import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
@@ -15,8 +16,7 @@ import java.util.Optional;
 import java.util.logging.Logger;
 
 /**
- * An upgrader that retires and deprovisions hosts on stale OS versions. Retirement of each host is spread out in time,
- * according to a time budget, to avoid potential service impact of retiring too many hosts close together.
+ * An upgrader that retires and deprovisions hosts on stale OS versions.
  *
  * Used in clouds where hosts must be re-provisioned to upgrade their OS.
  *
@@ -28,36 +28,52 @@ public class RetiringOsUpgrader implements OsUpgrader {
 
     protected final NodeRepository nodeRepository;
 
-    public RetiringOsUpgrader(NodeRepository nodeRepository) {
+    private final boolean softRebuild;
+    private final int maxActiveUpgrades;
+
+    public RetiringOsUpgrader(NodeRepository nodeRepository, boolean softRebuild, int maxActiveUpgrades) {
         this.nodeRepository = nodeRepository;
+        this.softRebuild = softRebuild;
+        this.maxActiveUpgrades = maxActiveUpgrades;
+        if (maxActiveUpgrades < 1) throw new IllegalArgumentException("maxActiveUpgrades must be positive, was " +
+                                                                      maxActiveUpgrades);
     }
 
     @Override
-    public final void upgradeTo(OsVersionTarget target) {
+    public void upgradeTo(OsVersionTarget target) {
         NodeList allNodes = nodeRepository.nodes().list();
         Instant now = nodeRepository.clock().instant();
-        NodeList candidates = candidates(now, target, allNodes);
-        candidates.not().deprovisioning()
-                  .byIncreasingOsVersion()
-                  .first(1)
-                  .forEach(node -> deprovision(node, target.version(), now));
+        for (var candidate : candidates(now, target, allNodes)) {
+            deprovision(candidate, target.version(), now);
+        }
     }
 
     @Override
-    public final void disableUpgrade(NodeType type) {
+    public void disableUpgrade(NodeType type) {
         // No action needed in this implementation.
+    }
+
+    @Override
+    public boolean canUpgradeAt(Instant instant, Node node) {
+        return node.history().age(instant).compareTo(gracePeriod()) > 0;
     }
 
     /** Returns nodes that are candidates for upgrade */
     private NodeList candidates(Instant instant, OsVersionTarget target, NodeList allNodes) {
         NodeList activeNodes = allNodes.state(Node.State.active).nodeType(target.nodeType());
+        if (softRebuild) {
+            // Soft rebuild is enabled, so this should only act on hosts with local storage, or non-x86-64
+            activeNodes = activeNodes.matching(node -> node.resources().storageType() == NodeResources.StorageType.local ||
+                                                       node.resources().architecture() != NodeResources.Architecture.x86_64);
+        }
         if (activeNodes.isEmpty()) return NodeList.of();
 
-        Duration nodeBudget = target.upgradeBudget().dividedBy(activeNodes.size());
-        Instant retiredAt = target.lastRetiredAt().orElse(Instant.EPOCH);
-        if (instant.isBefore(retiredAt.plus(nodeBudget))) return NodeList.of(); // Budget has not been spent yet
-
-        return activeNodes.osVersionIsBefore(target.version());
+        int numberToDeprovision = Math.max(0, maxActiveUpgrades - activeNodes.deprovisioning().size());
+        return activeNodes.not().deprovisioning()
+                          .osVersionIsBefore(target.version())
+                          .matching(node -> canUpgradeAt(instant, node))
+                          .byIncreasingOsVersion()
+                          .first(numberToDeprovision);
     }
 
     /** Upgrade given host by retiring and deprovisioning it */
@@ -65,9 +81,13 @@ public class RetiringOsUpgrader implements OsUpgrader {
         LOG.info("Retiring and deprovisioning " + host + ": On stale OS version " +
                  host.status().osVersion().current().map(Version::toFullString).orElse("<unset>") +
                  ", want " + target);
-        nodeRepository.nodes().deprovision(host.hostname(), Agent.RetiringUpgrader, now);
+        nodeRepository.nodes().deprovision(host.hostname(), Agent.RetiringOsUpgrader, now);
         nodeRepository.nodes().upgradeOs(NodeListFilter.from(host), Optional.of(target));
-        nodeRepository.osVersions().writeChange((change) -> change.withRetirementAt(now, host.type()));
+    }
+
+    /** The duration this leaves new nodes alone before scheduling any upgrade */
+    private Duration gracePeriod() {
+        return Duration.ofDays(1);
     }
 
 }

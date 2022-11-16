@@ -60,12 +60,16 @@ public abstract class TensorFunction<NAMETYPE extends Name> {
      *
      * @param context a context which must be passed to all nested functions when requesting the string value
      */
-    public abstract String toString(ToStringContext context);
+    public abstract String toString(ToStringContext<NAMETYPE> context);
 
     /** Returns this as a scalar function, or empty if it cannot be represented as a scalar function */
     public Optional<ScalarFunction<NAMETYPE>> asScalarFunction() { return Optional.empty(); }
 
     @Override
     public String toString() { return toString(ToStringContext.empty()); }
+
+    /** Returns a hashcode computed from the data in this */
+    @Override
+    public abstract int hashCode();
 
 }

@@ -14,10 +14,11 @@ import com.yahoo.protect.Validator;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.search.cluster.PingableSearcher;
+import com.yahoo.search.schema.RankProfile;
 import com.yahoo.search.grouping.vespa.GroupingExecutor;
-import com.yahoo.search.result.ErrorHit;
 import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.search.result.Hit;
+import com.yahoo.search.schema.SchemaInfo;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.searchlib.aggregation.Grouping;
 
@@ -27,15 +28,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
  * Superclass for backend searchers.
  *
- * @author  baldersheim
+ * @author baldersheim
  */
 public abstract class VespaBackEndSearcher extends PingableSearcher {
+
+    /** for vespa-internal use only; consider renaming the summary class */
+    public static final String SORTABLE_ATTRIBUTES_SUMMARY_CLASS = "attributeprefetch";
 
     private static final CompoundName TRACE_DISABLE = new CompoundName("trace.disable");
 
@@ -79,8 +82,7 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
         if (tree instanceof GeoLocationItem) {
             return true;
         }
-        if (tree instanceof CompositeItem) {
-            var composite = (CompositeItem)tree;
+        if (tree instanceof CompositeItem composite) {
             for (Item child : composite.items()) {
                 if (hasLocation(child)) return true;
             }
@@ -90,7 +92,7 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
 
     /**
      * Returns whether we need to send the query when fetching summaries.
-     * This is necessary if the query requests summary features or dynamic snippeting
+     * This is necessary if the query requests summary features or dynamic snippeting.
      */
     public boolean summaryNeedsQuery(Query query) {
         if (query.getRanking().getQueryCache()) return false;  // Query is cached in backend
@@ -104,7 +106,7 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
         if (hasLocation(query.getModel().getQueryTree())) return true;
 
         // Needed to generate ranking features?
-        RankProfile rankProfile = documentDb.rankProfiles().get(query.getRanking().getProfile());
+        RankProfile rankProfile = documentDb.schema().rankProfiles().get(query.getRanking().getProfile());
         if (rankProfile == null) return true; // stay safe
         if (rankProfile.hasSummaryFeatures()) return true;
         if (query.getRanking().getListFeatures()) return true;
@@ -130,12 +132,12 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
     private void resolveDocumentDatabase(Query query) {
         DocumentDatabase docDb = getDocumentDatabase(query);
         if (docDb != null) {
-            query.getModel().setDocumentDb(docDb.getName());
+            query.getModel().setDocumentDb(docDb.schema().name());
         }
     }
 
     public final void init(String serverId, SummaryParameters docSumParams, ClusterParams clusterParams,
-                           DocumentdbInfoConfig documentdbInfoConfig) {
+                           DocumentdbInfoConfig documentdbInfoConfig, SchemaInfo schemaInfo) {
         this.serverId = serverId;
         this.name = clusterParams.searcherName;
 
@@ -145,10 +147,9 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
 
         if (documentdbInfoConfig != null) {
             for (DocumentdbInfoConfig.Documentdb docDb : documentdbInfoConfig.documentdb()) {
-                DocumentDatabase db = new DocumentDatabase(docDb);
-                if (documentDbs.isEmpty()) {
+                DocumentDatabase db = new DocumentDatabase(schemaInfo.schemas().get(docDb.name()));
+                if (documentDbs.isEmpty())
                     defaultDocumentDb = db;
-                }
                 documentDbs.put(docDb.name(), db);
             }
         }
@@ -156,12 +157,18 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
 
     protected void transformQuery(Query query) { }
 
+    @Override
     public Result search(Query query, Execution execution) {
         // query root should not be null here
         Item root = query.getModel().getQueryTree().getRoot();
         if (root == null || root instanceof NullItem) {
             return new Result(query, ErrorMessage.createNullQuery(query.getHttpRequest().getUri().toString()));
         }
+
+        if ( ! getDocumentDatabase(query).schema().rankProfiles().containsKey(query.getRanking().getProfile()))
+            return new Result(query, ErrorMessage.createInvalidQueryParameter(getDocumentDatabase(query).schema() +
+                                                                              " does not contain requested rank profile '" +
+                                                                              query.getRanking().getProfile() + "'"));
 
         QueryRewrite.optimizeByRestrict(query);
         QueryRewrite.optimizeAndNot(query);
@@ -180,10 +187,8 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
             return new Result(query);
 
         Result result = doSearch2(query, execution);
-        if (isLoggingFine())
-            getLogger().fine("Result NOT retrieved from cache");
 
-        if (query.getTraceLevel() >= 1)
+        if (query.getTrace().getLevel() >= 1)
             query.trace(getName() + " dispatch response: " + result, false, 1);
         result.trace(getName());
         return result;
@@ -195,8 +200,7 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
 
         for (Iterator<Hit> i = hitIterator(result); i.hasNext(); ) {
             Hit hit = i.next();
-            if (hit instanceof FastHit) {
-                FastHit fastHit = (FastHit) hit;
+            if (hit instanceof FastHit fastHit) {
                 if ( ! fastHit.isFilled(summaryClass)) {
                     Query q = fastHit.getQuery();
                     if (q == null) {
@@ -236,7 +240,7 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
     }
 
     void traceQuery(String sourceName, String type, Query query, int offset, int hits, int level, Optional<String> quotedSummaryClass) {
-        if ((query.getTraceLevel()<level) || query.properties().getBoolean(TRACE_DISABLE)) return;
+        if ((query.getTrace().getLevel()<level) || query.properties().getBoolean(TRACE_DISABLE)) return;
 
         StringBuilder s = new StringBuilder();
         s.append(sourceName).append(" ").append(type).append(" to dispatch: ")
@@ -302,17 +306,15 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
             s.append(" restrict=").append(query.getModel().getRestrict().toString());
         }
 
-        if (quotedSummaryClass.isPresent()) {
-            s.append(" summary=").append(quotedSummaryClass.get());
-        }
+        quotedSummaryClass.ifPresent((String summaryClass) -> s.append(" summary=").append(summaryClass));
 
         query.trace(s.toString(), false, level);
-        if (query.isTraceable(level + 1)) {
+        if (query.getTrace().isTraceable(level + 1)) {
             query.trace("Current state of query tree: "
                             + new TextualQueryRepresentation(query.getModel().getQueryTree().getRoot()),
                     false, level+1);
         }
-        if (query.isTraceable(level + 2)) {
+        if (query.getTrace().isTraceable(level + 2)) {
             query.trace("YQL+ representation: " + query.yqlRepresentation(), level+2);
         }
     }
@@ -360,9 +362,7 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
         for (Iterator<Hit> i = hitIterator(result); i.hasNext();) {
             Hit hit = i.next();
 
-            if (hit instanceof FastHit && ! hit.isFilled(summaryClass)) {
-                FastHit fastHit = (FastHit) hit;
-
+            if (hit instanceof FastHit fastHit && ! hit.isFilled(summaryClass)) {
                 DocsumPacket docsum = packets[packetIndex];
 
                 packetIndex++;
@@ -388,7 +388,7 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
 
     private String decodeSummary(String summaryClass, FastHit hit, byte[] docsumdata) {
         DocumentDatabase db = getDocumentDatabase(hit.getQuery());
-        hit.setField(Hit.SDDOCNAME_FIELD, db.getName());
+        hit.setField(Hit.SDDOCNAME_FIELD, db.schema().name());
         return decodeSummary(summaryClass, hit, docsumdata, db.getDocsumDefinitionSet());
     }
 
@@ -398,10 +398,6 @@ public abstract class VespaBackEndSearcher extends PingableSearcher {
             hit.setFilled(summaryClass);
         }
         return error;
-    }
-
-    protected boolean isLoggingFine() {
-        return getLogger().isLoggable(Level.FINE);
     }
 
     public void shutDown() { }

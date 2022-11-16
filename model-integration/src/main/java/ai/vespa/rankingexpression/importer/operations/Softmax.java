@@ -1,7 +1,8 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.rankingexpression.importer.operations;
 
 import ai.vespa.rankingexpression.importer.OrderedTensorType;
+import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.tensor.functions.Join;
 import com.yahoo.tensor.functions.Map;
 import com.yahoo.tensor.functions.Reduce;
@@ -34,12 +35,12 @@ public class Softmax extends IntermediateOperation {
     }
 
     @Override
-    protected TensorFunction lazyGetFunction() {
+    protected TensorFunction<Reference> lazyGetFunction() {
         if ( ! allInputFunctionsPresent(1)) return null;
         List<String> reduceDimensions = reduceDimensions();
-        TensorFunction input = inputs.get(0).function().get();
-        TensorFunction sum = new Reduce(input, Reduce.Aggregator.sum, reduceDimensions);
-        TensorFunction div = new Join(input, sum, ScalarFunctions.divide());
+        TensorFunction<Reference> input = inputs.get(0).function().get();
+        TensorFunction<Reference> sum = new Reduce<>(input, Reduce.Aggregator.sum, reduceDimensions);
+        TensorFunction<Reference> div = new Join<>(input, sum, ScalarFunctions.divide());
         return div;
     }
 
@@ -93,13 +94,13 @@ public class Softmax extends IntermediateOperation {
         }
 
         @Override
-        protected TensorFunction lazyGetFunction() {
+        protected TensorFunction<Reference> lazyGetFunction() {
             if ( ! allInputFunctionsPresent(1)) return null;
             List<String> reduceDimensions = reduceDimensions();
-            TensorFunction input = inputs.get(0).function().get();
-            TensorFunction max = new Reduce(input, Reduce.Aggregator.max, reduceDimensions);
-            TensorFunction cap = new Join(input, max, ScalarFunctions.subtract());  // to avoid overflow
-            TensorFunction exp = new Map(cap, ScalarFunctions.exp());
+            TensorFunction<Reference> input = inputs.get(0).function().get();
+            TensorFunction<Reference> max = new Reduce<>(input, Reduce.Aggregator.max, reduceDimensions);
+            TensorFunction<Reference> cap = new Join<>(input, max, ScalarFunctions.subtract());  // to avoid overflow
+            TensorFunction<Reference> exp = new Map<>(cap, ScalarFunctions.exp());
             return exp;
         }
 

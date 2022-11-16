@@ -3,11 +3,10 @@ package com.yahoo.vespa.hosted.controller.deployment;
 
 import java.util.Collection;
 import java.util.List;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static java.util.Comparator.reverseOrder;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toUnmodifiableList;
 
 /**
  * Steps that make up a deployment job. See {@link JobProfile} for preset profiles.
@@ -66,7 +65,7 @@ public enum Step {
     deactivateReal(true, deployInitialReal, deployReal, endTests, copyVespaLogs),
 
     /** Deactivate the tester. */
-    deactivateTester(true, deployTester, endTests),
+    deactivateTester(true, deployTester, endTests, copyVespaLogs),
 
     /** Report completion to the deployment orchestration machinery. */
     report(true, installReal, deactivateReal, deactivateTester);
@@ -89,7 +88,7 @@ public enum Step {
                             .filter(among::contains)
                             .flatMap(pre -> Stream.concat(Stream.of(pre),
                                                           pre.allPrerequisites(among).stream()))
-                            .sorted()
+                            .sorted(reverseOrder())
                             .distinct()
                             .collect(toList());
     }
@@ -113,7 +112,9 @@ public enum Step {
         public static Step.Status of(RunStatus status) {
             switch (status) {
                 case success : throw new AssertionError("Unexpected run status '" + status + "'!");
+                case reset   :
                 case aborted : return unfinished;
+                case noTests :
                 case running : return succeeded;
                 default      : return failed;
             }

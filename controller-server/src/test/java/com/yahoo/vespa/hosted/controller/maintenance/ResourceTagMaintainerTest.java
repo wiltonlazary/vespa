@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.config.provision.ApplicationId;
@@ -10,14 +10,14 @@ import com.yahoo.vespa.hosted.controller.api.integration.aws.MockResourceTagger;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Node;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
 import com.yahoo.vespa.hosted.controller.integration.ZoneApiMock;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
 import static com.yahoo.vespa.hosted.controller.maintenance.ResourceTagMaintainer.SHARED_HOST_APPLICATION;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author olaa
@@ -27,17 +27,17 @@ public class ResourceTagMaintainerTest {
     private final ControllerTester tester = new ControllerTester();
 
     @Test
-    public void maintain() {
+    void maintain() {
         setUpZones();
         MockResourceTagger mockResourceTagger = new MockResourceTagger();
         ResourceTagMaintainer resourceTagMaintainer = new ResourceTagMaintainer(tester.controller(),
-                                                                                Duration.ofMinutes(5),
-                                                                                mockResourceTagger);
+                Duration.ofMinutes(5),
+                mockResourceTagger);
         resourceTagMaintainer.maintain();
         assertEquals(2, mockResourceTagger.getValues().size());
         Map<HostName, ApplicationId> applicationForHost = mockResourceTagger.getValues().get(ZoneId.from("prod.region-2"));
-        assertEquals(ApplicationId.from("t1", "a1", "i1"), applicationForHost.get(HostName.from("parentHostA.prod.region-2")));
-        assertEquals(SHARED_HOST_APPLICATION, applicationForHost.get(HostName.from("parentHostB.prod.region-2")));
+        assertEquals(ApplicationId.from("t1", "a1", "i1"), applicationForHost.get(HostName.of("parentHostA.prod.region-2")));
+        assertEquals(SHARED_HOST_APPLICATION, applicationForHost.get(HostName.of("parentHostB.prod.region-2")));
     }
 
     private void setUpZones() {
@@ -51,19 +51,19 @@ public class ResourceTagMaintainerTest {
 
     public void setNodes(ZoneId zone) {
         var hostA = Node.builder()
-                        .hostname(HostName.from("parentHostA." + zone.value()))
+                        .hostname(HostName.of("parentHostA." + zone.value()))
                         .type(NodeType.host)
                         .owner(ApplicationId.from(SystemApplication.TENANT.value(), "tenant-host", "default"))
                         .exclusiveTo(ApplicationId.from("t1", "a1", "i1"))
                         .build();
         var nodeA = Node.builder()
-                        .hostname(HostName.from("hostA." + zone.value()))
+                        .hostname(HostName.of("hostA." + zone.value()))
                         .type(NodeType.tenant)
-                        .parentHostname(HostName.from("parentHostA." + zone.value()))
+                        .parentHostname(HostName.of("parentHostA." + zone.value()))
                         .owner(ApplicationId.from("tenant1", "app1", "default"))
                         .build();
         var hostB = Node.builder()
-                        .hostname(HostName.from("parentHostB." + zone.value()))
+                        .hostname(HostName.of("parentHostB." + zone.value()))
                         .type(NodeType.host)
                         .owner(ApplicationId.from(SystemApplication.TENANT.value(), "tenant-host", "default"))
                         .build();

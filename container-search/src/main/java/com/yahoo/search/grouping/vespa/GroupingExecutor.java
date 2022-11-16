@@ -1,19 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.grouping.vespa;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.logging.Logger;
-
 import com.yahoo.component.ComponentId;
 import com.yahoo.component.chain.dependencies.After;
 import com.yahoo.component.chain.dependencies.Provides;
-import java.util.logging.Level;
 import com.yahoo.prelude.fastsearch.GroupingListHit;
 import com.yahoo.prelude.query.Item;
 import com.yahoo.prelude.query.QueryCanonicalizer;
@@ -29,8 +19,16 @@ import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.search.result.Hit;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.searchlib.aggregation.Grouping;
-import com.yahoo.vespa.objects.ObjectOperation;
-import com.yahoo.vespa.objects.ObjectPredicate;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Executes the {@link GroupingRequest grouping requests} set up by other searchers. This does the necessary
@@ -50,6 +48,11 @@ public class GroupingExecutor extends Searcher {
     private final static CompoundName PROP_GROUPINGLIST = newCompoundName(GROUPING_LIST);
     private final static Logger log = Logger.getLogger(GroupingExecutor.class.getName());
 
+    private static final double DEFAULT_PRECISION_FACTOR = 2.0;
+    private static final int DEFAULT_MAX_GROUPS = 10;
+    private static final int DEFAULT_MAX_HITS = 10;
+    private static final long DEFAULT_GLOBAL_MAX_GROUPS = 10000;
+
     /**
      * Constructs a new instance of this searcher without configuration.
      * This makes the searcher completely useless for searching purposes,
@@ -61,7 +64,7 @@ public class GroupingExecutor extends Searcher {
     /**
      * Constructs a new instance of this searcher with the given component id.
      *
-     * @param componentId The identifier to assign to this searcher.
+     * @param componentId the identifier to assign to this searcher
      */
     public GroupingExecutor(ComponentId componentId) {
         super(componentId);
@@ -141,10 +144,10 @@ public class GroupingExecutor extends Searcher {
      * context that corresponds to the given request, whereas the created {@link Grouping} objects are written directly
      * to the given map.
      *
-     * @param query The query being executed.
-     * @param req   The request to convert.
-     * @param map   The grouping map to write to.
-     * @return The context required to identify the request results.
+     * @param query the query being executed
+     * @param req   the request to convert
+     * @param map   the grouping map to write to
+     * @return the context required to identify the request results
      */
     private RequestContext convertRequest(Query query, GroupingRequest req, int requestId, Map<Integer, Grouping> map) {
         RequestBuilder builder = new RequestBuilder(requestId);
@@ -152,6 +155,10 @@ public class GroupingExecutor extends Searcher {
         builder.setDefaultSummaryName(query.getPresentation().getSummary());
         builder.setTimeZone(req.getTimeZone());
         builder.addContinuations(req.continuations());
+        builder.setDefaultMaxGroups(req.defaultMaxGroups().orElse(DEFAULT_MAX_GROUPS));
+        builder.setDefaultMaxHits(req.defaultMaxHits().orElse(DEFAULT_MAX_HITS));
+        builder.setGlobalMaxGroups(req.globalMaxGroups().orElse(DEFAULT_GLOBAL_MAX_GROUPS));
+        builder.setDefaultPrecisionFactor(req.defaultPrecisionFactor().orElse(DEFAULT_PRECISION_FACTOR));
         builder.build();
 
         RequestContext ctx = new RequestContext(req, builder.getTransform());
@@ -168,10 +175,10 @@ public class GroupingExecutor extends Searcher {
     /**
      * Converts the results of the given request context into a single {@link Group}.
      *
-     * @param requestContext   The context that identifies the results to convert.
-     * @param groupingMap  The map of all {@link Grouping} objects available.
-     * @param hitConverter The converter to use for {@link Hit} conversion.
-     * @return The corresponding root RootGroup.
+     * @param requestContext the context that identifies the results to convert
+     * @param groupingMap    the map of all {@link Grouping} objects available
+     * @param hitConverter   the converter to use for {@link Hit} conversion
+     * @return the corresponding root RootGroup.
      */
     private RootGroup convertResult(RequestContext requestContext, Map<Integer, Grouping> groupingMap,
                                     HitConverter hitConverter) {
@@ -191,10 +198,10 @@ public class GroupingExecutor extends Searcher {
      * grouping map argument as both an input and an output variable, as the contained {@link Grouping} objects are
      * updates as results arrive from the back end.
      *
-     * @param query       The query to execute.
-     * @param execution   The execution context used to run the queries.
-     * @param groupingMap The map of grouping requests to perform.
-     * @return The search result to pass back from this searcher.
+     * @param query       the query to execute
+     * @param execution   the execution context used to run the queries
+     * @param groupingMap the map of grouping requests to perform
+     * @return the search result to pass back from this searcher
      */
     private Result performSearch(Query query, Execution execution, Map<Integer, Grouping> groupingMap) {
         // Determine how many passes to perform.
@@ -212,7 +219,7 @@ public class GroupingExecutor extends Searcher {
         if (lastPass > 0) {
             baseRoot = origRoot.clone();
         }
-        if (query.isTraceable(3) && query.getGroupingSessionCache()) {
+        if (query.getTrace().isTraceable(3) && query.getGroupingSessionCache()) {
             query.trace("Grouping in " + (lastPass + 1) + " passes. SessionId='" + query.getSessionId() + "'.", 3);
         }
         for (int pass = 0; pass <= lastPass; ++pass) {
@@ -235,7 +242,7 @@ public class GroupingExecutor extends Searcher {
                 // noinspection ConstantConditions
                 passRoot = baseRoot.clone();
             }
-            if (query.isTraceable(4) && query.getGroupingSessionCache()) {
+            if (query.getTrace().isTraceable(4) && query.getGroupingSessionCache()) {
                 query.trace("Grouping with session cache '" + query.getGroupingSessionCache() + "' enabled for pass #" + pass + ".", 4);
             }
             if (origRoot != passRoot) {
@@ -263,8 +270,8 @@ public class GroupingExecutor extends Searcher {
      * Merges the content of result into state. This needs to be done in order to conserve the context objects contained
      * in the state as they are not part of the serialized object representation.
      *
-     * @param state  the current state.
-     * @param result the results from the current pass.
+     * @param state  the current state
+     * @param result the results from the current pass
      */
     private void mergeGroupingMaps(Map<Integer, Grouping> state, Map<Integer, Grouping> result) {
         for (Grouping grouping : result.values()) {
@@ -282,9 +289,9 @@ public class GroupingExecutor extends Searcher {
     /**
      * Returns a list of {@link Grouping} objects that are to be used for the given pass.
      *
-     * @param groupingMap The map of all grouping objects.
-     * @param pass        The pass about to be performed.
-     * @return A list of grouping objects.
+     * @param groupingMap the map of all grouping objects
+     * @param pass        the pass about to be performed
+     * @return a list of grouping objects
      */
     private List<Grouping> getGroupingListForPassN(Map<Integer, Grouping> groupingMap, int pass) {
         List<Grouping> ret = new ArrayList<>();
@@ -310,17 +317,19 @@ public class GroupingExecutor extends Searcher {
      * Merges the grouping content of the given result object. The first grouping hit found by iterating over the result
      * content is kept, and all consecutive matching hits are merged into this.
      *
-     * @param result The result to traverse.
-     * @return A map of merged grouping objects.
+     * @param result the result to traverse
+     * @return a map of merged grouping objects
      */
     private Map<Integer, Grouping> mergeGroupingResults(Result result) {
         Map<Integer, Grouping> ret = new HashMap<>();
         for (Iterator<Hit> i = result.hits().unorderedIterator(); i.hasNext(); ) {
             Hit hit = i.next();
             if (hit instanceof GroupingListHit) {
-                ContextInjector injector = new ContextInjector(hit);
                 for (Grouping grp : ((GroupingListHit)hit).getGroupingList()) {
-                    grp.select(injector, injector);
+                    grp.select(
+                            o -> o instanceof com.yahoo.searchlib.aggregation.Hit
+                                    && ((com.yahoo.searchlib.aggregation.Hit)o).getContext() == null,
+                            o -> ((com.yahoo.searchlib.aggregation.Hit)o).setContext(hit));
                     Grouping old = ret.get(grp.getId());
                     if (old != null) {
                         old.merge(grp);
@@ -341,8 +350,8 @@ public class GroupingExecutor extends Searcher {
      * Returns the list of {@link Grouping} objects assigned to the given query. If no list has been assigned, this
      * method returns an empty list.
      *
-     * @param query The query whose grouping list to return.
-     * @return The list of assigned grouping objects.
+     * @param query the query whose grouping list to return
+     * @return the list of assigned grouping objects
      */
     @SuppressWarnings({ "unchecked" })
     public static List<Grouping> getGroupingList(Query query) {
@@ -362,34 +371,15 @@ public class GroupingExecutor extends Searcher {
      * Sets the list of {@link Grouping} objects assigned to the given query. This method overwrites any grouping
      * objects already assigned to the query.
      *
-     * @param query The query whose grouping list to set.
-     * @param lst   The grouping list to set.
+     * @param query the query whose grouping list to set
+     * @param list   the grouping list to set
      */
-    public static void setGroupingList(Query query, List<Grouping> lst) {
-        query.properties().set(PROP_GROUPINGLIST, lst);
+    public static void setGroupingList(Query query, List<Grouping> list) {
+        query.properties().set(PROP_GROUPINGLIST, list);
     }
 
     private static CompoundName newCompoundName(String name) {
         return new CompoundName(GroupingExecutor.class.getName() + "." + name);
-    }
-
-    private static class ContextInjector implements ObjectPredicate, ObjectOperation {
-
-        final Object context;
-
-        ContextInjector(Object context) {
-            this.context = context;
-        }
-
-        @Override
-        public boolean check(Object obj) {
-            return com.yahoo.searchlib.aggregation.Hit.class.isInstance(obj);
-        }
-
-        @Override
-        public void execute(Object obj) {
-            ((com.yahoo.searchlib.aggregation.Hit)obj).setContext(context);
-        }
     }
 
     private static class RequestContext {
@@ -403,4 +393,5 @@ public class GroupingExecutor extends Searcher {
             this.transform = transform;
         }
     }
+
 }

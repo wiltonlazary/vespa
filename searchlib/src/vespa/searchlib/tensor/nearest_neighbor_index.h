@@ -1,9 +1,10 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
 #include "distance_function.h"
 #include "prepare_result.h"
+#include "vector_bundle.h"
 #include <vespa/vespalib/util/generationhandler.h>
 #include <vespa/vespalib/util/memoryusage.h>
 #include <cstdint>
@@ -12,15 +13,16 @@
 
 class FastOS_FileInterface;
 
+namespace vespalib::datastore {
+class CompactionSpec;
+class CompactionStrategy;
+}
 namespace vespalib::slime { struct Inserter; }
 
 namespace search::fileutil { class LoadedBuffer; }
 
-namespace search {
-class AddressSpaceUsage;
-class BitVector;
-class CompactionStrategy;
-}
+namespace search { class AddressSpaceUsage; }
+namespace search::queryeval { class GlobalFilter; }
 
 namespace search::tensor {
 
@@ -32,6 +34,9 @@ class NearestNeighborIndexSaver;
  */
 class NearestNeighborIndex {
 public:
+    using GlobalFilter = search::queryeval::GlobalFilter;
+    using CompactionSpec = vespalib::datastore::CompactionSpec;
+    using CompactionStrategy = vespalib::datastore::CompactionStrategy;
     using generation_t = vespalib::GenerationHandler::generation_t;
     struct Neighbor {
         uint32_t docid;
@@ -53,7 +58,7 @@ public:
      * The given read guard must be kept in the result.
      */
     virtual std::unique_ptr<PrepareResult> prepare_add_document(uint32_t docid,
-                                                                vespalib::eval::TypedCells vector,
+                                                                VectorBundle vectors,
                                                                 vespalib::GenerationHandler::Guard read_guard) const = 0;
     /**
      * Performs the complete step in a two-phase operation to add a document to the index.
@@ -64,10 +69,10 @@ public:
     virtual void complete_add_document(uint32_t docid, std::unique_ptr<PrepareResult> prepare_result) = 0;
 
     virtual void remove_document(uint32_t docid) = 0;
-    virtual void transfer_hold_lists(generation_t current_gen) = 0;
-    virtual void trim_hold_lists(generation_t first_used_gen) = 0;
+    virtual void assign_generation(generation_t current_gen) = 0;
+    virtual void reclaim_memory(generation_t first_used_gen) = 0;
     virtual bool consider_compact(const CompactionStrategy& compaction_strategy) = 0;
-    virtual vespalib::MemoryUsage update_stat() = 0;
+    virtual vespalib::MemoryUsage update_stat(const CompactionStrategy& compaction_strategy) = 0;
     virtual vespalib::MemoryUsage memory_usage() const = 0;
     virtual void populate_address_space_usage(search::AddressSpaceUsage& usage) const = 0;
     virtual void get_state(const vespalib::slime::Inserter& inserter) const = 0;
@@ -96,7 +101,7 @@ public:
     // only return neighbors where the corresponding filter bit is set
     virtual std::vector<Neighbor> find_top_k_with_filter(uint32_t k,
                                                          vespalib::eval::TypedCells vector,
-                                                         const BitVector &filter,
+                                                         const GlobalFilter &filter,
                                                          uint32_t explore_k,
                                                          double distance_threshold) const = 0;
 

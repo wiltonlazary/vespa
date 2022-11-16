@@ -6,14 +6,15 @@
 namespace vespamalloc {
 
 template <typename MemBlockPtrT, typename ThreadStatT>
-ThreadListT<MemBlockPtrT, ThreadStatT>::ThreadListT(AllocPool & pool) :
+ThreadListT<MemBlockPtrT, ThreadStatT>::ThreadListT(AllocPool & allocPool, MMapPool & mmapPool) :
     _isThreaded(false),
     _threadCount(0),
     _threadCountAccum(0),
-    _allocPool(pool)
+    _allocPool(allocPool),
+    _mmapPool(mmapPool)
 {
     for (size_t i = 0; i < getMaxNumThreads(); i++) {
-        _threadVector[i].setPool(_allocPool);
+        _threadVector[i].setPool(_allocPool, _mmapPool);
     }
 }
 
@@ -74,11 +75,11 @@ bool ThreadListT<MemBlockPtrT, ThreadStatT>::initThisThread()
             localId = i;
         }
     }
-    assert(localId >= 0);
-    assert(size_t(localId) < getMaxNumThreads());
+    ASSERT_STACKTRACE(localId >= 0);
+    ASSERT_STACKTRACE(size_t(localId) < getMaxNumThreads());
     _myPool = &_threadVector[localId];
-    assert(getThreadId() == size_t(localId));
-    assert(lidAccum < 0xffffffffu);
+    ASSERT_STACKTRACE(getThreadId() == size_t(localId));
+    ASSERT_STACKTRACE(lidAccum < 0xffffffffu);
     getCurrent().init(lidAccum+1);
 
     return retval;

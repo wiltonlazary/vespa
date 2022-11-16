@@ -6,7 +6,7 @@ cache:
    component-build: [/main_job_cache]
 
 shared:
-  image: vespaengine/vespa-build-centos7:latest
+  image: vespaengine/vespa-build-centos-stream8:latest
   environment:
     USER_SHELL_BIN: bash
   annotations:
@@ -29,6 +29,9 @@ shared:
 
     save-cache: &save-cache
       save-cache: |
+        ls -lart /tmp/vespa
+        du -sh /tmp/vespa/*
+
         if [[ -z "$SD_PULL_REQUEST" ]]; then
           # Remove what we have produced
           rm -rf $LOCAL_MVN_REPO/com/yahoo
@@ -39,7 +42,7 @@ shared:
           (cd /tmp && tar cf $MAIN_CACHE_FILE vespa)
 
           # Wipe the cache if we exceed 2GB to avoid pulling and pusing too large files
-          if (( $(stat --format='%s' $MAIN_CACHE_FILE) > $(( 2*1000*1000*1000 )) )); then
+          if (( $(stat --format='%s' $MAIN_CACHE_FILE) > $(( 2200*1000*1000 )) )); then
             tar cf $MAIN_CACHE_FILE --files-from=/dev/null;
             echo "Cleaning cache file. $MAIN_CACHE_FILE is now $(stat --format='%s' $MAIN_CACHE_FILE) bytes."
           fi
@@ -53,10 +56,11 @@ jobs:
       screwdriver.cd/ram: 16
       screwdriver.cd/disk: HIGH
       screwdriver.cd/timeout: 60
+      screwdriver.cd/buildPeriodically: H 4 * * *
 
     environment:
       LOCAL_MVN_REPO: "/tmp/vespa/mvnrepo"
-      VESPA_MAVEN_EXTRA_OPTS: "-Dmaven.repo.local=/tmp/vespa/mvnrepo -Dmaven.javadoc.skip=true -Dmaven.source.skip=true"
+      VESPA_MAVEN_EXTRA_OPTS: "-Dmaven.repo.local=/tmp/vespa/mvnrepo -Dmaven.source.skip=true"
       CCACHE_TMP_DIR: "/tmp/ccache_tmp"
       CCACHE_DATA_DIR: "/tmp/vespa/ccache"
       MAIN_CACHE_FILE: "/main_job_cache/vespa.tar"
@@ -87,13 +91,14 @@ jobs:
       screwdriver.cd/timeout: 90
       screwdriver.cd/dockerEnabled: true
       screwdriver.cd/dockerCpu: TURBO
-      screwdriver.cd/dockerRam: TURBO
+      screwdriver.cd/dockerRam: HIGH
     environment:
       LOCAL_MVN_REPO: "/tmp/vespa/mvnrepo"
       VESPA_MAVEN_EXTRA_OPTS: "--show-version --batch-mode --no-snapshot-updates -Dmaven.repo.local=/tmp/vespa/mvnrepo"
       CCACHE_TMP_DIR: "/tmp/ccache_tmp"
       CCACHE_DATA_DIR: "/tmp/vespa/ccache"
       MAIN_CACHE_FILE: "/main_job_cache/vespa.tar"
+      CCACHE_COMPRESS: "1"
     secrets:
       - DOCKER_HUB_DEPLOY_KEY
     steps:
@@ -108,10 +113,9 @@ jobs:
             exit 1
           fi
       - install-dependencies: |
-          yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-          yum install -y --setopt skip_missing_names_on_install=False docker-ce docker-ce-cli containerd.io
+          dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+          dnf -y install docker-ce docker-ce-cli containerd.io
           docker system info
-          ln -sf $(which yum) /usr/local/bin/dnf
       - checkout: |
           mkdir -p workdir
           cd workdir
@@ -121,12 +125,7 @@ jobs:
           git clone -q https://github.com/vespa-engine/system-test
           (cd system-test && git checkout $SYSTEM_TEST_REF)
           # Set correct version in pom.xml files
-          (cd vespa && \
-           find . -name "pom.xml" -exec sed -i'' \
-                -e "s,<version>.*SNAPSHOT.*</version>,<version>$VESPA_VERSION</version>," \
-                -e "s,<vespaversion>.*project.version.*</vespaversion>,<vespaversion>$VESPA_VERSION</vespaversion>," \
-                -e "s,<test-framework.version>.*project.version.*</test-framework.version>,<test-framework.version>$VESPA_VERSION</test-framework.version>," \
-                {} \;)
+          (cd vespa && screwdriver/replace-vespa-version-in-poms.sh $VESPA_VERSION $(pwd) )
       - make-srpm: |
           make -C $WORKDIR/vespa -f .copr/Makefile srpm outdir=$WORKDIR
       - *restore-cache
@@ -134,6 +133,7 @@ jobs:
           cd $WORKDIR/vespa
           export FACTORY_VESPA_VERSION=$VESPA_VERSION
           NUM_THREADS=$(( $(nproc) + 2 ))
+          time make -C client/go BIN=$WORKDIR/vespa-install/opt/vespa/bin SHARE=$WORKDIR/vespa-install/usr/share install-all
           time ./bootstrap.sh java
           time mvn -T $NUM_THREADS $VESPA_MAVEN_EXTRA_OPTS install
           cmake3 -DVESPA_UNPRIVILEGED=no .
@@ -143,6 +143,7 @@ jobs:
           time make -j ${NUM_THREADS} install DESTDIR=$WORKDIR/vespa-install
       - verify-rpm-build: |
           cd $WORKDIR
+          ulimit -c 0
           time rpmbuild --rebuild --define="_topdir $WORKDIR/vespa-rpmbuild" \
                         --define "_debugsource_template %{nil}" \
                         --define "installdir $WORKDIR/vespa-install" *.src.rpm
@@ -156,27 +157,29 @@ jobs:
           git archive HEAD --format tar | tar x -C docker/vespa-systemtests
           cp -a $LOCAL_MVN_REPO docker/repository
           cd docker
-          docker build --file Dockerfile.multistage \
-                       --build-arg BASE_IMAGE=centos:7 --build-arg VESPA_BASE_IMAGE=base \
-                       --build-arg SYSTEMTEST_BASE_IMAGE=vespa --build-arg SKIP_M2_POPULATE=true \
+          docker build --file Dockerfile.systemtest \
+                       --build-arg VESPA_BASE_IMAGE=vespaengine/vespa-systemtest-base-centos-stream8:latest \
+                       --build-arg SYSTEMTEST_BASE_IMAGE=vespa --build-arg SKIP_M2_POPULATE=false \
                        --target systemtest \
-                       --tag vespaengine/vespa-systemtest-centos7:$VESPA_VERSION \
-                       --tag vespaengine/vespa-systemtest-centos7:latest .
+                       --tag vespaengine/vespa-systemtest-centos-stream8:$VESPA_VERSION \
+                       --tag vespaengine/vespa-systemtest-centos-stream8:latest .
       - verify-test-image: |
-          docker run --rm -ti --entrypoint bash vespaengine/vespa-systemtest-centos7:$VESPA_VERSION -lc \
-          "source /opt/rh/rh-ruby27/enable; /opt/vespa-systemtests/lib/node_server.rb & sleep 3 && ruby /opt/vespa-systemtests/tests/search/basicsearch/basic_search.rb --run test_basicsearch__ELASTIC"
+          docker run --rm -ti --entrypoint bash vespaengine/vespa-systemtest-centos-stream8:$VESPA_VERSION -lc \
+          "/opt/vespa-systemtests/lib/node_server.rb & sleep 3 && ruby /opt/vespa-systemtests/tests/search/basicsearch/basic_search.rb --run test_basicsearch__ELASTIC"
       - publish-test-image: |
           if [[ -z "$SD_PULL_REQUEST" ]]; then
             OPT_STATE="$(set +o)"
             set +x
             docker login --username aressem --password "$DOCKER_HUB_DEPLOY_KEY"
             eval "$OPT_STATE"
-            docker push docker.io/vespaengine/vespa-systemtest-centos7:$VESPA_VERSION
-            docker push docker.io/vespaengine/vespa-systemtest-centos7:latest
+            docker push docker.io/vespaengine/vespa-systemtest-centos-stream8:$VESPA_VERSION
+            docker push docker.io/vespaengine/vespa-systemtest-centos-stream8:latest
           fi
       - *save-cache
 
   publish-release:
+    image: docker.io/vespaengine/vespa-build-centos-stream8:latest
+
     annotations:
       screwdriver.cd/cpu: 7
       screwdriver.cd/ram: 16
@@ -184,7 +187,7 @@ jobs:
       screwdriver.cd/timeout: 300
       screwdriver.cd/dockerEnabled: true
       screwdriver.cd/dockerCpu: TURBO
-      screwdriver.cd/dockerRam: TURBO
+      screwdriver.cd/dockerRam: HIGH
 
     secrets:
       - COPR_WEBHOOK
@@ -195,7 +198,9 @@ jobs:
       - GPG_ENCPHRASE
       - SAMPLE_APPS_DEPLOY_KEY
       - VESPA_DEPLOY_KEY
+      - DOCKER_IMAGE_DEPLOY_KEY
       - DOCKER_HUB_DEPLOY_KEY
+      - GHCR_DEPLOY_KEY
 
     environment:
        GIT_SSH_COMMAND: "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
@@ -209,10 +214,9 @@ jobs:
             exit 1
           fi
       - install-dependencies: |
-          yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-          yum install -y --setopt skip_missing_names_on_install=False docker-ce docker-ce-cli containerd.io rh-git227
+          dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+          dnf install -y docker-ce docker-ce-cli containerd.io
           docker system info
-          source /opt/rh/rh-git227/enable
       - release-rpms: |
           screwdriver/release-rpms.sh $VESPA_VERSION $VESPA_REF
       - release-container-image: |
@@ -221,6 +225,25 @@ jobs:
           screwdriver/release-java-artifacts.sh $VESPA_VERSION $VESPA_REF
       - update-sample-apps: |
           screwdriver/update-vespa-version-in-sample-apps.sh $VESPA_VERSION
+
+  publish-cli-release:
+    image: homebrew/brew:latest
+    annotations:
+      # Run once an hour, in the hours 7-15 UTC, Monday-Thursday
+      screwdriver.cd/buildPeriodically: H 7-15 * * 1-4
+    secrets:
+      - HOMEBREW_GITHUB_API_TOKEN
+      - GH_TOKEN
+    steps:
+      - install-dependencies: |
+          export HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1
+          brew install --quiet gh zip go
+      - publish-github:
+          make -C client/go clean dist-github
+      - publish-homebrew:
+          make -C client/go clean dist-homebrew
+      - verify-brew-install:
+          make -C client/go install-brew
 
   verify-opensource-release-7days:
     annotations:
@@ -255,6 +278,17 @@ jobs:
             echo "Current Docker image is older than 7 days"
             exit 1
           fi
+
+  verify-opensource-rpm-installable:
+    image: quay.io/centos/centos:stream8
+    annotations:
+      screwdriver.cd/buildPeriodically: H 0 * * *
+    steps:
+      - install: |
+          dnf config-manager --add-repo https://raw.githubusercontent.com/vespa-engine/vespa/master/dist/vespa-engine.repo
+          dnf config-manager --enable powertools
+          dnf install -y epel-release
+          dnf install -y vespa
 
   mirror-copr-rpms-to-artifactory:
     annotations:

@@ -6,7 +6,7 @@ import com.yahoo.vespa.model.content.cluster.ContentCluster;
 import com.yahoo.vespa.model.search.DispatchGroup;
 import com.yahoo.vespa.model.search.SearchInterface;
 import com.yahoo.vespa.model.search.SearchNode;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -15,11 +15,7 @@ import java.util.Optional;
 import static com.yahoo.config.model.test.TestUtil.joinLines;
 import static com.yahoo.vespa.model.content.utils.ContentClusterUtils.createCluster;
 import static com.yahoo.vespa.model.content.utils.ContentClusterUtils.createClusterXml;
-import static org.hamcrest.Matchers.containsString;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for hierarchic distribution in an indexed content cluster.
@@ -74,7 +70,7 @@ public class IndexedHierarchicDistributionTest {
     }
 
     @Test
-    public void requireThatSearchNodesAreCorrectWithOneGroup() throws Exception {
+    void requireThatSearchNodesAreCorrectWithOneGroup() throws Exception {
         ContentCluster c = getOneGroupCluster();
         List<SearchNode> searchNodes = c.getSearch().getSearchNodes();
 
@@ -85,13 +81,13 @@ public class IndexedHierarchicDistributionTest {
     }
 
     @Test
-    public void requireThatActivePerLeafGroupIsDefaultWithOneGroup() throws Exception {
+    void requireThatActivePerLeafGroupIsDefaultWithOneGroup() throws Exception {
         ContentCluster c = getOneGroupCluster();
         assertFalse(getStorDistributionConfig(c).active_per_leaf_group());
     }
 
     @Test
-    public void requireThatSearchNodesAreCorrectWithTwoGroups() throws Exception {
+    void requireThatSearchNodesAreCorrectWithTwoGroups() throws Exception {
         ContentCluster c = getTwoGroupsCluster();
         List<SearchNode> searchNodes = c.getSearch().getSearchNodes();
 
@@ -105,7 +101,7 @@ public class IndexedHierarchicDistributionTest {
     }
 
     @Test
-    public void requireThatActivePerLeafGroupIsSetWithTwoGroups() throws Exception {
+    void requireThatActivePerLeafGroupIsSetWithTwoGroups() throws Exception {
         ContentCluster c = getTwoGroupsCluster();
         assertTrue(getStorDistributionConfig(c).active_per_leaf_group());
     }
@@ -175,34 +171,34 @@ public class IndexedHierarchicDistributionTest {
     }
 
     @Test
-    public void requireThatWeMustHaveOnlyOneGroupLevel() {
+    void requireThatWeMustHaveOnlyOneGroupLevel() {
         try {
             getIllegalMultipleGroupsLevelCluster();
-            assertFalse("Did not get expected Exception", true);
+            fail("Did not get expected Exception");
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("sub group 'group0' contains 2 sub groups."));
+            assertTrue(e.getMessage().contains("sub group 'group0' contains 2 sub groups."));
         }
     }
 
     @Test
-    public void requireThatLeafGroupsMustHaveEqualNumberOfNodes() {
+    void requireThatLeafGroupsMustHaveEqualNumberOfNodes() {
         try {
             getIllegalGroupsCluster();
-            assertFalse("Did not get expected Exception", true);
+            fail("Did not get expected Exception");
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("leaf group 'group0' contains 1 node(s) while leaf group 'group1' contains 2 node(s)"));
+            assertTrue(e.getMessage().contains("leaf group 'group0' contains 1 node(s) while leaf group 'group1' contains 2 node(s)"));
         }
     }
 
     @Test
-    public void requireThatLeafGroupsCanHaveUnequalNumberOfNodesIfRandomPolicy() throws Exception {
+    void requireThatLeafGroupsCanHaveUnequalNumberOfNodesIfRandomPolicy() throws Exception {
         ContentCluster c = getOddGroupsCluster();
         DispatchGroup dg = c.getSearch().getIndexed().getRootDispatch();
         assertEquals(8, dg.getRowBits());
         assertEquals(3, dg.getNumPartitions());
-        assertEquals(true, dg.useFixedRowInDispatch());
+        assertTrue(dg.useFixedRowInDispatch());
         ArrayList<SearchInterface> list = new ArrayList<>();
-        for(SearchInterface si : dg.getSearchersIterable()) {
+        for (SearchInterface si : dg.getSearchersIterable()) {
             list.add(si);
         }
         assertEquals(5, list.size());
@@ -219,37 +215,37 @@ public class IndexedHierarchicDistributionTest {
     }
 
     @Test
-    public void requireThatLeafGroupsCountMustBeAFactorOfRedundancy() {
+    void requireThatLeafGroupsCountMustBeAFactorOfRedundancy() {
         try {
             getTwoGroupsCluster(3, 3, "2|*");
-            assertFalse("Did not get expected Exception", true);
+            fail("Did not get expected Exception");
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("Expected number of leaf groups (2) to be a factor of redundancy (3)"));
+            assertTrue(e.getMessage().contains("Expected number of leaf groups (2) to be a factor of redundancy (3)"));
         }
     }
 
     @Test
-    public void requireThatRedundancyPerGroupMustBeIsEqual() {
+    void requireThatRedundancyPerGroupMustBeIsEqual() {
         try {
             getTwoGroupsCluster(4, 4, "1|*");
-            assertFalse("Did not get expected Exception", true);
+            fail("Did not get expected Exception");
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("Expected distribution partitions should be '2|*'"));
+            assertTrue(e.getMessage().contains("Expected distribution partitions should be '2|*'"));
         }
     }
 
     @Test
-    public void requireThatReadyCopiesMustBeEqualToRedundancy() {
+    void requireThatReadyCopiesMustBeEqualToRedundancy() {
         try {
             getTwoGroupsCluster(4, 3, "2|*");
-            assertFalse("Did not get expected Exception", true);
+            fail("Did not get expected Exception");
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("Expected equal amount of ready copies per group"));
+            assertTrue(e.getMessage().contains("Expected equal amount of ready copies per group"));
         }
     }
 
     @Test
-    public void allowLessReadyCopiesThanRedundancy() throws Exception {
+    void allowLessReadyCopiesThanRedundancy() throws Exception {
         getTwoGroupsCluster(4, 2, "2|*");
     }
 

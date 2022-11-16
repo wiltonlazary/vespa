@@ -3,7 +3,10 @@
 #pragma once
 
 #include <vespa/searchlib/fef/blueprint.h>
+#include <vespa/searchlib/fef/properties.h>
+#include <vespa/searchlib/fef/query_value.h>
 #include <vespa/eval/eval/value_type.h>
+#include <vespa/eval/eval/value.h>
 
 namespace search::features {
 
@@ -15,10 +18,8 @@ namespace search::features {
  */
 class QueryBlueprint : public fef::Blueprint {
 private:
-    vespalib::string _key;  // 'foo'
-    vespalib::string _key2; // '$foo'
-    feature_t _defaultValue;
-    vespalib::eval::ValueType _valueType;
+    search::fef::QueryValue _qvalue;
+    vespalib::eval::Value::UP _default_object_value;
 
 public:
     QueryBlueprint();
@@ -30,6 +31,7 @@ public:
         return fef::ParameterDescriptions().desc().string();
     }
     bool setup(const fef::IIndexEnvironment &env, const fef::ParameterList &params) override;
+    void prepareSharedState(const fef::IQueryEnvironment &env, fef::IObjectStore &store) const override;
     fef::FeatureExecutor &createExecutor(const fef::IQueryEnvironment &env, vespalib::Stash &stash) const override;
 };
 

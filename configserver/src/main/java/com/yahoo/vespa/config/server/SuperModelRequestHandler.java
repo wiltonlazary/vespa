@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
 import com.yahoo.config.FileReference;
@@ -43,12 +43,12 @@ public class SuperModelRequestHandler implements RequestHandler {
     }
 
     /**
-     * Signals that config has been reloaded for an {@link com.yahoo.vespa.config.server.application.Application}
+     * Signals that config has been activated for an {@link com.yahoo.vespa.config.server.application.Application}
      * belonging to a tenant.
      *
-     * @param applicationSet The reloaded set of {@link com.yahoo.vespa.config.server.application.Application}.
+     * @param applicationSet The activated set of {@link com.yahoo.vespa.config.server.application.Application}.
      */
-    public synchronized void reloadConfig(ApplicationSet applicationSet) {
+    public synchronized void activateConfig(ApplicationSet applicationSet) {
         superModelManager.configActivated(applicationSet);
         updateHandler();
     }
@@ -106,6 +106,11 @@ public class SuperModelRequestHandler implements RequestHandler {
     @Override
     public Set<FileReference> listFileReferences(ApplicationId applicationId) {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean compatibleWith(Optional<Version> vespaVersion, ApplicationId application) {
+        return true;
     }
 
     public void enable() {

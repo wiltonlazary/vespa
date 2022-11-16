@@ -40,8 +40,9 @@ class MatchingElementsSearch;
 class Blueprint
 {
 public:
-    typedef std::unique_ptr<Blueprint> UP;
-    typedef std::unique_ptr<SearchIterator> SearchIteratorUP;
+    using UP = std::unique_ptr<Blueprint>;
+    using Children = std::vector<Blueprint::UP>;
+    using SearchIteratorUP = std::unique_ptr<SearchIterator>;
 
     struct HitEstimate {
         uint32_t estHits;
@@ -127,7 +128,7 @@ public:
 
     // utility to get the greater estimate to sort first, higher tiers last
     struct TieredGreaterEstimate {
-        bool operator () (Blueprint * const &a, Blueprint * const &b) const {
+        bool operator () (const auto &a, const auto &b) const {
             const auto &lhs = a->getState();
             const auto &rhs = b->getState();
             if (lhs.cost_tier() != rhs.cost_tier()) {
@@ -139,7 +140,7 @@ public:
 
     // utility to get the lesser estimate to sort first, higher tiers last
     struct TieredLessEstimate {
-        bool operator () (Blueprint * const &a, const Blueprint * const &b) const {
+        bool operator () (const auto &a, const auto &b) const {
             const auto &lhs = a->getState();
             const auto &rhs = b->getState();
             if (lhs.cost_tier() != rhs.cost_tier()) {
@@ -169,7 +170,7 @@ protected:
 public:
     class IPredicate {
     public:
-        virtual ~IPredicate() {}
+        virtual ~IPredicate() = default;
         virtual bool check(const Blueprint & bp) const = 0;
     };
 
@@ -202,7 +203,17 @@ public:
 
     virtual bool supports_termwise_children() const { return false; }
     virtual bool always_needs_unpack() const { return false; }
-    virtual void set_global_filter(const GlobalFilter &global_filter);
+
+    /**
+     * Sets the global filter on the query blueprint tree.
+     *
+     * This function is implemented by leaf blueprints that want the global filter,
+     * signaled by LeafBlueprint::set_want_global_filter().
+     *
+     * @param global_filter The global filter that is calculated once per query if wanted.
+     * @param estimated_hit_ratio The estimated hit ratio of the query (in the range [0.0, 1.0]).
+     */
+    virtual void set_global_filter(const GlobalFilter &global_filter, double estimated_hit_ratio);
 
     virtual const State &getState() const = 0;
     const Blueprint &root() const;
@@ -214,9 +225,14 @@ public:
     bool frozen() const { return _frozen; }
 
     virtual SearchIteratorUP createSearch(fef::MatchData &md, bool strict) const = 0;
-    virtual SearchIteratorUP createFilterSearch(bool strict, FilterConstraint constraint) const;
-    static std::unique_ptr<SearchIterator> create_and_filter(const std::vector<Blueprint *>& children, bool strict, FilterConstraint constraint);
-    static std::unique_ptr<SearchIterator> create_or_filter(const std::vector<Blueprint *>& children, bool strict, FilterConstraint constraint);
+    virtual SearchIteratorUP createFilterSearch(bool strict, FilterConstraint constraint) const = 0;
+    static SearchIteratorUP create_and_filter(const Children &children, bool strict, FilterConstraint constraint);
+    static SearchIteratorUP create_or_filter(const Children &children, bool strict, FilterConstraint constraint);
+    static SearchIteratorUP create_atmost_and_filter(const Children &children, bool strict, FilterConstraint constraint);
+    static SearchIteratorUP create_atmost_or_filter(const Children &children, bool strict, FilterConstraint constraint);
+    static SearchIteratorUP create_andnot_filter(const Children &children, bool strict, FilterConstraint constraint);
+    static SearchIteratorUP create_first_child_filter(const Children &children, bool strict, FilterConstraint constraint);
+    static SearchIteratorUP create_default_filter(bool strict, FilterConstraint constraint);
 
     // for debug dumping
     vespalib::string asString() const;
@@ -249,12 +265,12 @@ private:
     void updateState() const;
 
 protected:
-    void notifyChange() override final;
+    void notifyChange() final;
     virtual State calculateState() const = 0;
 
 public:
     StateCache() : _stale(true), _state(FieldSpecBaseList()) {}
-    const State &getState() const override final {
+    const State &getState() const final {
         if (_stale) {
             updateState();
         }
@@ -268,8 +284,6 @@ public:
 
 class IntermediateBlueprint : public blueprint::StateCache
 {
-public:
-    typedef std::vector<Blueprint*> Children;
 private:
     Children _children;
     HitEstimate calculateEstimate() const;
@@ -286,7 +300,7 @@ protected:
     // conflicting collections of field specs.
     FieldSpecBaseList mixChildrenFields() const;
 
-    State calculateState() const override final;
+    State calculateState() const final;
 
     virtual bool isPositive(size_t index) const { (void) index; return true; }
 
@@ -299,10 +313,10 @@ public:
     IntermediateBlueprint();
     ~IntermediateBlueprint() override;
 
-    void setDocIdLimit(uint32_t limit) override final;
+    void setDocIdLimit(uint32_t limit) final;
 
-    void optimize(Blueprint* &self) override final;
-    void set_global_filter(const GlobalFilter &global_filter) override;
+    void optimize(Blueprint* &self) final;
+    void set_global_filter(const GlobalFilter &global_filter, double estimated_hit_ratio) override;
 
     IndexList find(const IPredicate & check) const;
     size_t childCnt() const { return _children.size(); }
@@ -315,7 +329,7 @@ public:
 
     virtual HitEstimate combine(const std::vector<HitEstimate> &data) const = 0;
     virtual FieldSpecBaseList exposeFields() const = 0;
-    virtual void sort(std::vector<Blueprint*> &children) const = 0;
+    virtual void sort(Children &children) const = 0;
     virtual bool inheritStrict(size_t i) const = 0;
     virtual SearchIteratorUP
     createIntermediateSearch(MultiSearch::Children subSearches,
@@ -323,7 +337,7 @@ public:
 
     void visitMembers(vespalib::ObjectVisitor &visitor) const override;
     void fetchPostings(const ExecuteInfo &execInfo) override;
-    void freeze() override final;
+    void freeze() final;
 
     UnpackInfo calculateUnpackInfo(const fef::MatchData & md) const;
     bool isIntermediate() const override { return true; }
@@ -336,7 +350,7 @@ private:
     State _state;
 
 protected:
-    void optimize(Blueprint* &self) override final;
+    void optimize(Blueprint* &self) final;
     void setEstimate(HitEstimate est);
     void set_cost_tier(uint32_t value);
     void set_allow_termwise_eval(bool value);
@@ -346,26 +360,26 @@ protected:
     LeafBlueprint(const FieldSpecBaseList &fields, bool allow_termwise_eval);
 public:
     ~LeafBlueprint() override;
-    const State &getState() const override final { return _state; }
-    void setDocIdLimit(uint32_t limit) override final { Blueprint::setDocIdLimit(limit); }
+    const State &getState() const final { return _state; }
+    void setDocIdLimit(uint32_t limit) final { Blueprint::setDocIdLimit(limit); }
     void fetchPostings(const ExecuteInfo &execInfo) override;
-    void freeze() override final;
+    void freeze() final;
     SearchIteratorUP createSearch(fef::MatchData &md, bool strict) const override;
 
-    virtual SearchIteratorUP createLeafSearch(const fef::TermFieldMatchDataArray &tfmda,
-                                                bool strict) const = 0;
+    virtual bool getRange(vespalib::string & from, vespalib::string & to) const;
+    virtual SearchIteratorUP createLeafSearch(const fef::TermFieldMatchDataArray &tfmda, bool strict) const = 0;
 };
 
 // for leaf nodes representing a single term
 struct SimpleLeafBlueprint : LeafBlueprint {
-    SimpleLeafBlueprint(const FieldSpecBase &field) : LeafBlueprint(FieldSpecBaseList().add(field), true) {}
-    SimpleLeafBlueprint(const FieldSpecBaseList &fields) : LeafBlueprint(fields, true) {}
+    explicit SimpleLeafBlueprint(const FieldSpecBase &field) : LeafBlueprint(FieldSpecBaseList().add(field), true) {}
+    explicit SimpleLeafBlueprint(const FieldSpecBaseList &fields) : LeafBlueprint(fields, true) {}
 };
 
 // for leaf nodes representing more complex structures like wand/phrase
 struct ComplexLeafBlueprint : LeafBlueprint {
-    ComplexLeafBlueprint(const FieldSpecBase &field) : LeafBlueprint(FieldSpecBaseList().add(field), false) {}    
-    ComplexLeafBlueprint(const FieldSpecBaseList &fields) : LeafBlueprint(fields, false) {}
+    explicit ComplexLeafBlueprint(const FieldSpecBase &field) : LeafBlueprint(FieldSpecBaseList().add(field), false) {}
+    explicit ComplexLeafBlueprint(const FieldSpecBaseList &fields) : LeafBlueprint(fields, false) {}
 };
 
 //-----------------------------------------------------------------------------

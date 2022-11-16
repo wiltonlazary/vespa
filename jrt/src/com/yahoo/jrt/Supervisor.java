@@ -12,13 +12,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * requests obtained from that {@link Target}. Note that RPC
  * invocations can be performed both ways across a connection, so even
  * the client side of a connection has RPC server capabilities.
- **/
+ */
 public class Supervisor {
 
-    private static final int SMALL_INPUT_BUFFER_SIZE = 20 * 1024;  // Large enough too hold the typical application buffersize of 17k.
-    private static final int SMALL_OUTPUT_BUFFER_SIZE = 8 *1024;   // Suitable small buffer usage with many connections and little traffic.
     private final Transport         transport;
-    private SessionHandler          sessionHandler = null;
     private final Object            methodMapLock = new Object();
     private final AtomicReference<HashMap<String, Method>> methodMap = new AtomicReference<>(new HashMap<>());
     private int                     maxInputBufferSize  = 64*1024;
@@ -26,23 +23,22 @@ public class Supervisor {
     private boolean                 dropEmptyBuffers = false;
 
     /**
-     * Create a new Supervisor based on the given {@link Transport}
+     * Creates a new Supervisor based on the given {@link Transport}
      *
-     * @param transport object performing low-level operations for
-     * this Supervisor
-     **/
+     * @param transport object performing low-level operations for this Supervisor
+     */
     public Supervisor(Transport transport) {
         this.transport = transport;
         new MandatoryMethods(this);
     }
 
     /**
-     * Drop empty buffers. This will reduce memory footprint for idle
+     * Drops empty buffers. This will reduce memory footprint for idle
      * connections at the cost of extra allocations when buffer space
      * is needed again.
      *
      * @param value true means drop empty buffers
-     **/
+     */
     public Supervisor setDropEmptyBuffers(boolean value) {
         dropEmptyBuffers = value;
         return this;
@@ -50,7 +46,7 @@ public class Supervisor {
     boolean getDropEmptyBuffers() { return dropEmptyBuffers; }
 
     /**
-     * Set maximum input buffer size. This value will only affect
+     * Sets maximum input buffer size. This value will only affect
      * connections that use a common input buffer when decoding
      * incoming packets. Note that this value is not an absolute
      * max. The buffer will still grow larger than this value if
@@ -58,14 +54,14 @@ public class Supervisor {
      * larger than this value, it will be shrunk back when possible.
      *
      * @param bytes buffer size in bytes. 0 means unlimited.
-     **/
+     */
     public void setMaxInputBufferSize(int bytes) {
         maxInputBufferSize = bytes;
     }
     int getMaxInputBufferSize() { return maxInputBufferSize; }
 
     /**
-     * Set maximum output buffer size. This value will only affect
+     * Sets maximum output buffer size. This value will only affect
      * connections that use a common output buffer when encoding
      * outgoing packets. Note that this value is not an absolute
      * max. The buffer will still grow larger than this value if needed
@@ -73,44 +69,35 @@ public class Supervisor {
      * than this value, it will be shrunk back when possible.
      *
      * @param bytes buffer size in bytes. 0 means unlimited.
-     **/
+     */
     public void setMaxOutputBufferSize(int bytes) {
         maxOutputBufferSize = bytes;
     }
     int getMaxOutputBufferSize() { return maxOutputBufferSize; }
 
     /**
-     * Obtain the method map for this Supervisor
+     * Obtains the method map for this Supervisor
      *
      * @return the method map
-     **/
+     */
     HashMap<String, Method> methodMap() {
         return methodMap.getAcquire();
     }
 
     /**
-     * Obtain the underlying Transport object.
+     * Obtains the underlying Transport object.
      *
      * @return underlying Transport object
-     **/
+     */
     public Transport transport() {
         return transport;
     }
 
     /**
-     * Set the session handler for this Supervisor
-     *
-     * @param handler the session handler
-     **/
-    public void setSessionHandler(SessionHandler handler) {
-        sessionHandler = handler;
-    }
-
-    /**
-     * Add a method to the set of methods held by this Supervisor
+     * Adds a method to the set of methods held by this Supervisor
      *
      * @param method the method to add
-     **/
+     */
     public void addMethod(Method method) {
         synchronized (methodMapLock) {
             HashMap<String, Method> newMap = new HashMap<>(methodMap());
@@ -120,12 +107,12 @@ public class Supervisor {
     }
 
     /**
-     * Remove a method from the set of methods held by this
+     * Removes a method from the set of methods held by this
      * Supervisor. Use this if you know exactly which method to remove
      * and not only the name.
      *
      * @param method the method to remove
-     **/
+     */
     public void removeMethod(Method method) {
         synchronized (methodMapLock) {
             HashMap<String, Method> newMap = new HashMap<>(methodMap());
@@ -136,19 +123,19 @@ public class Supervisor {
     }
 
     /**
-     * Connect to the given address. The new {@link Target} will be
+     * Connects to the given address. The new {@link Target} will be
      * associated with this Supervisor.
      *
      * @return Target representing our end of the connection
      * @param spec where to connect
      * @see #connect(com.yahoo.jrt.Spec, java.lang.Object)
-     **/
+     */
     public Target connect(Spec spec) {
         return transport.connect(this, spec, null);
     }
 
     /**
-     * Connect to the given address. The new {@link Target} will be
+     * Connects to the given address. The new {@link Target} will be
      * associated with this Supervisor and will have 'context' as
      * application context.
      *
@@ -156,87 +143,20 @@ public class Supervisor {
      * @param spec where to connect
      * @param context application context for the Target
      * @see Target#getContext
-     **/
+     */
     public Target connect(Spec spec, Object context) {
         return transport.connect(this, spec, context);
     }
 
     /**
-     * Listen to the given address.
+     * Listens to the given address.
      *
      * @return active object accepting new connections that will be
      * associated with this Supervisor
      * @param spec the address to listen to
-     **/
+     */
     public Acceptor listen(Spec spec) throws ListenFailedException {
         return transport.listen(this, spec);
-    }
-
-    /**
-     * Convenience method for connecting to a peer, invoking a method
-     * and disconnecting.
-     *
-     * @param spec the address to connect to
-     * @param req the invocation request
-     * @param timeout request timeout in seconds
-     **/
-    public void invokeBatch(Spec spec, Request req, double timeout) {
-        Target target = connect(spec);
-        try {
-            target.invokeSync(req, timeout);
-        } finally {
-            target.close();
-        }
-    }
-
-    /**
-     * This method is invoked when a new target is created
-     *
-     * @param target the target
-     **/
-    void sessionInit(Target target) {
-        SessionHandler handler = sessionHandler;
-        if (handler != null) {
-            handler.handleSessionInit(target);
-        }
-    }
-
-    /**
-     * This method is invoked when a target establishes a connection
-     * with its peer
-     *
-     * @param target the target
-     **/
-    void sessionLive(Target target) {
-        SessionHandler handler = sessionHandler;
-        if (handler != null) {
-            handler.handleSessionLive(target);
-        }
-    }
-
-    /**
-     * This method is invoked when a target becomes invalid
-     *
-     * @param target the target
-     **/
-    void sessionDown(Target target) {
-        SessionHandler handler = sessionHandler;
-        if (handler != null) {
-            handler.handleSessionDown(target);
-        }
-    }
-
-    /**
-     * This method is invoked when a target is invalid and no more
-     * invocations are active
-     *
-     * @param target the target
-     **/
-    void sessionFini(Target target) {
-        SessionHandler handler = sessionHandler;
-        if (handler != null) {
-            handler.handleSessionFini(target);
-        }
     }
 
     /**
@@ -244,7 +164,7 @@ public class Supervisor {
      * is empty and only used for testing through sub-classing.
      *
      * @param info information about the written packet
-     **/
+     */
     void writePacket(PacketInfo info) {}
 
     /**
@@ -252,17 +172,17 @@ public class Supervisor {
      * is empty and only used for testing through sub-classing.
      *
      * @param info information about the read packet
-     **/
+     */
     void readPacket(PacketInfo info) {}
 
     /**
-     * Handle a packet received on one of the connections associated
+     * Handles a packet received on one of the connections associated
      * with this Supervisor. This method is invoked for all packets
      * not handled by a {@link ReplyHandler}
      *
      * @param conn where the packet came from
      * @param packet the packet
-     **/
+     */
     void handlePacket(Connection conn, Packet packet) {
         if (packet.packetCode() != Packet.PCODE_REQUEST) {
             return;
@@ -274,4 +194,5 @@ public class Supervisor {
                              packet.requestId(),
                              packet.noReply()).invoke();
     }
+
 }

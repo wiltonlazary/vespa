@@ -6,6 +6,7 @@
 #include "defines.h"
 #include "singlestringattribute.h"
 #include "singleboolattribute.h"
+#include <vespa/searchcommon/attribute/config.h>
 #include "singlestringpostattribute.hpp"
 #include "singlenumericpostattribute.hpp"
 #include <vespa/searchlib/tensor/direct_tensor_attribute.h>
@@ -24,7 +25,7 @@ AttributeFactory::createSingleFastSearch(stringref name, const Config & info)
     assert(info.fastSearch());
     switch(info.basicType().type()) {
     case BasicType::BOOL:
-        return std::make_shared<SingleBoolAttribute>(name, info.getGrowStrategy());
+        return std::make_shared<SingleBoolAttribute>(name, info.getGrowStrategy(), info.paged());
     case BasicType::UINT2:
     case BasicType::UINT4:
         break;

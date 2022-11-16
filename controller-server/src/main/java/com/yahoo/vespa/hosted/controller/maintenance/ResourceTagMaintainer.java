@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.config.provision.ApplicationId;
@@ -34,8 +34,8 @@ public class ResourceTagMaintainer extends ControllerMaintainer {
     @Override
     public double maintain() {
         controller().zoneRegistry().zones()
-                .ofCloud(CloudName.from("aws"))
                 .reachable()
+                .in(CloudName.AWS)
                 .zones().forEach(zone -> {
                     Map<HostName, ApplicationId> applicationOfHosts = getTenantOfParentHosts(zone.getId());
                     int taggedResources = resourceTagger.tagResources(zone, applicationOfHosts);

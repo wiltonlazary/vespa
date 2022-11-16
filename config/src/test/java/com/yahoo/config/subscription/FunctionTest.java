@@ -2,20 +2,16 @@
 package com.yahoo.config.subscription;
 
 import com.yahoo.foo.FunctionTestConfig;
-
 import org.junit.Before;
 import org.junit.Test;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 
-import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -28,6 +24,7 @@ import static org.junit.Assert.fail;
  *
  * @author gjoranv
  */
+@SuppressWarnings("deprecation")
 public class FunctionTest {
 
     public static final String PATH = "src/test/resources/configs/function-test/";
@@ -214,7 +211,7 @@ public class FunctionTest {
         assertEquals(0, config.intarr().size());
         assertEquals(2, config.longarr().size());
         assertEquals(Long.MAX_VALUE, config.longarr(0));
-        assertThat(config.longarr().get(1), is(Long.MIN_VALUE));
+        assertEquals(Long.MIN_VALUE, config.longarr().get(1).longValue());
         assertEquals(2, config.doublearr().size());
         assertEquals(1, config.stringarr().size());
         assertEquals(1, config.enumarr().size());
@@ -231,8 +228,8 @@ public class FunctionTest {
         assertEquals("basicFoo", config.basicStruct().foo());
         assertEquals(3, config.basicStruct().bar());  // new List api
         assertEquals(2, config.basicStruct().intArr().size());
-        assertThat(config.basicStruct().intArr().get(0), is(310));  // new List api
-        assertThat(config.basicStruct().intArr().get(1), is(311));  // new List api
+        assertEquals(310, config.basicStruct().intArr().get(0).intValue());  // new List api
+        assertEquals(311, config.basicStruct().intArr().get(1).intValue());  // new List api
         assertEquals(310, config.basicStruct().intArr(0));          // short-hand
         assertEquals("inner0", config.rootStruct().inner0().name());  // new List api
         assertEquals(11, config.rootStruct().inner0().index());

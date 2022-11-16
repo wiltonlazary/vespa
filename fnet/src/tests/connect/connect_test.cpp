@@ -98,13 +98,13 @@ struct TransportFixture : FNET_IPacketHandler, FNET_IConnectionCleanupHandler {
         transport.Start(&pool);
     }
     TransportFixture(AsyncResolver::HostResolver::SP host_resolver)
-        : streamer(nullptr), pool(128_Ki), transport(TransportConfig().resolver(make_resolver(std::move(host_resolver)))),
+        : streamer(nullptr), pool(128_Ki), transport(fnet::TransportConfig().resolver(make_resolver(std::move(host_resolver)))),
           conn_lost(), conn_deleted()
     {
         transport.Start(&pool);
     }
     TransportFixture(CryptoEngine::SP crypto)
-        : streamer(nullptr), pool(128_Ki), transport(TransportConfig().crypto(std::move(crypto))),
+        : streamer(nullptr), pool(128_Ki), transport(fnet::TransportConfig().crypto(std::move(crypto))),
           conn_lost(), conn_deleted()
     {
         transport.Start(&pool);
@@ -117,8 +117,11 @@ struct TransportFixture : FNET_IPacketHandler, FNET_IConnectionCleanupHandler {
     }
     void Cleanup(FNET_Connection *) override { conn_deleted.countDown(); }
     FNET_Connection *connect(const vespalib::string &spec) {
-        FNET_Connection *conn = transport.Connect(spec.c_str(), &streamer, this);
+        FNET_Connection *conn = transport.Connect(spec.c_str(), &streamer);
         ASSERT_TRUE(conn != nullptr);
+        if (conn->OpenChannel(this, FNET_Context()) == nullptr) {
+            conn_lost.countDown();
+        }
         conn->SetCleanupHandler(this);
         return conn;
     }

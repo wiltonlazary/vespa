@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.provisioning;
 
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.NodeFlavors;
@@ -24,10 +25,7 @@ public interface NodeSpec {
     /** The node type this requests */
     NodeType type();
 
-    /**
-     * Returns whether the physical hosts running the nodes of this application can
-     * also run nodes of other applications.
-     */
+    /** Returns whether the hosts running the nodes of this application can also run nodes of other applications. */
     boolean isExclusive();
 
     /** Returns whether the given flavor is compatible with this spec */
@@ -68,6 +66,9 @@ public interface NodeSpec {
     /** Returns true if nodes with non-active parent hosts should be rejected */
     boolean rejectNonActiveParent();
 
+    /** Returns the cloud account to use when fulfilling this spec */
+    CloudAccount cloudAccount();
+
     /**
      * Returns true if a node with given current resources and current spare host resources can be resized
      * in-place to resources in this spec.
@@ -77,12 +78,12 @@ public interface NodeSpec {
         return false;
     }
 
-    static NodeSpec from(int nodeCount, NodeResources resources, boolean exclusive, boolean canFail) {
-        return new CountNodeSpec(nodeCount, resources, exclusive, canFail);
+    static NodeSpec from(int nodeCount, NodeResources resources, boolean exclusive, boolean canFail, CloudAccount cloudAccount) {
+        return new CountNodeSpec(nodeCount, resources, exclusive, canFail, cloudAccount);
     }
 
-    static NodeSpec from(NodeType type) {
-        return new TypeNodeSpec(type);
+    static NodeSpec from(NodeType type, CloudAccount cloudAccount) {
+        return new TypeNodeSpec(type, cloudAccount);
     }
 
     /** A node spec specifying a node count and a flavor */
@@ -92,12 +93,14 @@ public interface NodeSpec {
         private final NodeResources requestedNodeResources;
         private final boolean exclusive;
         private final boolean canFail;
+        private final CloudAccount cloudAccount;
 
-        private CountNodeSpec(int count, NodeResources resources, boolean exclusive, boolean canFail) {
+        private CountNodeSpec(int count, NodeResources resources, boolean exclusive, boolean canFail, CloudAccount cloudAccount) {
             this.count = count;
             this.requestedNodeResources = Objects.requireNonNull(resources, "Resources must be specified");
             this.exclusive = exclusive;
             this.canFail = canFail;
+            this.cloudAccount = Objects.requireNonNull(cloudAccount);
         }
 
         @Override
@@ -144,7 +147,7 @@ public interface NodeSpec {
 
         @Override
         public NodeSpec fraction(int divisor) {
-            return new CountNodeSpec(count/divisor, requestedNodeResources, exclusive, canFail);
+            return new CountNodeSpec(count/divisor, requestedNodeResources, exclusive, canFail, cloudAccount);
         }
 
         @Override
@@ -175,6 +178,11 @@ public interface NodeSpec {
         }
 
         @Override
+        public CloudAccount cloudAccount() {
+            return cloudAccount;
+        }
+
+        @Override
         public String toString() { return "request for " + count + " nodes with " + requestedNodeResources; }
 
     }
@@ -186,9 +194,11 @@ public interface NodeSpec {
                                                                                NodeType.controller, 3);
 
         private final NodeType type;
+        private final CloudAccount cloudAccount;
 
-        public TypeNodeSpec(NodeType type) {
+        public TypeNodeSpec(NodeType type, CloudAccount cloudAccount) {
             this.type = type;
+            this.cloudAccount = cloudAccount;
         }
 
         @Override
@@ -240,6 +250,11 @@ public interface NodeSpec {
         @Override
         public boolean rejectNonActiveParent() {
             return true;
+        }
+
+        @Override
+        public CloudAccount cloudAccount() {
+            return cloudAccount;
         }
 
         @Override

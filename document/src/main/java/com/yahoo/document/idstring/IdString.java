@@ -1,11 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.document.idstring;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.text.Text;
 import com.yahoo.text.Utf8String;
-
-import java.util.OptionalInt;
 
 /**
  * To be used with DocumentId constructor.
@@ -81,10 +79,9 @@ public abstract class IdString {
     }
 
     private static void validateTextString(String id) {
-        OptionalInt illegalCodePoint = Text.validateTextString(id);
-        if (illegalCodePoint.isPresent()) {
+        if ( ! Text.isValidTextString(id)) {
             throw new IllegalArgumentException("Unparseable id '" + id + "': Contains illegal code point 0x" +
-                    Integer.toHexString(illegalCodePoint.getAsInt()).toUpperCase());
+                    Integer.toHexString(Text.validateTextString(id).getAsInt()).toUpperCase());
         }
     }
 

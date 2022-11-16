@@ -6,21 +6,16 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../parent/pom.xml</relativePath>
     </parent>
     <artifactId>clustercontroller-utils</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <packaging>container-plugin</packaging>
     <dependencies>
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.codehaus.jettison</groupId>
-            <artifactId>jettison</artifactId>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
         </dependency>
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
@@ -35,10 +30,14 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <groupId>com.yahoo.vespa</groupId>
-            <artifactId>yolean</artifactId>
-            <version>${project.version}</version>
-            <scope>provided</scope>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.google.guava</groupId>
@@ -56,13 +55,6 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <configuration>
-                    <compilerArgs>
-                        <arg>-Xlint:unchecked</arg>
-                        <arg>-Xlint:deprecation</arg>
-                        <arg>-Werror</arg>
-                    </compilerArgs>
-                </configuration>
             </plugin>
         </plugins>
     </build>

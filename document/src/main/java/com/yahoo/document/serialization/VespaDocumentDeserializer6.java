@@ -2,8 +2,6 @@
 package com.yahoo.document.serialization;
 
 import com.yahoo.collections.Tuple2;
-import com.yahoo.compress.CompressionType;
-import com.yahoo.compress.Compressor;
 import com.yahoo.document.annotation.AlternateSpanList;
 import com.yahoo.document.annotation.Annotation;
 import com.yahoo.document.annotation.AnnotationReference;
@@ -58,7 +56,6 @@ import com.yahoo.document.update.RemoveValueUpdate;
 import com.yahoo.document.update.ValueUpdate;
 import com.yahoo.document.WeightedSetDataType;
 import com.yahoo.io.GrowableByteBuffer;
-import com.yahoo.tensor.serialization.TypedBinaryFormat;
 import com.yahoo.text.Utf8;
 import com.yahoo.text.Utf8Array;
 import com.yahoo.text.Utf8String;
@@ -70,7 +67,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import static com.yahoo.text.Utf8.calculateStringPositions;
 
@@ -81,8 +77,7 @@ import static com.yahoo.text.Utf8.calculateStringPositions;
  */
 public class VespaDocumentDeserializer6 extends BufferSerializer implements DocumentDeserializer {
 
-    private final Compressor compressor = new Compressor();
-    private DocumentTypeManager manager;
+    private final DocumentTypeManager manager;
     private short version;
     private List<SpanNode> spanNodes;
     private List<Annotation> annotations;
@@ -100,7 +95,6 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
         read(null, document);
     }
 
-    @SuppressWarnings("deprecation")
     public void read(FieldBase field, Document doc) {
         // Verify that we have correct version
         version = getShort(null);
@@ -117,13 +111,11 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
         doc.setDataType(readDocumentType());
         doc.setId(documentId);
 
-        Struct h = doc.getHeader();
-        h.clear();
         if ((content & 0x2) != 0) {
-            readHeaderBody(h);
+            readHeaderBody(doc);
         }
         if ((content & 0x4) != 0) {
-            readHeaderBody(h);
+            readHeaderBody(doc);
         }
 
         if (dataLength != (position() - dataPos)) {
@@ -267,21 +259,7 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
         }
 
         int dataSize = getInt(null);
-        byte comprCode = getByte(null);
-        CompressionType compression = CompressionType.valueOf(comprCode);
-
-        int uncompressedSize = 0;
-        if (compression != CompressionType.NONE &&
-            compression != CompressionType.INCOMPRESSIBLE)
-        {
-            // uncompressedsize (full size of FIELDS only, after decompression)
-            long pSize = getInt2_4_8Bytes(null);
-            //TODO: Look into how to support data segments larger than INT_MAX bytes
-            if (pSize > Integer.MAX_VALUE) {
-                throw new DeserializationException("Uncompressed size of data block is too large.");
-            }
-            uncompressedSize = (int) pSize;
-        }
+        byte ignoredComprCode = getByte(null);
 
         int numberOfFields = getInt1_4Bytes(null);
 
@@ -293,14 +271,12 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
 
         // save a reference to the big buffer we're reading from:
         GrowableByteBuffer bigBuf = buf;
-
-        byte[] destination = compressor.decompress(compression, getBuf().array(), position(), uncompressedSize, Optional.of(dataSize));
-
+        GrowableByteBuffer thisStructOnly = GrowableByteBuffer.wrap(getBuf().array(), position(), dataSize);
         // set position in original buffer to after data
         position(position() + dataSize);
 
         // for a while: deserialize from this buffer instead:
-        buf = GrowableByteBuffer.wrap(destination);
+        buf = thisStructOnly;
 
         s.clear();
         StructDataType type = s.getDataType();
@@ -323,30 +299,13 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
         buf = bigBuf;
     }
 
-    private void readHeaderBody(Struct primary) {
-        primary.setVersion(version);
-
+    private void readHeaderBody(Document target) {
         if (version < 8) {
             throw new DeserializationException("Illegal document serialization version " + version);
         }
 
         int dataSize = getInt(null);
-
-        byte comprCode = getByte(null);
-        CompressionType compression = CompressionType.valueOf(comprCode);
-
-        int uncompressedSize = 0;
-        if (compression != CompressionType.NONE &&
-            compression != CompressionType.INCOMPRESSIBLE)
-        {
-            // uncompressedsize (full size of FIELDS only, after decompression)
-            long pSize = getInt2_4_8Bytes(null);
-            //TODO: Look into how to support data segments larger than INT_MAX bytes
-            if (pSize > Integer.MAX_VALUE) {
-                throw new DeserializationException("Uncompressed size of data block is too large.");
-            }
-            uncompressedSize = (int) pSize;
-        }
+        byte unusedComprCode = getByte(null);
 
         int numberOfFields = getInt1_4Bytes(null);
 
@@ -358,16 +317,16 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
 
         // save a reference to the big buffer we're reading from:
         GrowableByteBuffer bigBuf = buf;
-
-        byte[] destination = compressor.decompress(compression, getBuf().array(), position(), uncompressedSize, Optional.of(dataSize));
+        GrowableByteBuffer thisStructOnly = GrowableByteBuffer.wrap(getBuf().array(), position(), dataSize);
 
         // set position in original buffer to after data
         position(position() + dataSize);
 
         // for a while: deserialize from this buffer instead:
-        buf = GrowableByteBuffer.wrap(destination);
+        buf = thisStructOnly;
 
-        StructDataType priType = primary.getDataType();
+        StructDataType priType = target.getDataType().contentStruct();
+
         for (int i=0; i<numberOfFields; ++i) {
             int posBefore = position();
             Integer f_id = fieldIdsAndLengths.get(i).first;
@@ -375,7 +334,7 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
             if (structField != null) {
                 FieldValue value = structField.getDataType().createFieldValue();
                 value.deserialize(structField, this);
-                primary.setFieldValue(structField, value);
+                target.setFieldValue(structField, value);
             }
             //jump to beginning of next field:
             position(posBefore + fieldIdsAndLengths.get(i).second.intValue());
@@ -619,7 +578,7 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
         DocumentType docType = manager.getDocumentType(new DataTypeName(docTypeName));
         if (docType == null) {
             throw new DeserializationException("No known document type with name " + 
-                                               new Utf8String(docTypeName).toString());
+                                               new Utf8String(docTypeName));
         }
         return docType;
     }
@@ -714,6 +673,7 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
 
         byte features = buf.get();
         int length = buf.getInt1_2_4Bytes();
+        int skipToPos = buf.position() + length;
 
         if ((features & (byte) 1) == (byte) 1) {
             //we have a span node
@@ -728,15 +688,19 @@ public class VespaDocumentDeserializer6 extends BufferSerializer implements Docu
         if ((features & (byte) 2) == (byte) 2) {
             //we have a value:
             int dataTypeId = buf.getInt();
-
-            //if this data type ID the same as the one in our config?
-            if (dataTypeId != type.getDataType().getId()) {
-                //not the same, but we will handle it gracefully, and just skip past the data:
-                buf.position(buf.position() + length - 4);
-            } else {
+            try {
                 FieldValue value = type.getDataType().createFieldValue();
                 value.deserialize(this);
                 annotation.setFieldValue(value);
+                // could get buffer underflow or DeserializationException
+            } catch (RuntimeException rte) {
+                if (dataTypeId == type.getDataType().getId()) {
+                    throw new DeserializationException("Could not deserialize annotation payload", rte);
+                }
+                // XXX: does this make sense? The annotation without its payload may be a problem.
+                // handle it gracefully, and just skip past the data
+            } finally {
+                buf.position(skipToPos);
             }
         }
     }

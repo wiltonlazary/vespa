@@ -1,9 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/document_type_repo_factory.h>
 #include <vespa/document/repo/documenttyperepo.h>
-#include <vespa/fastos/app.h>
+#include <vespa/document/datatype/datatype.h>
+#include <vespa/vespalib/util/signalhandler.h>
 #include <vespa/searchcore/bmcluster/avg_sampler.h>
 #include <vespa/searchcore/bmcluster/bm_cluster.h>
 #include <vespa/searchcore/bmcluster/bm_cluster_controller.h>
@@ -18,15 +20,12 @@
 #include <vespa/searchcore/bmcluster/bucket_selector.h>
 #include <vespa/searchcore/bmcluster/spi_bm_feed_handler.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/objects/nbostream.h>
-#include <vespa/vespalib/testkit/testapp.h>
-#include <vespa/vespalib/util/lambdatask.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <getopt.h>
+#include <filesystem>
 #include <iostream>
-#include <thread>
 
 #include <vespa/log/log.h>
 LOG_SETUP("vespa-feed-bm");
@@ -36,8 +35,6 @@ using namespace std::chrono_literals;
 
 using document::DocumentTypeRepo;
 using document::DocumentTypeRepoFactory;
-using document::DocumenttypesConfig;
-using document::DocumenttypesConfigBuilder;
 using search::bmcluster::AvgSampler;
 using search::bmcluster::BmClusterController;
 using search::bmcluster::IBmFeedHandler;
@@ -185,15 +182,15 @@ Benchmark::run()
     _cluster->stop();
 }
 
-class App : public FastOS_Application
+class App
 {
     BMParams _bm_params;
 public:
     App();
-    ~App() override;
+    ~App();
     void usage();
-    bool get_options();
-    int Main() override;
+    bool get_options(int argc, char **argv);
+    int main(int argc, char **argv);
 };
 
 App::App()
@@ -229,7 +226,6 @@ App::usage()
         "[--rpc-events-before-wakeup events]\n"
         "[--rpc-network-threads threads]\n"
         "[--rpc-targets-per-node targets]\n"
-        "[--skip-communicationmanager-thread]\n"
         "[--skip-get-spi-bucket-info]\n"
         "[--update-passes update-passes]\n"
         "[--use-async-message-handling]\n"
@@ -239,10 +235,9 @@ App::usage()
 }
 
 bool
-App::get_options()
+App::get_options(int argc, char **argv)
 {
     int c;
-    const char *opt_argument = nullptr;
     int long_opt_index = 0;
     static struct option long_opts[] = {
         { "bucket-db-stripe-bits", 1, nullptr, 0 },
@@ -262,7 +257,6 @@ App::get_options()
         { "rpc-events-before-wakeup", 1, nullptr, 0 },
         { "rpc-network-threads", 1, nullptr, 0 },
         { "rpc-targets-per-node", 1, nullptr, 0 },
-        { "skip-communicationmanager-thread", 0, nullptr, 0 },
         { "skip-get-spi-bucket-info", 0, nullptr, 0 },
         { "update-passes", 1, nullptr, 0 },
         { "use-async-message-handling", 0, nullptr, 0 },
@@ -289,7 +283,6 @@ App::get_options()
         LONGOPT_RPC_EVENTS_BEFORE_WAKEUP,
         LONGOPT_RPC_NETWORK_THREADS,
         LONGOPT_RPC_TARGETS_PER_NODE,
-        LONGOPT_SKIP_COMMUNICATIONMANAGER_THREAD,
         LONGOPT_SKIP_GET_SPI_BUCKET_INFO,
         LONGOPT_UPDATE_PASSES,
         LONGOPT_USE_ASYNC_MESSAGE_HANDLING,
@@ -297,23 +290,22 @@ App::get_options()
         LONGOPT_USE_MESSAGE_BUS,
         LONGOPT_USE_STORAGE_CHAIN
     };
-    int opt_index = 1;
-    resetOptIndex(opt_index);
-    while ((c = GetOptLong("", opt_argument, opt_index, long_opts, &long_opt_index)) != -1) {
+    optind = 1;
+    while ((c = getopt_long(argc, argv, "", long_opts, &long_opt_index)) != -1) {
         switch (c) {
         case 0:
             switch(long_opt_index) {
             case LONGOPT_BUCKET_DB_STRIPE_BITS:
-                _bm_params.set_bucket_db_stripe_bits(atoi(opt_argument));
+                _bm_params.set_bucket_db_stripe_bits(atoi(optarg));
                 break;
             case LONGOPT_CLIENT_THREADS:
-                _bm_params.set_client_threads(atoi(opt_argument));
+                _bm_params.set_client_threads(atoi(optarg));
                 break;
             case LONGOPT_DISTRIBUTOR_STRIPES:
-                _bm_params.set_distributor_stripes(atoi(opt_argument));
+                _bm_params.set_distributor_stripes(atoi(optarg));
                 break;
             case LONGOPT_DOCUMENTS:
-                _bm_params.set_documents(atoi(opt_argument));
+                _bm_params.set_documents(atoi(optarg));
                 break;
             case LONGOPT_ENABLE_DISTRIBUTOR:
                 _bm_params.set_enable_distributor(true);
@@ -322,43 +314,40 @@ App::get_options()
                 _bm_params.set_enable_service_layer(true);
                 break;
             case LONGOPT_GET_PASSES:
-                _bm_params.set_get_passes(atoi(opt_argument));
+                _bm_params.set_get_passes(atoi(optarg));
                 break;
             case LONGOPT_GROUPS:
-                _bm_params.set_groups(atoi(opt_argument));
+                _bm_params.set_groups(atoi(optarg));
                 break;
             case LONGOPT_INDEXING_SEQUENCER:
-                _bm_params.set_indexing_sequencer(opt_argument);
+                _bm_params.set_indexing_sequencer(optarg);
                 break;
             case LONGOPT_MAX_PENDING:
-                _bm_params.set_max_pending(atoi(opt_argument));
+                _bm_params.set_max_pending(atoi(optarg));
                 break;
             case LONGOPT_NODES_PER_GROUP:
-                _bm_params.set_nodes_per_group(atoi(opt_argument));
+                _bm_params.set_nodes_per_group(atoi(optarg));
                 break;
             case LONGOPT_PUT_PASSES:
-                _bm_params.set_put_passes(atoi(opt_argument));
+                _bm_params.set_put_passes(atoi(optarg));
                 break;
             case LONGOPT_UPDATE_PASSES:
-                _bm_params.set_update_passes(atoi(opt_argument));
+                _bm_params.set_update_passes(atoi(optarg));
                 break;
             case LONGOPT_REMOVE_PASSES:
-                _bm_params.set_remove_passes(atoi(opt_argument));
+                _bm_params.set_remove_passes(atoi(optarg));
                 break;
             case LONGOPT_RESPONSE_THREADS:
-                _bm_params.set_response_threads(atoi(opt_argument));
+                _bm_params.set_response_threads(atoi(optarg));
                 break;
             case LONGOPT_RPC_EVENTS_BEFORE_WAKEUP:
-                _bm_params.set_rpc_events_before_wakeup(atoi(opt_argument));
+                _bm_params.set_rpc_events_before_wakeup(atoi(optarg));
                 break;
             case LONGOPT_RPC_NETWORK_THREADS:
-                _bm_params.set_rpc_network_threads(atoi(opt_argument));
+                _bm_params.set_rpc_network_threads(atoi(optarg));
                 break;
             case LONGOPT_RPC_TARGETS_PER_NODE:
-                _bm_params.set_rpc_targets_per_node(atoi(opt_argument));
-                break;
-            case LONGOPT_SKIP_COMMUNICATIONMANAGER_THREAD:
-                _bm_params.set_skip_communicationmanager_thread(true);
+                _bm_params.set_rpc_targets_per_node(atoi(optarg));
                 break;
             case LONGOPT_SKIP_GET_SPI_BUCKET_INFO:
                 _bm_params.set_skip_get_spi_bucket_info(true);
@@ -387,24 +376,23 @@ App::get_options()
 }
 
 int
-App::Main()
+App::main(int argc, char **argv)
 {
-    if (!get_options()) {
+    if (!get_options(argc, argv)) {
         usage();
         return 1;
     }
-    vespalib::rmdir(base_dir, true);
+    std::filesystem::remove_all(std::filesystem::path(base_dir));
     Benchmark bm(_bm_params);
     bm.run();
     return 0;
 }
 
-int
-main(int argc, char* argv[])
-{
+int main(int argc, char **argv) {
+    vespalib::SignalHandler::PIPE.ignore();
     DummyFileHeaderContext::setCreator("vespa-feed-bm");
     App app;
-    auto exit_value = app.Entry(argc, argv);
-    vespalib::rmdir(base_dir, true);
+    auto exit_value = app.main(argc, argv);
+    std::filesystem::remove_all(std::filesystem::path(base_dir));
     return exit_value;
 }

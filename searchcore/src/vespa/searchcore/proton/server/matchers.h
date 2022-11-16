@@ -12,21 +12,22 @@ namespace proton {
 namespace matching {
     class Matcher;
     class QueryLimiter;
-    struct IConstantValueRepo;
+    struct IRankingAssetsRepo;
 }
 
 class Matchers {
 private:
-    typedef vespalib::hash_map<vespalib::string, std::shared_ptr<matching::Matcher>> Map;
+    using Map = vespalib::hash_map<vespalib::string, std::shared_ptr<matching::Matcher>>;
     Map                                _rpmap;
     std::shared_ptr<matching::Matcher> _fallback;
     std::shared_ptr<matching::Matcher> _default;
 public:
-    typedef std::shared_ptr<Matchers> SP;
-    typedef std::unique_ptr<Matchers> UP;
+    using SP = std::shared_ptr<Matchers>;
     Matchers(const vespalib::Clock &clock,
              matching::QueryLimiter &queryLimiter,
-             const matching::IConstantValueRepo &constantValueRepo);
+             const matching::IRankingAssetsRepo &rankingAssetsRepo);
+    Matchers(const Matchers &) = delete;
+    Matchers & operator =(const Matchers &) = delete;
     ~Matchers();
     void add(const vespalib::string &name, std::shared_ptr<matching::Matcher> matcher);
     matching::MatchingStats getStats() const;

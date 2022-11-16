@@ -1,10 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.document.restapi.resource;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.jdisc.Metric;
 
 /**
@@ -12,7 +12,7 @@ import com.yahoo.jdisc.Metric;
  *
  * @author jonmv
  */
-public class RestApi extends LoggingRequestHandler {
+public class RestApi extends ThreadedHttpRequestHandler {
 
     @Inject
     public RestApi() {

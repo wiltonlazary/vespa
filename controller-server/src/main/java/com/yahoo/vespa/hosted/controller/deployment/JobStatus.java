@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.deployment;
 
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobId;
@@ -60,15 +60,15 @@ public class JobStatus {
     }
 
     public boolean isSuccess() {
-        return lastStatus().isPresent() && lastStatus().get() == RunStatus.success;
+        return lastCompleted.map(last -> ! last.hasFailed()).orElse(false);
     }
 
     public boolean isRunning() {
         return lastTriggered.isPresent() && ! lastTriggered.get().hasEnded();
     }
 
-    public boolean isOutOfCapacity() {
-        return lastStatus().isPresent() && lastStatus().get() == RunStatus.outOfCapacity;
+    public boolean isNodeAllocationFailure() {
+        return lastStatus().isPresent() && lastStatus().get() == RunStatus.nodeAllocationFailure;
     }
 
     @Override
@@ -90,18 +90,17 @@ public class JobStatus {
 
     static Optional<Run> lastSuccess(NavigableMap<RunId, Run> runs) {
         return runs.descendingMap().values().stream()
-                   .filter(run -> run.status() == RunStatus.success)
+                   .filter(Run::hasSucceeded)
                    .findFirst();
     }
 
     static Optional<Run> firstFailing(NavigableMap<RunId, Run> runs) {
         Run failed = null;
-        loop: for (Run run : runs.descendingMap().values())
-            switch (run.status()) {
-                case running: continue loop;
-                case success: break loop;
-                default: failed = run;
-            }
+        for (Run run : runs.descendingMap().values()) {
+            if ( ! run.hasEnded()) continue;
+            if ( ! run.hasFailed()) break;
+            failed = run;
+        }
         return Optional.ofNullable(failed);
     }
 

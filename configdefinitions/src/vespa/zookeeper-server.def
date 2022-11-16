@@ -2,7 +2,7 @@
 namespace=cloud.config
 
 # Vespa home is prepended if the file is relative
-zooKeeperConfigFile string default="conf/zookeeper/zookeeper.cfg"
+zooKeeperConfigFile string default="var/zookeeper/conf/zookeeper.cfg"
 
 # For more info about the values below, see ZooKeeper documentation
 
@@ -16,8 +16,6 @@ maxClientConnections int default=0
 dataDir string default="var/zookeeper"
 
 clientPort int default=2181
-# TODO(bjorncs): remove setting - no longer in use
-secureClientPort int default=2184
 
 snapshotCount int default=50000
 # Purge interval in hours
@@ -32,22 +30,24 @@ juteMaxBuffer int default=52428800
 myid int restart
 server[].id int
 server[].hostname string
+server[].clientPort int default=2181
 server[].quorumPort int default=2182
 server[].electionPort int default=2183
 # Whether this server is joining an existing cluster
 server[].joining bool default=false
+# Whether this server is retired, and about to be removed
+server[].retired bool default=false
 
 # Needed when upgrading from ZooKeeper 3.4 to 3.5, see https://issues.apache.org/jira/browse/ZOOKEEPER-3056,
 # and in general where there is a zookeeper ensemble running that has had few transactions.
 # TODO: Consider setting this to false by default (and override where appropriate)
 trustEmptySnapshot bool default=true
 
-# TLS options
-# TODO(bjorncs): todo cleanup after migrating to unified Vespa TLS configuration
-tlsForQuorumCommunication enum { OFF, PORT_UNIFICATION, TLS_WITH_PORT_UNIFICATION, TLS_ONLY } default=OFF
-# TODO(bjorncs): todo cleanup after migrating to unified Vespa TLS configuration
-tlsForClientServerCommunication enum { OFF, PORT_UNIFICATION, TLS_WITH_PORT_UNIFICATION, TLS_ONLY } default=OFF
-# TODO(bjorncs): remove setting - no longer in use
-jksKeyStoreFile string default="conf/zookeeper/zookeeper.jks"
-
 dynamicReconfiguration bool default=false
+snapshotMethod string default="gz"
+
+# Uses default Vespa mTLS config if empty string
+vespaTlsConfigFile string default=""
+
+leaderCloseSocketAsync bool default=false
+learnerAsyncSending bool default=false

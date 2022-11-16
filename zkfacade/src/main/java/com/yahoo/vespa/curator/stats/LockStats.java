@@ -68,9 +68,9 @@ public class LockStats {
         Thread oldThread = lockPathsHeld.put(lockPath, currentThread);
         if (oldThread != null) {
             getLockMetrics(lockPath).incrementAcquireWithoutReleaseCount();
-            logger.warning("Thread " + currentThread.getName() +
-                    " reports it has the lock on " + lockPath + ", but thread " + oldThread.getName() +
-                    " has not reported it released the lock");
+            logger.warning("Thread " + currentThread.getName() + " reports it has the lock on " +
+                           lockPath + ", but thread " + oldThread.getName() +
+                           " has not reported it released the lock");
         }
     }
 
@@ -79,13 +79,13 @@ public class LockStats {
         Thread oldThread = lockPathsHeld.remove(lockPath);
         if (oldThread == null) {
             getLockMetrics(lockPath).incrementNakedReleaseCount();
-            logger.warning("Thread " + currentThread.getName() +
-                    " is releasing the lock " + lockPath + ", but nobody owns that lock");
+            logger.warning("Thread " + currentThread.getName() + " is releasing the lock " + lockPath +
+                           ", but nobody owns that lock");
         } else if (oldThread != currentThread) {
             getLockMetrics(lockPath).incrementForeignReleaseCount();
             logger.warning("Thread " + currentThread.getName() +
-                    " is releasing the lock " + lockPath + ", but it was owned by thread "
-                    + oldThread.getName());
+                           " is releasing the lock " + lockPath + ", but it was owned by thread " +
+                           oldThread.getName());
         }
     }
 

@@ -70,8 +70,8 @@ void checkResult(const ResultSet & rs, const std::vector<RankedHit> & exp)
         ASSERT_EQUAL(rs.getArrayUsed(), exp.size());
 
         for (uint32_t i = 0; i < exp.size(); ++i) {
-            EXPECT_EQUAL(rh[i]._docId, exp[i]._docId);
-            EXPECT_EQUAL(rh[i]._rankValue + 1.0, exp[i]._rankValue + 1.0);
+            EXPECT_EQUAL(rh[i].getDocId(), exp[i].getDocId());
+            EXPECT_EQUAL(rh[i].getRank() + 1.0, exp[i].getRank() + 1.0);
         }
     } else {
         ASSERT_TRUE(rs.getArray() == nullptr);
@@ -179,17 +179,23 @@ struct Fixture {
 
 struct AscendingScoreFixture : Fixture {
     AscendingScoreFixture() : Fixture() {}
+    ~AscendingScoreFixture() override;
     HitRank calculateScore(uint32_t i) override {
         return i + 100;
     }
 };
 
+AscendingScoreFixture::~AscendingScoreFixture() = default;
+
 struct DescendingScoreFixture : Fixture {
     DescendingScoreFixture() : Fixture() {}
+    ~DescendingScoreFixture() override;
     HitRank calculateScore(uint32_t i) override {
         return 100 - i;
     }
 };
+
+DescendingScoreFixture::~DescendingScoreFixture() = default;
 
 TEST_F("testReRank - empty", Fixture) {
     EXPECT_EQUAL(0u, f.reRank());
@@ -511,8 +517,11 @@ TEST("require that hits can be added out of order when passing array limit") {
         expRh.back()._docId = i;
         expRh.back()._rankValue = (i < 50) ? default_rank_value : (i + 100);
     }
-    // add results in reverse order
-    for (uint32_t i = numHits; i-- > 0; ) {
+    for (uint32_t i = 50; i < 150; ++i) {
+        hc.addHit(i, i + 100);
+    }
+    // only the overflowing doc is out of order
+    for (uint32_t i = 0; i < 50; ++i) {
         hc.addHit(i, i + 100);
     }
     std::unique_ptr<ResultSet> rs = hc.getResultSet();

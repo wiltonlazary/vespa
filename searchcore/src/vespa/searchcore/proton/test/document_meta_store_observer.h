@@ -10,15 +10,15 @@ namespace proton::test {
 struct DocumentMetaStoreObserver : public IDocumentMetaStore
 {
     IDocumentMetaStore &_store;
-    uint32_t _removeCompleteCnt;
-    DocId _removeCompleteLid;
+    uint32_t _removes_complete_cnt;
+    std::vector<DocId> _removes_complete_lids;
     DocId _compactLidSpaceLidLimit;
     uint32_t _holdUnblockShrinkLidSpaceCnt;
 
     DocumentMetaStoreObserver(IDocumentMetaStore &store) noexcept
         : _store(store),
-          _removeCompleteCnt(0),
-          _removeCompleteLid(0),
+          _removes_complete_cnt(0),
+          _removes_complete_lids(0),
           _compactLidSpaceLidLimit(0),
           _holdUnblockShrinkLidSpaceCnt(0)
     {}
@@ -61,25 +61,21 @@ struct DocumentMetaStoreObserver : public IDocumentMetaStore
     Result inspect(const GlobalId &gid, uint64_t prepare_serial_num) override {
         return _store.inspect(gid, prepare_serial_num);
     }
-    Result put(const GlobalId &gid,
-               const BucketId &bucketId,
-               const Timestamp &timestamp,
-               uint32_t docSize,
-               DocId lid,
-               uint64_t prepare_serial_num) override
+    Result put(const GlobalId &gid, const BucketId &bucketId, Timestamp timestamp,
+               uint32_t docSize, DocId lid, uint64_t prepare_serial_num) override
     {
         return _store.put(gid, bucketId, timestamp, docSize, lid, prepare_serial_num);
     }
-    bool updateMetaData(DocId lid, const BucketId &bucketId, const Timestamp &timestamp) override {
+    bool updateMetaData(DocId lid, const BucketId &bucketId, Timestamp timestamp) override {
         return _store.updateMetaData(lid, bucketId, timestamp);
     }
     bool remove(DocId lid, uint64_t prepare_serial_num) override {
         return _store.remove(lid, prepare_serial_num);
     }
-    void removeComplete(DocId lid) override {
-        ++_removeCompleteCnt;
-        _removeCompleteLid = lid;
-        _store.removeComplete(lid);
+    void removes_complete(const std::vector<DocId>& lids) override {
+        ++_removes_complete_cnt;
+        _removes_complete_lids.insert(_removes_complete_lids.end(), lids.cbegin(), lids.cend());
+        _store.removes_complete(lids);
     }
     void move(DocId fromLid, DocId toLid, uint64_t prepare_serial_num) override {
         _store.move(fromLid, toLid, prepare_serial_num);
@@ -87,12 +83,8 @@ struct DocumentMetaStoreObserver : public IDocumentMetaStore
     bool validLid(DocId lid) const override {
         return _store.validLid(lid);
     }
-     void removeBatch(const std::vector<DocId> &lidsToRemove,
-                             const DocId docIdLimit) override {
+     void removeBatch(const std::vector<DocId> &lidsToRemove, const DocId docIdLimit) override {
         _store.removeBatch(lidsToRemove, docIdLimit);
-    }
-    void removeBatchComplete(const std::vector<DocId> &lidsToRemove) override {
-        _store.removeBatchComplete(lidsToRemove);
     }
     const RawDocumentMetaData &getRawMetaData(DocId lid) const override {
         return _store.getRawMetaData(lid);
@@ -118,8 +110,8 @@ struct DocumentMetaStoreObserver : public IDocumentMetaStore
     void setBucketState(const BucketId &bucketId, bool active) override {
         _store.setBucketState(bucketId, active);
     }
-    void populateActiveBuckets(const document::BucketId::List &buckets) override {
-        _store.populateActiveBuckets(buckets);
+    void populateActiveBuckets(document::BucketId::List buckets) override {
+        _store.populateActiveBuckets(std::move(buckets));
     }
 
 
@@ -170,8 +162,8 @@ struct DocumentMetaStoreObserver : public IDocumentMetaStore
     DocId getCommittedDocIdLimit() const override {
         return _store.getCommittedDocIdLimit();
     }
-    void removeAllOldGenerations() override {
-        _store.removeAllOldGenerations();
+    void reclaim_unused_memory() override {
+        _store.reclaim_unused_memory();
     }
     bool canShrinkLidSpace() const override {
         return _store.canShrinkLidSpace();

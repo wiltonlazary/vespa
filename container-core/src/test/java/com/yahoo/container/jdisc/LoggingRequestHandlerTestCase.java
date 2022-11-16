@@ -13,8 +13,8 @@ import com.yahoo.jdisc.handler.ContentChannel;
 import com.yahoo.jdisc.handler.RequestHandler;
 import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.jdisc.service.CurrentContainer;
-import org.junit.After;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -26,7 +26,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test contracts in LoggingRequestHandler.
@@ -97,7 +97,7 @@ public class LoggingRequestHandlerTestCase {
         }
     }
 
-    static final class AccessLogTestHandler extends LoggingRequestHandler {
+    static final class AccessLogTestHandler extends ThreadedHttpRequestHandler {
 
         public AccessLogTestHandler(Executor executor) {
             super(executor);
@@ -110,13 +110,13 @@ public class LoggingRequestHandlerTestCase {
 
     }
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         executor = Executors.newCachedThreadPool();
         handler = new AccessLogTestHandler(executor);
     }
 
-    @After
+    @AfterEach
     public void tearDown() throws Exception {
         handler = null;
         executor.shutdown();
@@ -146,11 +146,6 @@ public class LoggingRequestHandlerTestCase {
 
                 @Override
                 public RequestHandler resolveHandler(com.yahoo.jdisc.Request request) {
-                    return null;
-                }
-
-                @Override
-                public <T> T getInstance(Key<T> tKey) {
                     return null;
                 }
 

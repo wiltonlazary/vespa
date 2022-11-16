@@ -25,14 +25,13 @@ public class SearchChainsBuilder extends ChainsBuilder<Searcher<?>, SearchChain>
 
     private static final Map<String, Class<? extends DomChainBuilderBase<? extends Searcher<?>, ? extends SearchChain>>>
             chainType2builderClass = Collections.unmodifiableMap(
-            new LinkedHashMap<String, Class<? extends DomChainBuilderBase<? extends Searcher<?>, ? extends SearchChain>>>() {{
+            new LinkedHashMap<>() {{
                 put("chain", DomSearchChainBuilder.class);
-                put("searchchain", DomSearchChainBuilder.class);
                 put("provider", DomProviderBuilder.class);
             }});
 
-    public SearchChainsBuilder(DeployState deployState, AbstractConfigProducer ancestor, List<Element> searchChainsElements,
-                               Map<String, ComponentsBuilder.ComponentType> outerSearcherTypeByComponentName) {
+    public SearchChainsBuilder(DeployState deployState, AbstractConfigProducer<?> ancestor, List<Element> searchChainsElements,
+                               Map<String, ComponentsBuilder.ComponentType<?>> outerSearcherTypeByComponentName) {
         super(deployState, ancestor, searchChainsElements, outerSearcherTypeByComponentName, chainType2builderClass);
     }
 

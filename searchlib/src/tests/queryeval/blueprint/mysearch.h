@@ -126,12 +126,16 @@ public:
         set_cost_tier(value);
         return *this;
     }
-    void set_global_filter(const GlobalFilter &) override {
+    void set_global_filter(const GlobalFilter &, double) override {
         _got_global_filter = true;
     }
     bool got_global_filter() const { return _got_global_filter; }
     // make public
     using LeafBlueprint::set_want_global_filter;
+
+    SearchIteratorUP createFilterSearch(bool strict, FilterConstraint constraint) const override {
+        return create_default_filter(strict, constraint);
+    }
 };
 
 //-----------------------------------------------------------------------------

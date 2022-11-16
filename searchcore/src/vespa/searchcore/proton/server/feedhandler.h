@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "feed_handler_stats.h"
 #include "i_inc_serial_num.h"
 #include "i_operation_storer.h"
 #include "idocumentmovehandler.h"
@@ -10,7 +11,6 @@
 #include "ipruneremoveddocumentshandler.h"
 #include "tlswriter.h"
 #include "transactionlogmanager.h"
-#include <persistence/spi/types.h>
 #include <vespa/document/bucket/bucketid.h>
 #include <vespa/searchcore/proton/common/doctypename.h>
 #include <vespa/searchcore/proton/common/feedtoken.h>
@@ -35,6 +35,7 @@ class IReplayConfig;
 class JoinBucketsOperation;
 class PutOperation;
 class RemoveOperation;
+class ReplayThrottlingPolicy;
 class SplitBucketOperation;
 class UpdateOperation;
 
@@ -56,7 +57,6 @@ private:
     using Packet = search::transactionlog::Packet;
     using RPC = search::transactionlog::client::RPC;
     using SerialNum = search::SerialNum;
-    using Timestamp = storage::spi::Timestamp;
     using BucketId =  document::BucketId;
     using FeedStateSP = std::shared_ptr<FeedState>;
     using FeedOperationUP = std::unique_ptr<FeedOperation>;
@@ -76,15 +76,13 @@ private:
     TlsWriter                             *_tlsWriter;
     TlsReplayProgress::UP                  _tlsReplayProgress;
     // the serial num of the last feed operation processed by feed handler.
-    SerialNum                              _serialNum;
+    std::atomic<SerialNum>                 _serialNum;
     // the serial num considered to be fully procssessed and flushed to stable storage. Used to prune transaction log.
     SerialNum                              _prunedSerialNum;
     // the serial num of the last feed operation in the transaction log at startup before replay
     SerialNum                              _replay_end_serial_num;
     uint64_t                               _prepare_serial_num;
-    size_t                                 _numOperationsPendingCommit;
-    size_t                                 _numOperationsCompleted;
-    size_t                                 _numCommitsCompleted;
+    FeedOperationCounter                   _numOperations;
     bool                                   _delayedPrune;
     mutable std::shared_mutex              _feedLock;
     FeedStateSP                            _feedState;
@@ -97,6 +95,8 @@ private:
     SerialNum                              _syncedSerialNum; 
     bool                                   _allowSync; // Sanity check
     std::atomic<vespalib::steady_time>     _heart_beat_time;
+    mutable std::mutex                     _stats_lock;
+    mutable FeedHandlerStats               _stats;
 
     /**
      * Delayed handling of feed operations, in master write thread.
@@ -123,7 +123,6 @@ private:
     void performDeleteBucket(FeedToken token, DeleteBucketOperation &op);
     void performSplit(FeedToken token, SplitBucketOperation &op);
     void performJoin(FeedToken token, JoinBucketsOperation &op);
-    void performSync();
     void performEof();
 
     /**
@@ -135,8 +134,8 @@ private:
     FeedStateSP getFeedState() const;
     void changeFeedState(FeedStateSP newState);
     void doChangeFeedState(FeedStateSP newState);
-    void onCommitDone(size_t numPendingAtStart);
-    void initiateCommit();
+    void onCommitDone(size_t numPendingAtStart, vespalib::steady_time start_time);
+    void initiateCommit(vespalib::steady_time start_time);
     void enqueCommitTask();
 public:
     FeedHandler(const FeedHandler &) = delete;
@@ -189,7 +188,8 @@ public:
                          SerialNum flushedSummaryMgrSerial,
                          SerialNum oldestFlushedSerial,
                          SerialNum newestFlushedSerial,
-                         ConfigStore &config_store);
+                         ConfigStore &config_store,
+                         const ReplayThrottlingPolicy& replay_throttling_policy);
 
     /**
      * Called when a flush is done and allows pruning of the transaction log.
@@ -213,9 +213,15 @@ public:
         _bucketDBHandler = bucketDBHandler;
     }
 
-    void setSerialNum(SerialNum serialNum) { _serialNum = serialNum; }
-    SerialNum inc_serial_num() override { return ++_serialNum; }
-    SerialNum getSerialNum() const override { return _serialNum; }
+    // Must only be called from writer thread:
+    void setSerialNum(SerialNum serialNum) { _serialNum.store(serialNum, std::memory_order_relaxed); }
+    SerialNum inc_serial_num() override {
+        const auto post_inc = _serialNum.load(std::memory_order_relaxed) + 1u;
+        _serialNum.store(post_inc, std::memory_order_relaxed);
+        return post_inc;
+    }
+    // May be called from non-writer threads:
+    SerialNum getSerialNum() const override { return _serialNum.load(std::memory_order_relaxed); }
     // The two following methods are used when saving initial config
     SerialNum get_replay_end_serial_num() const { return _replay_end_serial_num; }
     SerialNum inc_replay_end_serial_num() { return ++_replay_end_serial_num; }
@@ -236,7 +242,6 @@ public:
     void handleMove(MoveOperation &op, std::shared_ptr<vespalib::IDestructorCallback> moveDoneCtx) override;
     void heartBeat() override;
 
-    void sync();
     RPC::Result receive(const Packet &packet) override;
 
     void eof() override;
@@ -247,6 +252,7 @@ public:
     [[nodiscard]] CommitResult storeOperationSync(const FeedOperation & op);
     void considerDelayedPrune();
     vespalib::steady_time get_heart_beat_time() const;
+    FeedHandlerStats get_stats(bool reset_min_max) const;
 };
 
 } // namespace proton

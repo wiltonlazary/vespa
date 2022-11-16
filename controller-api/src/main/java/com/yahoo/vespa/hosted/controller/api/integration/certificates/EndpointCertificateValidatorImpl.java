@@ -36,7 +36,7 @@ public class EndpointCertificateValidatorImpl implements EndpointCertificateVali
             var pemEncodedEndpointCertificate = secretStore.getSecret(endpointCertificateMetadata.certName(), endpointCertificateMetadata.version());
 
             if (pemEncodedEndpointCertificate == null)
-                throw new EndpointCertificateException(EndpointCertificateException.Type.VERIFICATION_FAILURE, "Secret store returned null for certificate");
+                throw new EndpointCertificateException(EndpointCertificateException.Type.CERT_NOT_AVAILABLE, "Secret store returned null for certificate");
 
             List<X509Certificate> x509CertificateList = X509CertificateUtils.certificateListFromPem(pemEncodedEndpointCertificate);
 
@@ -59,7 +59,7 @@ public class EndpointCertificateValidatorImpl implements EndpointCertificateVali
 
             X509Certificate endEntityCertificate = x509CertificateList.get(0);
             Set<String> subjectAlternativeNames = X509CertificateUtils.getSubjectAlternativeNames(endEntityCertificate).stream()
-                    .filter(san -> san.getType().equals(SubjectAlternativeName.Type.DNS_NAME))
+                    .filter(san -> san.getType().equals(SubjectAlternativeName.Type.DNS))
                     .map(SubjectAlternativeName::getValue).collect(Collectors.toSet());
 
             if (!subjectAlternativeNames.containsAll(requiredNamesForZone))

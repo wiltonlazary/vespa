@@ -70,24 +70,9 @@ public class LogMessage
     }
 
     public Instant  getTimestamp()       {return time;}
-    /**
-     * @deprecated Use {@link #getTimestamp()}
-     */
-    @Deprecated(since = "7", forRemoval = true)
-    public long     getTime ()          {return time.toEpochMilli();}
-    /**
-     * @deprecated Use {@link #getTimestamp()}
-     */
-    @Deprecated(since = "7", forRemoval = true)
-    public long     getTimeInSeconds () {return time.getEpochSecond();}
     public String   getHost ()          {return host;}
     public long     getProcessId()      {return processId;}
     public OptionalLong getThreadId()      {return threadId > 0 ? OptionalLong.of(threadId) : OptionalLong.empty();}
-    /**
-     * @deprecated Use {@link #getProcessId()} / {@link #getThreadId()}
-     */
-    @Deprecated(since = "7", forRemoval = true)
-    public String   getThreadProcess () {return VespaFormat.formatThreadProcess(processId, threadId);}
     public String   getService ()       {return service;}
     public String   getComponent ()     {return component;}
     public Level    getLevel ()         {return level;}
@@ -108,8 +93,9 @@ public class LogMessage
         if (! m.matches()) {
             throw new InvalidLogFormatException(msg);
         }
-
+        @SuppressWarnings("deprecation")
         Level msgLevel = LogLevel.parse(m.group(6));
+
         Instant timestamp = parseTimestamp(m.group(1));
         String threadProcess = m.group(3);
 
@@ -161,6 +147,7 @@ public class LogMessage
      *         it will return <code>null</code>.
      *
      */
+    @SuppressWarnings("deprecation")
     public Event getEvent () throws MalformedEventException {
         if ((level == LogLevel.EVENT) && (event == null)) {
             try {
@@ -188,7 +175,7 @@ public class LogMessage
                                 + component.length()
                                 + level.toString().length()
                                 + payload.length()
-                                + 1)
+                                + 7)
             .append(timeStr).append("\t")
             .append(host).append("\t")
             .append(threadProcess).append("\t")

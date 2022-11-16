@@ -27,7 +27,7 @@ import java.time.temporal.TemporalAdjusters;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author jonmv
@@ -135,17 +135,21 @@ public class DeploymentTester {
     public void abortAll() {
         triggerJobs();
         for (Run run : jobs.active()) {
-            jobs.abort(run.id());
-            runner.advance(jobs.run(run.id()).get());
-            assertTrue(jobs.run(run.id()).get().hasEnded());
+            jobs.abort(run.id(), "DeploymentTester.abortAll");
+            runner.advance(jobs.run(run.id()));
+            assertTrue(jobs.run(run.id()).hasEnded());
         }
     }
 
     /** Triggers jobs until nothing more triggers, and returns the number of triggered jobs. */
     public int triggerJobs() {
-        int triggered = 0;
-        while (triggered != (triggered += deploymentTrigger().triggerReadyJobs()));
-        return triggered;
+        int triggered;
+        int triggeredTotal = 0;
+        do {
+            triggered = (int) deploymentTrigger().triggerReadyJobs().triggered();
+            triggeredTotal += triggered;
+        } while (triggered > 0);
+        return triggeredTotal;
     }
 
 }

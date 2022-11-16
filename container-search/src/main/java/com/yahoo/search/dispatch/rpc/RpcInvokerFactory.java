@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.dispatch.rpc;
 
 import com.yahoo.prelude.fastsearch.DocumentDatabase;
@@ -43,13 +43,7 @@ public class RpcInvokerFactory extends InvokerFactory {
         Query query = result.getQuery();
 
         boolean summaryNeedsQuery = searcher.summaryNeedsQuery(query);
-
         return new RpcProtobufFillInvoker(rpcResourcePool, searcher.getDocumentDatabase(query), searcher.getServerId(), summaryNeedsQuery);
-    }
-
-    // for testing
-    public FillInvoker createFillInvoker(DocumentDatabase documentDb) {
-        return new RpcFillInvoker(rpcResourcePool, documentDb);
     }
 
 }

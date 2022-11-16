@@ -1,16 +1,18 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container;
 
+import com.yahoo.container.bundle.BundleInstantiationSpecification;
 import com.yahoo.vespa.defaults.Defaults;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collections;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
+ * NOTE: Stable ordering of bundles in config is handled by {@link ContainerCluster#addPlatformBundle(Path)}
+ *
  * @author gjoranv
  * @author Ulf Lilleengen
  */
@@ -28,12 +30,36 @@ public class PlatformBundles {
     }
 
     public static final Path LIBRARY_PATH = Paths.get(Defaults.getDefaults().underVespaHome("lib/jars"));
-    public static final String searchAndDocprocBundle = "container-search-and-docproc";
+    public static final String SEARCH_AND_DOCPROC_BUNDLE = BundleInstantiationSpecification.CONTAINER_SEARCH_AND_DOCPROC;
 
-    public static Set<Path> commonVespaBundles() {
-        var bundles = new LinkedHashSet<Path>();
-        commonVespaBundles.stream().map(PlatformBundles::absoluteBundlePath).forEach(bundles::add);
-        return Collections.unmodifiableSet(bundles);
+    // Bundles that must be loaded for all container types.
+    public static final Set<Path> COMMON_VESPA_BUNDLES = toBundlePaths(
+            "container-spifly.jar",  // Aries SPIFly repackaged
+            // Used by vespa-athenz, zkfacade, other vespa bundles and nearly all hosted apps.
+            // TODO Vespa 9: stop installing and providing servlet-api. Seems difficult, though.
+            "javax.servlet-api-3.1.0.jar"
+    );
+
+    public static final Set<Path> VESPA_SECURITY_BUNDLES = toBundlePaths(
+            "jdisc-security-filters",
+            "vespa-athenz"
+    );
+
+    public static final Set<Path> VESPA_ZK_BUNDLES = toBundlePaths(
+            "zkfacade",
+            "zookeeper-server"
+    );
+
+    public static final Set<Path> SEARCH_AND_DOCPROC_BUNDLES = toBundlePaths(
+            SEARCH_AND_DOCPROC_BUNDLE,
+            "docprocs",
+            "linguistics-components"
+    );
+
+    private static Set<Path> toBundlePaths(String... bundleNames) {
+        return Stream.of(bundleNames)
+                .map(PlatformBundles::absoluteBundlePath)
+                .collect(Collectors.toSet());
     }
 
     public static Path absoluteBundlePath(String fileName) {
@@ -42,26 +68,19 @@ public class PlatformBundles {
 
     public static Path absoluteBundlePath(String fileName, JarSuffix jarSuffix) {
         if (fileName == null) return null;
-        return LIBRARY_PATH.resolve(Paths.get(fileName + jarSuffix.suffix));
+        String fullFilename = fileName.endsWith(".jar") ? fileName : fileName + jarSuffix.suffix;
+        return LIBRARY_PATH.resolve(Paths.get(fullFilename));
     }
 
     public static boolean isSearchAndDocprocClass(String className) {
         return searchAndDocprocComponents.contains(className);
     }
 
-    // Bundles that must be loaded for all container types.
-    private static final List<String> commonVespaBundles = List.of(
-            "zkfacade",
-            "zookeeper-server"  // TODO: not necessary in metrics-proxy.
-    );
-
     // This is a hack to allow users to declare components from the search-and-docproc bundle without naming the bundle.
     private static final Set<String> searchAndDocprocComponents = Set.of(
             "com.yahoo.docproc.AbstractConcreteDocumentFactory",
             "com.yahoo.docproc.DocumentProcessor",
             "com.yahoo.docproc.SimpleDocumentProcessor",
-            "com.yahoo.docproc.util.JoinerDocumentProcessor",
-            "com.yahoo.docproc.util.SplitterDocumentProcessor",
             "com.yahoo.example.TimingSearcher",
             "com.yahoo.language.simple.SimpleLinguistics",
             "com.yahoo.prelude.cluster.ClusterSearcher",
@@ -125,8 +144,6 @@ public class PlatformBundles {
             "com.yahoo.search.searchchain.ForkingSearcher",
             "com.yahoo.search.searchchain.example.ExampleSearcher",
             "com.yahoo.search.searchers.CacheControlSearcher",
-            "com.yahoo.search.statistics.PeakQpsSearcher",
-            "com.yahoo.search.statistics.TimingSearcher",
             "com.yahoo.vespa.streamingvisitors.MetricsSearcher",
             "com.yahoo.vespa.streamingvisitors.VdsStreamingSearcher"
     );

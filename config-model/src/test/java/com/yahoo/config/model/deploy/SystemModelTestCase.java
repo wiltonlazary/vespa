@@ -2,25 +2,27 @@
 package com.yahoo.config.model.deploy;
 
 import com.yahoo.cloud.config.SentinelConfig;
+import com.yahoo.net.HostName;
 import com.yahoo.test.StandardConfig;
 import com.yahoo.config.model.ConfigModel;
 import com.yahoo.config.model.ConfigModelRegistry;
 import com.yahoo.config.model.MapConfigModelRegistry;
 import com.yahoo.config.model.ApplicationConfigProducerRoot;
-import com.yahoo.net.HostName;
-import com.yahoo.vespa.model.*;
+import com.yahoo.vespa.model.ConfigProducer;
+import com.yahoo.vespa.model.HostResource;
+import com.yahoo.vespa.model.HostSystem;
+import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.test.ApiConfigModel;
 import com.yahoo.vespa.model.test.SimpleConfigModel;
 import com.yahoo.vespa.model.test.SimpleService;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithFilePkg;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author bratseth
@@ -48,21 +50,21 @@ public class SystemModelTestCase {
     }
 
     @Test
-    public void testMetrics() {
+    void testMetrics() {
         VespaModel vespaModel = getVespaModelDoNotValidateXml(TESTDIR + "metricsconfig");
-        SimpleService service0 = (SimpleService)vespaModel.getConfigProducer("simple/simpleservice.0").get();
+        SimpleService service0 = (SimpleService) vespaModel.getConfigProducer("simple/simpleservice.0").get();
         vespaModel.getConfigProducer("simple/simpleservice.1");
-        assertThat(service0.getDefaultMetricDimensions().get("clustername"), is("testClusterName"));
+        assertEquals("testClusterName", service0.getDefaultMetricDimensions().get("clustername"));
     }
 
     @Test
-    public void testVespaModel() {
+    void testVespaModel() {
         VespaModel vespaModel = getVespaModelDoNotValidateXml(TESTDIR + "simpleconfig/");
         assertNotNull(vespaModel);
 
-        assertEquals("There are two instances of the simple model + Routing and AdminModel (set up implicitly)", 4, vespaModel.configModelRepo().asMap().size());
-        assertNotNull("One gets the default name as there is no explicit id", vespaModel.configModelRepo().asMap().get("simple"));
-        assertNotNull("The other gets the explicit id as name", vespaModel.configModelRepo().asMap().get("second"));
+        assertEquals(4, vespaModel.configModelRepo().asMap().size(), "There are two instances of the simple model + Routing and AdminModel (set up implicitly)");
+        assertNotNull(vespaModel.configModelRepo().asMap().get("simple"), "One gets the default name as there is no explicit id");
+        assertNotNull(vespaModel.configModelRepo().asMap().get("second"), "The other gets the explicit id as name");
 
         ApplicationConfigProducerRoot root = vespaModel.getVespa();
         assertNotNull(root);
@@ -103,7 +105,7 @@ public class SystemModelTestCase {
     }
 
     @Test
-    public void testHostSystem() {
+    void testHostSystem() {
         VespaModel vespaModel = getVespaModelDoNotValidateXml(TESTDIR + "simpleconfig/");
         HostSystem hostSystem = vespaModel.hostSystem();
 
@@ -124,7 +126,7 @@ public class SystemModelTestCase {
     }
 
     @Test
-    public void testBasePorts() {
+    void testBasePorts() {
         VespaModel vespaModel = getVespaModelDoNotValidateXml(TESTDIR + "simpleconfig");
         assertNotNull(vespaModel);
 
@@ -137,15 +139,15 @@ public class SystemModelTestCase {
      * Be sure to update it as well if you change this.
      */
     @Test
-    public void testPlugins() {
+    void testPlugins() {
         VespaModel vespaModel = getVespaModelDoNotValidateXml(TESTDIR + "plugins");
 
         assertNotNull(vespaModel);
         ApplicationConfigProducerRoot root = vespaModel.getVespa();
 
         assertEquals(5, vespaModel.configModelRepo().asMap().size());
-        assertTrue(vespaModel.configModelRepo().asMap().keySet().contains("simple"));
-        assertTrue(vespaModel.configModelRepo().asMap().keySet().contains("api"));
+        assertTrue(vespaModel.configModelRepo().asMap().containsKey("simple"));
+        assertTrue(vespaModel.configModelRepo().asMap().containsKey("api"));
         assertTrue(root.getConfigIds().contains("simple/simpleservice.0"));
         assertTrue(root.getConfigIds().contains("simple/simpleservice.1"));
         assertTrue(root.getConfigIds().contains("api/apiservice.0"));
@@ -164,19 +166,19 @@ public class SystemModelTestCase {
         assertEquals("routing", plugin.getId());
 
         assertEquals(vespaModel.getConfig(StandardConfig.class, "api/apiservice.0").astring(), "apiservice");
-        
+
         assertEquals(vespaModel.getConfig(StandardConfig.class, "simple/simpleservice.0").astring(), "simpleservice");
         assertEquals(vespaModel.getConfig(StandardConfig.class, "simple/simpleservice.1").astring(), "simpleservice");
         assertEquals(vespaModel.getConfig(StandardConfig.class, "simple2/simpleservice.0").astring(), "simpleservice");
     }
 
     @Test
-    public void testEqualPlugins() {
+    void testEqualPlugins() {
         try {
             getVespaModelDoNotValidateXml(TESTDIR + "doubleconfig");
             fail("No exception upon two plugins with the same name");
         } catch (RuntimeException expected) {
-            assertThat(expected.getMessage(), is("Could not resolve tag <simpleplugin version=\"1.0\"> to a config model component"));
+            assertEquals("Could not resolve tag <simpleplugin version=\"1.0\"> to a config model component", expected.getMessage());
         }
     }
 

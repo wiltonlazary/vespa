@@ -2,14 +2,12 @@
 package com.yahoo.jdisc.http.server.jetty;
 
 import com.google.inject.Inject;
-import com.yahoo.component.ComponentId;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.container.logging.ConnectionLog;
 import com.yahoo.container.logging.RequestLog;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.http.ConnectorConfig;
 import com.yahoo.jdisc.http.ServerConfig;
-import com.yahoo.jdisc.http.ServletPathsConfig;
 import com.yahoo.jdisc.service.AbstractServerProvider;
 import com.yahoo.jdisc.service.CurrentContainer;
 import org.eclipse.jetty.http.HttpField;
@@ -20,11 +18,13 @@ import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.SslConnectionFactory;
+import org.eclipse.jetty.server.handler.ContextHandler;
+import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.HandlerCollection;
+import org.eclipse.jetty.server.handler.HandlerWrapper;
 import org.eclipse.jetty.server.handler.StatisticsHandler;
 import org.eclipse.jetty.server.handler.gzip.GzipHandler;
 import org.eclipse.jetty.server.handler.gzip.GzipHttpOutputInterceptor;
-import org.eclipse.jetty.servlet.FilterHolder;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.util.log.JavaUtilLog;
@@ -32,14 +32,12 @@ import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 
 import javax.management.remote.JMXServiceURL;
-import javax.servlet.DispatcherType;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.BindException;
 import java.net.MalformedURLException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -59,16 +57,13 @@ public class JettyHttpServer extends AbstractServerProvider {
     private final List<Integer> listenedPorts = new ArrayList<>();
     private final ServerMetricReporter metricsReporter;
 
-    @Inject
+    @Inject // ServerProvider implementors must use com.google.inject.Inject
     public JettyHttpServer(CurrentContainer container,
                            Metric metric,
                            ServerConfig serverConfig,
-                           ServletPathsConfig servletPathsConfig,
                            FilterBindings filterBindings,
                            Janitor janitor,
                            ComponentRegistry<ConnectorFactory> connectorFactories,
-                           ComponentRegistry<ServletHolder> servletHolders,
-                           FilterInvoker filterInvoker,
                            RequestLog requestLog,
                            ConnectionLog connectionLog) {
         super(container);
@@ -91,25 +86,13 @@ public class JettyHttpServer extends AbstractServerProvider {
             listenedPorts.add(connectorConfig.listenPort());
         }
 
-        JDiscContext jDiscContext = new JDiscContext(filterBindings,
-                                                     container,
-                                                     janitor,
-                                                     metric,
-                                                     serverConfig);
+        JDiscContext jDiscContext = new JDiscContext(filterBindings, container, janitor, metric, serverConfig);
 
         ServletHolder jdiscServlet = new ServletHolder(new JDiscHttpServlet(jDiscContext));
-        FilterHolder jDiscFilterInvokerFilter = new FilterHolder(new JDiscFilterInvokerFilter(jDiscContext, filterInvoker));
-
         List<JDiscServerConnector> connectors = Arrays.stream(server.getConnectors())
                                                       .map(JDiscServerConnector.class::cast)
                                                       .collect(toList());
-
-        server.setHandler(getHandlerCollection(serverConfig,
-                                               servletPathsConfig,
-                                               connectors,
-                                               jdiscServlet,
-                                               servletHolders,
-                                               jDiscFilterInvokerFilter));
+        server.setHandler(createRootHandler(serverConfig, connectors, jdiscServlet));
         this.metricsReporter = new ServerMetricReporter(metric, server);
     }
 
@@ -149,57 +132,36 @@ public class JettyHttpServer extends AbstractServerProvider {
         }
     }
 
-    private HandlerCollection getHandlerCollection(ServerConfig serverConfig,
-                                                   ServletPathsConfig servletPathsConfig,
-                                                   List<JDiscServerConnector> connectors,
-                                                   ServletHolder jdiscServlet,
-                                                   ComponentRegistry<ServletHolder> servletHolders,
-                                                   FilterHolder jDiscFilterInvokerFilter) {
-        ServletContextHandler servletContextHandler = createServletContextHandler();
-
-        servletHolders.allComponentsById().forEach((id, servlet) -> {
-            String path = getServletPath(servletPathsConfig, id);
-            servletContextHandler.addServlet(servlet, path);
-            servletContextHandler.addFilter(jDiscFilterInvokerFilter, path, EnumSet.allOf(DispatcherType.class));
-        });
-
-        servletContextHandler.addServlet(jdiscServlet, "/*");
-
-        List<ConnectorConfig> connectorConfigs = connectors.stream().map(JDiscServerConnector::connectorConfig).collect(toList());
-        var secureRedirectHandler = new SecuredRedirectHandler(connectorConfigs);
-        secureRedirectHandler.setHandler(servletContextHandler);
-
-        var proxyHandler = new HealthCheckProxyHandler(connectors);
-        proxyHandler.setHandler(secureRedirectHandler);
-
-        var authEnforcer = new TlsClientAuthenticationEnforcer(connectorConfigs);
-        authEnforcer.setHandler(proxyHandler);
-
-        GzipHandler gzipHandler = newGzipHandler(serverConfig);
-        gzipHandler.setHandler(authEnforcer);
-
-        HttpResponseStatisticsCollector statisticsCollector =
-                new HttpResponseStatisticsCollector(serverConfig.metric().monitoringHandlerPaths(),
-                                                    serverConfig.metric().searchHandlerPaths());
-        statisticsCollector.setHandler(gzipHandler);
-
-        StatisticsHandler statisticsHandler = newStatisticsHandler();
-        statisticsHandler.setHandler(statisticsCollector);
-
-        HandlerCollection handlerCollection = new HandlerCollection();
-        handlerCollection.setHandlers(new Handler[] { statisticsHandler });
-        return handlerCollection;
+    private Handler createRootHandler(
+            ServerConfig serverCfg, List<JDiscServerConnector> connectors, ServletHolder jdiscServlet) {
+        HandlerCollection perConnectorHandlers = new ContextHandlerCollection();
+        for (JDiscServerConnector connector : connectors) {
+            ConnectorConfig connectorCfg = connector.connectorConfig();
+            List<Handler> connectorChain = new ArrayList<>();
+            if (connectorCfg.tlsClientAuthEnforcer().enable()) {
+                connectorChain.add(newTlsClientAuthEnforcerHandler(connectorCfg));
+            }
+            if (connectorCfg.healthCheckProxy().enable()) {
+                connectorChain.add(newHealthCheckProxyHandler(connectors));
+            } else {
+                connectorChain.add(newServletHandler(jdiscServlet));
+            }
+            ContextHandler connectorRoot = newConnectorContextHandler(connector);
+            addChainToRoot(connectorRoot, connectorChain);
+            perConnectorHandlers.addHandler(connectorRoot);
+        }
+        StatisticsHandler root = newGenericStatisticsHandler();
+        addChainToRoot(root, List.of(
+                newResponseStatisticsHandler(serverCfg), newGzipHandler(serverCfg), perConnectorHandlers));
+        return root;
     }
 
-    private static String getServletPath(ServletPathsConfig servletPathsConfig, ComponentId id) {
-        return "/" + servletPathsConfig.servlets(id.stringValue()).path();
-    }
-
-    private ServletContextHandler createServletContextHandler() {
-        ServletContextHandler servletContextHandler = new ServletContextHandler(ServletContextHandler.NO_SECURITY | ServletContextHandler.NO_SESSIONS);
-        servletContextHandler.setContextPath("/");
-        servletContextHandler.setDisplayName(getDisplayName(listenedPorts));
-        return servletContextHandler;
+    private static void addChainToRoot(Handler root, List<Handler> chain) {
+        Handler parent = root;
+        for (Handler h : chain) {
+            ((HandlerWrapper)parent).setHandler(h);
+            parent = h;
+        }
     }
 
     private static String getDisplayName(List<Integer> ports) {
@@ -238,11 +200,14 @@ public class JettyHttpServer extends AbstractServerProvider {
     @Override
     public void close() {
         try {
-            log.log(Level.INFO, String.format("Shutting down server (graceful=%b, timeout=%.1fs)", isGracefulShutdownEnabled(), server.getStopTimeout()/1000d));
+            log.log(Level.INFO, String.format("Shutting down Jetty server (graceful=%b, timeout=%.1fs)",
+                    isGracefulShutdownEnabled(), server.getStopTimeout()/1000d));
+            long start = System.currentTimeMillis();
             server.stop();
-            log.log(Level.INFO, "Server shutdown completed");
+            log.log(Level.INFO, String.format("Jetty server shutdown completed in %.3f seconds",
+                    (System.currentTimeMillis()-start)/1000D));
         } catch (final Exception e) {
-            log.log(Level.SEVERE, "Server shutdown threw an unexpected exception.", e);
+            log.log(Level.SEVERE, "Jetty server shutdown threw an unexpected exception.", e);
         }
 
         metricsReporter.shutdown();
@@ -258,13 +223,37 @@ public class JettyHttpServer extends AbstractServerProvider {
 
     Server server() { return server; }
 
-    private StatisticsHandler newStatisticsHandler() {
+    private ServletContextHandler newServletHandler(ServletHolder servlet) {
+        var h = new ServletContextHandler(ServletContextHandler.NO_SECURITY | ServletContextHandler.NO_SESSIONS);
+        h.setContextPath("/");
+        h.setDisplayName(getDisplayName(listenedPorts));
+        h.addServlet(servlet, "/*");
+        return h;
+    }
+
+    private static ContextHandler newConnectorContextHandler(JDiscServerConnector c) {
+        return new ConnectorSpecificContextHandler(c);
+    }
+
+    private static HealthCheckProxyHandler newHealthCheckProxyHandler(List<JDiscServerConnector> connectors) {
+        return new HealthCheckProxyHandler(connectors);
+    }
+
+    private static TlsClientAuthenticationEnforcer newTlsClientAuthEnforcerHandler(ConnectorConfig cfg) {
+        return new TlsClientAuthenticationEnforcer(cfg.tlsClientAuthEnforcer());
+    }
+
+    private static HttpResponseStatisticsCollector newResponseStatisticsHandler(ServerConfig cfg) {
+        return new HttpResponseStatisticsCollector(cfg.metric());
+    }
+
+    private static StatisticsHandler newGenericStatisticsHandler() {
         StatisticsHandler statisticsHandler = new StatisticsHandler();
         statisticsHandler.statsReset();
         return statisticsHandler;
     }
 
-    private GzipHandler newGzipHandler(ServerConfig serverConfig) {
+    private static GzipHandler newGzipHandler(ServerConfig serverConfig) {
         GzipHandler gzipHandler = new GzipHandlerWithVaryHeaderFixed();
         gzipHandler.setCompressionLevel(serverConfig.responseCompressionLevel());
         gzipHandler.setInflateBufferSize(8 * 1024);

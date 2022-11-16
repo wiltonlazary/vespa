@@ -5,6 +5,7 @@ import com.yahoo.cloud.config.LogforwarderConfig;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.model.AbstractService;
 import com.yahoo.vespa.model.PortAllocBridge;
+import java.util.Optional;
 
 public class LogForwarder extends AbstractService implements LogforwarderConfig.Producer {
 
@@ -65,7 +66,8 @@ public class LogForwarder extends AbstractService implements LogforwarderConfig.
     /**
      * @return The command used to start LogForwarder
      */
-    public String getStartupCommand() { return "exec $ROOT/bin/vespa-logforwarder-start -c " + getConfigId(); }
+    @Override
+    public Optional<String> getStartupCommand() { return Optional.of("exec $ROOT/bin/vespa-logforwarder-start -c " + getConfigId()); }
 
     @Override
     public void getConfig(LogforwarderConfig.Builder builder) {
@@ -77,6 +79,16 @@ public class LogForwarder extends AbstractService implements LogforwarderConfig.
         if (config.phoneHomeInterval != null) {
             builder.phoneHomeInterval(config.phoneHomeInterval);
         }
+    }
+
+    @Override
+    public Optional<String> getPreShutdownCommand() {
+        var builder = new LogforwarderConfig.Builder();
+        getConfig(builder);
+        var cfg = new LogforwarderConfig(builder);
+        var home = cfg.splunkHome();
+        String cmd = "$ROOT/bin/vespa-logforwarder-start -S -c " + getConfigId();
+        return Optional.of(cmd);
     }
 
 }

@@ -20,9 +20,7 @@ import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.node.Allocation;
 import com.yahoo.vespa.hosted.provision.node.ClusterId;
-import com.yahoo.vespa.hosted.provision.node.History;
 import com.yahoo.vespa.hosted.provision.persistence.CacheStats;
-import com.yahoo.vespa.orchestrator.Orchestrator;
 import com.yahoo.vespa.service.monitor.ServiceModel;
 import com.yahoo.vespa.service.monitor.ServiceMonitor;
 
@@ -47,20 +45,17 @@ public class MetricsReporter extends NodeRepositoryMaintainer {
 
     private final Set<Pair<Metric.Context, String>> nonZeroMetrics = new HashSet<>();
     private final Metric metric;
-    private final Orchestrator orchestrator;
     private final ServiceMonitor serviceMonitor;
     private final Map<Map<String, String>, Metric.Context> contextMap = new HashMap<>();
     private final Supplier<Integer> pendingRedeploymentsSupplier;
 
     MetricsReporter(NodeRepository nodeRepository,
                     Metric metric,
-                    Orchestrator orchestrator,
                     ServiceMonitor serviceMonitor,
                     Supplier<Integer> pendingRedeploymentsSupplier,
                     Duration interval) {
         super(nodeRepository, interval, metric);
         this.metric = metric;
-        this.orchestrator = orchestrator;
         this.serviceMonitor = serviceMonitor;
         this.pendingRedeploymentsSupplier = pendingRedeploymentsSupplier;
     }
@@ -201,18 +196,13 @@ public class MetricsReporter extends NodeRepositoryMaintainer {
 
         metric.set("wantToRetire", node.status().wantToRetire() ? 1 : 0, context);
         metric.set("wantToDeprovision", node.status().wantToDeprovision() ? 1 : 0, context);
-        metric.set("failReport", NodeFailer.reasonsToFailParentHost(node).isEmpty() ? 0 : 1, context);
-
-        if (node.type().isHost()) {
-            metric.set("wantToEncrypt", node.reports().getReport("wantToEncrypt").isPresent() ? 1 : 0, context);
-            metric.set("diskEncrypted", node.reports().getReport("diskEncrypted").isPresent() ? 1 : 0, context);
-        }
+        metric.set("failReport", NodeFailer.reasonsToFailHost(node).isEmpty() ? 0 : 1, context);
 
         HostName hostname = new HostName(node.hostname());
 
         serviceModel.getApplication(hostname)
                 .map(ApplicationInstance::reference)
-                .map(reference -> orchestrator.getHostInfo(reference, hostname))
+                .map(reference -> nodeRepository().orchestrator().getHostInfo(reference, hostname))
                 .ifPresent(info -> {
                     int suspended = info.status().isSuspended() ? 1 : 0;
                     metric.set("suspended", suspended, context);
@@ -252,7 +242,7 @@ public class MetricsReporter extends NodeRepositoryMaintainer {
             boolean down = NodeHealthTracker.allDown(services);
             metric.set("nodeFailerBadNode", (down ? 1 : 0), context);
 
-            boolean nodeDownInNodeRepo = node.history().event(History.Event.Type.down).isPresent();
+            boolean nodeDownInNodeRepo = node.isDown();
             metric.set("downInNodeRepo", (nodeDownInNodeRepo ? 1 : 0), context);
         }
 
@@ -347,7 +337,7 @@ public class MetricsReporter extends NodeRepositoryMaintainer {
                         (applicationId, applicationNodes) -> {
                             var allocatedCapacity = applicationNodes.stream()
                                     .map(node -> node.allocation().get().requestedResources().justNumbers())
-                                    .reduce(new NodeResources(0, 0, 0, 0, any), NodeResources::add);
+                                    .reduce(new NodeResources(0, 0, 0, 0, any).justNumbers(), NodeResources::add);
 
                             var context = getContext(dimensions(applicationId));
 
@@ -369,7 +359,7 @@ public class MetricsReporter extends NodeRepositoryMaintainer {
 
     static Map<String, String> dimensions(ApplicationId application, ClusterSpec.Id cluster) {
         Map<String, String> dimensions = new HashMap<>(dimensions(application));
-        dimensions.put("clusterId", cluster.value());
+        dimensions.put("clusterid", cluster.value());
         return dimensions;
     }
 
@@ -383,14 +373,14 @@ public class MetricsReporter extends NodeRepositoryMaintainer {
         return nodes.hosts().state(State.active).asList().stream()
                     .map(host -> host.flavor().resources())
                     .map(NodeResources::justNumbers)
-                    .reduce(new NodeResources(0, 0, 0, 0, any), NodeResources::add);
+                    .reduce(new NodeResources(0, 0, 0, 0, any).justNumbers(), NodeResources::add);
     }
 
     private static NodeResources getFreeCapacityTotal(NodeList nodes) {
         return nodes.hosts().state(State.active).asList().stream()
                     .map(n -> freeCapacityOf(nodes, n))
                     .map(NodeResources::justNumbers)
-                    .reduce(new NodeResources(0, 0, 0, 0, any), NodeResources::add);
+                    .reduce(new NodeResources(0, 0, 0, 0, any).justNumbers(), NodeResources::add);
     }
 
     private static NodeResources freeCapacityOf(NodeList nodes, Node host) {

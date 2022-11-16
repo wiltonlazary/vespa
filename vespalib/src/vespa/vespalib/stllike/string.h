@@ -111,6 +111,7 @@ public:
         }
         return npos;
     }
+
     /**
      * Find the last occurrence of a substring, starting at e and
      * searching in reverse order.
@@ -126,6 +127,17 @@ public:
         int diff(memcmp(_s, s, std::min(sz, size())));
         return (diff != 0) ? diff : (size() - sz);
     }
+
+    /**
+     * Returns true iff input string is a prefix of this string.
+     */
+    [[nodiscard]] bool starts_with(stringref prefix) const noexcept {
+        if (prefix.size() > size()) {
+            return false;
+        }
+        return (memcmp(data(), prefix.data(), prefix.size()) == 0);
+    }
+
     const char & operator [] (size_t i) const { return _s[i]; }
     operator std::string () const { return std::string(_s, _sz); }
     bool operator  <        (const char * s) const noexcept { return compare(s, strlen(s)) < 0; }
@@ -254,6 +266,16 @@ public:
      */
     void pop_back() {
       _resize(size() - 1);
+    }
+
+    /**
+     * Returns true iff input string is a prefix of this string.
+     */
+    [[nodiscard]] bool starts_with(stringref prefix) const noexcept {
+        if (prefix.size() > size()) {
+            return false;
+        }
+        return (memcmp(buffer(), prefix.data(), prefix.size()) == 0);
     }
 
     /**
@@ -572,7 +594,9 @@ private:
     void init(const void *s) noexcept {
         if (__builtin_expect(_sz < StackSize, true)) {
             _bufferSize = StackSize;
-            memcpy(_stack, s, _sz);
+            if (s) {
+                memcpy(_stack, s, _sz);
+            }
             _stack[_sz] = '\0';
         } else {
             init_slower(s);
@@ -630,7 +654,7 @@ template<uint32_t StackSize>
 small_string<StackSize>
 operator + (const char * a, const small_string<StackSize> & b);
 
-#if __cplusplus < 201709L || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ < 10)
+#if __cplusplus < 201709L
 template<typename T, uint32_t StackSize>
 bool
 operator == (const T& a, const small_string<StackSize>& b) noexcept
@@ -674,6 +698,9 @@ inline bool ends_with(stringref text, stringref key) {
     }
     return false;
 }
+
+// returns a reference to a shared empty string
+const string &empty_string();
 
 /**
  * Utility function to format an unsigned integer into a new

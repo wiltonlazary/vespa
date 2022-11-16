@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.logserver.protocol;
 
 import ai.vespa.logserver.protocol.protobuf.LogProtocol;
@@ -79,6 +79,7 @@ class ProtobufSerialization {
                 .build();
     }
 
+    @SuppressWarnings("deprecation")
     private static Level fromLogMessageLevel(LogProtocol.LogMessage.Level level) {
         switch (level) {
             case FATAL:
@@ -104,6 +105,7 @@ class ProtobufSerialization {
         }
     }
 
+    @SuppressWarnings("deprecation")
     private static LogProtocol.LogMessage.Level toLogMessageLevel(Level level) {
         Level vespaLevel = LogLevel.getVespaLogLevel(level);
         if (vespaLevel.equals(LogLevel.FATAL)) {

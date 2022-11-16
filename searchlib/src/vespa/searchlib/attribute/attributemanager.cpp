@@ -1,14 +1,16 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "attributemanager.h"
 #include "attribute_read_guard.h"
 #include "attributecontext.h"
 #include "attributefactory.h"
-#include "attributemanager.h"
 #include "attrvector.h"
 #include "interlock.h"
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
 #include <vespa/vespalib/util/exceptions.h>
 #include <condition_variable>
+#include <set>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.attributemanager");
@@ -119,16 +121,6 @@ uint64_t AttributeManager::getMemoryFootprint() const
     return sum;
 }
 
-bool AttributeManager::hasReaders() const
-{
-    for(AttributeMap::const_iterator it(_attributes.begin()), mt(_attributes.end()); it != mt; it++) {
-        if (it->second->hasReaders())
-            return true;
-    }
-
-    return false;
-}
-
 const AttributeManager::VectorHolder *
 AttributeManager::findAndLoadAttribute(const string & name) const
 {
@@ -214,7 +206,7 @@ AttributeManager::createBaseFileName(const string & name) const
         dir += "/";
         dir += getSnapshot().dirName;
     }
-    return AttributeVector::BaseName(dir, name);
+    return attribute::BaseName(dir, name);
 }
 
 bool

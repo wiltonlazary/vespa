@@ -3,6 +3,7 @@ package ai.vespa.rankingexpression.importer.operations;
 
 import ai.vespa.rankingexpression.importer.DimensionRenamer;
 import ai.vespa.rankingexpression.importer.OrderedTensorType;
+import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.searchlib.rankingexpression.evaluation.TensorValue;
 import com.yahoo.searchlib.rankingexpression.evaluation.Value;
 import com.yahoo.tensor.TensorType;
@@ -36,7 +37,7 @@ public class OnnxConstant extends IntermediateOperation {
     }
 
     @Override
-    protected TensorFunction lazyGetFunction() {
+    protected TensorFunction<Reference> lazyGetFunction() {
         return null;  // will be added by function() since this is constant.
     }
 
@@ -83,7 +84,7 @@ public class OnnxConstant extends IntermediateOperation {
         }
         if (value.isEmpty()) {
             throw new IllegalArgumentException("Node '" + name + "' of type " +
-                    "constant has missing or non-supported 'value' attribute");
+                                               "constant has missing or non-supported 'value' attribute");
         }
         return value.get();
     }

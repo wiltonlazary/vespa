@@ -9,6 +9,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/vespa-engine/vespa/client/go/util"
+	"github.com/vespa-engine/vespa/client/go/vespa"
 )
 
 var DefaultDeployment Deployment
@@ -16,12 +19,12 @@ var DefaultDeployment Deployment
 func init() {
 	defaultDeploymentRaw := `<deployment version="1.0">
   <prod>
-    <region active="true">aws-us-east-1c</region>
+    <region>aws-us-east-1c</region>
   </prod>
 </deployment>`
 	d, err := ReadDeployment(strings.NewReader(defaultDeploymentRaw))
 	if err != nil {
-		panic(err)
+		util.JustExitWith(err)
 	}
 	DefaultDeployment = d
 }
@@ -44,8 +47,7 @@ type Prod struct {
 }
 
 type Region struct {
-	Name   string `xml:",chardata"`
-	Active bool   `xml:"active,attr"`
+	Name string `xml:",chardata"`
 }
 
 func (d Deployment) String() string { return d.rawXML.String() }
@@ -142,14 +144,33 @@ func ReadServices(r io.Reader) (Services, error) {
 func Regions(names ...string) []Region {
 	var regions []Region
 	for _, z := range names {
-		regions = append(regions, Region{Name: z, Active: true})
+		regions = append(regions, Region{Name: z})
 	}
 	return regions
 }
 
 // ParseResources parses nodes resources from string s.
 func ParseResources(s string) (Resources, error) {
-	parts := strings.Split(s, ",")
+	var parts []string
+	inRange := false
+	var sb strings.Builder
+	for _, c := range s {
+		if inRange {
+			if c == ']' {
+				inRange = false
+			}
+		} else {
+			if c == '[' {
+				inRange = true
+			} else if c == ',' {
+				parts = append(parts, sb.String())
+				sb.Reset()
+				continue
+			}
+		}
+		sb.WriteRune(c)
+	}
+	parts = append(parts, sb.String())
 	if len(parts) != 3 {
 		return Resources{}, fmt.Errorf("invalid resources: %q", s)
 	}
@@ -171,36 +192,44 @@ func ParseResources(s string) (Resources, error) {
 // ParseNodeCount parses a node count range from string s.
 func ParseNodeCount(s string) (int, int, error) {
 	parseErr := fmt.Errorf("invalid node count: %q", s)
+	min, max := 0, 0
 	n, err := strconv.Atoi(s)
 	if err == nil {
-		return n, n, nil
-	}
-	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		min = n
+		max = n
+	} else if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
 		parts := strings.Split(s[1:len(s)-1], ",")
 		if len(parts) != 2 {
 			return 0, 0, parseErr
 		}
-		min, err := strconv.Atoi(parts[0])
+		min, err = strconv.Atoi(strings.TrimSpace(parts[0]))
 		if err != nil {
 			return 0, 0, parseErr
 		}
-		max, err := strconv.Atoi(parts[1])
+		max, err = strconv.Atoi(strings.TrimSpace(parts[1]))
 		if err != nil {
 			return 0, 0, parseErr
 		}
-		return min, max, nil
+	} else {
+		return 0, 0, parseErr
 	}
-	return 0, 0, parseErr
+
+	if min <= 0 || min > max {
+		return 0, 0, parseErr
+	}
+	return min, max, nil
 }
 
 // IsProdRegion returns whether string s is a valid production region.
-func IsProdRegion(s string, system string) bool {
-	if system == "publiccd" {
+func IsProdRegion(s string, system vespa.System) bool {
+	// TODO: Add support for cd and main systems
+	if system.Name == vespa.PublicCDSystem.Name {
 		return s == "aws-us-east-1c"
 	}
 	switch s {
 	case "aws-us-east-1c", "aws-us-west-2a",
-		"aws-eu-west-1a", "aws-ap-northeast-1a":
+		"aws-eu-west-1a", "aws-ap-northeast-1a",
+		"gcp-us-central1-f":
 		return true
 	}
 	return false
@@ -208,10 +237,10 @@ func IsProdRegion(s string, system string) bool {
 
 func parseResource(field, s string) (string, error) {
 	parts := strings.SplitN(s, "=", 2)
-	if len(parts) != 2 || parts[0] != field {
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) != field {
 		return "", fmt.Errorf("invalid value for %s field: %q", field, s)
 	}
-	return parts[1], nil
+	return strings.TrimSpace(parts[1]), nil
 }
 
 // ReplaceRaw finds all elements of name in rawXML and replaces their contents with value.

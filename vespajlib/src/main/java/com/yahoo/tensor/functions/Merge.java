@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.tensor.functions;
 
 import com.google.common.collect.ImmutableList;
@@ -70,11 +70,6 @@ public class Merge<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETY
     }
 
     @Override
-    public String toString(ToStringContext context) {
-        return "merge(" + argumentA.toString(context) + ", " + argumentB.toString(context) + ", " + merger + ")";
-    }
-
-    @Override
     public TensorType type(TypeContext<NAMETYPE> context) {
         return outputType(argumentA.type(context), argumentB.type(context));
     }
@@ -86,6 +81,15 @@ public class Merge<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETY
         TensorType mergedType = outputType(a.type(), b.type());
         return evaluate(a, b, mergedType, merger);
     }
+
+
+    @Override
+    public String toString(ToStringContext<NAMETYPE> context) {
+        return "merge(" + argumentA.toString(context) + ", " + argumentB.toString(context) + ", " + merger + ")";
+    }
+
+    @Override
+    public int hashCode() { return Objects.hash("merge", argumentA, argumentB, merger); }
 
     static Tensor evaluate(Tensor a, Tensor b, TensorType mergedType, DoubleBinaryOperator combinator) {
         // Choose merge algorithm

@@ -13,6 +13,7 @@ import com.yahoo.vespa.hosted.provision.applications.Application;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.time.Duration;
 
 /**
  * A class which can take a partial JSON node/v2 application JSON structure and apply it to an application object.
@@ -33,7 +34,8 @@ public class ApplicationPatcher implements AutoCloseable {
         } catch (IOException e) {
             throw new UncheckedIOException("Error reading request body", e);
         }
-        this.lock = nodeRepository.nodes().lock(applicationId);
+        // Use same timeout for acquiring lock as client timeout for patch request
+        this.lock = nodeRepository.applications().lock(applicationId, Duration.ofSeconds(30));
         try {
             this.application = nodeRepository.applications().require(applicationId);
         }
@@ -47,7 +49,7 @@ public class ApplicationPatcher implements AutoCloseable {
     public Application apply() {
         inspector.traverse((String name, Inspector value) -> {
             try {
-                application = applyField(application, name, value, inspector);
+                application = applyField(application, name, value);
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Could not set field '" + name + "'", e);
             }
@@ -65,15 +67,13 @@ public class ApplicationPatcher implements AutoCloseable {
         lock.close();
     }
 
-    private Application applyField(Application application, String name, Inspector value, Inspector root) {
-        switch (name) {
-            case "currentReadShare" :
-                return application.with(application.status().withCurrentReadShare(asDouble(value)));
-            case "maxReadShare" :
-                return application.with(application.status().withMaxReadShare(asDouble(value)));
-            default :
-                throw new IllegalArgumentException("Could not apply field '" + name + "' on an application: No such modifiable field");
-        }
+    private Application applyField(Application application, String name, Inspector value) {
+        return switch (name) {
+            case "currentReadShare" -> application.with(application.status().withCurrentReadShare(asDouble(value)));
+            case "maxReadShare" -> application.with(application.status().withMaxReadShare(asDouble(value)));
+            default -> throw new IllegalArgumentException("Could not apply field '" + name +
+                                                          "' on an application: No such modifiable field");
+        };
     }
 
     private Double asDouble(Inspector field) {

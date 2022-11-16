@@ -11,107 +11,74 @@
 
 namespace vespalib {
 
-/**
- * @brief Helper class
- *
- * Helper to enable auto_arr instances as parameters and return values.
- * You should not use this class directly.
- **/
-template<class OtherArray> struct auto_arr_ref {
-    OtherArray* _array;
-    auto_arr_ref(OtherArray* a) : _array(a) {}
-};
+inline void *memcpy_safe(void *dest, const void *src, size_t n) noexcept {
+    if (n == 0) [[unlikely]] {
+        return dest;
+    }
+    return memcpy(dest, src, n);
+}
+
+inline void *memmove_safe(void *dest, const void *src, size_t n) noexcept {
+    if (n == 0) [[unlikely]] {
+        return dest;
+    }
+    return memmove(dest, src, n);
+}
+
+inline int memcmp_safe(const void *s1, const void *s2, size_t n) noexcept {
+    if (n == 0) [[unlikely]] {
+        return 0;
+    }
+    return memcmp(s1, s2, n);
+}
 
 /**
- * @brief std::unique_ptr for arrays
- *
- * This class behaves just like unique_ptr, but wraps a pointer allocated
- * with new[]; so it will call delete[] when doing cleanup.
- */
-template <class Array> class auto_arr {
+ * Wrapper class that enables unaligned access to trivial values.
+ **/
+template <typename T>
+class Unaligned {
 private:
-    Array* _array; // actual owned array (if any)
+    char _data[sizeof(T)];
 
 public:
-    /**
-     * @brief constructor from pointer
-     *
-     * Note: the pointer must have been allocated with new[]
-     **/
-    explicit auto_arr(Array* a = 0) throw() : _array(a) {}
+    Unaligned() = delete;
+    Unaligned(const Unaligned &) = delete;
+    Unaligned(Unaligned &&) = delete;
 
-    /**
-     * @brief "copy" contructor
-     *
-     * Note: non-const parameter; transfers ownership
-     * instead of copying.
-     **/
-    auto_arr(auto_arr& a) throw() : _array(a.release()) {}
+    Unaligned &operator=(const Unaligned &) = default;
+    Unaligned &operator=(Unaligned &&) = default;
 
-    /**
-     * @brief assignment operator
-     *
-     * Note: non-const parameter; transfers ownership
-     * instead of copying.
-     **/
-    auto_arr& operator=(auto_arr& a) throw() {
-        reset(a.release());
+    static_assert(std::is_trivial_v<T>);
+    static_assert(alignof(T) > 1, "value is always aligned");
+
+    constexpr static Unaligned &at(void *p) noexcept {
+        return *reinterpret_cast<Unaligned*>(p);
+    }
+    constexpr static const Unaligned &at(const void *p) noexcept {
+        return *reinterpret_cast<const Unaligned*>(p);
+    }
+
+    constexpr static Unaligned *ptr(void *p) noexcept {
+        return reinterpret_cast<Unaligned*>(p);
+    }
+    constexpr static const Unaligned *ptr(const void *p) noexcept {
+        return reinterpret_cast<const Unaligned*>(p);
+    }
+
+    T read() const noexcept {
+        T value;
+        static_assert(sizeof(_data) == sizeof(value));
+        memcpy(&value, _data, sizeof(value));
+        return value;
+    }
+    void write(const T &value) noexcept {
+        static_assert(sizeof(_data) == sizeof(value));
+        memcpy(_data, &value, sizeof(value));
+    }
+    operator T () const noexcept { return read(); }
+    Unaligned &operator=(const T &value) noexcept {
+        write(value);
         return *this;
-    }
-
-    /** @brief destructor, calls delete[] on owned pointer */
-    ~auto_arr() throw() { delete[] _array; }
-
-    /** @brief value access */
-    Array& operator [] (size_t i) const throw() { return _array[i]; }
-
-    /** @brief access underlying array */
-    Array* get() const throw() { return _array; }
-
-    /**
-     * @brief release ownership
-     *
-     * The caller of release() must take responsibility for eventually calling delete[].
-     * @return previously owned pointer
-     **/
-    Array* release() throw() {
-        Array* tmp = _array;
-        _array = 0;
-        return tmp;
-    }
-
-    /**
-     * @brief reset value
-     *
-     * Behaves like destruct then construct.
-     **/
-    void reset(Array* a = 0) throw() {
-        delete[] _array;
-        _array = a;
-    }
-
-    /**
-     * @brief special implicit conversion from auxiliary type
-     * to enable parameter / return value passing
-     **/
-    auto_arr(auto_arr_ref<Array> ref) throw()
-        : _array(ref._array) {}
-
-    /**
-     * @brief special assignment from auxiliary type
-     * to enable parameter / return value passing
-     **/
-    auto_arr& operator=(auto_arr_ref<Array> ref) throw() {
-        reset(ref._array);
-        return *this;
-    }
-
-    /**
-     * @brief special implicit conversion to auxiliary type
-     * to enable parameter / return value passing
-     **/
-    operator auto_arr_ref<Array>() throw() {
-        return auto_arr_ref<Array>(this->release());
     }
 };
 
@@ -130,51 +97,25 @@ public:
      *
      * Note: the pointer must have been allocated with malloc()
      **/
-    MallocAutoPtr(void *p=nullptr) :  _p(p) { }
+    MallocAutoPtr(void *p=nullptr) noexcept :  _p(p) { }
 
     /** @brief destructor, calls free() on owned pointer */
     ~MallocAutoPtr() { cleanup(); }
 
-    MallocAutoPtr(MallocAutoPtr && rhs) : _p(rhs._p) { rhs._p = nullptr; }
-    MallocAutoPtr & operator = (MallocAutoPtr && rhs) {
+    MallocAutoPtr(MallocAutoPtr && rhs) noexcept : _p(rhs._p) { rhs._p = nullptr; }
+    MallocAutoPtr & operator = (MallocAutoPtr && rhs) noexcept {
         cleanup();
         std::swap(_p, rhs._p);
         return *this;
     }
 
-    /**
-     * @brief "copy" contructor
-     *
-     * Note: non-const parameter; transfers ownership
-     * instead of copying.
-     **/
-    MallocAutoPtr(const MallocAutoPtr & rhs)
-        : _p(rhs._p) { const_cast<MallocAutoPtr &>(rhs)._p = nullptr; }
+    MallocAutoPtr(const MallocAutoPtr & rhs) = delete;
+    MallocAutoPtr  & operator = (const MallocAutoPtr & rhs) = delete;
 
-    /**
-     * @brief assignment operator
-     *
-     * Note: non-const parameter; transfers ownership
-     * instead of copying.
-     **/
-    MallocAutoPtr  & operator = (const MallocAutoPtr & rhs) {
-        if (this != &rhs) {
-            MallocAutoPtr tmp(rhs);
-            swap(tmp);
-        }
-        return *this;
-    }
-
-    /** @brief swap contents */
-    void swap(MallocAutoPtr & rhs) { std::swap(_p, rhs._p); }
-
-    /** @brief value access */
-    const void * get() const { return _p; }
-
-    /** @brief value access */
-    void * get()             { return _p; }
+    const void * get() const noexcept { return _p; }
+    void * get()             noexcept { return _p; }
 private:
-    void cleanup() {
+    void cleanup() noexcept {
         if (_p) {
             free(_p);
             _p = nullptr;
@@ -227,9 +168,7 @@ public:
         if (_p == nullptr) {
             _sz = 0;
         }
-        if (_sz != 0) {
-            memcpy(_p, rhs.get(), _sz);
-        }
+        memcpy_safe(_p, rhs.get(), _sz);
     }
 
     /**

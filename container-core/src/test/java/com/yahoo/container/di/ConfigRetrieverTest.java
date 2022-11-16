@@ -9,22 +9,19 @@ import com.yahoo.container.di.ConfigRetriever.BootstrapConfigs;
 import com.yahoo.container.di.ConfigRetriever.ComponentsConfigs;
 import com.yahoo.container.di.ConfigRetriever.ConfigSnapshot;
 import com.yahoo.vespa.config.ConfigKey;
-import org.hamcrest.Matchers;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Ignore;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  *
@@ -36,28 +33,27 @@ public class ConfigRetrieverTest {
 
     private DirConfigSource dirConfigSource = null;
 
-    @Before
-    public void setup() {
-        dirConfigSource = new DirConfigSource("ConfigRetrieverTest-");
-    }
+    @TempDir
+    File tmpDir;
 
-    @After
-    public void cleanup() {
-        dirConfigSource.cleanup();
+    @BeforeEach
+    public void setup() {
+        dirConfigSource = new DirConfigSource(tmpDir);
     }
 
     @Test
-    public void require_that_bootstrap_configs_come_first() {
+    void require_that_bootstrap_configs_come_first() {
         writeConfigs();
         ConfigRetriever retriever = createConfigRetriever();
         ConfigSnapshot bootstrapConfigs = retriever.getConfigs(Collections.emptySet(), 0, true);
 
-        assertThat(bootstrapConfigs, Matchers.instanceOf(BootstrapConfigs.class));
+        assertTrue(bootstrapConfigs instanceof BootstrapConfigs);
+        retriever.shutdown();
     }
 
     @Test
     @SuppressWarnings("unused")
-    public void require_that_components_comes_after_bootstrap() {
+    void require_that_components_comes_after_bootstrap() {
         writeConfigs();
         ConfigRetriever retriever = createConfigRetriever();
         ConfigSnapshot bootstrapConfigs = retriever.getConfigs(Collections.emptySet(), 0, true);
@@ -66,20 +62,16 @@ public class ConfigRetrieverTest {
         ConfigSnapshot componentsConfigs = retriever.getConfigs(Collections.singleton(testConfigKey), 0, true);
 
         if (componentsConfigs instanceof ComponentsConfigs) {
-            assertThat(componentsConfigs.size(), is(3));
+            assertEquals(3, componentsConfigs.size());
         } else {
             fail("ComponentsConfigs has unexpected type: " + componentsConfigs);
         }
+        retriever.shutdown();
     }
 
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
-
-    @Ignore
+    @Disabled
     @SuppressWarnings("unused")
     public void require_exception_upon_modified_components_keys_without_bootstrap() {
-        expectedException.expect(IllegalArgumentException.class);
-
         writeConfigs();
         ConfigRetriever retriever = createConfigRetriever();
         ConfigKey<? extends ConfigInstance> testConfigKey = new ConfigKey<>(TestConfig.class, dirConfigSource.configId());
@@ -88,15 +80,21 @@ public class ConfigRetrieverTest {
         Set<ConfigKey<? extends ConfigInstance>> keys = new HashSet<>();
         keys.add(testConfigKey);
         keys.add(new ConfigKey<>(TestConfig.class, ""));
-        retriever.getConfigs(keys, 0, true);
+        try {
+            retriever.getConfigs(keys, 0, true);
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertEquals("", e.getMessage());
+        }
     }
 
     @Test
-    public void require_that_empty_components_keys_after_bootstrap_returns_components_configs() {
+    void require_that_empty_components_keys_after_bootstrap_returns_components_configs() {
         writeConfigs();
         ConfigRetriever retriever = createConfigRetriever();
-        assertThat(retriever.getConfigs(Collections.emptySet(), 0, true), instanceOf(BootstrapConfigs.class));
-        assertThat(retriever.getConfigs(Collections.emptySet(), 0, true), instanceOf(ComponentsConfigs.class));
+        assertTrue(retriever.getConfigs(Collections.emptySet(), 0, true) instanceof BootstrapConfigs);
+        assertTrue(retriever.getConfigs(Collections.emptySet(), 0, true) instanceof ComponentsConfigs);
+        retriever.shutdown();
     }
 
     public void writeConfigs() {

@@ -6,13 +6,11 @@ import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.searchlib.rankingexpression.evaluation.DoubleValue;
 import ai.vespa.rankingexpression.importer.DimensionRenamer;
 import com.yahoo.searchlib.rankingexpression.evaluation.Value;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticNode;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticOperator;
+import com.yahoo.searchlib.rankingexpression.rule.OperationNode;
+import com.yahoo.searchlib.rankingexpression.rule.Operator;
 import com.yahoo.searchlib.rankingexpression.rule.ConstantNode;
 import com.yahoo.searchlib.rankingexpression.rule.EmbracedNode;
 import com.yahoo.searchlib.rankingexpression.rule.ExpressionNode;
-import com.yahoo.searchlib.rankingexpression.rule.Function;
-import com.yahoo.searchlib.rankingexpression.rule.FunctionNode;
 import com.yahoo.searchlib.rankingexpression.rule.ReferenceNode;
 import com.yahoo.searchlib.rankingexpression.rule.TensorFunctionNode;
 import com.yahoo.tensor.Tensor;
@@ -110,12 +108,12 @@ public class Reshape extends IntermediateOperation {
     }
 
     @Override
-    protected TensorFunction lazyGetFunction() {
+    protected TensorFunction<Reference> lazyGetFunction() {
         if ( ! inputs.stream().map(IntermediateOperation::type).allMatch(Optional::isPresent) ) return null;
         if ( ! inputs.stream().map(IntermediateOperation::function).allMatch(Optional::isPresent) ) return null;
 
         OrderedTensorType inputType = inputs.get(0).type().get();
-        TensorFunction inputFunction = inputs.get(0).function().get();
+        TensorFunction<Reference> inputFunction = inputs.get(0).function().get();
         return reshape(inputFunction, inputType, type);
     }
 
@@ -129,7 +127,7 @@ public class Reshape extends IntermediateOperation {
         return new Reshape(modelName(), name(), inputs, attributeMap);
     }
 
-    public TensorFunction reshape(TensorFunction inputFunction, OrderedTensorType inputType, OrderedTensorType outputType) {
+    public TensorFunction<Reference> reshape(TensorFunction<Reference> inputFunction, OrderedTensorType inputType, OrderedTensorType outputType) {
         if ( ! OrderedTensorType.tensorSize(inputType.type()).equals(OrderedTensorType.tensorSize(outputType.type())))
             throw new IllegalArgumentException("New and old shape of tensor must have the same size when reshaping");
 
@@ -159,13 +157,13 @@ public class Reshape extends IntermediateOperation {
                 inputDimensionExpression = new EmbracedNode(new ConstantNode(DoubleValue.zero));
             } else if (dim == (inputType.rank() - 1)) {
                 ExpressionNode size = new ConstantNode(new DoubleValue(inputDimensionSize));
-                ExpressionNode div = new ArithmeticNode(unrolled, ArithmeticOperator.MODULO, size);
+                ExpressionNode div = new OperationNode(unrolled, Operator.modulo, size);
                 inputDimensionExpression = new EmbracedNode(div);
             } else {
                 ExpressionNode size = new ConstantNode(new DoubleValue(innerSize));
                 ExpressionNode previousSize = new ConstantNode(new DoubleValue(previousInnerSize));
-                ExpressionNode mod = new ArithmeticNode(unrolled, ArithmeticOperator.MODULO, previousSize);
-                ExpressionNode div = new ArithmeticNode(new EmbracedNode(mod), ArithmeticOperator.DIVIDE, size);
+                ExpressionNode mod = new OperationNode(unrolled, Operator.modulo, previousSize);
+                ExpressionNode div = new OperationNode(new EmbracedNode(mod), Operator.divide, size);
                 inputDimensionExpression = new EmbracedNode(div);
             }
             dimensionValues.add(new com.yahoo.tensor.functions.Slice.DimensionValue<>(Optional.of(inputDimensionName), wrapScalar(inputDimensionExpression)));
@@ -183,21 +181,21 @@ public class Reshape extends IntermediateOperation {
             return new ConstantNode(DoubleValue.zero);
 
         List<ExpressionNode> children = new ArrayList<>();
-        List<ArithmeticOperator> operators = new ArrayList<>();
+        List<Operator> operators = new ArrayList<>();
         int size = 1;
         for (int i = type.dimensions().size() - 1; i >= 0; --i) {
             TensorType.Dimension dimension = type.dimensions().get(i);
             children.add(0, new ReferenceNode(dimension.name()));
             if (size > 1) {
-                operators.add(0, ArithmeticOperator.MULTIPLY);
+                operators.add(0, Operator.multiply);
                 children.add(0, new ConstantNode(new DoubleValue(size)));
             }
             size *= OrderedTensorType.dimensionSize(dimension);
             if (i > 0) {
-                operators.add(0, ArithmeticOperator.PLUS);
+                operators.add(0, Operator.plus);
             }
         }
-        return new ArithmeticNode(children, operators);
+        return new OperationNode(children, operators);
     }
 
     @Override

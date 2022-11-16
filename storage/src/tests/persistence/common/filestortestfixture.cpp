@@ -51,12 +51,9 @@ FileStorTestFixture::TearDown()
 void
 FileStorTestFixture::createBucket(const document::BucketId& bid)
 {
-    spi::Context context(spi::Priority(0), spi::Trace::TraceLevel(0));
-    _node->getPersistenceProvider().createBucket(makeSpiBucket(bid), context);
-
+    _node->getPersistenceProvider().createBucket(makeSpiBucket(bid));
     StorBucketDatabase::WrappedEntry entry(
-            _node->getStorageBucketDatabase().get(bid, "foo",
-                    StorBucketDatabase::CREATE_IF_NONEXISTING));
+            _node->getStorageBucketDatabase().get(bid, "foo", StorBucketDatabase::CREATE_IF_NONEXISTING));
     entry->info = api::BucketInfo(0, 0, 0, 0, 0, true, false);
     entry.write();
 }
@@ -76,7 +73,7 @@ FileStorTestFixture::TestFileStorComponents::TestFileStorComponents(
       manager(nullptr)
 {
     injector.inject(top);
-    auto fsm = std::make_unique<FileStorManager>(fixture._config->getConfigId(), fixture._node->getPersistenceProvider(),
+    auto fsm = std::make_unique<FileStorManager>(config::ConfigUri(fixture._config->getConfigId()), fixture._node->getPersistenceProvider(),
                                                  fixture._node->getComponentRegister(), *fixture._node, fixture._node->get_host_info());
     manager = fsm.get();
     top.push_back(std::move(fsm));

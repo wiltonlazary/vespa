@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "provider_error_wrapper.h"
-#include "persistenceutil.h"
+#include <vespa/persistence/spi/docentry.h>
 #include <vespa/vespalib/util/idestructorcallback.h>
 
 namespace storage {
@@ -60,42 +60,17 @@ ProviderErrorWrapper::setClusterState(BucketSpace bucketSpace, const spi::Cluste
     return checkResult(_impl.setClusterState(bucketSpace, state));
 }
 
-spi::Result
-ProviderErrorWrapper::setActiveState(const spi::Bucket& bucket, spi::BucketInfo::ActiveState newState)
+void
+ProviderErrorWrapper::setActiveStateAsync(const spi::Bucket& bucket, spi::BucketInfo::ActiveState newState, spi::OperationComplete::UP onComplete)
 {
-    return checkResult(_impl.setActiveState(bucket, newState));
+    onComplete->addResultHandler(this);
+    _impl.setActiveStateAsync(bucket, newState, std::move(onComplete));
 }
 
 spi::BucketInfoResult
 ProviderErrorWrapper::getBucketInfo(const spi::Bucket& bucket) const
 {
     return checkResult(_impl.getBucketInfo(bucket));
-}
-
-spi::Result
-ProviderErrorWrapper::put(const spi::Bucket& bucket, spi::Timestamp ts, spi::DocumentSP doc, spi::Context& context)
-{
-    return checkResult(_impl.put(bucket, ts, std::move(doc), context));
-}
-
-spi::RemoveResult
-ProviderErrorWrapper::remove(const spi::Bucket& bucket, spi::Timestamp ts, const document::DocumentId& docId, spi::Context& context)
-{
-    return checkResult(_impl.remove(bucket, ts, docId, context));
-}
-
-spi::RemoveResult
-ProviderErrorWrapper::removeIfFound(const spi::Bucket& bucket, spi::Timestamp ts,
-                                    const document::DocumentId& docId, spi::Context& context)
-{
-    return checkResult(_impl.removeIfFound(bucket, ts, docId, context));
-}
-
-spi::UpdateResult
-ProviderErrorWrapper::update(const spi::Bucket& bucket, spi::Timestamp ts,
-                             spi::DocumentUpdateSP docUpdate, spi::Context& context)
-{
-    return checkResult(_impl.update(bucket, ts, std::move(docUpdate), context));
 }
 
 spi::GetResult
@@ -113,27 +88,29 @@ ProviderErrorWrapper::createIterator(const spi::Bucket &bucket, FieldSetSP field
 }
 
 spi::IterateResult
-ProviderErrorWrapper::iterate(spi::IteratorId iteratorId, uint64_t maxByteSize, spi::Context& context) const
+ProviderErrorWrapper::iterate(spi::IteratorId iteratorId, uint64_t maxByteSize) const
 {
-    return checkResult(_impl.iterate(iteratorId, maxByteSize, context));
+    return checkResult(_impl.iterate(iteratorId, maxByteSize));
 }
 
 spi::Result
-ProviderErrorWrapper::destroyIterator(spi::IteratorId iteratorId, spi::Context& context)
+ProviderErrorWrapper::destroyIterator(spi::IteratorId iteratorId)
 {
-    return checkResult(_impl.destroyIterator(iteratorId, context));
+    return checkResult(_impl.destroyIterator(iteratorId));
 }
 
-spi::Result
-ProviderErrorWrapper::createBucket(const spi::Bucket& bucket, spi::Context& context)
+void
+ProviderErrorWrapper::deleteBucketAsync(const spi::Bucket& bucket, spi::OperationComplete::UP onComplete) noexcept
 {
-    return checkResult(_impl.createBucket(bucket, context));
+    onComplete->addResultHandler(this);
+    _impl.deleteBucketAsync(bucket, std::move(onComplete));
 }
 
-spi::Result
-ProviderErrorWrapper::deleteBucket(const spi::Bucket& bucket, spi::Context& context)
+void
+ProviderErrorWrapper::createBucketAsync(const spi::Bucket& bucket, spi::OperationComplete::UP onComplete) noexcept
 {
-    return checkResult(_impl.deleteBucket(bucket, context));
+    onComplete->addResultHandler(this);
+    _impl.createBucketAsync(bucket, std::move(onComplete));
 }
 
 spi::BucketIdListResult
@@ -143,17 +120,15 @@ ProviderErrorWrapper::getModifiedBuckets(BucketSpace bucketSpace) const
 }
 
 spi::Result
-ProviderErrorWrapper::split(const spi::Bucket& source, const spi::Bucket& target1,
-                            const spi::Bucket& target2, spi::Context& context)
+ProviderErrorWrapper::split(const spi::Bucket& source, const spi::Bucket& target1, const spi::Bucket& target2)
 {
-    return checkResult(_impl.split(source, target1, target2, context));
+    return checkResult(_impl.split(source, target1, target2));
 }
 
 spi::Result
-ProviderErrorWrapper::join(const spi::Bucket& source1, const spi::Bucket& source2,
-                           const spi::Bucket& target, spi::Context& context)
+ProviderErrorWrapper::join(const spi::Bucket& source1, const spi::Bucket& source2, const spi::Bucket& target)
 {
-    return checkResult(_impl.join(source1, source2, target, context));
+    return checkResult(_impl.join(source1, source2, target));
 }
 
 std::unique_ptr<vespalib::IDestructorCallback>
@@ -163,41 +138,41 @@ ProviderErrorWrapper::register_resource_usage_listener(spi::IResourceUsageListen
 }
 
 spi::Result
-ProviderErrorWrapper::removeEntry(const spi::Bucket& bucket, spi::Timestamp ts, spi::Context& context)
+ProviderErrorWrapper::removeEntry(const spi::Bucket& bucket, spi::Timestamp ts)
 {
-    return checkResult(_impl.removeEntry(bucket, ts, context));
+    return checkResult(_impl.removeEntry(bucket, ts));
 }
 
 void
 ProviderErrorWrapper::putAsync(const spi::Bucket &bucket, spi::Timestamp ts, spi::DocumentSP doc,
-                               spi::Context &context, spi::OperationComplete::UP onComplete)
+                               spi::OperationComplete::UP onComplete)
 {
     onComplete->addResultHandler(this);
-    _impl.putAsync(bucket, ts, std::move(doc), context, std::move(onComplete));
+    _impl.putAsync(bucket, ts, std::move(doc), std::move(onComplete));
 }
 
 void
-ProviderErrorWrapper::removeAsync(const spi::Bucket &bucket, spi::Timestamp ts, const document::DocumentId &docId,
-                                  spi::Context & context, spi::OperationComplete::UP onComplete)
+ProviderErrorWrapper::removeAsync(const spi::Bucket &bucket, std::vector<spi::IdAndTimestamp> ids,
+                                  spi::OperationComplete::UP onComplete)
 {
     onComplete->addResultHandler(this);
-    _impl.removeAsync(bucket, ts, docId, context, std::move(onComplete));
+    _impl.removeAsync(bucket, std::move(ids), std::move(onComplete));
 }
 
 void
 ProviderErrorWrapper::removeIfFoundAsync(const spi::Bucket &bucket, spi::Timestamp ts, const document::DocumentId &docId,
-                                         spi::Context & context, spi::OperationComplete::UP onComplete)
+                                         spi::OperationComplete::UP onComplete)
 {
     onComplete->addResultHandler(this);
-    _impl.removeIfFoundAsync(bucket, ts, docId, context, std::move(onComplete));
+    _impl.removeIfFoundAsync(bucket, ts, docId, std::move(onComplete));
 }
 
 void
 ProviderErrorWrapper::updateAsync(const spi::Bucket &bucket, spi::Timestamp ts, spi::DocumentUpdateSP upd,
-                                  spi::Context &context, spi::OperationComplete::UP onComplete)
+                                  spi::OperationComplete::UP onComplete)
 {
     onComplete->addResultHandler(this);
-    _impl.updateAsync(bucket, ts, std::move(upd), context, std::move(onComplete));
+    _impl.updateAsync(bucket, ts, std::move(upd), std::move(onComplete));
 }
 
 std::unique_ptr<vespalib::IDestructorCallback>

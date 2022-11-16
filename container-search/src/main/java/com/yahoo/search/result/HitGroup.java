@@ -3,7 +3,6 @@ package com.yahoo.search.result;
 
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
-import com.google.common.util.concurrent.ListenableFuture;
 import com.yahoo.collections.ListenableArrayList;
 import com.yahoo.net.URI;
 import com.yahoo.prelude.fastsearch.SortDataHitSorter;
@@ -19,6 +18,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -84,7 +84,7 @@ public class HitGroup extends Hit implements DataList<Hit>, Cloneable, Iterable<
      */
     private DefaultErrorHit errorHit = null;
 
-    private final ListenableFuture<DataList<Hit>> completedFuture;
+    private final CompletableFuture<DataList<Hit>> completedFuture;
 
     private final IncomingData<Hit> incomingHits;
 
@@ -247,9 +247,7 @@ public class HitGroup extends Hit implements DataList<Hit>, Cloneable, Iterable<
         return hit;
     }
 
-    /**
-     * Adds a list of hits to this group, the same
-     */
+    /** Adds a list of hits to this group, the same as calling add for each item in the list. */
     public void addAll(List<Hit> hits) {
         for (Hit hit : hits)
             add(hit);
@@ -621,7 +619,7 @@ public class HitGroup extends Hit implements DataList<Hit>, Cloneable, Iterable<
     }
 
     /**
-     * <p>Sets the hit orderer for this group.</p>
+     * Sets the hit orderer for this group.
      *
      * @param hitOrderer the new hit orderer, or null to use default relevancy ordering
      */
@@ -964,8 +962,7 @@ public class HitGroup extends Hit implements DataList<Hit>, Cloneable, Iterable<
     @Override
     public IncomingData<Hit> incoming() { return incomingHits; }
 
-    @Override
-    public ListenableFuture<DataList<Hit>> complete() { return completedFuture; }
+    @Override public CompletableFuture<DataList<Hit>> completeFuture() { return completedFuture; }
 
     @Override
     public void addDataListener(Runnable runnable) {

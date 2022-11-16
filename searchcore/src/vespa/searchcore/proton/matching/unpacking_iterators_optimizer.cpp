@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "unpacking_iterators_optimizer.h"
 
@@ -43,7 +43,9 @@ struct TermExpander : QueryVisitor {
     void visit(ONear &) override {}
     void visit(Or &) override {}
     void visit(Phrase &n) override { expand(n); }
-    void visit(SameElement &n) override { expand(n); }
+    void visit(SameElement &) override {
+        // TODO expand(n) once we figure out to handle artificial terms in matched-elements-only;
+    }
     void visit(PrefixTerm &) override {}
     void visit(RangeTerm &) override {}
     void visit(Rank &) override {}
@@ -57,6 +59,10 @@ struct TermExpander : QueryVisitor {
     void visit(PredicateQuery &) override {}
     void visit(RegExpTerm &) override {}
     void visit(NearestNeighborTerm &) override {}
+    void visit(TrueQueryNode &) override {}
+    void visit(FalseQueryNode &) override {}
+    void visit(FuzzyTerm &) override {}
+
     void flush(Intermediate &parent) {
         for (Node::UP &term: terms) {
             parent.append(std::move(term));
@@ -68,13 +74,9 @@ struct TermExpander : QueryVisitor {
 struct NodeTraverser : TemplateTermVisitor<NodeTraverser, ProtonNodeTypes>
 {
     bool split_unpacking_iterators;
-    bool delay_unpacking_iterators;
 
-    NodeTraverser(bool split_unpacking_iterators_in,
-                  bool delay_unpacking_iterators_in)
-        : split_unpacking_iterators(split_unpacking_iterators_in),
-          delay_unpacking_iterators(delay_unpacking_iterators_in) {}
-
+    NodeTraverser(bool split_unpacking_iterators_in)
+        : split_unpacking_iterators(split_unpacking_iterators_in) {}
     template <class TermNode> void visitTerm(TermNode &) {}
     void visit(ProtonNodeTypes::And &n) override {
         for (Node *child: n.getChildren()) {
@@ -88,16 +90,6 @@ struct NodeTraverser : TemplateTermVisitor<NodeTraverser, ProtonNodeTypes>
             expander.flush(n);
         }
     }
-    void visit(ProtonNodeTypes::Phrase &n) override {
-        if (delay_unpacking_iterators) {
-            n.set_expensive(true);
-        }
-    }
-    void visit(ProtonNodeTypes::SameElement &n) override {
-        if (delay_unpacking_iterators) {
-            n.set_expensive(true);
-        }
-    }
 };
 
 } // namespace proton::matching::<unnamed>
@@ -105,12 +97,10 @@ struct NodeTraverser : TemplateTermVisitor<NodeTraverser, ProtonNodeTypes>
 search::query::Node::UP
 UnpackingIteratorsOptimizer::optimize(search::query::Node::UP root,
                                       bool has_white_list,
-                                      bool split_unpacking_iterators,
-                                      bool delay_unpacking_iterators)
+                                      bool split_unpacking_iterators)
 {
-    if (split_unpacking_iterators || delay_unpacking_iterators) {
-        NodeTraverser traverser(split_unpacking_iterators,
-                                delay_unpacking_iterators);
+    if (split_unpacking_iterators) {
+        NodeTraverser traverser(split_unpacking_iterators);
         root->accept(traverser);
     }
     if (has_white_list && split_unpacking_iterators) {

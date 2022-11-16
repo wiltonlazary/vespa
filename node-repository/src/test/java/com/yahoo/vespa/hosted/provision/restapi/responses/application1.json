@@ -13,7 +13,8 @@
           "diskGb" : 50.0,
           "bandwidthGbps" : 1.0,
           "diskSpeed" : "fast",
-          "storageType" : "any"
+          "storageType" : "any",
+          "architecture":"x86_64"
         }
       },
       "max" : {
@@ -25,7 +26,8 @@
           "diskGb" : 1000.0,
           "bandwidthGbps" : 1.0,
           "diskSpeed" : "fast",
-          "storageType" : "any"
+          "storageType" : "any",
+          "architecture":"x86_64"
         }
       },
       "current" : {
@@ -37,7 +39,8 @@
           "diskGb" : 50.0,
           "bandwidthGbps" : 1.0,
           "diskSpeed" : "fast",
-          "storageType" : "local"
+          "storageType" : "local",
+          "architecture":"x86_64"
         }
       },
       "suggested" : {
@@ -49,7 +52,8 @@
           "diskGb" : 100.0,
           "bandwidthGbps" : 1.0,
           "diskSpeed" : "fast",
-          "storageType" : "any"
+          "storageType" : "any",
+          "architecture":"x86_64"
         }
       },
       "target" : {
@@ -61,19 +65,23 @@
           "diskGb" : 100.0,
           "bandwidthGbps" : 1.0,
           "diskSpeed" : "fast",
-          "storageType" : "any"
+          "storageType" : "any",
+          "architecture":"x86_64"
         }
       },
       "utilization" : {
           "cpu" : 0.0,
-          "idealCpu": 0.275,
+          "idealCpu": 0.1375,
           "currentCpu": 0.0,
+          "peakCpu": 0.0,
           "memory" : 0.0,
           "idealMemory": 0.65,
           "currentMemory": 0.0,
+          "peakMemory": 0.0,
           "disk" : 0.0,
-          "idealDisk": 0.6,
-          "currentDisk": 0.0
+          "idealDisk": 0.95,
+          "currentDisk": 0.0,
+          "peakDisk": 0.0
       },
       "scalingEvents" : [
         {
@@ -86,7 +94,8 @@
               "diskGb": 0.0,
               "bandwidthGbps": 0.0,
               "diskSpeed": "fast",
-              "storageType": "any"
+              "storageType": "any",
+              "architecture":"x86_64"
             }
           },
           "to": {
@@ -98,7 +107,8 @@
               "diskGb": 50.0,
               "bandwidthGbps": 1.0,
               "diskSpeed": "fast",
-              "storageType": "local"
+              "storageType": "local",
+              "architecture":"x86_64"
             }
           },
           "at" : 123

@@ -11,9 +11,8 @@
 
 namespace search::queryeval {
 
-SimplePhraseBlueprint::SimplePhraseBlueprint(const FieldSpec &field, const IRequestContext & requestContext, bool expensive)
+SimplePhraseBlueprint::SimplePhraseBlueprint(const FieldSpec &field, bool expensive)
     : ComplexLeafBlueprint(field),
-      _doom(requestContext.getDoom()),
       _field(field),
       _estimate(),
       _layout(),
@@ -24,13 +23,7 @@ SimplePhraseBlueprint::SimplePhraseBlueprint(const FieldSpec &field, const IRequ
     }
 }
 
-SimplePhraseBlueprint::~SimplePhraseBlueprint()
-{
-    while (!_terms.empty()) {
-        delete _terms.back();
-        _terms.pop_back();
-    }
-}
+SimplePhraseBlueprint::~SimplePhraseBlueprint() = default;
 
 FieldSpec
 SimplePhraseBlueprint::getNextChildField(const FieldSpec &outer)
@@ -52,7 +45,7 @@ SimplePhraseBlueprint::addTerm(Blueprint::UP term)
         _estimate = childEst;
     }
     setEstimate(_estimate);
-    _terms.push_back(term.release());
+    _terms.push_back(std::move(term));
 }
 
 SearchIterator::UP
@@ -75,32 +68,20 @@ SimplePhraseBlueprint::createLeafSearch(const fef::TermFieldMatchDataArray &tfmd
         order_map.insert(std::make_pair(childState.estimate().estHits, i));
     }
     std::vector<uint32_t> eval_order;
+    eval_order.reserve(order_map.size());
     for (const auto & child : order_map) {
         eval_order.push_back(child.second);
-    }
-    
-    auto phrase = std::make_unique<SimplePhraseSearch>(std::move(children),
-                                                       std::move(md), childMatch,
-                                                       eval_order, *tfmda[0], strict);
-    phrase->setDoom(& _doom);
-    return phrase;
+    }    
+
+    return std::make_unique<SimplePhraseSearch>(std::move(children),
+                                                std::move(md), std::move(childMatch),
+                                                std::move(eval_order), *tfmda[0], strict);
 }
 
 SearchIterator::UP
 SimplePhraseBlueprint::createFilterSearch(bool strict, FilterConstraint constraint) const
 {
-    if (constraint == FilterConstraint::UPPER_BOUND) {
-        MultiSearch::Children children;
-        children.reserve(_terms.size());
-        for (size_t i = 0; i < _terms.size(); ++i) {
-            bool child_strict = strict && (i == 0);
-            children.push_back(_terms[i]->createFilterSearch(child_strict, constraint));
-        }
-        UnpackInfo unpack_info;
-        return AndSearch::create(std::move(children), strict, unpack_info);
-    } else {
-        return std::make_unique<EmptySearch>();
-    }
+    return create_atmost_and_filter(_terms, strict, constraint);
 }
 
 void

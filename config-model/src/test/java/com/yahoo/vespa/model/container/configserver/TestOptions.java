@@ -130,4 +130,5 @@ public class TestOptions implements CloudConfigOptions {
         this.hostedVespa = Optional.of(hostedVespa);
         return this;
     }
+
 }

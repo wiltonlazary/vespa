@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.systemd;
 
 import com.yahoo.vespa.hosted.node.admin.task.util.process.TestTerminal;
@@ -45,6 +45,10 @@ public class SystemCtlTester extends SystemCtl {
         return this;
     }
 
+    public SystemCtlTester expectGetServiceProperty(String unit, String property, String output) {
+        expectCommand("systemctl show --property " + property + " --value " + unit + ".service 2>&1", 0, output);
+        return this;
+    }
 
     private void expectCommand(String command, int exitCode, String output) {
         terminal.expectCommand((useSudo() ? "sudo " : "") + command, exitCode, output);

@@ -7,7 +7,7 @@ import ai.vespa.rankingexpression.importer.onnx.OnnxImporter;
 import ai.vespa.rankingexpression.importer.tensorflow.TensorFlowImporter;
 import ai.vespa.rankingexpression.importer.vespa.VespaImporter;
 import ai.vespa.rankingexpression.importer.xgboost.XGBoostImporter;
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.application.container.JDisc;
 import com.yahoo.application.container.impl.StandaloneContainerRunner;
 import com.yahoo.application.content.ContentCluster;
@@ -26,6 +26,8 @@ import com.yahoo.jdisc.handler.RequestHandler;
 import com.yahoo.jdisc.service.ClientProvider;
 import com.yahoo.jdisc.service.ServerProvider;
 import com.yahoo.search.Searcher;
+import com.yahoo.search.query.profile.compiled.CompiledQueryProfileRegistry;
+import com.yahoo.search.query.profile.config.QueryProfileXMLReader;
 import com.yahoo.search.rendering.Renderer;
 import com.yahoo.text.StringUtilities;
 import com.yahoo.text.Utf8;
@@ -71,6 +73,7 @@ public final class Application implements AutoCloseable {
     private final List<ContentCluster> contentClusters;
     private final Path path;
     private final boolean deletePathWhenClosing;
+    private final CompiledQueryProfileRegistry compiledQueryProfileRegistry;
 
     // For internal use only
     Application(Path path, Networking networking, boolean deletePathWhenClosing) {
@@ -79,6 +82,7 @@ public final class Application implements AutoCloseable {
         this.deletePathWhenClosing = deletePathWhenClosing;
         contentClusters = ContentCluster.fromPath(path);
         container = JDisc.fromPath(path, networking, createVespaModel().configModelRepo());
+        compiledQueryProfileRegistry = readQueryProfilesFromApplicationPackage(path);
     }
 
     @Beta
@@ -123,6 +127,17 @@ public final class Application implements AutoCloseable {
         return fromApplicationPackage(file.toPath(), networking);
     }
 
+    private CompiledQueryProfileRegistry readQueryProfilesFromApplicationPackage(Path path) {
+        String queryProfilePath = path + "/search/query-profiles";
+        QueryProfileXMLReader queryProfileXMLReader = new QueryProfileXMLReader();
+
+        File f = new File(queryProfilePath);
+        if(f.exists() && f.isDirectory()) {
+            return queryProfileXMLReader.read(queryProfilePath).compile();
+        }
+        return CompiledQueryProfileRegistry.empty;
+    }
+
     private VespaModel createVespaModel() {
         try {
             List<MlModelImporter> modelImporters = List.of(new VespaImporter(),
@@ -147,6 +162,10 @@ public final class Application implements AutoCloseable {
      */
     public JDisc getJDisc(String id) {
         return container;
+    }
+
+    public CompiledQueryProfileRegistry getCompiledQueryProfileRegistry() {
+        return compiledQueryProfileRegistry;
     }
 
     /**
@@ -260,35 +279,35 @@ public final class Application implements AutoCloseable {
 
         /**
          * @param name             name of document type (search definition)
-         * @param searchDefinition add this search definition to the application
+         * @param schema add this search definition to the application
          * @throws java.io.IOException e.g.if file not found
          */
-        public Builder documentType(String name, String searchDefinition) throws IOException {
+        public Builder documentType(String name, String schema) throws IOException {
             Path path = nestedResource(ApplicationPackage.SCHEMAS_DIR, name, ApplicationPackage.SD_NAME_SUFFIX);
-            createFile(path, searchDefinition);
+            createFile(path, schema);
             return this;
         }
 
-        public Builder expressionInclude(String name, String searchDefinition) throws IOException {
+        public Builder expressionInclude(String name, String schema) throws IOException {
             Path path = nestedResource(ApplicationPackage.SCHEMAS_DIR, name, ApplicationPackage.RANKEXPRESSION_NAME_SUFFIX);
-            createFile(path, searchDefinition);
+            createFile(path, schema);
             return this;
         }
 
         /**
-         * @param name                  name of rank expression
-         * @param rankExpressionContent add this rank expression to the application
+         * @param name                  name of ranking expression
+         * @param rankingExpressionContent add this ranking expression to the application
          * @throws java.io.IOException e.g.if file not found
          */
-        public Builder rankExpression(String name, String rankExpressionContent) throws IOException {
+        public Builder rankExpression(String name, String rankingExpressionContent) throws IOException {
             Path path = nestedResource(ApplicationPackage.SCHEMAS_DIR, name, ApplicationPackage.RANKEXPRESSION_NAME_SUFFIX);
-            createFile(path, rankExpressionContent);
+            createFile(path, rankingExpressionContent);
             return this;
         }
 
         /**
          * @param name         name of query profile
-         * @param queryProfile add this queyr profile to the application
+         * @param queryProfile add this query profile to the application
          * @return builder
          * @throws java.io.IOException e.g.if file not found
          */

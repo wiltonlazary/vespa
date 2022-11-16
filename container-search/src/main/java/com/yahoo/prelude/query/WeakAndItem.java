@@ -5,6 +5,7 @@ import com.yahoo.compress.IntegerCompressor;
 import com.yahoo.prelude.query.textualrepresentation.Discloser;
 
 import java.nio.ByteBuffer;
+import java.util.Objects;
 
 /**
  * Weak And of a collection of sub-expressions:
@@ -23,7 +24,6 @@ public final class WeakAndItem extends NonReducibleCompositeItem {
 
     private int n;
     private String index;
-    private int scoreThreshold = 0;
 
     /** Creates a WAND item with default N */
     public WeakAndItem() {
@@ -53,6 +53,10 @@ public final class WeakAndItem extends NonReducibleCompositeItem {
     @Override
     public String getName() { return "WEAKAND"; }
 
+    /**
+     * Sets the default index name to apply to all child items of this.
+     * This is useful in conjunction with using {@link PureWeightedItem}s as children.
+     */
     @Override
     public void setIndexName(String index) {
         String toSet = (index == null) ? "" : index;
@@ -60,6 +64,7 @@ public final class WeakAndItem extends NonReducibleCompositeItem {
         this.index = toSet;
     }
 
+    /** Returns the index name set for this, or null if none. */
     public String getIndexName() { return index; }
 
     /** Appends the heading of this string - <code>[getName()]([limit]) </code> */
@@ -75,17 +80,6 @@ public final class WeakAndItem extends NonReducibleCompositeItem {
 
     public void setN(int N) { this.n = N; }
 
-    @Deprecated // TODO: Remove on Vespa 8
-    public int getScoreThreshold() { return scoreThreshold; }
-
-    /**
-     * Noop.
-     *
-     * @deprecated has no effect
-     */
-    @Deprecated // TODO: Remove on Vespa 8
-    public void setScoreThreshold(int scoreThreshold) { this.scoreThreshold = scoreThreshold; }
-
     @Override
     protected void encodeThis(ByteBuffer buffer) {
         super.encodeThis(buffer);
@@ -100,7 +94,7 @@ public final class WeakAndItem extends NonReducibleCompositeItem {
     }
 
     @Override
-    public int hashCode() { return super.hashCode() + 31 * n; }
+    public int hashCode() { return Objects.hash(super.hashCode(), n, index); }
 
     /** Returns whether this item is of the same class and contains the same state as the given item. */
     @Override
@@ -108,6 +102,7 @@ public final class WeakAndItem extends NonReducibleCompositeItem {
         if (!super.equals(object)) return false;
         WeakAndItem other = (WeakAndItem) object; // Ensured by superclass
         if (this.n != other.n) return false;
+        if ( ! Objects.equals(this.index, other.index)) return false;
         return true;
     }
 

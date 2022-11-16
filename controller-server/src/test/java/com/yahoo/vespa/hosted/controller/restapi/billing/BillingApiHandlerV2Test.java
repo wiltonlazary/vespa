@@ -1,3 +1,4 @@
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.billing;
 
 import com.yahoo.application.container.handler.Request;
@@ -9,8 +10,8 @@ import com.yahoo.vespa.hosted.controller.restapi.ContainerTester;
 import com.yahoo.vespa.hosted.controller.restapi.ControllerContainerCloudTest;
 import com.yahoo.vespa.hosted.controller.security.Auth0Credentials;
 import com.yahoo.vespa.hosted.controller.security.CloudTenantSpec;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Set;
@@ -36,14 +37,14 @@ public class BillingApiHandlerV2Test extends ControllerContainerCloudTest {
     private MockBillingController billingController;
     private ContainerTester tester;
 
-    @Before
+    @BeforeEach
     public void before() {
         tester = new ContainerTester(container, responseFiles);
         tester.controller().tenants().create(new CloudTenantSpec(tenant, ""), new Auth0Credentials(() -> "foo", Set.of(Role.hostedOperator())));
         var clock = (ManualClock) tester.controller().serviceRegistry().clock();
         clock.setInstant(Instant.parse("2021-04-13T00:00:00Z"));
         billingController = (MockBillingController) tester.serviceRegistry().billingController();
-        billingController.addInvoice(tenant, BillingApiHandlerTest.createInvoice(), true);
+        billingController.addBill(tenant, BillingApiHandlerTest.createBill(), true);
     }
 
     @Override
@@ -67,51 +68,46 @@ public class BillingApiHandlerV2Test extends ControllerContainerCloudTest {
     }
 
     @Test
-    public void require_tenant_info() {
+    void require_tenant_info() {
         var request = request("/billing/v2/tenant/" + tenant.value()).roles(tenantReader);
-        tester.assertResponse(request, "{\"tenant\":\"tenant1\",\"plan\":\"trial\",\"collection\":\"AUTO\"}");
+        tester.assertResponse(request, "{\"tenant\":\"tenant1\",\"plan\":{\"id\":\"trial\",\"name\":\"Free Trial - for testing purposes\"},\"collection\":\"AUTO\"}");
     }
 
     @Test
-    public void require_admin_for_update_plan() {
-        var request = request("/billing/v2/tenant/" + tenant.value(), Request.Method.PATCH)
-                .data("{\"plan\": \"pay-as-you-go\"}");
-
-        var forbidden = request.roles(tenantReader);
-        tester.assertResponse(forbidden, ACCESS_DENIED, 403);
-        var success = request.roles(tenantAdmin);
-        tester.assertResponse(success, "{\"tenant\":\"tenant1\",\"plan\":\"pay-as-you-go\",\"collection\":\"AUTO\"}");
-    }
-
-    @Test
-    public void require_accountant_for_update_collection() {
+    void require_accountant_for_update_collection() {
         var request = request("/billing/v2/tenant/" + tenant.value(), Request.Method.PATCH)
                 .data("{\"collection\": \"INVOICE\"}");
 
         var forbidden = request.roles(tenantAdmin);
-        tester.assertResponse(forbidden, "{\"error-code\":\"FORBIDDEN\",\"message\":\"Only accountant can change billing method\"}", 403);
+        tester.assertResponse(forbidden, """
+                {
+                  "code" : 403,
+                  "message" : "Access denied"
+                }""", 403);
 
         var success = request.roles(financeAdmin);
-        tester.assertResponse(success, "{\"tenant\":\"tenant1\",\"plan\":\"trial\",\"collection\":\"INVOICE\"}");
+        tester.assertResponse(success, """
+                {"tenant":"tenant1","plan":{"id":"trial","name":"Free Trial - for testing purposes"},"collection":"INVOICE"}""");
     }
 
     @Test
-    public void require_tenant_usage() {
+    void require_tenant_usage() {
         var request = request("/billing/v2/tenant/" + tenant + "/usage").roles(tenantReader);
         tester.assertResponse(request, "{\"from\":\"2021-04-13\",\"to\":\"2021-04-13\",\"total\":\"0.00\",\"items\":[]}");
     }
 
     @Test
-    public void require_tenant_invoice() {
+    void require_tenant_invoice() {
         var listRequest = request("/billing/v2/tenant/" + tenant + "/bill").roles(tenantReader);
-        tester.assertResponse(listRequest, "{\"invoices\":[{\"id\":\"id-1\",\"from\":\"2020-05-23\",\"to\":\"2020-05-23\",\"total\":\"123.00\",\"status\":\"OPEN\"}]}");
+        tester.assertResponse(listRequest, "{\"invoices\":[{\"id\":\"id-1\",\"from\":\"2020-05-23\",\"to\":\"2020-05-28\",\"total\":\"123.00\",\"status\":\"OPEN\"}]}");
 
         var singleRequest = request("/billing/v2/tenant/" + tenant + "/bill/id-1").roles(tenantReader);
-        tester.assertResponse(singleRequest, "{\"id\":\"id-1\",\"from\":\"2020-05-23\",\"to\":\"2020-05-23\",\"total\":\"123.00\",\"status\":\"OPEN\",\"statusHistory\":[{\"at\":\"2020-05-23T00:00:00Z\",\"status\":\"OPEN\"}],\"items\":[{\"id\":\"some-id\",\"description\":\"description\",\"amount\":\"123.00\",\"plan\":\"some-plan\",\"planName\":\"Plan with id: some-plan\",\"cpu\":{},\"memory\":{},\"disk\":{}}]}");
+        tester.assertResponse(singleRequest, """
+                {"id":"id-1","from":"2020-05-23","to":"2020-05-28","total":"123.00","status":"OPEN","statusHistory":[{"at":"2020-05-23T00:00:00Z","status":"OPEN"}],"items":[{"id":"some-id","description":"description","amount":"123.00","plan":{"id":"paid","name":"Paid Plan - for testing purposes"},"cpu":{},"memory":{},"disk":{}}]}""");
     }
 
     @Test
-    public void require_accountant_summary() {
+    void require_accountant_summary() {
         var tenantRequest = request("/billing/v2/accountant").roles(tenantReader);
         tester.assertResponse(tenantRequest, "{\n" +
                 "  \"code\" : 403,\n" +
@@ -119,20 +115,28 @@ public class BillingApiHandlerV2Test extends ControllerContainerCloudTest {
                 "}", 403);
 
         var accountantRequest = request("/billing/v2/accountant").roles(Role.hostedAccountant());
-        tester.assertResponse(accountantRequest, "{\"tenants\":[{\"tenant\":\"tenant1\",\"plan\":\"trial\",\"collection\":\"AUTO\",\"lastBill\":null,\"unbilled\":\"0.00\"}]}");
+        tester.assertResponse(accountantRequest, """
+                {"tenants":[{"tenant":"tenant1","plan":{"id":"trial","name":"Free Trial - for testing purposes"},"quota":{"budget":-1.0},"collection":"AUTO","lastBill":null,"unbilled":"0.00"}]}""");
     }
 
     @Test
-    public void require_accountant_tenant_preview() {
+    void require_accountant_tenant_preview() {
         var accountantRequest = request("/billing/v2/accountant/preview/tenant/tenant1").roles(Role.hostedAccountant());
-        tester.assertResponse(accountantRequest, "{\"id\":\"empty\",\"from\":\"2021-04-13\",\"to\":\"2021-04-13\",\"total\":\"0.00\",\"status\":\"OPEN\",\"statusHistory\":[{\"at\":\"2021-04-13T00:00:00Z\",\"status\":\"OPEN\"}],\"items\":[]}");
+        tester.assertResponse(accountantRequest, "{\"id\":\"empty\",\"from\":\"2021-04-13\",\"to\":\"2021-04-12\",\"total\":\"0.00\",\"status\":\"OPEN\",\"statusHistory\":[{\"at\":\"2021-04-13T00:00:00Z\",\"status\":\"OPEN\"}],\"items\":[]}");
     }
 
     @Test
-    public void require_accountant_tenant_bill() {
+    void require_accountant_tenant_bill() {
         var accountantRequest = request("/billing/v2/accountant/preview/tenant/tenant1", Request.Method.POST)
                 .roles(Role.hostedAccountant())
                 .data("{\"from\": \"2020-05-01\",\"to\": \"2020-06-01\"}");
         tester.assertResponse(accountantRequest, "{\"message\":\"Created bill id-123\"}");
+    }
+
+    @Test
+    void require_list_of_all_plans() {
+        var accountantRequest = request("/billing/v2/accountant/plans")
+                .roles(Role.hostedAccountant());
+        tester.assertResponse(accountantRequest, "{\"plans\":[{\"id\":\"trial\",\"name\":\"Free Trial - for testing purposes\"},{\"id\":\"paid\",\"name\":\"Paid Plan - for testing purposes\"},{\"id\":\"none\",\"name\":\"None Plan - for testing purposes\"}]}");
     }
 }

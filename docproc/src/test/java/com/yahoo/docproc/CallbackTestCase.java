@@ -1,6 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.docproc;
 
+import com.yahoo.docproc.impl.DocprocService;
+import com.yahoo.docproc.impl.ProcessingEndpoint;
 import com.yahoo.document.DataType;
 import com.yahoo.document.DocumentId;
 import com.yahoo.document.DocumentOperation;
@@ -22,7 +24,7 @@ public class CallbackTestCase {
 
     private DocumentPut put1;
     private DocumentPut put2;
-    private List<DocumentOperation> operations = new ArrayList<>(2);
+    private final List<DocumentOperation> operations = new ArrayList<>(2);
     DocprocService service;
 
     @Before

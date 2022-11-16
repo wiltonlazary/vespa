@@ -4,18 +4,14 @@ package com.yahoo.vespa.http.server;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
 import com.yahoo.document.DocumentTypeManager;
-import com.yahoo.documentapi.messagebus.protocol.DocumentMessage;
-import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.ReferencedResource;
+import com.yahoo.jdisc.ResourceReference;
 import com.yahoo.messagebus.Message;
 import com.yahoo.messagebus.ReplyHandler;
 import com.yahoo.messagebus.Result;
 import com.yahoo.messagebus.shared.SharedSourceSession;
 import com.yahoo.net.HostName;
-import com.yahoo.vespa.http.client.core.ErrorCode;
-import com.yahoo.vespa.http.client.core.Headers;
-import com.yahoo.vespa.http.client.core.OperationStatus;
 import com.yahoo.vespaxmlparser.FeedOperation;
 import com.yahoo.yolean.Exceptions;
 
@@ -56,13 +52,12 @@ class ClientFeederV3 {
     private final AtomicInteger ongoingRequests = new AtomicInteger(0);
     private final String hostName;
 
-    ClientFeederV3(
-            ReferencedResource<SharedSourceSession> sourceSession,
-            FeedReaderFactory feedReaderFactory,
-            DocumentTypeManager docTypeManager,
-            String clientId,
-            Metric metric,
-            ReplyHandler feedReplyHandler) {
+    ClientFeederV3(ReferencedResource<SharedSourceSession> sourceSession,
+                   FeedReaderFactory feedReaderFactory,
+                   DocumentTypeManager docTypeManager,
+                   String clientId,
+                   Metric metric,
+                   ReplyHandler feedReplyHandler) {
         this.sourceSession = sourceSession;
         this.clientId = clientId;
         this.feedReplyHandler = feedReplyHandler;
@@ -71,22 +66,25 @@ class ClientFeederV3 {
         this.hostName = HostName.getLocalhost();
     }
 
-    public boolean timedOut() {
+    boolean timedOut() {
         synchronized (monitor) {
             return Instant.now().isAfter(prevOpsPerSecTime.plusSeconds(6000)) && ongoingRequests.get() == 0;
         }
     }
 
-    public void kill() {
-        // No new requests should be sent to this object, but there can be old one, even though this is very unlikely.
-        while (ongoingRequests.get() > 0) {
-            try {
-                ongoingRequests.wait(100);
-            } catch (InterruptedException e) {
-                break;
+    void kill() {
+        try (ResourceReference ignored = sourceSession.getReference()) {
+            // No new requests should be sent to this object, but there can be old one, even though this is very unlikely.
+            while (ongoingRequests.get() > 0) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    return;
+                }
             }
+        } catch (Exception e) {
+            log.log(Level.WARNING, "Failed to close reference to source session", e);
         }
-        sourceSession.getReference().close();
     }
 
     private void transferPreviousRepliesToResponse(BlockingQueue<OperationStatus> operations) throws InterruptedException {
@@ -98,7 +96,7 @@ class ClientFeederV3 {
         }
     }
 
-    public HttpResponse handleRequest(HttpRequest request) throws IOException {
+    HttpResponse handleRequest(HttpRequest request) throws IOException {
         ongoingRequests.incrementAndGet();
         try {
             FeederSettings feederSettings = new FeederSettings(request);
@@ -220,10 +218,7 @@ class ClientFeederV3 {
 
         // This is a bit hard to set up while testing, so we accept that things are not perfect.
         if (sourceSession.getResource().session() != null) {
-            metric.set(
-                    MetricNames.PENDING,
-                    Double.valueOf(sourceSession.getResource().session().getPendingCount()),
-                    null);
+            metric.set(MetricNames.PENDING, (double) sourceSession.getResource().session().getPendingCount(), null);
         }
 
         DocumentOperationMessageV3 message = DocumentOperationMessageV3.create(operation, operationId, metric);
@@ -231,7 +226,7 @@ class ClientFeederV3 {
             // typical end of feed
             return null;
         }
-        metric.add(MetricNames.NUM_OPERATIONS, 1, null /*metricContext*/);
+        metric.add(MetricNames.NUM_OPERATIONS, 1, null);
         log(Level.FINE, "Successfully deserialized document id: ", message.getOperationId());
         return message;
     }
@@ -240,17 +235,6 @@ class ClientFeederV3 {
         msg.getMessage().setContext(new ReplyContext(msg.getOperationId(), feedReplies));
         if (settings.traceLevel != null) {
             msg.getMessage().getTrace().setLevel(settings.traceLevel);
-        }
-        if (settings.priority != null) {
-            try {
-                DocumentProtocol.Priority priority = DocumentProtocol.Priority.valueOf(settings.priority);
-                if (msg.getMessage() instanceof DocumentMessage) {
-                    ((DocumentMessage) msg.getMessage()).setPriority(priority);
-                }
-            }
-            catch (IllegalArgumentException i) {
-                log.severe(i.getMessage());
-            }
         }
     }
 
@@ -275,7 +259,7 @@ class ClientFeederV3 {
             if (now.plusSeconds(1).isAfter(prevOpsPerSecTime)) {
                 Duration duration = Duration.between(now, prevOpsPerSecTime);
                 double opsPerSec = operationsForOpsPerSec / (duration.toMillis() / 1000.);
-                metric.set(MetricNames.OPERATIONS_PER_SEC, opsPerSec, null /*metricContext*/);
+                metric.set(MetricNames.OPERATIONS_PER_SEC, opsPerSec, null);
                 operationsForOpsPerSec = 1.0d;
                 prevOpsPerSecTime = now;
             } else {
@@ -283,4 +267,5 @@ class ClientFeederV3 {
             }
         }
     }
+
 }

@@ -1,12 +1,15 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-#include <vespa/log/log.h>
-LOG_SETUP("bitvector_test");
+
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/searchlib/index/field_length_info.h>
 #include <vespa/searchlib/diskindex/bitvectordictionary.h>
 #include <vespa/searchlib/diskindex/fieldwriter.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
-#include <vespa/vespalib/io/fileutil.h>
+#include <vespa/searchcommon/common/schema.h>
+#include <filesystem>
+
+#include <vespa/log/log.h>
+LOG_SETUP("bitvector_test");
 
 using namespace search::index;
 using search::index::schema::DataType;
@@ -47,7 +50,7 @@ FieldWriterWrapper::open(const std::string &path,
                         const TuneFileSeqWrite &tuneFileWrite,
                         const common::FileHeaderContext &fileHeaderContext)
 {
-    vespalib::mkdir(path, false);
+    std::filesystem::create_directory(std::filesystem::path(path));
     return _writer.open(path, 64, 10000, false, false, schema, indexId, FieldLengthInfo(), tuneFileWrite, fileHeaderContext);
 }
 
@@ -102,7 +105,7 @@ Test::requireThatDictionaryHandlesNoEntries(bool directio, bool readmmap)
     if (readmmap)
         tuneFileRead.setWantMemoryMap();
     FieldWriterWrapper fww(5, 2);
-    vespalib::mkdir("dump", false);
+    std::filesystem::create_directory(std::filesystem::path("dump"));
     EXPECT_TRUE(fww.open("dump/1/", _schema, _indexId, tuneFileWrite,
                          fileHeaderContext));
     fww.newWord("1").add(1);

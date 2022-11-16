@@ -12,14 +12,15 @@ import com.yahoo.metrics.simple.Identifier;
 import com.yahoo.metrics.simple.MetricReceiver;
 import com.yahoo.metrics.simple.Point;
 import com.yahoo.metrics.simple.UntypedMetric;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author bratseth
@@ -27,10 +28,10 @@ import static org.junit.Assert.assertTrue;
 public class SnapshotConverterTest {
 
     @Test
-    public void testPointConversion() {
+    void testPointConversion() {
         MetricDimensions a = SnapshotConverter.convert(new Point(Collections.emptyMap()));
         MetricDimensions b = SnapshotConverter.convert(new Point(new HashMap<>(0)));
-        MetricDimensions c = SnapshotConverter.convert((Point)null);
+        MetricDimensions c = SnapshotConverter.convert((Point) null);
         assertEquals(a.hashCode(), b.hashCode());
         assertEquals(a, b);
         assertEquals(a.hashCode(), c.hashCode());
@@ -40,17 +41,17 @@ public class SnapshotConverterTest {
     }
 
     @Test
-    public void testConversion() {
+    void testConversion() {
         MetricReceiver mock = new MetricReceiver.MockReceiver();
         mock.declareCounter("foo").add(1);
         mock.declareGauge("quuux").sample(42.25);
-        mock.declareCounter("bar", new Point(new HashMap<String,String>())).add(4);
+        mock.declareCounter("bar", new Point(new HashMap<String, String>())).add(4);
 
         MetricSnapshot snapshot = new SnapshotConverter(mock.getSnapshot()).convert();
 
         for (Map.Entry<MetricDimensions, MetricSet> entry : snapshot) {
             for (Map.Entry<String, String> dv : entry.getKey()) {
-                assertTrue(false);
+                fail();
             }
 
             int cnt = 0;
@@ -58,16 +59,16 @@ public class SnapshotConverterTest {
                 ++cnt;
                 if ("foo".equals(mv.getKey())) {
                     assertTrue(mv.getValue() instanceof CountMetric);
-                    assertEquals(1, ((CountMetric)mv.getValue()).getCount());
+                    assertEquals(1, ((CountMetric) mv.getValue()).getCount());
                 } else if ("bar".equals(mv.getKey())) {
                     assertTrue(mv.getValue() instanceof CountMetric);
-                    assertEquals(4, ((CountMetric)mv.getValue()).getCount());
+                    assertEquals(4, ((CountMetric) mv.getValue()).getCount());
                 } else if ("quuux".equals(mv.getKey())) {
                     assertTrue(mv.getValue() instanceof GaugeMetric);
-                    assertEquals(42.25, ((GaugeMetric)mv.getValue()).getLast(), 0.001);
-                    assertEquals(1, ((GaugeMetric)mv.getValue()).getCount());
+                    assertEquals(42.25, ((GaugeMetric) mv.getValue()).getLast(), 0.001);
+                    assertEquals(1, ((GaugeMetric) mv.getValue()).getCount());
                 } else {
-                    assertTrue(false);
+                    fail();
                 }
             }
             assertEquals(3, cnt);

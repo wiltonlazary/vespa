@@ -3,6 +3,8 @@
 #include "querytermdata.h"
 #include "searchenvironment.h"
 #include "searchvisitor.h"
+#include "matching_elements_filler.h"
+#include <vespa/persistence/spi/docentry.h>
 #include <vespa/document/datatype/positiondatatype.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/datatype/weightedsetdatatype.h>
@@ -11,12 +13,15 @@
 #include <vespa/searchlib/common/packets.h>
 #include <vespa/searchlib/uca/ucaconverter.h>
 #include <vespa/searchlib/features/setup.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/geo/zcurve.h>
 #include <vespa/vespalib/objects/nbostream.h>
+#include <vespa/vespalib/stllike/hash_map.hpp>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/data/slime/slime.h>
+#include <vespa/vespalib/text/stringtokenizer.h>
 #include <vespa/fnet/databuffer.h>
-#include "matching_elements_filler.h"
 
 #include <vespa/log/log.h>
 LOG_SETUP(".visitor.instance.searchvisitor");
@@ -66,11 +71,12 @@ AttributeVector::SP
 createMultiValueAttribute(const vespalib::string & name, const document::FieldValue & fv, bool arrayType)
 {
     const DataType * ndt = fv.getDataType();
-    if (ndt->inherits(document::CollectionDataType::classId)) {
-        ndt = &(static_cast<const document::CollectionDataType *>(ndt))->getNestedType();
+    const document::CollectionDataType * cdt = ndt->cast_collection();
+    if (cdt != nullptr) {
+        ndt = &cdt->getNestedType();
     }
     LOG(debug, "Create %s attribute '%s' with data type '%s' (%s)",
-        arrayType ? "array" : "weighted set", name.c_str(), ndt->getName().c_str(), fv.getClass().name());
+        arrayType ? "array" : "weighted set", name.c_str(), ndt->getName().c_str(), fv.className());
     if (ndt->getId() == DataType::T_BYTE ||
         ndt->getId() == DataType::T_INT ||
         ndt->getId() == DataType::T_LONG)
@@ -87,50 +93,98 @@ createMultiValueAttribute(const vespalib::string & name, const document::FieldVa
                          : std::make_shared<search::WeightedSetStringExtAttribute>(name);
     } else {
         LOG(debug, "Can not make an multivalue attribute out of %s with data type '%s' (%s)",
-            name.c_str(), ndt->getName().c_str(), fv.getClass().name());
+            name.c_str(), ndt->getName().c_str(), fv.className());
     }
-    return AttributeVector::SP();
+    return {};
 }
 
 AttributeVector::SP
 createAttribute(const vespalib::string & name, const document::FieldValue & fv)
 {
-    LOG(debug, "Create single value attribute '%s' with value type '%s'", name.c_str(), fv.getClass().name());
-    if (fv.inherits(document::ByteFieldValue::classId) || fv.inherits(document::IntFieldValue::classId) || fv.inherits(document::LongFieldValue::classId)) {
+    LOG(debug, "Create single value attribute '%s' with value type '%s'", name.c_str(), fv.className());
+    if (fv.isA(document::FieldValue::Type::BYTE) || fv.isA(document::FieldValue::Type::INT) || fv.isA(document::FieldValue::Type::LONG)) {
         return std::make_shared<search::SingleIntegerExtAttribute>(name);
-    } else if (fv.inherits(document::DoubleFieldValue::classId) || fv.inherits(document::FloatFieldValue::classId)) {
+    } else if (fv.isA(document::FieldValue::Type::DOUBLE) || fv.isA(document::FieldValue::Type::FLOAT)) {
         return std::make_shared<search::SingleFloatExtAttribute>(name);
-    } else if (fv.inherits(document::StringFieldValue::classId)) {
+    } else if (fv.isA(document::FieldValue::Type::STRING)) {
         return std::make_shared<search::SingleStringExtAttribute>(name);
     } else {
-        LOG(debug, "Can not make an attribute out of %s of type '%s'.", name.c_str(), fv.getClass().name());
+        LOG(debug, "Can not make an attribute out of %s of type '%s'.", name.c_str(), fv.className());
     }
-    return AttributeVector::SP();
+    return {};
 }
 
-SearchVisitor::SummaryGenerator::SummaryGenerator() :
-    HitsAggregationResult::SummaryGenerator(),
-    _callback(),
-    _docsumState(_callback),
-    _docsumFilter(),
-    _docsumWriter(nullptr),
-    _rawBuf(4_Ki)
+SearchVisitor::StreamingDocsumsState::StreamingDocsumsState(search::docsummary::GetDocsumsStateCallback& callback, ResolveClassInfo& resolve_class_info)
+    : _state(callback),
+      _resolve_class_info(resolve_class_info)
+{
+}
+
+SearchVisitor::StreamingDocsumsState::~StreamingDocsumsState() = default;
+
+SearchVisitor::SummaryGenerator::SummaryGenerator(const search::IAttributeManager& attr_manager)
+    : HitsAggregationResult::SummaryGenerator(),
+      _callback(),
+      _docsum_states(),
+      _summaryFields(),
+      _docsumFilter(),
+      _docsumWriter(nullptr),
+      _buf(4_Ki),
+      _dump_features(),
+      _location(),
+      _stack_dump(),
+      _attr_manager(attr_manager)
 {
 }
 
 SearchVisitor::SummaryGenerator::~SummaryGenerator() = default;
 
+SearchVisitor::StreamingDocsumsState&
+SearchVisitor::SummaryGenerator::get_streaming_docsums_state(const vespalib::string& summary_class) {
+    auto itr = _docsum_states.find(summary_class);
+    if (itr != _docsum_states.end()) {
+        return *itr->second;
+    }
+    vespalib::hash_set<vespalib::string> fields;
+    for (const auto& field: _summaryFields) {
+        fields.insert(field);
+    }
+    auto rci = _docsumWriter->resolveClassInfo(summary_class, fields);
+    auto state = std::make_unique<StreamingDocsumsState>(_callback, rci);
+    auto &ds = state->get_state();
+    ds._args.setResultClassName(summary_class);
+    ds._args.set_fields(fields);
+    if (_dump_features.has_value()) {
+        ds._args.dumpFeatures(_dump_features.value());
+    }
+    if (_location.has_value()) {
+        ds._args.setLocation(_location.value());
+    }
+    if (_stack_dump.has_value()) {
+        ds._args.setStackDump(_stack_dump.value().size(), _stack_dump.value().data());
+    }
+    _docsumWriter->initState(_attr_manager, ds, state->get_resolve_class_info());
+    auto insres = _docsum_states.insert(std::make_pair(summary_class, std::move(state)));
+    return *insres.first->second;
+}
 
 vespalib::ConstBufferRef
 SearchVisitor::SummaryGenerator::fillSummary(AttributeVector::DocId lid, const HitsAggregationResult::SummaryClassType & summaryClass)
 {
     if (_docsumWriter != nullptr) {
-        _rawBuf.reset();
-        _docsumState._args.setResultClassName(summaryClass);
-        uint32_t docsumLen = _docsumWriter->WriteDocsum(lid, &_docsumState, _docsumFilter.get(), &_rawBuf);
-        return vespalib::ConstBufferRef(_rawBuf.GetDrainPos(), docsumLen);
+        vespalib::Slime slime;
+        vespalib::slime::SlimeInserter inserter(slime);
+        auto& sds = get_streaming_docsums_state(summaryClass);
+        _docsumWriter->insertDocsum(sds.get_resolve_class_info(), lid, sds.get_state(), *_docsumFilter, inserter);
+        _buf.reset();
+        vespalib::WritableMemory magicId = _buf.reserve(4);
+        memcpy(magicId.data, &search::docsummary::SLIME_MAGIC_ID, 4);
+        _buf.commit(4);
+        vespalib::slime::BinaryFormat::encode(slime, _buf);
+        vespalib::Memory mem = _buf.obtain();
+        return {mem.data, mem.size};
     }
-    return vespalib::ConstBufferRef();
+    return {};
 }
 
 void SearchVisitor::HitsResultPreparator::execute(vespalib::Identifiable & obj)
@@ -185,10 +239,10 @@ SearchVisitor::SearchVisitor(StorageComponent& component,
     _docTypeMapping(),
     _fieldSearchSpecMap(),
     _snippetModifierManager(),
-    _summaryGenerator(),
     _summaryClass("default"),
     _attrMan(),
     _attrCtx(_attrMan.createContext()),
+    _summaryGenerator(_attrMan),
     _groupingList(),
     _attributeFields(),
     _sortList(),
@@ -215,6 +269,13 @@ void SearchVisitor::init(const Parameters & params)
         _summaryClass = vespalib::string(valueRef.data(), valueRef.size());
         LOG(debug, "Received summary class: %s", _summaryClass.c_str());
     }
+    if ( params.lookup("summary-fields", valueRef) ) {
+        vespalib::StringTokenizer fieldTokenizer(valueRef, " ");
+        for (const auto & field : fieldTokenizer) {
+            _summaryGenerator.add_summary_field(field);
+            LOG(debug, "Received field: %s", vespalib::string(field).c_str());
+        }
+    }
 
     size_t wantedSummaryCount(10);
     if (params.lookup("summarycount", valueRef) ) {
@@ -233,7 +294,7 @@ void SearchVisitor::init(const Parameters & params)
     int queryFlags = params.get("queryflags", 0);
     if (queryFlags) {
         bool dumpFeatures = (queryFlags & QFLAG_DUMP_FEATURES) != 0;
-        _summaryGenerator.getDocsumState()._args.dumpFeatures(dumpFeatures);
+        _summaryGenerator.set_dump_features(dumpFeatures);
         _rankController.setDumpFeatures(dumpFeatures);
         LOG(debug, "QFLAG_DUMP_FEATURES: %s", _rankController.getDumpFeatures() ? "true" : "false");
     }
@@ -269,7 +330,7 @@ void SearchVisitor::init(const Parameters & params)
     if (params.lookup("location", valueRef)) {
         location = vespalib::string(valueRef.data(), valueRef.size());
         LOG(debug, "Location = '%s'", location.c_str());
-        _summaryGenerator.getDocsumState()._args.setLocation(valueRef);
+        _summaryGenerator.set_location(valueRef);
     }
 
     Parameters::ValueRef searchClusterBlob;
@@ -289,12 +350,12 @@ void SearchVisitor::init(const Parameters & params)
             LOG(spam, "Received query blob of %zu bytes", queryBlob.size());
             VISITOR_TRACE(9, vespalib::make_string("Setting up for query blob of %zu bytes", queryBlob.size()));
             QueryTermDataFactory addOnFactory;
-            _query = Query(addOnFactory, search::QueryPacketT(queryBlob.data(), queryBlob.size()));
+            _query = Query(addOnFactory, vespalib::stringref(queryBlob.data(), queryBlob.size()));
             _searchBuffer->reserve(0x10000);
 
             int stackCount = 0;
             if (params.get("querystackcount", stackCount)) {
-                _summaryGenerator.getDocsumState()._args.SetStackDump(queryBlob.size(), (const char*)queryBlob.data());
+                _summaryGenerator.set_stack_dump(std::vector<char>(queryBlob.begin(), queryBlob.end()));
             } else {
                 LOG(warning, "Request without query stack count");
             }
@@ -371,12 +432,11 @@ SearchVisitor::AttributeInserter::onPrimitive(uint32_t, const Content & c)
     LOG(debug, "AttributeInserter: Adding value '%s'(%d) to attribute '%s' for docid '%d'",
         value.toString().c_str(), c.getWeight(), _attribute.getName().c_str(), _docId);
     search::IExtendAttribute & attr = *_attribute.getExtendInterface();
-    const vespalib::Identifiable::RuntimeClass & aInfo = _attribute.getClass();
-    if (aInfo.inherits(search::IntegerAttribute::classId)) {
+    if (_attribute.isIntegerType()) {
         attr.add(value.getAsLong(), c.getWeight());
-    } else if (aInfo.inherits(search::FloatingPointAttribute::classId)) {
+    } else if (_attribute.isFloatingPointType()) {
         attr.add(value.getAsDouble(), c.getWeight());
-    } else if (aInfo.inherits(search::StringAttribute::classId)) {
+    } else if (_attribute.isStringType()) {
         attr.add(value.getAsString().c_str(), c.getWeight());
     } else {
         assert(false && "We got an attribute vector that is of an unknown type");
@@ -610,10 +670,10 @@ SearchVisitor::registerAdditionalFields(const std::vector<vsm::DocsumTools::Fiel
     for (const vsm::DocsumTools::FieldSpec & spec : docsumSpec) {
         fieldList.push_back(spec.getOutputName());
         const std::vector<vespalib::string> & inputNames = spec.getInputNames();
-        for (size_t j = 0; j < inputNames.size(); ++j) {
-            fieldList.push_back(inputNames[j]);
-            if (PositionDataType::isZCurveFieldName(inputNames[j])) {
-                fieldList.emplace_back(PositionDataType::cutZCurveFieldName(inputNames[j]));
+        for (const auto & name : inputNames) {
+            fieldList.push_back(name);
+            if (PositionDataType::isZCurveFieldName(name)) {
+                fieldList.emplace_back(PositionDataType::cutZCurveFieldName(name));
             }
         }
     }
@@ -686,33 +746,7 @@ SearchVisitor::setupDocsumObjects()
     docsumFilter->setSnippetModifiers(_snippetModifierManager.getModifiers());
     _summaryGenerator.setFilter(std::move(docsumFilter));
     if (_vsmAdapter->getDocsumTools().get()) {
-        GetDocsumsState * ds(&_summaryGenerator.getDocsumState());
-        _vsmAdapter->getDocsumTools()->getDocsumWriter()->InitState(_attrMan, ds);
-       _summaryGenerator.setDocsumWriter(*_vsmAdapter->getDocsumTools()->getDocsumWriter());
-       for (const IAttributeVector * v : ds->_attributes) {
-           if (v != nullptr) {
-               vespalib::string name(v->getName());
-               vsm::FieldIdT fid = _fieldSearchSpecMap.nameIdMap().fieldNo(name);
-               if ( fid != StringFieldIdTMap::npos ) {
-                   AttributeGuard::UP attr(_attrMan.getAttribute(name));
-                   if (attr->valid()) {
-                       size_t index(_attributeFields.size());
-                       for (size_t j(0); j < index; j++) {
-                           if (_attributeFields[j]._field == fid) {
-                               index = j;
-                           }
-                        }
-                        if (index == _attributeFields.size()) {
-                            _attributeFields.emplace_back(fid, std::move(attr));
-                        }
-                   } else {
-                       LOG(warning, "Attribute '%s' is not valid", name.c_str());
-                   }
-               } else {
-                   LOG(warning, "No field with name '%s'. Odd ....", name.c_str());
-               }
-           }
-       }
+        _summaryGenerator.setDocsumWriter(*_vsmAdapter->getDocsumTools()->getDocsumWriter());
     } else {
         LOG(warning, "No docsum tools available");
     }
@@ -730,7 +764,7 @@ SearchVisitor::setupAttributeVectors()
 
 void SearchVisitor::setupAttributeVector(const FieldPath &fieldPath) {
     vespalib::string attrName(fieldPath.front().getName());
-    for (FieldPath::const_iterator ft(fieldPath.begin() + 1), fmt(fieldPath.end()); ft != fmt; ft++) {
+    for (auto ft(fieldPath.begin() + 1), fmt(fieldPath.end()); ft != fmt; ft++) {
         attrName.append(".");
         attrName.append((*ft)->getName());
     }
@@ -738,12 +772,12 @@ void SearchVisitor::setupAttributeVector(const FieldPath &fieldPath) {
     enum FieldDataType { OTHER = 0, ARRAY, WSET };
     FieldDataType typeSeen = OTHER;
     for (const auto & entry : fieldPath) {
-        int dataTypeId(entry->getDataType().getClass().id());
-        if (dataTypeId == document::ArrayDataType::classId) {
+        const document::DataType & dt = entry->getDataType();
+        if (dt.isArray()) {
             typeSeen = ARRAY;
-        } else if (dataTypeId == document::MapDataType::classId) {
+        } else if (dt.isMap()) {
             typeSeen = ARRAY;
-        } else if (dataTypeId == document::WeightedSetDataType::classId) {
+        } else if (dt.isWeightedSet()) {
             typeSeen = WSET;
         }
     }
@@ -759,14 +793,14 @@ void SearchVisitor::setupAttributeVector(const FieldPath &fieldPath) {
 
     if (attr) {
         LOG(debug, "Adding attribute '%s' for field '%s' with data type '%s' (%s)",
-            attr->getName().c_str(), attrName.c_str(), fv.getDataType()->getName().c_str(), fv.getClass().name());
+            attr->getName().c_str(), attrName.c_str(), fv.getDataType()->getName().c_str(), fv.className());
         if ( ! _attrMan.add(attr) ) {
             LOG(warning, "Failed adding attribute '%s' for field '%s' with data type '%s' (%s)",
-                attr->getName().c_str(), attrName.c_str(), fv.getDataType()->getName().c_str(), fv.getClass().name());
+                attr->getName().c_str(), attrName.c_str(), fv.getDataType()->getName().c_str(), fv.className());
         }
     } else {
         LOG(debug, "Cannot setup attribute for field '%s' with data type '%s' (%s). Aggregation and sorting will not work for this field",
-            attrName.c_str(), fv.getDataType()->getName().c_str(), fv.getClass().name());
+            attrName.c_str(), fv.getDataType()->getName().c_str(), fv.className());
     }
 }
 
@@ -853,7 +887,7 @@ private:
 
 bool
 SearchVisitor::compatibleDocumentTypes(const document::DocumentType& typeA,
-                                       const document::DocumentType& typeB) const
+                                       const document::DocumentType& typeB)
 {
     if (&typeA == &typeB) {
         return true;
@@ -864,7 +898,7 @@ SearchVisitor::compatibleDocumentTypes(const document::DocumentType& typeA,
 
 void
 SearchVisitor::handleDocuments(const document::BucketId&,
-                               std::vector<storage::spi::DocEntry::UP>& entries,
+                               DocEntryList & entries,
                                HitCounter& hitCounter)
 {
     (void) hitCounter;
@@ -934,7 +968,6 @@ SearchVisitor::handleDocument(StorageDocument & document)
             group(document.docDoc(), rp.getRankScore(), false);
 
             if (amongTheBest) {
-                document.saveCachedFields();
                 needToKeepDocument = true;
             }
 
@@ -986,7 +1019,7 @@ SearchVisitor::fillAttributeVectors(const vespalib::string & documentId, const S
 {
     for (const AttrInfo & finfo : _attributeFields) {
         const AttributeGuard &finfoGuard(*finfo._attr);
-        bool isPosition = finfoGuard->getClass().inherits(search::IntegerAttribute::classId) && PositionDataType::isZCurveFieldName(finfoGuard->getName());
+        bool isPosition = finfoGuard->isIntegerType() && PositionDataType::isZCurveFieldName(finfoGuard->getName());
         LOG(debug, "Filling attribute '%s',  isPosition='%s'", finfoGuard->getName().c_str(), isPosition ? "true" : "false");
         uint32_t fieldId = finfo._field;
         if (isPosition) {

@@ -1,24 +1,39 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.clustercontroller.core;
 
+import com.yahoo.vdslib.state.Node;
+import com.yahoo.vdslib.state.NodeState;
+import com.yahoo.vdslib.state.NodeType;
+import com.yahoo.vdslib.state.State;
 import com.yahoo.vespa.clustercontroller.core.database.Database;
 import com.yahoo.vespa.clustercontroller.core.database.DatabaseFactory;
 import com.yahoo.vespa.clustercontroller.core.database.DatabaseHandler;
-import com.yahoo.vespa.clustercontroller.core.listeners.NodeAddedOrRemovedListener;
-import com.yahoo.vespa.clustercontroller.core.listeners.NodeStateOrHostInfoChangeHandler;
-import org.junit.Test;
+import com.yahoo.vespa.clustercontroller.core.listeners.NodeListener;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.MockitoAnnotations;
+import java.util.Map;
+import java.util.TreeMap;
 
-import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class DatabaseHandlerTest {
+
+    private AutoCloseable openMock = null;
+
+    @Captor
+    ArgumentCaptor<TreeMap<Node, NodeState>> wantedStatesArgument;
 
     static class Fixture {
         final ClusterFixture clusterFixture = ClusterFixture.forFlatCluster(10);
@@ -41,8 +56,8 @@ public class DatabaseHandlerTest {
             when(mockTimer.getCurrentTimeInMillis()).thenReturn(1000000L);
         }
 
-        DatabaseHandler.Context createMockContext() {
-            return new DatabaseHandler.Context() {
+        DatabaseHandler.DatabaseContext createMockContext() {
+            return new DatabaseHandler.DatabaseContext() {
                 @Override
                 public ContentCluster getCluster() {
                     return clusterFixture.cluster();
@@ -54,24 +69,31 @@ public class DatabaseHandlerTest {
                 }
 
                 @Override
-                public NodeAddedOrRemovedListener getNodeAddedOrRemovedListener() {
-                    return null;
-                }
-
-                @Override
-                public NodeStateOrHostInfoChangeHandler getNodeStateUpdateListener() {
+                public NodeListener getNodeStateUpdateListener() {
                     return null;
                 }
             };
         }
 
         DatabaseHandler createHandler() throws Exception {
-            return new DatabaseHandler(mockDbFactory, mockTimer, databaseAddress, 0, monitor);
+            FleetControllerContext fleetControllerContext = mock(FleetControllerContext.class);
+            when(fleetControllerContext.id()).thenReturn(new FleetControllerId("clusterName", 0));
+            return new DatabaseHandler(fleetControllerContext, mockDbFactory, mockTimer, databaseAddress, monitor);
         }
     }
 
+    @BeforeEach
+    public void setUp() {
+        openMock = MockitoAnnotations.openMocks(this);
+    }
+
+    @AfterEach
+    public void tearDown() throws Exception {
+        openMock.close();
+    }
+
     @Test
-    public void can_store_latest_cluster_state_bundle() throws Exception {
+    void can_store_latest_cluster_state_bundle() throws Exception {
         Fixture f = new Fixture();
         DatabaseHandler handler = f.createHandler();
         handler.doNextZooKeeperTask(f.createMockContext()); // Database setup step
@@ -81,7 +103,7 @@ public class DatabaseHandlerTest {
     }
 
     @Test
-    public void can_load_latest_cluster_state_bundle() throws Exception {
+    void can_load_latest_cluster_state_bundle() throws Exception {
         Fixture f = new Fixture();
         DatabaseHandler handler = f.createHandler();
         handler.doNextZooKeeperTask(f.createMockContext()); // Database setup step
@@ -89,19 +111,44 @@ public class DatabaseHandlerTest {
         when(f.mockDatabase.retrieveLastPublishedStateBundle()).thenReturn(f.dummyBundle);
 
         ClusterStateBundle retrievedBundle = handler.getLatestClusterStateBundle();
-        assertThat(retrievedBundle, equalTo(f.dummyBundle));
+        assertEquals(f.dummyBundle, retrievedBundle);
     }
 
     // FIXME I don't like the semantics of this, but it mirrors the legacy behavior for the
     // rest of the DB load operations exposed by the DatabaseHandler.
     @Test
-    public void empty_bundle_is_returned_if_no_db_connection() throws Exception {
+    void empty_bundle_is_returned_if_no_db_connection() throws Exception {
         Fixture f = new Fixture();
         DatabaseHandler handler = f.createHandler();
         // Note: no DB setup step
 
         ClusterStateBundle retrievedBundle = handler.getLatestClusterStateBundle();
-        assertThat(retrievedBundle, equalTo(ClusterStateBundle.empty()));
+        assertEquals(ClusterStateBundle.empty(), retrievedBundle);
     }
 
+    @Test
+    void save_wanted_state_of_configured_nodes() throws Exception {
+        var fixture = new Fixture();
+        DatabaseHandler handler = fixture.createHandler();
+        DatabaseHandler.DatabaseContext databaseContext = fixture.createMockContext();
+
+        // The test fixture contains 10 nodes with indices 1-10.  A wanted state for
+        // an existing node (5) should be preserved.  Note that it is not possible to set a
+        // wanted state outside the existing nodes.
+        Node storageNode5 = Node.ofStorage(5);
+        NodeState maintenance = new NodeState(NodeType.STORAGE, State.MAINTENANCE);
+        databaseContext.getCluster().getNodeInfo(storageNode5).setWantedState(maintenance);
+        var expectedWantedStates = new TreeMap<>(Map.of(storageNode5, maintenance));
+
+        // Ensure database is connected to ZooKeeper
+        assertTrue(handler.doNextZooKeeperTask(databaseContext));
+
+        // Verify ZooKeeperDatabase::storeWantedStates is invoked once
+        verify(fixture.mockDatabase, times(0)).storeWantedStates(any());
+        assertTrue(handler.saveWantedStates(databaseContext));
+        verify(fixture.mockDatabase, times(1)).storeWantedStates(wantedStatesArgument.capture());
+
+        // Verify ZooKeeperDatabase::storeWantedStates only saves states for existing nodes
+        assertEquals(expectedWantedStates, wantedStatesArgument.getValue());
+    }
 }

@@ -47,7 +47,6 @@ public class JavaClassBuilder implements ClassBuilder {
             try (PrintStream out = new PrintStream(new FileOutputStream(outFile))) {
                 out.print(getConfigClass(className));
             }
-            System.err.println(outFile.getPath() + " successfully written.");
         } catch (FileNotFoundException e) {
             throw new CodegenRuntimeException(e);
         }
@@ -86,15 +85,13 @@ public class JavaClassBuilder implements ClassBuilder {
                 "  public final static String CONFIG_DEF_MD5 = \"" + root.getMd5() + "\";\n" + //
                 "  public final static String CONFIG_DEF_NAME = \"" + root.getName() + "\";\n" + //
                 "  public final static String CONFIG_DEF_NAMESPACE = \"" + root.getNamespace() + "\";\n" + //
-                "  public final static String CONFIG_DEF_VERSION = \"\";\n" + // TODO: Remove in Vespa 8
                 "  public final static String[] CONFIG_DEF_SCHEMA = {\n" + //
                 "" + indentCode(INDENTATION + INDENTATION, getDefSchema()) + "\n" + //
                 "  };\n" + //
                 "\n" + //
                 "  public static String getDefMd5()       { return CONFIG_DEF_MD5; }\n" + //
                 "  public static String getDefName()      { return CONFIG_DEF_NAME; }\n" + //
-                "  public static String getDefNamespace() { return CONFIG_DEF_NAMESPACE; }\n" + //
-                "  public static String getDefVersion()   { return CONFIG_DEF_VERSION; }";
+                "  public static String getDefNamespace() { return CONFIG_DEF_NAMESPACE; }";
     }
 
     private String getDefSchema() {
@@ -108,12 +105,9 @@ public class JavaClassBuilder implements ClassBuilder {
     }
 
     /**
-     * @param rootDir
-     *            The root directory for the destination path.
-     * @param javaPackage
-     *            The java package
-     * @return the destination path for the generated config file, including the
-     *         given rootDir.
+     * @param rootDir the root directory for the destination path.
+     * @param javaPackage the java package
+     * @return the destination path for the generated config file, including the given rootDir.
      */
     private File getDestPath(File rootDir, String javaPackage) {
         File dir = rootDir;
@@ -144,7 +138,7 @@ public class JavaClassBuilder implements ClassBuilder {
         for (int i = 1;; i++) {
             String candidate = (i < basis.length()) ? basis.substring(0, i)
                     : ReservedWords.INTERNAL_PREFIX + basis + rng.nextInt(Integer.MAX_VALUE);
-            if (usedSymbols.contains(candidate) == false) {
+            if ( ! usedSymbols.contains(candidate)) {
                 return candidate;
             }
         }

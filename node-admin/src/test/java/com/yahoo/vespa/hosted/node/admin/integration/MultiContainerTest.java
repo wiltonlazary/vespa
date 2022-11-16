@@ -6,7 +6,7 @@ import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeSpec;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeState;
 import com.yahoo.vespa.hosted.node.admin.container.ContainerName;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
@@ -20,13 +20,12 @@ import static org.mockito.ArgumentMatchers.eq;
 public class MultiContainerTest {
 
     @Test
-    public void test() {
-        DockerImage image1 = DockerImage.fromString("registry.example.com/image1");
-        DockerImage image2 = DockerImage.fromString("registry.example.com/image2");
+    void test() {
+        DockerImage image1 = DockerImage.fromString("registry.example.com/repo/image1");
+        DockerImage image2 = DockerImage.fromString("registry.example.com/repo/image2");
         try (ContainerTester tester = new ContainerTester(List.of(image1, image2))) {
             addAndWaitForNode(tester, "host1.test.yahoo.com", image1);
-            NodeSpec nodeSpec2 = addAndWaitForNode(
-                    tester, "host2.test.yahoo.com", image2);
+            NodeSpec nodeSpec2 = addAndWaitForNode(tester, "host2.test.yahoo.com", image2);
 
             tester.addChildNodeRepositoryNode(NodeSpec.Builder.testSpec(nodeSpec2.hostname(), NodeState.dirty).build());
 
@@ -49,7 +48,7 @@ public class MultiContainerTest {
         tester.addChildNodeRepositoryNode(nodeSpec);
 
         ContainerName containerName = ContainerName.fromHostname(hostName);
-        tester.inOrder(tester.containerOperations).createContainer(containerMatcher(containerName), any(), any());
+        tester.inOrder(tester.containerOperations).createContainer(containerMatcher(containerName), any());
         tester.inOrder(tester.containerOperations).resumeNode(containerMatcher(containerName));
         tester.inOrder(tester.nodeRepository).updateNodeAttributes(eq(hostName), any());
 

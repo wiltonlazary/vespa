@@ -1,7 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.jdisc.http.filter.security.athenz;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
+import com.yahoo.jdisc.http.filter.DiscFilterRequest;
 import com.yahoo.vespa.athenz.api.AthenzResourceName;
 
 import java.util.Optional;
@@ -27,7 +28,7 @@ public class StaticRequestResourceMapper implements RequestResourceMapper {
     }
 
     @Override
-    public Optional<ResourceNameAndAction> getResourceNameAndAction(String method, String uriPath, String uriQuery) {
+    public Optional<ResourceNameAndAction> getResourceNameAndAction(DiscFilterRequest request) {
         return Optional.of(new ResourceNameAndAction(resourceName, action));
     }
 }

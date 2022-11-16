@@ -48,8 +48,11 @@ public class Argmax<NAMETYPE extends Name> extends CompositeTensorFunction<NAMET
     }
 
     @Override
-    public String toString(ToStringContext context) {
+    public String toString(ToStringContext<NAMETYPE> context) {
         return "argmax(" + argument.toString(context) + Reduce.commaSeparated(dimensions) + ")";
     }
+
+    @Override
+    public int hashCode() { return Objects.hash("argmax", argument, dimensions); }
 
 }

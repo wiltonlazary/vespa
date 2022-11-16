@@ -98,22 +98,23 @@ ConfigTask::PerformTask()
 } // namespace slobrok::<unnamed>
 
 SBEnv::SBEnv(const ConfigShim &shim)
-    : _transport(std::make_unique<FNET_Transport>(TransportConfig().drop_empty_buffers(true))),
+    : _transport(std::make_unique<FNET_Transport>(fnet::TransportConfig().drop_empty_buffers(true))),
       _supervisor(std::make_unique<FRT_Supervisor>(_transport.get())),
       _configShim(shim),
       _configurator(shim.factory().create(*this)),
       _shuttingDown(false),
       _partnerList(),
       _me(createSpec(_configShim.portNumber())),
-      _rpcHooks(*this),
-      _remotechecktask(std::make_unique<RemoteCheck>(getSupervisor()->GetScheduler(), _exchanger)),
-      _health(),
-      _metrics(_rpcHooks, *_transport),
-      _components(),
       _localRpcMonitorMap(getScheduler(),
                           [this] (MappingMonitorOwner &owner) {
                               return std::make_unique<RpcMappingMonitor>(*_supervisor, owner);
                           }),
+      _globalVisibleHistory(),
+      _rpcHooks(*this), // Transitively references _localRpcMonitorMap and _globalVisibleHistory
+      _remotechecktask(std::make_unique<RemoteCheck>(getSupervisor()->GetScheduler(), _exchanger)),
+      _health(),
+      _metrics(_rpcHooks, *_transport),
+      _components(),
       _exchanger(*this)
 {
     srandom(time(nullptr) ^ getpid());
@@ -173,7 +174,7 @@ SBEnv::MainLoop()
 
     std::unique_ptr<ReconfigurableStateServer> stateServer;
     if (_configShim.enableStateServer()) {
-        stateServer = std::make_unique<ReconfigurableStateServer>(_configShim.configId(), _health, _metrics, _components);
+        stateServer = std::make_unique<ReconfigurableStateServer>(config::ConfigUri(_configShim.configId()), _health, _metrics, _components);
     }
 
     try {
@@ -182,6 +183,7 @@ SBEnv::MainLoop()
         LOG(debug, "slobrok: starting main event loop");
         EV_STARTED("slobrok");
         getTransport()->Main();
+        getTransport()->WaitFinished();
         LOG(debug, "slobrok: main event loop done");
     } catch (vespalib::Exception &e) {
         LOG(error, "invalid config: %s", e.what());

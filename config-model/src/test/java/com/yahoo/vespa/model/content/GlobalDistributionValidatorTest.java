@@ -3,9 +3,7 @@ package com.yahoo.vespa.model.content;
 
 import com.yahoo.documentmodel.NewDocumentType;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithFilePkg;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -16,42 +14,44 @@ import java.util.stream.Stream;
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
 import static java.util.stream.Collectors.toSet;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author bjorncs
  */
 public class GlobalDistributionValidatorTest {
 
-    @Rule
-    public final ExpectedException exceptionRule = ExpectedException.none();
-
     @Test
-    public void validation_succeeds_on_no_documents() {
+    void validation_succeeds_on_no_documents() {
         new GlobalDistributionValidator()
                 .validate(emptyMap(), emptySet());
     }
 
     @Test
-    public void validation_succeeds_on_no_global_documents() {
+    void validation_succeeds_on_no_global_documents() {
         Fixture fixture = new Fixture()
                 .addNonGlobalDocument(createDocumentType("foo"));
         validate(fixture);
     }
 
     @Test
-    public void throws_exception_if_referenced_document_not_global() {
+    void throws_exception_if_referenced_document_not_global() {
         NewDocumentType parent = createDocumentType("parent");
         Fixture fixture = new Fixture()
                 .addNonGlobalDocument(parent)
                 .addNonGlobalDocument(createDocumentType("child", parent));
-        exceptionRule.expect(IllegalArgumentException.class);
-        exceptionRule.expectMessage(
-                "The following document types are referenced from other documents, but are not globally distributed: 'parent'");
-        validate(fixture);
+        try {
+            validate(fixture);
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertEquals("The following document types are referenced from other documents, but are not globally distributed: 'parent'",
+                    e.getMessage());
+        }
     }
 
     @Test
-    public void validation_succeeds_if_referenced_document_is_global() {
+    void validation_succeeds_if_referenced_document_is_global() {
         NewDocumentType parent = createDocumentType("parent");
         Fixture fixture = new Fixture()
                 .addGlobalDocument(parent)
@@ -60,23 +60,30 @@ public class GlobalDistributionValidatorTest {
     }
 
     @Test
-    public void throws_exception_on_unknown_document() {
+    void throws_exception_on_unknown_document() {
         NewDocumentType unknown = new NewDocumentType(new NewDocumentType.Name("unknown"));
         NewDocumentType child = createDocumentType("child", unknown);
         Fixture fixture = new Fixture()
                 .addNonGlobalDocument(child);
-        exceptionRule.expect(IllegalArgumentException.class);
-        exceptionRule.expectMessage(
-                "The following document types are referenced from other documents, but are not listed in services.xml: 'unknown'");
-        validate(fixture);
+
+        try {
+            validate(fixture);
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertEquals("The following document types are referenced from other documents, but are not listed in services.xml: 'unknown'",
+                    e.getMessage());
+        }
     }
 
     @Test
-    public void throws_exception_if_referenced_document_not_global_end_to_end() {
-        exceptionRule.expect(IllegalArgumentException.class);
-        exceptionRule.expectMessage(
-                "The following document types are referenced from other documents, but are not globally distributed: 'parent'");
-        new VespaModelCreatorWithFilePkg("src/test/cfg/application/validation/global_distribution_validation/").create();
+    void throws_exception_if_referenced_document_not_global_end_to_end() {
+        try {
+            new VespaModelCreatorWithFilePkg("src/test/cfg/application/validation/global_distribution_validation/").create();
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertEquals("The following document types are referenced from other documents, but are not globally distributed: 'parent'",
+                    e.getMessage());
+        }
     }
 
     private static NewDocumentType createDocumentType(String name, NewDocumentType... references) {

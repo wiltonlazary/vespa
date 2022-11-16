@@ -1,8 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.yql;
 
-import com.google.common.annotations.Beta;
-import com.google.inject.Inject;
+import com.yahoo.api.annotations.Beta;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.language.Linguistics;
 import com.yahoo.language.simple.SimpleLinguistics;
 import com.yahoo.processing.IllegalInputException;
@@ -10,7 +10,7 @@ import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.search.Searcher;
 import com.yahoo.processing.request.CompoundName;
-import com.yahoo.search.grouping.GroupingRequest;
+import com.yahoo.search.grouping.GroupingQueryParser;
 import com.yahoo.search.query.QueryTree;
 import com.yahoo.search.query.parser.Parsable;
 import com.yahoo.search.query.parser.ParserEnvironment;
@@ -18,6 +18,7 @@ import com.yahoo.search.query.parser.ParserFactory;
 import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.searchchain.PhaseNames;
+import com.yahoo.yolean.Exceptions;
 import com.yahoo.yolean.chain.After;
 import com.yahoo.yolean.chain.Before;
 import com.yahoo.yolean.chain.Provides;
@@ -59,13 +60,13 @@ public class MinimalQueryInserter extends Searcher {
     }
 
     private static boolean warmup(Linguistics linguistics) {
-        Query query = new Query("search/?yql=select%20*%20from%20sources%20where%20title%20contains%20'xyz';");
+        Query query = new Query("search/?yql=select%20*%20from%20sources%20where%20title%20contains%20'xyz'");
         Result result = insertQuery(query, new ParserEnvironment().setLinguistics(linguistics));
         if (result != null) {
-            log.warning("Warmup code trigger an error. Error = " + result.toString());
+            log.warning("Warmup code trigger an error. Error = " + result);
             return false;
         }
-        if ( ! "select * from sources where title contains \"xyz\";".equals(query.yqlRepresentation())) {
+        if ( ! "select * from sources where title contains \"xyz\"".equals(query.yqlRepresentation())) {
             log.warning("Warmup code generated unexpected yql: " + query.yqlRepresentation());
             return false;
         }
@@ -93,7 +94,9 @@ public class MinimalQueryInserter extends Searcher {
             Parsable parsable = Parsable.fromQueryModel(query.getModel()).setQuery(query.properties().getString(YQL));
             newTree = parser.parse(parsable);
         } catch (RuntimeException e) {
-            return new Result(query, ErrorMessage.createInvalidQueryParameter("Could not instantiate query from YQL", e));
+            return new Result(query, ErrorMessage.createInvalidQueryParameter("Could not create query from YQL: " +
+                                                                              Exceptions.toMessageString(e),
+                                                                              e));
         }
         if (parser.getOffset() != null) {
             int maxHits = query.properties().getInteger(MAX_HITS);
@@ -113,11 +116,11 @@ public class MinimalQueryInserter extends Searcher {
         }
         query.getModel().getQueryTree().setRoot(newTree.getRoot());
         query.getPresentation().getSummaryFields().addAll(parser.getYqlSummaryFields());
-        for (VespaGroupingStep step : parser.getGroupingSteps()) {
-            GroupingRequest.newInstance(query)
-                    .setRootOperation(step.getOperation())
-                    .continuations().addAll(step.continuations());
-        }
+
+        GroupingQueryParser.validate(query);
+        for (VespaGroupingStep step : parser.getGroupingSteps())
+            GroupingQueryParser.createGroupingRequestIn(query, step.getOperation(), step.continuations());
+
         if (parser.getYqlSources().size() == 0) {
             query.getModel().getSources().clear();
         } else {

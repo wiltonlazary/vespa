@@ -1,10 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.codegen;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
 
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests parsing of a single line of a .def file
@@ -14,13 +13,15 @@ import org.junit.Test;
  */
 public class DefLineParsingTest {
 
-    @Test(expected = IllegalArgumentException.class)
-    public void require_that_null_default_is_not_allowed() {
-        new DefLine("s string default=null");
+    @Test
+    void require_that_null_default_is_not_allowed() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            new DefLine("s string default=null");
+        });
     }
 
     @Test
-    public void testParseIntArray() {
+    void testParseIntArray() {
         DefLine l = new DefLine("foo[] int");
 
         assertEquals("foo[]", l.getName());
@@ -29,7 +30,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseIntMap() {
+    void testParseIntMap() {
         DefLine l = new DefLine("foo{} int");
 
         assertEquals("foo{}", l.getName());
@@ -38,7 +39,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseInnerMap() {
+    void testParseInnerMap() {
         DefLine l = new DefLine("foo{}.i int");
 
         assertEquals("foo{}.i", l.getName());
@@ -47,7 +48,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseEnum() {
+    void testParseEnum() {
         DefLine l = new DefLine("idtype enum { us_east, US_WEST, EMEA } default=EMEA");
 
         assertEquals("idtype", l.getName());
@@ -60,7 +61,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultReference() {
+    void testParseDefaultReference() {
         DefLine l = new DefLine("foo.bar reference default=\"value\"");
 
         assertEquals("foo.bar", l.getName());
@@ -70,7 +71,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseNoDefaultReference() {
+    void testParseNoDefaultReference() {
         DefLine l = new DefLine("foo.bar reference");
 
         assertEquals("foo.bar", l.getName());
@@ -83,7 +84,7 @@ public class DefLineParsingTest {
      * the future, so the test is included to verify that value and name can be retrieved.
      */
     @Test
-    public void testParseDefaultFile() {
+    void testParseDefaultFile() {
         DefLine l = new DefLine("fileWithDef file default=\"value\"");
 
         assertEquals("fileWithDef", l.getName());
@@ -93,7 +94,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseNoDefaultFile() {
+    void testParseNoDefaultFile() {
         DefLine l = new DefLine("fileVal file");
 
         assertEquals("fileVal", l.getName());
@@ -102,7 +103,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseUrls() {
+    void testParseUrls() {
         DefLine l = new DefLine("urlVal url");
 
         assertEquals("urlVal", l.getName());
@@ -111,7 +112,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultUrls() {
+    void testParseDefaultUrls() {
         DefLine l = new DefLine("urlVal url default=\"http://docs.vespa.ai\"");
 
         assertEquals("urlVal", l.getName());
@@ -120,9 +121,16 @@ public class DefLineParsingTest {
         assertEquals("url", l.getType().getName());
     }
 
+    @Test
+    void testParseModels() {
+        DefLine l = new DefLine("modelVal model");
+
+        assertEquals("modelVal", l.getName());
+        assertEquals("model", l.getType().getName());
+    }
 
     @Test
-    public void testParseDefaultInt() {
+    void testParseDefaultInt() {
         DefLine l = new DefLine("foo int default=1000");
 
         assertEquals("foo", l.getName());
@@ -132,7 +140,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultLong() {
+    void testParseDefaultLong() {
         DefLine l = new DefLine("foo long default=9223372036854775807");
 
         assertEquals("foo", l.getName());
@@ -142,7 +150,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultDouble() {
+    void testParseDefaultDouble() {
         DefLine l = new DefLine("foo double default=5.37");
 
         assertEquals("foo", l.getName());
@@ -152,7 +160,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultFalseBoolean() {
+    void testParseDefaultFalseBoolean() {
         DefLine l = new DefLine("foo bool default=false");
 
         assertEquals("foo", l.getName());
@@ -162,7 +170,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultTrueBoolean() {
+    void testParseDefaultTrueBoolean() {
         DefLine l = new DefLine("foo bool default=true");
 
         assertEquals("foo", l.getName());
@@ -172,7 +180,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseNoDefaultString() {
+    void testParseNoDefaultString() {
         DefLine l = new DefLine("foo.bar string");
 
         assertEquals("foo.bar", l.getName());
@@ -181,7 +189,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultString() {
+    void testParseDefaultString() {
         DefLine l = new DefLine("foo.bar string default=\"value\"");
 
         assertEquals("foo.bar", l.getName());
@@ -191,7 +199,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultEmptyString() {
+    void testParseDefaultEmptyString() {
         DefLine l = new DefLine("foo.bar string default=\"\"");
 
         assertEquals("foo.bar", l.getName());
@@ -201,7 +209,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseDefaultStringUnquoted() {
+    void testParseDefaultStringUnquoted() {
         DefLine l = new DefLine("foo.bar string default=value");
 
         assertEquals("foo.bar", l.getName());
@@ -211,7 +219,7 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testParseStringnullDefaultString() {
+    void testParseStringnullDefaultString() {
         DefLine l = new DefLine("foo.bar string default=\"null\"");
 
         assertEquals("foo.bar", l.getName());
@@ -221,17 +229,17 @@ public class DefLineParsingTest {
     }
 
     @Test
-    public void testRanges() {
+    void testRanges() {
         DefLine i = new DefLine("i int range=[0, 100]");
         DefLine l = new DefLine("l long range=[-1e10, 0]");
         DefLine d = new DefLine("d double range=[0, 1.0]");
-        assertThat(i.getRange(), is("[0, 100]"));
-        assertThat(l.getRange(), is("[-1e10, 0]"));
-        assertThat(d.getRange(), is("[0, 1.0]"));
+        assertEquals("[0, 100]", i.getRange());
+        assertEquals("[-1e10, 0]", l.getRange());
+        assertEquals("[0, 1.0]", d.getRange());
     }
 
     @Test
-    public void testRestartSpecification() {
+    void testRestartSpecification() {
         DefLine r0 = new DefLine("i int");
         DefLine r1 = new DefLine("i int restart");
         assertFalse(r0.getRestart());

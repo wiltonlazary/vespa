@@ -40,13 +40,6 @@ public abstract class CollectionDataType extends DataType {
     @Override
     protected FieldValue createByReflection(Object arg) { return null; }
 
-    /**
-     * Sets the nested type of this CollectionDataType.&nbsp;WARNING! Do not use! Only to be used by config system!
-     */
-    public void setNestedType(DataType nestedType) {
-        this.nestedType = nestedType;
-    }
-
     @Override
     public PrimitiveDataType getPrimitiveType() {
         return nestedType.getPrimitiveType();

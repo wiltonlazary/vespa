@@ -28,10 +28,6 @@ reuseAddress                        bool     default=true
 # The maximum idle time for a connection, which roughly translates to the Socket.setSoTimeout(int).
 idleTimeout                         double   default=180.0
 
-# DEPRECATED - Ignored, no longer in use
-stopTimeout                           double default = 30.0
-# TODO Vespa 8 Remove stop timeout
-
 # Whether or not to have socket keep alive turned on.
 tcpKeepAliveEnabled                 bool     default=false
 
@@ -105,20 +101,20 @@ healthCheckProxy.enable        bool    default=false
 # Which port to proxy
 healthCheckProxy.port          int     default=8080
 
-# Low-level timeout for proxy client (socket connect, socket read, connection pool). Aggregate timeout will be longer.
+# Low-level timeout for proxy client (socket connect, socket read, connection pool).
 healthCheckProxy.clientTimeout double  default=1.0
+
+# Servlet async request timeout. Must be larger than 'clientTimeout' to cover cost of queueing and response handling.
+healthCheckProxy.handlerTimeout double  default=1.5
+
+# Expiry for cached health response
+healthCheckProxy.cacheExpiry double  default=1.0
 
 # Enable PROXY protocol V1/V2 support (only for https connectors).
 proxyProtocol.enabled          bool    default=false
 
 # Allow https in parallel with proxy protocol
 proxyProtocol.mixedMode        bool    default=false
-
-# Redirect all requests to https port
-secureRedirect.enabled         bool    default=false
-
-# Target port for redirect
-secureRedirect.port            int     default=443
 
 # Maximum number of request per connection before server marks connections as non-persistent. Set to '0' to disable.
 maxRequestsPerConnection       int     default=0
@@ -132,3 +128,9 @@ http2Enabled                   bool  default=true
 http2.streamIdleTimeout double default=600
 
 http2.maxConcurrentStreams int default=4096
+
+# Override the default server name when authority is missing from request.
+serverName.fallback string default=""
+
+# The list of accepted server names. Empty list to accept any. Elements follows format of 'serverName.default'.
+serverName.allowed[] string

@@ -8,8 +8,7 @@
 #include "service.h"
 #include "state-api.h"
 #include <vespa/config-sentinel.h>
-#include <vespa/config/config.h>
-#include <vespa/vespalib/net/state_server.h>
+#include <vespa/vespalib/net/http/state_server.h>
 #include <sys/types.h>
 #include <sys/select.h>
 

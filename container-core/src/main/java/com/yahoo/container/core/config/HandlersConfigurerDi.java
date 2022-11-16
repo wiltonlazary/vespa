@@ -2,9 +2,9 @@
 package com.yahoo.container.core.config;
 
 import com.google.inject.AbstractModule;
-import com.google.inject.Inject;
 import com.google.inject.Injector;
 import com.yahoo.component.AbstractComponent;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.concurrent.ThreadFactoryFactory;
 import com.yahoo.config.FileReference;
@@ -20,7 +20,6 @@ import com.yahoo.jdisc.service.ClientProvider;
 import com.yahoo.jdisc.service.ServerProvider;
 import com.yahoo.osgi.OsgiImpl;
 import com.yahoo.osgi.OsgiWrapper;
-import com.yahoo.statistics.Statistics;
 import org.osgi.framework.Bundle;
 
 import java.util.ArrayList;
@@ -71,7 +70,8 @@ public class HandlersConfigurerDi {
 
         this.vespaContainer = vespaContainer;
         container = new Container(subscriberFactory, configId, deconstructor, osgiWrapper);
-        getNewComponentGraph(discInjector, true);
+        Runnable cleanupTask = waitForNextGraphGeneration(discInjector, true);
+        cleanupTask.run();
     }
 
     private static class ContainerAndDiOsgi extends OsgiImpl implements OsgiWrapper {
@@ -98,19 +98,28 @@ public class HandlersConfigurerDi {
         }
 
         @Override
-        public Set<Bundle> useApplicationBundles(Collection<FileReference> bundles) {
-            log.info("Installing bundles from the latest application");
-            return applicationBundleLoader.useBundles(new ArrayList<>(bundles));
+        public void useApplicationBundles(Collection<FileReference> bundles, long generation) {
+            log.info("Installing bundles for application generation " + generation);
+            applicationBundleLoader.useBundles(new ArrayList<>(bundles));
+        }
+
+        @Override
+        public Set<Bundle> completeBundleGeneration(GenerationStatus status) {
+            return applicationBundleLoader.completeGeneration(status);
         }
     }
 
     /**
      * Wait for new config to arrive and produce the new graph
+     * @return Task for deconstructing previous component graph and bundles
      */
-    public void getNewComponentGraph(Injector discInjector, boolean isInitializing) {
-        currentGraph = container.getNewComponentGraph(currentGraph,
-                                                      createFallbackInjector(vespaContainer, discInjector),
-                                                      isInitializing);
+    public Runnable waitForNextGraphGeneration(Injector discInjector, boolean isInitializing) {
+        Container.ComponentGraphResult result = container.waitForNextGraphGeneration(
+                this.currentGraph,
+                createFallbackInjector(vespaContainer, discInjector),
+                isInitializing);
+        this.currentGraph = result.newGraph();
+        return result.oldComponentsCleanupTask();
     }
 
     private Injector createFallbackInjector(com.yahoo.container.Container vespaContainer, Injector discInjector) {
@@ -120,7 +129,6 @@ public class HandlersConfigurerDi {
                 // Provide a singleton instance for all component fallbacks,
                 // otherwise fallback injection may lead to a cascade of components requiring reconstruction.
                 bind(com.yahoo.container.Container.class).toInstance(vespaContainer);
-                bind(com.yahoo.statistics.Statistics.class).toInstance(Statistics.nullImplementation);
                 bind(AccessLog.class).toInstance(AccessLog.NONE_INSTANCE);
                 bind(Executor.class).toInstance(fallbackExecutor);
                 if (vespaContainer.getFileAcquirer() != null)
@@ -137,9 +145,9 @@ public class HandlersConfigurerDi {
         return currentGraph.getInstance(componentClass);
     }
 
-    public void shutdown(ComponentDeconstructor deconstructor) {
-        container.shutdown(currentGraph, deconstructor);
-    }
+    public void shutdown() { container.shutdown(currentGraph); }
+
+    public void shutdownConfigRetriever() { container.shutdownConfigRetriever(); }
 
     /** Returns the currently active application configuration generation */
     public long generation() { return currentGraph.generation(); }

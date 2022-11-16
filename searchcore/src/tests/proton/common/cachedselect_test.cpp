@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/document/base/documentid.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/document/fieldvalue/intfieldvalue.h>
@@ -59,8 +60,6 @@ using search::attribute::CollectionType;
 using search::attribute::IAttributeContext;
 using search::attribute::test::MockAttributeManager;
 using vespalib::string;
-
-using namespace search::index;
 
 using IATint32 = IntegerAttributeTemplate<int32_t>;
 using IntEnumAttribute = EnumAttribute<IATint32>;
@@ -191,10 +190,11 @@ public:
     MyIntAv(const string &name)
         : SvIntAttr(name, Config(BasicType::INT32,
                                  CollectionType::SINGLE,
-                                 true, false)),
+                                 true)),
           _gets(0)
     {
     }
+    ~MyIntAv() override;
 
     virtual uint32_t
     get(AttributeVector::DocId doc, largeint_t *v, uint32_t sz) const override
@@ -210,6 +210,7 @@ public:
     }
 };
 
+MyIntAv::~MyIntAv() = default;
 
 class MyAttributeManager : public MockAttributeManager
 {

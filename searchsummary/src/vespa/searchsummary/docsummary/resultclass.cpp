@@ -1,110 +1,73 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "resultclass.h"
-#include "resultconfig.h"
+#include "docsum_field_writer.h"
 #include <vespa/vespalib/stllike/hashtable.hpp>
-#include <cassert>
-#include <zlib.h>
 
 namespace search::docsummary {
 
-ResultClass::ResultClass(const char *name, uint32_t id, util::StringEnum & fieldEnum)
+ResultClass::ResultClass(const char *name)
     : _name(name),
-      _classID(id),
       _entries(),
       _nameMap(),
-      _fieldEnum(fieldEnum),
-      _enumMap(),
-      _dynInfo(NULL),
-      _omit_summary_features(false)
+      _dynInfo(),
+      _omit_summary_features(false),
+      _num_field_writer_states(0)
 { }
 
 
 ResultClass::~ResultClass() = default;
 
 int
-ResultClass::GetIndexFromName(const char* name) const
+ResultClass::getIndexFromName(const char* name) const
 {
-    NameIdMap::const_iterator found(_nameMap.find(name));
+    auto found = _nameMap.find(name);
     return (found != _nameMap.end()) ? found->second : -1;
 }
 
 bool
-ResultClass::AddConfigEntry(const char *name, ResType type)
+ResultClass::addConfigEntry(const char *name, std::unique_ptr<DocsumFieldWriter> docsum_field_writer)
 {
-    if (_nameMap.find(name) != _nameMap.end())
+    if (_nameMap.find(name) != _nameMap.end()) {
         return false;
+    }
 
     _nameMap[name] = _entries.size();
-    ResConfigEntry e;
-    e._type      = type;
-    e._bindname  = name;
-    e._enumValue = _fieldEnum.Add(name);
-    assert(e._enumValue >= 0);
-    _entries.push_back(e);
+    ResConfigEntry e(name);
+    if (docsum_field_writer) {
+        docsum_field_writer->setIndex(_entries.size());
+        bool generated = docsum_field_writer->isGenerated();
+        _dynInfo.update_override_counts(generated);
+        if (docsum_field_writer->setFieldWriterStateIndex(_num_field_writer_states)) {
+            ++_num_field_writer_states;
+        }
+    }
+    e.set_writer(std::move(docsum_field_writer));
+    _entries.push_back(std::move(e));
     return true;
 }
 
-
-void
-ResultClass::CreateEnumMap()
+bool
+ResultClass::addConfigEntry(const char *name)
 {
-    _enumMap.resize(_fieldEnum.GetNumEntries());
-
-    for (uint32_t i(0), m(_enumMap.size()); i < m; i++) {
-        _enumMap[i] = -1;
-    }
-    for (uint32_t i(0); i < _entries.size(); i++) {
-        _enumMap[_entries[i]._enumValue] = i;
-    }
+    return addConfigEntry(name, {});
 }
 
-
 bool
-ResEntry::_extract_field(search::RawBuf *target) const
+ResultClass::all_fields_generated(const vespalib::hash_set<vespalib::string>& fields) const
 {
-    bool rc = true;
-    target->reset();
-
-    if (ResultConfig::IsVariableSize(_type)) {
-        if (_is_compressed()) { // COMPRESSED
-
-            uint32_t len = _get_length();
-            uint32_t realLen = 0;
-
-            if (len >= sizeof(uint32_t))
-                realLen = _get_real_length();
-            else
-                rc = false;
-
-            if (realLen > 0) {
-                uLongf rlen = realLen;
-                char *fillPos = target->GetWritableFillPos(realLen + 1 < 32000 ?
-                                                           32000 : realLen + 1);
-                if ((uncompress((Bytef *)fillPos, &rlen,
-                                (const Bytef *)(_get_compressed()),
-                                len - sizeof(realLen)) == Z_OK) &&
-                    rlen == realLen) {
-                    fillPos[realLen] = '\0';
-                    target->Fill(realLen);
-                } else {
-                    rc = false;
-                }
-            }
-        } else {                     // UNCOMPRESSED
-            uint32_t len = _len;
-            if (len + 1 < 32000)
-                target->preAlloc(32000);
-            else
-                target->preAlloc(len + 1);
-            char *fillPos = target->GetWritableFillPos(len + 1 < 32000 ?
-                                                       32000 : len + 1);
-            memcpy(fillPos, _pt, len);
-            fillPos[len] = '\0';
-            target->Fill(len);
+    if (_dynInfo._generateCnt == getNumEntries()) {
+        return true;
+    }
+    if (fields.empty()) {
+        return false;
+    }
+    for (const auto& entry : _entries) {
+        if (fields.contains(entry.name()) && !entry.is_generated()) {
+            return false;
         }
     }
-    return rc;
+    return true;
 }
 
 }

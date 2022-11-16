@@ -117,14 +117,17 @@ public class Generate<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAM
     }
 
     @Override
-    public String toString(ToStringContext context) { return type + "(" + generatorToString(context) + ")"; }
+    public String toString(ToStringContext<NAMETYPE> context) { return type + "(" + generatorToString(context) + ")"; }
 
-    private String generatorToString(ToStringContext context) {
+    private String generatorToString(ToStringContext<NAMETYPE> context) {
         if (freeGenerator != null)
             return freeGenerator.toString();
         else
             return boundGenerator.toString(new GenerateToStringContext(context));
     }
+
+    @Override
+    public int hashCode() { return Objects.hash("generate", type, freeGenerator, boundGenerator); }
 
     /**
      * A context for generating all the values of a tensor produced by evaluating Generate.
@@ -183,11 +186,11 @@ public class Generate<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAM
     }
 
     /** A context which adds the bindings of the generate dimension names to the given context. */
-    private class GenerateToStringContext implements ToStringContext {
+    private class GenerateToStringContext implements ToStringContext<NAMETYPE> {
 
-        private final ToStringContext context;
+        private final ToStringContext<NAMETYPE> context;
 
-        public GenerateToStringContext(ToStringContext context) {
+        public GenerateToStringContext(ToStringContext<NAMETYPE> context) {
             this.context = context;
         }
 
@@ -200,7 +203,7 @@ public class Generate<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAM
         }
 
         @Override
-        public ToStringContext parent() { return context; }
+        public ToStringContext<NAMETYPE> parent() { return context; }
 
     }
 

@@ -1,8 +1,23 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include <vespa/document/test/fieldvalue_helpers.h>
 #include <vespa/document/base/testdocman.h>
-#include <vespa/document/datatype/annotationreferencedatatype.h>
+#include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/datatype/mapdatatype.h>
+#include <vespa/document/datatype/weightedsetdatatype.h>
+#include <vespa/document/datatype/numericdatatype.h>
 #include <vespa/document/fieldvalue/iteratorhandler.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/bytefieldvalue.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
+#include <vespa/document/fieldvalue/longfieldvalue.h>
+#include <vespa/document/fieldvalue/floatfieldvalue.h>
+#include <vespa/document/fieldvalue/doublefieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/rawfieldvalue.h>
+#include <vespa/document/fieldvalue/arrayfieldvalue.h>
+#include <vespa/document/fieldvalue/mapfieldvalue.h>
+#include <vespa/document/fieldvalue/weightedsetfieldvalue.h>
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/serialization/vespadocumentdeserializer.h>
@@ -19,7 +34,6 @@
 #include <gmock/gmock.h>
 
 using vespalib::nbostream;
-using vespalib::compression::CompressionConfig;
 using namespace ::testing;
 
 using namespace document::config_builder;
@@ -36,9 +50,11 @@ TEST(DocumentTest, testSizeOf)
     EXPECT_EQ(32u, sizeof(vespalib::GrowableByteBuffer));
     EXPECT_EQ(88ul, sizeof(IdString));
     EXPECT_EQ(104ul, sizeof(DocumentId));
-    EXPECT_EQ(240ul, sizeof(Document));
-    EXPECT_EQ(96ul, sizeof(StructFieldValue));
-    EXPECT_EQ(16ul, sizeof(StructuredFieldValue));
+    EXPECT_EQ(256ul, sizeof(Document));
+    EXPECT_EQ(80ul, sizeof(NumericDataType));
+    EXPECT_EQ(24ul, sizeof(LongFieldValue));
+    EXPECT_EQ(104ul, sizeof(StructFieldValue));
+    EXPECT_EQ(24ul, sizeof(StructuredFieldValue));
     EXPECT_EQ(56ul, sizeof(SerializableArray));
 }
 
@@ -334,11 +350,12 @@ TEST(DocumentTest, testModifyDocument)
     structmap1.put(StringFieldValue("test"), l2s1);
     l1s1.setValue(structmapF, structmap1);
 
-    WeightedSetFieldValue wset1(wset);
+    WeightedSetFieldValue wwset1(wset);
+    WSetHelper wset1(wwset1);
     wset1.add("foo");
     wset1.add("bar");
     wset1.add("zoo");
-    l1s1.setValue(wsetF, wset1);
+    l1s1.setValue(wsetF, wwset1);
 
     WeightedSetFieldValue wset2(structwset);
     wset2.add(l2s1);
@@ -690,20 +707,19 @@ TEST(DocumentTest,testReadSerializedAllVersions)
         // Create a memory instance of document
     {
         Document doc(*docType, DocumentId("id:ns:serializetest::http://test.doc.id/"));
-        doc.set("intfield", 5);
-        doc.set("floatfield", -9.23);
-        doc.set("stringfield", "This is a string.");
-        doc.set("longfield", static_cast<int64_t>(398420092938472983LL));
-        doc.set("doublefield", 98374532.398820);
-        doc.set("bytefield", -2);
-        doc.setValue("rawfield", RawFieldValue("RAW DATA", 8));
+        doc.setValue("intfield", IntFieldValue::make(5));
+        doc.setValue("floatfield", FloatFieldValue::make(-9.23));
+        doc.setValue("stringfield", StringFieldValue::make("This is a string."));
+        doc.setValue("longfield", LongFieldValue::make(static_cast<int64_t>(398420092938472983LL)));
+        doc.setValue("doublefield", DoubleFieldValue::make(98374532.398820));
+        doc.setValue("bytefield", ByteFieldValue::make(-2));
+        doc.setValue("rawfield", std::make_unique<RawFieldValue>("RAW DATA", 8));
         Document docInDoc(*docInDocType, DocumentId("id:ns:docindoc::http://doc.in.doc/"));
-        docInDoc.set("stringindocfield", "Elvis is dead");
-        //docInDoc.setCompression(CompressionConfig(CompressionConfig::NONE, 0, 0));
+        docInDoc.setValue("stringindocfield", StringFieldValue::make("Elvis is dead"));
         doc.setValue("docfield", docInDoc);
         ArrayFieldValue floatArray(*arrayOfFloatDataType);
-        floatArray.add(1.0);
-        floatArray.add(2.0);
+        CollectionHelper(floatArray).add(1.0);
+        CollectionHelper(floatArray).add(2.0);
         doc.setValue("arrayoffloatfield", floatArray);
         WeightedSetFieldValue weightedSet(*weightedSetDataType);
         weightedSet.add(StringFieldValue("Weighted 0"), 50);
@@ -713,7 +729,6 @@ TEST(DocumentTest,testReadSerializedAllVersions)
         // Write document to disk, (when you bump version and alter stuff,
         // you can copy this current to new test for new version)
         {
-            //doc.setCompression(CompressionConfig(CompressionConfig::NONE, 0, 0));
             nbostream buf = doc.serialize();
             int fd = open(TEST_PATH("data/document-cpp-currentversion-uncompressed.dat").c_str(),
                           O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -721,20 +736,6 @@ TEST(DocumentTest,testReadSerializedAllVersions)
             size_t len = write(fd, buf.peek(), buf.size());
             EXPECT_EQ(buf.size(), len);
             close(fd);
-        }
-        {
-            CompressionConfig oldCfg(doc.getType().getFieldsType().getCompressionConfig());
-            CompressionConfig newCfg(CompressionConfig::LZ4, 9, 95);
-            const_cast<StructDataType &>(doc.getType().getFieldsType()).setCompressionConfig(newCfg);
-            nbostream buf = doc.serialize();
-            EXPECT_TRUE(buf.size() <= buf.capacity());
-            int fd = open(TEST_PATH("data/document-cpp-currentversion-lz4-9.dat").c_str(),
-                          O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            EXPECT_TRUE(fd > 0);
-            size_t len = write(fd, buf.peek(), buf.size());
-            EXPECT_EQ(buf.size(), len);
-            close(fd);
-            const_cast<StructDataType &>(doc.getType().getFieldsType()).setCompressionConfig(oldCfg);
         }
     }
 
@@ -829,14 +830,14 @@ TEST(DocumentTest, testGenerateSerializedFile)
     DocumentTypeRepo repo(readDocumenttypesConfig(file_name));
     Document doc(*repo.getDocumentType("serializetest"), DocumentId("id:ns:serializetest::http://test.doc.id/"));
 
-    doc.set("intfield", 5);
-    doc.set("floatfield", -9.23);
-    doc.set("stringfield", "This is a string.");
-    doc.set("longfield", (int64_t) 398420092938472983ll);
-    doc.set("doublefield", 98374532.398820);
-    doc.set("urifield", "http://this.is.a.test/");
-    doc.set("bytefield", -2);
-    doc.set("rawfield", "RAW DATA");
+    doc.setValue("intfield", IntFieldValue::make(5));
+    doc.setValue("floatfield", FloatFieldValue::make(-9.23));
+    doc.setValue("stringfield", StringFieldValue::make("This is a string."));
+    doc.setValue("longfield", LongFieldValue::make((int64_t) 398420092938472983ll));
+    doc.setValue("doublefield", DoubleFieldValue::make(98374532.398820));
+    doc.setValue("urifield", StringFieldValue::make("http://this.is.a.test/"));
+    doc.setValue("bytefield", ByteFieldValue::make(-2));
+    doc.setValue("rawfield", std::make_unique<RawFieldValue>("RAW DATA"));
 
     const DocumentType *docindoc_type = repo.getDocumentType("docindoc");
     EXPECT_TRUE(docindoc_type);
@@ -874,18 +875,6 @@ TEST(DocumentTest, testGenerateSerializedFile)
     fd = open((serializedDir + "/serializecppsplit_header.dat").c_str(),
               O_WRONLY | O_TRUNC | O_CREAT, 0644);
     if (write(fd, hBuf.peek(), hBuf.size()) != (ssize_t)hBuf.size()) {
-        throw vespalib::Exception("write failed");
-    }
-    close(fd);
-
-    CompressionConfig newCfg(CompressionConfig::LZ4, 9, 95);
-    const_cast<StructDataType &>(doc.getType().getFieldsType()).setCompressionConfig(newCfg);
-
-    nbostream lz4buf = doc.serialize();
-
-    fd = open((serializedDir + "/serializecpp-lz4-level9.dat").c_str(),
-              O_WRONLY | O_TRUNC | O_CREAT, 0644);
-    if (write(fd, lz4buf.data(), lz4buf.size()) != (ssize_t)lz4buf.size()) {
         throw vespalib::Exception("write failed");
     }
     close(fd);
@@ -942,48 +931,6 @@ TEST(DocumentTest, testCRC32)
     /// \todo TODO (was warning):  Cannot test for in memory representation altered, as there is no syntax for getting internal refs to data from document. Add test when this is added.
 }
 
-TEST(DocumentTest, testHasChanged)
-{
-    TestDocRepo test_repo;
-    Document doc(*test_repo.getDocumentType("testdoctype1"),
-                 DocumentId("id:ns:testdoctype1::crawler:http://www.ntnu.no/"));
-        // Before deserialization we are changed.
-    EXPECT_TRUE(doc.hasChanged());
-
-    doc.setValue(doc.getField("hstringval"), StringFieldValue("bla bla bla bla bla"));
-        // Still changed after setting a value of course.
-    EXPECT_TRUE(doc.hasChanged());
-
-    nbostream buf;
-    doc.serialize(buf);
-        // Setting a value in doc tags us changed.
-    {
-        buf.rp(0);
-        Document doc2(test_repo.getTypeRepo(), buf);
-        EXPECT_TRUE(!doc2.hasChanged());
-
-        doc2.set("headerval", 13);
-        EXPECT_TRUE(doc2.hasChanged());
-    }
-        // Overwriting a value in doc tags us changed.
-    {
-        buf.rp(0);
-        Document doc2(test_repo.getTypeRepo(), buf);
-
-        doc2.set("hstringval", "bla bla bla bla bla");
-        EXPECT_TRUE(doc2.hasChanged());
-    }
-        // Clearing value tags us changed.
-    {
-        buf.rp(0);
-        Document doc2(test_repo.getTypeRepo(), buf);
-
-        doc2.clear();
-        EXPECT_TRUE(doc2.hasChanged());
-    }
-        // Add more tests here when we allow non-const refs to internals
-}
-
 TEST(DocumentTest, testSliceSerialize)
 {
         // Test that document doesn't need its own bytebuffer, such that we
@@ -1011,84 +958,6 @@ TEST(DocumentTest, testSliceSerialize)
 
     EXPECT_EQ(*doc, doc3);
     EXPECT_EQ(*doc2, doc4);
-}
-
-TEST(DocumentTest, testCompression)
-{
-    TestDocMan testDocMan;
-    Document::UP doc = testDocMan.createDocument();
-
-    std::string bigString("compress me");
-    for (int i = 0; i < 8; ++i) { bigString += bigString; }
-
-    doc->setValue("hstringval", StringFieldValue(bigString));
-
-    nbostream buf_uncompressed = doc->serialize();
-
-    CompressionConfig oldCfg(doc->getType().getFieldsType().getCompressionConfig());
-
-    CompressionConfig newCfg(CompressionConfig::LZ4, 9, 95);
-    const_cast<StructDataType &>(doc->getType().getFieldsType()).setCompressionConfig(newCfg);
-    nbostream buf_lz4 = doc->serialize();
-
-    const_cast<StructDataType &>(doc->getType().getFieldsType()).setCompressionConfig(oldCfg);
-
-    EXPECT_TRUE(buf_lz4.size() < buf_uncompressed.size());
-
-    Document doc_lz4(testDocMan.getTypeRepo(), buf_lz4);
-
-    EXPECT_EQ(*doc, doc_lz4);
-}
-
-TEST(DocumentTest, testCompressionConfigured)
-{
-    DocumenttypesConfigBuilderHelper builder;
-    builder.document(43, "serializetest",
-                     Struct("serializetest.header").setId(44),
-                     Struct("serializetest.body").setId(45)
-                     .addField("stringfield", DataType::T_STRING));
-    DocumentTypeRepo repo(builder.config());
-    Document doc_uncompressed(*repo.getDocumentType("serializetest"),
-                              DocumentId("id:ns:serializetest::1"));
-
-    std::string bigString("compress me");
-    for (int i = 0; i < 8; ++i) { bigString += bigString; }
-
-    doc_uncompressed.setValue("stringfield", StringFieldValue(bigString));
-    nbostream buf_uncompressed;
-    doc_uncompressed.serialize(buf_uncompressed);
-
-    size_t uncompressedSize = buf_uncompressed.size();
-
-    DocumenttypesConfigBuilderHelper builder2;
-    builder2.document(43, "serializetest",
-                      Struct("serializetest.header").setId(44),
-                      Struct("serializetest.body").setId(45)
-                      .addField("stringfield", DataType::T_STRING)
-                      .setCompression(DocumenttypesConfig::Documenttype::
-                                      Datatype::Sstruct::Compression::Type::LZ4,
-                                      9, 99, 0));
-    DocumentTypeRepo repo2(builder2.config());
-
-    Document doc(repo2, buf_uncompressed);
-
-    nbostream buf_compressed;
-    doc.serialize(buf_compressed);
-    size_t compressedSize = buf_compressed.size();
-
-    EXPECT_TRUE(compressedSize < uncompressedSize);
-
-    Document doc2(repo2, buf_compressed);
-
-    nbostream buf_compressed2;
-    doc2.serialize(buf_compressed2);
-
-    EXPECT_EQ(compressedSize, buf_compressed2.size());
-
-    Document doc3(repo2, buf_compressed2);
-
-    EXPECT_EQ(doc2, doc_uncompressed);
-    EXPECT_EQ(doc2, doc3);
 }
 
 TEST(DocumentTest, testUnknownEntries)

@@ -1,19 +1,19 @@
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.horizon;
 
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.TenantName;
-import com.yahoo.slime.JsonFormat;
-import com.yahoo.slime.SlimeUtils;
-import com.yahoo.vespa.hosted.controller.api.role.Role;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Set;
 
-import static org.junit.Assert.assertEquals;
+import static com.yahoo.slime.SlimeUtils.jsonToSlimeOrThrow;
+import static com.yahoo.slime.SlimeUtils.toJsonBytes;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author valerijf
@@ -21,7 +21,7 @@ import static org.junit.Assert.assertEquals;
 public class TsdbQueryRewriterTest {
 
     @Test
-    public void rewrites_query() throws IOException {
+    void rewrites_query() throws IOException {
         assertRewrite("filters-complex.json", "filters-complex.expected.json", Set.of(TenantName.from("tenant2")), false);
 
         assertRewrite("filter-in-execution-graph.json",
@@ -45,10 +45,9 @@ public class TsdbQueryRewriterTest {
         byte[] data = Files.readAllBytes(Paths.get("src/test/resources/horizon", initialFilename));
         data = TsdbQueryRewriter.rewrite(data, tenants, operator, SystemName.Public);
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        new JsonFormat(false).encode(baos, SlimeUtils.jsonToSlime(data));
-        String expectedJson = Files.readString(Paths.get("src/test/resources/horizon", expectedFilename));
+        String actualJson = new String(toJsonBytes(jsonToSlimeOrThrow(data).get(), false), UTF_8);
+        String expectedJson = new String(toJsonBytes(jsonToSlimeOrThrow(Files.readAllBytes(Paths.get("src/test/resources/horizon", expectedFilename))).get(), false), UTF_8);
 
-        assertEquals(expectedJson, baos.toString());
+        assertEquals(expectedJson, actualJson);
     }
 }

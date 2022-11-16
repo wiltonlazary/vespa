@@ -25,26 +25,14 @@ public class DistributorCluster extends AbstractConfigProducer<Distributor> impl
 
     public static final Logger log = Logger.getLogger(DistributorCluster.class.getPackage().toString());
 
-
-    private static class GcOptions {
-
-        public final int interval;
-        public final String selection;
-
-        public GcOptions(int interval, String selection) {
-            this.interval = interval;
-            this.selection = selection;
-        }
-    }
+    private record GcOptions(int interval, String selection) { }
 
     private final ContentCluster parent;
     private final BucketSplitting bucketSplitting;
     private final GcOptions gc;
     private final boolean hasIndexedDocumentType;
-    private final boolean useThreePhaseUpdates;
     private final int maxActivationInhibitedOutOfSyncGroups;
-    private final int mergeBusyWait;
-    private final boolean enhancedMaintenanceScheduling;
+    private final boolean useTwoPhaseDocumentGc;
 
     public static class Builder extends VespaDomBuilder.DomConfigProducerBuilder<DistributorCluster> {
 
@@ -54,8 +42,8 @@ public class DistributorCluster extends AbstractConfigProducer<Distributor> impl
             this.parent = parent;
         }
 
-        private String prepareGCSelection(ModelElement documentNode, String selStr) throws ParseException {
-            DocumentSelector s = new DocumentSelector(selStr);
+        private String prepareGCSelection(ModelElement documentNode, String selectionString) throws ParseException {
+            DocumentSelector s = new DocumentSelector(selectionString);
             boolean enableGC = false;
             if (documentNode != null) {
                 enableGC = documentNode.booleanAttribute("garbage-collection", false);
@@ -100,40 +88,33 @@ public class DistributorCluster extends AbstractConfigProducer<Distributor> impl
         }
 
         @Override
-        protected DistributorCluster doBuild(DeployState deployState, AbstractConfigProducer ancestor, Element producerSpec) {
+        protected DistributorCluster doBuild(DeployState deployState, AbstractConfigProducer<?> ancestor, Element producerSpec) {
             final ModelElement clusterElement = new ModelElement(producerSpec);
             final ModelElement documentsNode = clusterElement.child("documents");
             final GcOptions gc = parseGcOptions(documentsNode);
             final boolean hasIndexedDocumentType = clusterContainsIndexedDocumentType(documentsNode);
-            boolean useThreePhaseUpdates = deployState.getProperties().featureFlags().useThreePhaseUpdates();
             int maxInhibitedGroups = deployState.getProperties().featureFlags().maxActivationInhibitedOutOfSyncGroups();
-            int mergeBusyWait = deployState.getProperties().featureFlags().distributorMergeBusyWait();
-            boolean useEnhancedMaintenanceScheduling = deployState.getProperties().featureFlags().distributorEnhancedMaintenanceScheduling();
+            boolean useTwoPhaseDocumentGc = deployState.getProperties().featureFlags().useTwoPhaseDocumentGc();
 
             return new DistributorCluster(parent,
                     new BucketSplitting.Builder().build(new ModelElement(producerSpec)), gc,
-                    hasIndexedDocumentType, useThreePhaseUpdates,
-                    maxInhibitedGroups, mergeBusyWait,
-                    useEnhancedMaintenanceScheduling);
+                    hasIndexedDocumentType,
+                    maxInhibitedGroups, useTwoPhaseDocumentGc);
         }
     }
 
     private DistributorCluster(ContentCluster parent, BucketSplitting bucketSplitting,
                                GcOptions gc, boolean hasIndexedDocumentType,
-                               boolean useThreePhaseUpdates,
                                int maxActivationInhibitedOutOfSyncGroups,
-                               int mergeBusyWait,
-                               boolean enhancedMaintenanceScheduling)
+                               boolean useTwoPhaseDocumentGc)
     {
         super(parent, "distributor");
         this.parent = parent;
         this.bucketSplitting = bucketSplitting;
         this.gc = gc;
         this.hasIndexedDocumentType = hasIndexedDocumentType;
-        this.useThreePhaseUpdates = useThreePhaseUpdates;
         this.maxActivationInhibitedOutOfSyncGroups = maxActivationInhibitedOutOfSyncGroups;
-        this.mergeBusyWait = mergeBusyWait;
-        this.enhancedMaintenanceScheduling = enhancedMaintenanceScheduling;
+        this.useTwoPhaseDocumentGc = useTwoPhaseDocumentGc;
     }
 
     @Override
@@ -144,11 +125,9 @@ public class DistributorCluster extends AbstractConfigProducer<Distributor> impl
                     .interval(gc.interval));
         }
         builder.enable_revert(parent.getPersistence().supportRevert());
-        builder.disable_bucket_activation(hasIndexedDocumentType == false);
-        builder.enable_metadata_only_fetch_phase_for_inconsistent_updates(useThreePhaseUpdates);
+        builder.disable_bucket_activation(!hasIndexedDocumentType);
         builder.max_activation_inhibited_out_of_sync_groups(maxActivationInhibitedOutOfSyncGroups);
-        builder.inhibit_merge_sending_on_busy_node_duration_sec(mergeBusyWait);
-        builder.implicitly_clear_bucket_priority_on_schedule(enhancedMaintenanceScheduling);
+        builder.enable_two_phase_garbage_collection(useTwoPhaseDocumentGc);
 
         bucketSplitting.getConfig(builder);
     }

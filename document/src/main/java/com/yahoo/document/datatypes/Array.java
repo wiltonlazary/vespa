@@ -21,7 +21,7 @@ import java.util.ListIterator;
 import java.util.RandomAccess;
 
 /**
- * FieldValue which encapsulates a Array value
+ * FieldValue which encapsulates an Array value
  *
  * @author Einar M R Rosenvinge
  */
@@ -42,8 +42,7 @@ public final class Array<T extends FieldValue> extends CollectionFieldValue<T> i
         this(type);
         for (T v : values) {
             if (!((ArrayDataType)type).getNestedType().isValueCompatible(v)) {
-                throw new IllegalArgumentException("FieldValue " + v +
-                        " is not compatible with " + type + ".");
+                throw new IllegalArgumentException("FieldValue " + v + " is not compatible with " + type + ".");
             }
         }
         this.values.addAll(values);
@@ -221,12 +220,10 @@ public final class Array<T extends FieldValue> extends CollectionFieldValue<T> i
         return values.addAll(index, c);
     }
 
-    @SuppressWarnings("deprecation")
     public boolean retainAll(Collection<?> c) {
         return values.retainAll(c);
     }
 
-    @SuppressWarnings("deprecation")
     public boolean removeAll(Collection<?> c) {
         return values.removeAll(c);
     }
@@ -235,12 +232,10 @@ public final class Array<T extends FieldValue> extends CollectionFieldValue<T> i
         return values.get(index);
     }
 
-    @SuppressWarnings("deprecation")
     public int indexOf(Object o) {
         return values.indexOf(o);
     }
 
-    @SuppressWarnings("deprecation")
     public int lastIndexOf(Object o) {
         return values.lastIndexOf(o);
     }
@@ -257,7 +252,6 @@ public final class Array<T extends FieldValue> extends CollectionFieldValue<T> i
         return values.remove(index);
     }
 
-    @SuppressWarnings("deprecation")
     public T set(int index, T o) {
         verifyElementCompatibility(o);
         T fval = values.set(index, o);
@@ -513,7 +507,6 @@ public final class Array<T extends FieldValue> extends CollectionFieldValue<T> i
             };
         }
 
-        @SuppressWarnings("deprecation")
         public List<E> subList(int fromIndex, int toIndex) {
             return new ListWrapper<E>(myvalues.subList(fromIndex, toIndex));
         }

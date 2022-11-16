@@ -3,7 +3,7 @@ package com.yahoo.prelude.querytransform;
 
 import java.util.*;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.chain.dependencies.After;
 import com.yahoo.component.chain.dependencies.Provides;
 import com.yahoo.prelude.Index;
@@ -53,11 +53,11 @@ public class NormalizingSearcher extends Searcher {
     }
 
     protected void normalize(Query query, IndexFacts.Session indexFacts) {
-        String oldQuery = (query.getTraceLevel() >= 2) ? query.getModel().getQueryTree().getRoot().toString() : null;
+        String oldQuery = (query.getTrace().getLevel() >= 2) ? query.getModel().getQueryTree().getRoot().toString() : null;
 
         normalizeBody(query, indexFacts);
 
-        if (query.getTraceLevel() >= 2 && ! query.getModel().getQueryTree().getRoot().toString().equals(oldQuery))
+        if (query.getTrace().getLevel() >= 2 && ! query.getModel().getQueryTree().getRoot().toString().equals(oldQuery))
             query.trace(getFunctionName(), true, 2);
     }
 

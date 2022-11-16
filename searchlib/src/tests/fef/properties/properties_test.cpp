@@ -278,22 +278,6 @@ TEST("test stuff") {
             p.add("vespa.dump.ignoredefaultfeatures", "true");
             EXPECT_TRUE(dump::IgnoreDefaultFeatures::check(p));
         }
-        { // vespa.matching.split_unpacking_iterators
-            EXPECT_EQUAL(matching::SplitUnpackingIterators::NAME, vespalib::string("vespa.matching.split_unpacking_iterators"));
-            EXPECT_EQUAL(matching::SplitUnpackingIterators::DEFAULT_VALUE, false);
-            Properties p;
-            EXPECT_EQUAL(matching::SplitUnpackingIterators::check(p), false);
-            p.add("vespa.matching.split_unpacking_iterators", "true");
-            EXPECT_EQUAL(matching::SplitUnpackingIterators::check(p), true);
-        }
-        { // vespa.matching.delay_unpacking_iterators
-            EXPECT_EQUAL(matching::DelayUnpackingIterators::NAME, vespalib::string("vespa.matching.delay_unpacking_iterators"));
-            EXPECT_EQUAL(matching::DelayUnpackingIterators::DEFAULT_VALUE, false);
-            Properties p;
-            EXPECT_EQUAL(matching::DelayUnpackingIterators::check(p), false);
-            p.add("vespa.matching.delay_unpacking_iterators", "true");
-            EXPECT_EQUAL(matching::DelayUnpackingIterators::check(p), true);
-        }
         { // vespa.matching.termwise_limit
             EXPECT_EQUAL(matching::TermwiseLimit::NAME, vespalib::string("vespa.matching.termwise_limit"));
             EXPECT_EQUAL(matching::TermwiseLimit::DEFAULT_VALUE, 1.0);
@@ -453,6 +437,70 @@ TEST("test stuff") {
             EXPECT_TRUE(!IsFilterField::check(p, "bar"));
             IsFilterField::set(p, "bar");
             EXPECT_TRUE(IsFilterField::check(p, "bar"));
+        }
+        {
+            EXPECT_EQUAL(mutate::on_match::Attribute::NAME, vespalib::string("vespa.mutate.on_match.attribute"));
+            EXPECT_EQUAL(mutate::on_match::Attribute::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_match::Attribute::lookup(p), "");
+            p.add("vespa.mutate.on_match.attribute", "foobar");
+            EXPECT_EQUAL(mutate::on_match::Attribute::lookup(p), "foobar");
+        }
+        {
+            EXPECT_EQUAL(mutate::on_match::Operation::NAME, vespalib::string("vespa.mutate.on_match.operation"));
+            EXPECT_EQUAL(mutate::on_match::Operation::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_match::Operation::lookup(p), "");
+            p.add("vespa.mutate.on_match.operation", "+=1");
+            EXPECT_EQUAL(mutate::on_match::Operation::lookup(p), "+=1");
+        }
+        {
+            EXPECT_EQUAL(mutate::on_first_phase::Attribute::NAME, vespalib::string("vespa.mutate.on_first_phase.attribute"));
+            EXPECT_EQUAL(mutate::on_first_phase::Attribute::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_first_phase::Attribute::lookup(p), "");
+            p.add("vespa.mutate.on_first_phase.attribute", "foobar");
+            EXPECT_EQUAL(mutate::on_first_phase::Attribute::lookup(p), "foobar");
+        }
+        {
+            EXPECT_EQUAL(mutate::on_first_phase::Operation::NAME, vespalib::string("vespa.mutate.on_first_phase.operation"));
+            EXPECT_EQUAL(mutate::on_first_phase::Operation::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_first_phase::Operation::lookup(p), "");
+            p.add("vespa.mutate.on_first_phase.operation", "+=1");
+            EXPECT_EQUAL(mutate::on_first_phase::Operation::lookup(p), "+=1");
+        }
+        {
+            EXPECT_EQUAL(mutate::on_second_phase::Attribute::NAME, vespalib::string("vespa.mutate.on_second_phase.attribute"));
+            EXPECT_EQUAL(mutate::on_second_phase::Attribute::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_second_phase::Attribute::lookup(p), "");
+            p.add("vespa.mutate.on_second_phase.attribute", "foobar");
+            EXPECT_EQUAL(mutate::on_second_phase::Attribute::lookup(p), "foobar");
+        }
+        {
+            EXPECT_EQUAL(mutate::on_second_phase::Operation::NAME, vespalib::string("vespa.mutate.on_second_phase.operation"));
+            EXPECT_EQUAL(mutate::on_second_phase::Operation::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_second_phase::Operation::lookup(p), "");
+            p.add("vespa.mutate.on_second_phase.operation", "+=1");
+            EXPECT_EQUAL(mutate::on_second_phase::Operation::lookup(p), "+=1");
+        }
+        {
+            EXPECT_EQUAL(mutate::on_summary::Attribute::NAME, vespalib::string("vespa.mutate.on_summary.attribute"));
+            EXPECT_EQUAL(mutate::on_summary::Attribute::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_summary::Attribute::lookup(p), "");
+            p.add("vespa.mutate.on_summary.attribute", "foobar");
+            EXPECT_EQUAL(mutate::on_summary::Attribute::lookup(p), "foobar");
+        }
+        {
+            EXPECT_EQUAL(mutate::on_summary::Operation::NAME, vespalib::string("vespa.mutate.on_summary.operation"));
+            EXPECT_EQUAL(mutate::on_summary::Operation::DEFAULT_VALUE, "");
+            Properties p;
+            EXPECT_EQUAL(mutate::on_summary::Operation::lookup(p), "");
+            p.add("vespa.mutate.on_summary.operation", "+=1");
+            EXPECT_EQUAL(mutate::on_summary::Operation::lookup(p), "+=1");
         }
         {
             EXPECT_EQUAL(execute::onmatch::Attribute::NAME, vespalib::string("vespa.execute.onmatch.attribute"));

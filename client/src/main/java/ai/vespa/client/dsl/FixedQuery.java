@@ -1,24 +1,23 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.client.dsl;
-
-import com.google.gson.internal.LinkedHashTreeMap;
 
 import java.math.BigDecimal;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
- * FixedQuery contains a 'Query' which is terminated by a 'semicolon'
+ * FixedQuery contains a 'Query'.
  * This object holds vespa or user defined parameters
  * https://docs.vespa.ai/en/reference/query-api-reference.html
  */
 public class FixedQuery {
 
-    final EndQuery endQuery;
-    Map<String, String> others = new HashMap<>();
-    Map<String, String> queryMap;
+    private final EndQuery endQuery;
+    private final Map<String, String> others = new HashMap<>();
+    private Map<String, String> queryMap;
 
     FixedQuery(EndQuery endQuery) {
         this.endQuery = endQuery;
@@ -94,7 +93,6 @@ public class FixedQuery {
         return this;
     }
 
-    @Deprecated
     public FixedQuery query(String query) {
         this.param("query", query);
         return this;
@@ -334,7 +332,6 @@ public class FixedQuery {
         return this;
     }
 
-
     /**
      * build the query map from the query
      *
@@ -344,8 +341,6 @@ public class FixedQuery {
         if (queryMap != null) {
             return queryMap;
         }
-
-        assignIndex();
 
         StringBuilder sb = new StringBuilder();
         sb.append("select ")
@@ -358,9 +353,8 @@ public class FixedQuery {
         if (!"".equals(endQuery.toString())) {
             sb.append(' ').append(endQuery);
         }
-        sb.append(";");
 
-        queryMap = new LinkedHashTreeMap<>(); // for the order
+        queryMap = new LinkedHashMap<>(); // for the order
         queryMap.put("yql", sb.toString());
         queryMap.putAll(others);
         queryMap.putAll(getUserInputs());
@@ -368,30 +362,13 @@ public class FixedQuery {
     }
 
     /**
-     * build the vespa query string join by '&amp;'
+     * Builds the vespa query string joined by '&amp;'
      *
      * @return the query string
      */
     public String build() {
         return buildQueryMap().entrySet().stream().map(entry -> entry.getKey() + "=" + entry.getValue())
             .collect(Collectors.joining("&"));
-    }
-
-    private void assignIndex() {
-        assignIndex(endQuery.queryChain.getQuery(), new AtomicInteger());
-    }
-
-    private void assignIndex(QueryChain q, AtomicInteger ai) {
-        q.setIndex(ai.incrementAndGet());
-        if (q instanceof Query) {
-            assignIndex((Query) q, ai);
-        }
-    }
-
-    private void assignIndex(Query q, AtomicInteger ai) {
-        q.queries.stream()
-            .filter(QueryChain::nonEmpty)
-            .forEach(qu -> assignIndex(qu, ai));
     }
 
     private Map<String, String> getUserInputs() {
@@ -401,9 +378,7 @@ public class FixedQuery {
     private Map<String, String> getUserInputs(Query q) {
         Map<String, String> param = new HashMap<>();
         q.queries.forEach(qu -> {
-            if (qu instanceof UserInput) {
-                param.putAll(((UserInput) qu).getParam());
-            } else if (qu instanceof Query) {
+            if (qu instanceof Query) {
                 param.putAll(getUserInputs((Query) qu));
             }
         });
@@ -425,4 +400,5 @@ public class FixedQuery {
     public boolean hasNegativeSearchField(String fieldName, Object value) {
         return endQuery.queryChain.hasNegativeSearchField(fieldName, value);
     }
+
 }

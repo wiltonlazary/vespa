@@ -6,7 +6,9 @@ import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.component.Version;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.time.Clock;
 import java.util.List;
@@ -25,17 +27,20 @@ import static org.junit.Assert.assertTrue;
  */
 public class RedeployTest {
 
+    @Rule
+    public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
     @Test
     public void testRedeploy() {
-        DeployTester tester = new DeployTester.Builder().build();
+        DeployTester tester = new DeployTester.Builder(temporaryFolder).build();
         tester.deployApp("src/test/apps/app");
         Optional<com.yahoo.config.provision.Deployment> deployment = tester.redeployFromLocalActive();
 
         assertTrue(deployment.isPresent());
-        long activeSessionIdBefore = tester.applicationRepository().getActiveSession(tester.applicationId()).getSessionId();
+        long activeSessionIdBefore = tester.applicationRepository().getActiveSession(tester.applicationId()).get().getSessionId();
         assertEquals(tester.applicationId(), tester.tenant().getSessionRepository().getLocalSession(activeSessionIdBefore).getApplicationId());
         deployment.get().activate();
-        long activeSessionIdAfter =  tester.applicationRepository().getActiveSession(tester.applicationId()).getSessionId();
+        long activeSessionIdAfter =  tester.applicationRepository().getActiveSession(tester.applicationId()).get().getSessionId();
         assertEquals(activeSessionIdAfter, activeSessionIdBefore + 1);
         assertEquals(tester.applicationId(), tester.tenant().getSessionRepository().getLocalSession(activeSessionIdAfter).getApplicationId());
     }
@@ -45,7 +50,7 @@ public class RedeployTest {
     public void testNoRedeploy() {
         List<ModelFactory> modelFactories = List.of(createModelFactory(Clock.systemUTC()),
                                                     createFailingModelFactory(Version.fromString("1.0.0")));
-        DeployTester tester = new DeployTester.Builder().modelFactories(modelFactories).build();
+        DeployTester tester = new DeployTester.Builder(temporaryFolder).modelFactories(modelFactories).build();
         ApplicationId id = ApplicationId.from(tester.tenant().getName(),
                                               ApplicationName.from("default"),
                                               InstanceName.from("default"));

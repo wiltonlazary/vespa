@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
 #include <vespa/vespalib/objects/objectvisitor.h>
@@ -21,7 +21,9 @@ public:
         SUBSTRINGTERM = 2,
         EXACTSTRINGTERM = 3,
         SUFFIXTERM = 4,
-        REGEXP = 5
+        REGEXP = 5,
+        GEO_LOCATION = 6,
+        FUZZYTERM = 7
     };
 
     template <typename N>
@@ -50,6 +52,8 @@ public:
     size_t           getDiversityCutoffGroups() const { return _diversityCutoffGroups; }
     bool             getDiversityCutoffStrict() const { return _diversityCutoffStrict; }
     vespalib::stringref getDiversityAttribute() const { return _diversityAttribute; }
+    size_t           getFuzzyMaxEditDistance() const { return _fuzzyMaxEditDistance; }
+    size_t           getFuzzyPrefixLength() const { return _fuzzyPrefixLength; }
     bool getAsIntegerTerm(int64_t & lower, int64_t & upper) const;
     bool getAsDoubleTerm(double & lower, double & upper) const;
     const char * getTerm() const { return _term.c_str(); }
@@ -59,11 +63,14 @@ public:
     bool isSuffix()        const { return (_type == Type::SUFFIXTERM); }
     bool isWord()          const { return (_type == Type::WORD); }
     bool isRegex()         const { return (_type == Type::REGEXP); }
+    bool isGeoLoc()        const { return (_type == Type::GEO_LOCATION); }
+    bool isFuzzy()         const { return (_type == Type::FUZZYTERM); }
     bool empty()           const { return _term.empty(); }
     virtual void visitMembers(vespalib::ObjectVisitor &visitor) const;
     vespalib::string getClassName() const;
     bool isValid() const { return _valid; }
     const string & getTermString() const { return _term; }
+
 private:
     bool getRangeInternal(int64_t & low, int64_t & high) const;
     template <typename N>
@@ -80,6 +87,10 @@ private:
     stringref   _diversityAttribute;
     template <typename T, typename D>
     bool    getAsNumericTerm(T & lower, T & upper, D d) const;
+
+protected:
+    uint32_t    _fuzzyMaxEditDistance;  // set in QueryTerm
+    uint32_t    _fuzzyPrefixLength;
 };
 
 }

@@ -3,12 +3,13 @@
 #include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/value.h>
 #include <vespa/eval/eval/value_codec.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/searchcommon/attribute/iattributecontext.h>
+#include <vespa/searchlib/attribute/attribute.h>
 #include <vespa/searchlib/attribute/attribute_blueprint_factory.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
 #include <vespa/searchlib/attribute/attributecontext.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
-#include <vespa/searchlib/attribute/attribute.h>
 #include <vespa/searchlib/fef/matchdata.h>
 #include <vespa/searchlib/query/tree/location.h>
 #include <vespa/searchlib/query/tree/point.h>
@@ -18,6 +19,7 @@
 #include <vespa/searchlib/queryeval/leaf_blueprints.h>
 #include <vespa/searchlib/queryeval/nearest_neighbor_blueprint.h>
 #include <vespa/searchlib/tensor/dense_tensor_attribute.h>
+#include <vespa/searchlib/test/attribute_builder.h>
 #include <vespa/vespalib/gtest/gtest.h>
 
 #include <vespa/log/log.h>
@@ -27,14 +29,18 @@ using search::AttributeGuard;
 using search::AttributeVector;
 using search::IAttributeManager;
 using search::attribute::IAttributeContext;
+using search::attribute::test::AttributeBuilder;
 using search::fef::MatchData;
 using search::fef::TermFieldMatchData;
 using search::query::Location;
 using search::query::Node;
 using search::query::Point;
+using search::query::SimpleDotProduct;
 using search::query::SimpleLocationTerm;
 using search::query::SimplePrefixTerm;
 using search::query::SimpleStringTerm;
+using search::query::SimpleWandTerm;
+using search::query::SimpleWeightedSetTerm;
 using search::query::Weight;
 using search::queryeval::Blueprint;
 using search::queryeval::EmptyBlueprint;
@@ -43,6 +49,7 @@ using search::queryeval::FieldSpec;
 using search::queryeval::FilterWrapper;
 using search::queryeval::NearestNeighborBlueprint;
 using search::queryeval::SearchIterator;
+using search::queryeval::SimpleResult;
 using std::string;
 using std::vector;
 using vespalib::eval::TensorSpec;
@@ -71,7 +78,7 @@ public:
     }
 
     AttributeGuard::UP getAttribute(const string &) const override {
-        return AttributeGuard::UP(new AttributeGuard(_attribute_vector));
+        return std::make_unique<AttributeGuard>(_attribute_vector);
     }
 
     std::unique_ptr<attribute::AttributeReadGuard>
@@ -99,7 +106,7 @@ public:
     }
 };
 
-constexpr uint32_t DOCID_LIMIT = 3;
+constexpr uint32_t DOCID_LIMIT = 4;
 
 bool
 do_search(const Node &node, IAttributeManager &attribute_manager, bool expect_attribute_search_context = true)
@@ -111,7 +118,7 @@ do_search(const Node &node, IAttributeManager &attribute_manager, bool expect_at
     Blueprint::UP result = source.createBlueprint(requestContext, FieldSpec(field, 0, 0), node);
     assert(result.get());
     EXPECT_TRUE(!result->getState().estimate().empty);
-    EXPECT_EQ(3u, result->getState().estimate().estHits);
+    EXPECT_EQ(DOCID_LIMIT, result->getState().estimate().estHits);
     if (expect_attribute_search_context) {
         EXPECT_TRUE(result->get_attribute_search_context() != nullptr);
     } else {
@@ -121,9 +128,10 @@ do_search(const Node &node, IAttributeManager &attribute_manager, bool expect_at
     result->setDocIdLimit(DOCID_LIMIT);
     SearchIterator::UP iterator = result->createSearch(*md, true);
     assert((bool)iterator);
-    iterator->initRange(1, 3);
+    iterator->initRange(1, DOCID_LIMIT);
     EXPECT_TRUE(!iterator->seek(1));
-    return iterator->seek(2);
+    EXPECT_TRUE(!iterator->seek(2));
+    return iterator->seek(3);
 }
 
 bool
@@ -143,62 +151,41 @@ downcast(ParentType& parent)
     return *result;
 }
 
-struct StringAttributeFiller {
-    using ValueType = vespalib::string;
-    static void add(AttributeVector& attr, const vespalib::string& value) {
-        auto& real = downcast<StringAttribute>(attr);
-        real.update(attr.getNumDocs() - 1, value);
-        real.commit();
-    }
-};
-
-struct IntegerAttributeFiller {
-    using ValueType = int64_t;
-    static void add(AttributeVector& attr, int64_t value) {
-        auto& real = downcast<IntegerAttribute>(attr);
-        real.update(attr.getNumDocs() - 1, value);
-        real.commit();
-    }
-};
-
-template <typename FillerType>
-void
-fill(AttributeVector& attr, typename FillerType::ValueType value)
+AttributeVector::SP
+make_string_attribute(std::initializer_list<vespalib::string> values)
 {
-    AttributeVector::DocId docid;
-    attr.addDoc(docid);
-    attr.addDoc(docid);
-    attr.addDoc(docid);
-    assert(DOCID_LIMIT-1 == docid);
-    FillerType::add(attr, value);
+    Config cfg(BasicType::STRING, CollectionType::SINGLE);
+    return AttributeBuilder(field, cfg).fill(values).get();
 }
 
 AttributeVector::SP
 make_string_attribute(const std::string& value)
 {
-    Config cfg(BasicType::STRING, CollectionType::SINGLE);
-    auto attr = AttributeFactory::createAttribute(field, cfg);
-    fill<StringAttributeFiller>(*attr, value);
-    return attr;
+    return make_string_attribute({"", "", value});
 }
 
 AttributeVector::SP
-make_int_attribute(int64_t value)
+make_wset_string_attribute(std::initializer_list<std::initializer_list<vespalib::string>> values)
+{
+    Config cfg(BasicType::STRING, CollectionType::WSET);
+    // fast-search is needed to trigger use of DirectAttributeBlueprint.
+    cfg.setFastSearch(true);
+    return AttributeBuilder(field, cfg).fill_array(values).get();
+}
+
+AttributeVector::SP
+make_int_attribute(int32_t value)
 {
     Config cfg(BasicType::INT32, CollectionType::SINGLE);
-    auto attr = AttributeFactory::createAttribute(field, cfg);
-    fill<IntegerAttributeFiller>(*attr, value);
-    return attr;
+    return AttributeBuilder(field, cfg).fill({-1, -1, value}).get();
 }
 
 AttributeVector::SP
-make_fast_search_long_attribute(int64_t value)
+make_fast_search_long_attribute(int32_t value)
 {
-    Config cfg(BasicType::fromType(int64_t()), CollectionType::SINGLE);
+    Config cfg(BasicType::INT64, CollectionType::SINGLE);
     cfg.setFastSearch(true);
-    auto attr = AttributeFactory::createAttribute(field, cfg);
-    fill<IntegerAttributeFiller>(*attr, value);
-    return attr;
+    return AttributeBuilder(field, cfg).fill({-1, -1, value}).get();
 }
 
 MyAttributeManager
@@ -300,17 +287,21 @@ make_int_attribute(const vespalib::string& name)
     return AttributeFactory::createAttribute(name, cfg);
 }
 
+using BFC = Blueprint::FilterConstraint;
+
 class BlueprintFactoryFixture {
 public:
+    AttributeVector::SP attr;
     MyAttributeManager mgr;
     vespalib::string attr_name;
     AttributeContext attr_ctx;
     FakeRequestContext request_ctx;
     AttributeBlueprintFactory source;
 
-    BlueprintFactoryFixture(AttributeVector::SP attr)
-        : mgr(attr),
-          attr_name(attr->getName()),
+    BlueprintFactoryFixture(AttributeVector::SP attr_in)
+        : attr(attr_in),
+          mgr(attr_in),
+          attr_name(attr_in->getName()),
           attr_ctx(mgr),
           request_ctx(&attr_ctx),
           source()
@@ -323,12 +314,30 @@ public:
         result->setDocIdLimit(DOCID_LIMIT);
         return result;
     }
+    void expect_document_weight_attribute() {
+        EXPECT_TRUE(attr->asDocumentWeightAttribute() != nullptr);
+    }
+    void expect_filter_search(const SimpleResult& upper_and_lower, const Node& term) {
+        expect_filter_search(upper_and_lower, upper_and_lower, term);
+    }
+    void expect_filter_search(const SimpleResult& upper, const SimpleResult& lower, const Node& term) {
+        auto blueprint = create_blueprint(term);
+        auto upper_itr = blueprint->createFilterSearch(true, BFC::UPPER_BOUND);
+        auto lower_itr = blueprint->createFilterSearch(true, BFC::LOWER_BOUND);
+        EXPECT_EQ(upper, SimpleResult().search(*upper_itr, DOCID_LIMIT));
+        EXPECT_EQ(lower, SimpleResult().search(*lower_itr, DOCID_LIMIT));
+    }
+    void expect_filter_wrapper(const Node& term) {
+        auto blueprint = create_blueprint(term);
+        auto itr = blueprint->createFilterSearch(true, BFC::UPPER_BOUND);
+        downcast<FilterWrapper>(*itr);
+    }
 };
 
 class NearestNeighborFixture : public BlueprintFactoryFixture {
 public:
-    NearestNeighborFixture(AttributeVector::SP attr)
-        : BlueprintFactoryFixture(std::move(attr))
+    NearestNeighborFixture(AttributeVector::SP attr_in)
+        : BlueprintFactoryFixture(std::move(attr_in))
     {
     }
     ~NearestNeighborFixture() {}
@@ -353,7 +362,7 @@ expect_nearest_neighbor_blueprint(const vespalib::string& attribute_tensor_type_
     const auto& nearest = downcast<const NearestNeighborBlueprint>(*result);
     EXPECT_EQ(attribute_tensor_type_spec, nearest.get_attribute_tensor().getTensorType().to_spec());
     EXPECT_EQ(converted_query_tensor, spec_from_value(nearest.get_query_tensor()));
-    EXPECT_EQ(7u, nearest.get_target_num_hits());
+    EXPECT_EQ(7u, nearest.get_target_hits());
 }
 
 TEST(AttributeBlueprintTest, nearest_neighbor_blueprint_is_created_by_attribute_blueprint_factory)
@@ -400,17 +409,60 @@ TEST(AttributeBlueprintTest, empty_blueprint_is_created_when_nearest_neighbor_te
     expect_empty_blueprint(make_tensor_attribute(field, "tensor(x[2])"), dense_x_3); // tensor types are not same size
 }
 
-TEST(AttributeBlueprintTest, attribute_field_blueprint_wraps_filter_search_iterator)
+TEST(AttributeBlueprintTest, attribute_field_blueprint_creates_exact_filter_search)
 {
-    BlueprintFactoryFixture f(make_string_attribute("foo"));
+    BlueprintFactoryFixture f(make_string_attribute({"foo", "x", "foo"}));
     SimpleStringTerm term("foo", field, 0, Weight(0));
-    auto blueprint = f.create_blueprint(term);
+    f.expect_filter_search(SimpleResult({1, 3}), term);
+    f.expect_filter_wrapper(term);
+}
 
-    auto itr = blueprint->createFilterSearch(true, Blueprint::FilterConstraint::UPPER_BOUND);
-    auto& wrapper = downcast<FilterWrapper>(*itr);
-    wrapper.initRange(1, 3);
-    EXPECT_FALSE(wrapper.seek(1));
-    EXPECT_TRUE(wrapper.seek(2));
+TEST(AttributeBlueprintTest, direct_attribute_blueprint_creates_exact_filter_search)
+{
+    BlueprintFactoryFixture f(make_wset_string_attribute({{"foo"}, {}, {"foo"}}));
+    f.expect_document_weight_attribute();
+    SimpleStringTerm term("foo", field, 0, Weight(0));
+    f.expect_filter_search(SimpleResult({1, 3}), term);
+    f.expect_filter_wrapper(term);
+}
+
+TEST(AttributeBlueprintTest, direct_wand_blueprint_creates_or_like_filter_search)
+{
+    BlueprintFactoryFixture f(make_wset_string_attribute({{"foo"}, {"x"}, {"bar"}}));
+    f.expect_document_weight_attribute();
+    SimpleWandTerm term(2, field, 0, Weight(0), DOCID_LIMIT, 1000, 1.0);
+    term.addTerm("foo", Weight(10));
+    term.addTerm("bar", Weight(20));
+    f.expect_filter_search(SimpleResult({1, 3}), SimpleResult(), term);
+}
+
+TEST(AttributeBlueprintTest, direct_weighted_set_blueprint_creates_or_like_filter_search)
+{
+    BlueprintFactoryFixture f(make_wset_string_attribute({{"foo"}, {"x"}, {"bar"}}));
+    f.expect_document_weight_attribute();
+    {
+        SimpleWeightedSetTerm term(2, field, 0, Weight(0));
+        term.addTerm("foo", Weight(10));
+        term.addTerm("bar", Weight(20));
+        f.expect_filter_search(SimpleResult({1, 3}), term);
+    }
+    {
+        SimpleDotProduct term(2, field, 0, Weight(0));
+        term.addTerm("foo", Weight(10));
+        term.addTerm("bar", Weight(20));
+        f.expect_filter_search(SimpleResult({1, 3}), term);
+    }
+}
+
+TEST(AttributeBlueprintTest, attribute_weighted_set_blueprint_creates_or_like_filter_search)
+{
+    BlueprintFactoryFixture f(make_string_attribute({"foo", "x", "bar"}));
+    {
+        SimpleWeightedSetTerm term(2, field, 0, Weight(0));
+        term.addTerm("foo", Weight(10));
+        term.addTerm("bar", Weight(20));
+        f.expect_filter_search(SimpleResult({1, 3}), term);
+    }
 }
 
 GTEST_MAIN_RUN_ALL_TESTS()

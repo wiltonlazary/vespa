@@ -4,14 +4,13 @@ package com.yahoo.vespa.config.server.application;
 import ai.vespa.util.http.hc5.VespaAsyncHttpClientBuilder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.concurrent.DaemonThreadFactory;
+import com.yahoo.config.model.api.ApplicationClusterInfo;
 import com.yahoo.config.model.api.HostInfo;
 import com.yahoo.config.model.api.PortInfo;
 import com.yahoo.config.model.api.ServiceInfo;
-import com.yahoo.slime.Cursor;
-import com.yahoo.vespa.config.server.http.JSONResponse;
 import org.apache.hc.client5.http.async.methods.SimpleHttpRequest;
 import org.apache.hc.client5.http.async.methods.SimpleHttpResponse;
 import org.apache.hc.client5.http.async.methods.SimpleRequestBuilder;
@@ -41,14 +40,17 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 import static com.yahoo.config.model.api.container.ContainerServiceType.CLUSTERCONTROLLER_CONTAINER;
 import static com.yahoo.config.model.api.container.ContainerServiceType.CONTAINER;
 import static com.yahoo.config.model.api.container.ContainerServiceType.LOGSERVER_CONTAINER;
+import static com.yahoo.config.model.api.container.ContainerServiceType.METRICS_PROXY_CONTAINER;
 import static com.yahoo.config.model.api.container.ContainerServiceType.QRSERVER;
 
 /**
@@ -67,13 +69,14 @@ public class ConfigConvergenceChecker extends AbstractComponent {
             QRSERVER.serviceName,
             LOGSERVER_CONTAINER.serviceName,
             CLUSTERCONTROLLER_CONTAINER.serviceName,
+            METRICS_PROXY_CONTAINER.serviceName,
             "searchnode",
             "storagenode",
             "distributor"
     );
 
 
-    private final Executor responseHandlerExecutor =
+    private final ExecutorService responseHandlerExecutor =
             Executors.newSingleThreadExecutor(new DaemonThreadFactory("config-convergence-checker-response-handler-"));
     private final ObjectMapper jsonMapper = new ObjectMapper();
 
@@ -82,38 +85,80 @@ public class ConfigConvergenceChecker extends AbstractComponent {
 
     /** Fetches the active config generation for all services in the given application. */
     public Map<ServiceInfo, Long> getServiceConfigGenerations(Application application, Duration timeoutPerService) {
+        return getServiceConfigGenerations(application, timeoutPerService, true);
+    }
+
+    /**
+     * Fetches the active config generation for all services in the given application. Will not check services
+     * which defer config changes until restart if checkAll is false.
+     */
+    private Map<ServiceInfo, Long> getServiceConfigGenerations(Application application, Duration timeoutPerService, boolean checkAll) {
         List<ServiceInfo> servicesToCheck = new ArrayList<>();
         application.getModel().getHosts()
                    .forEach(host -> host.getServices().stream()
                                         .filter(service -> serviceTypesToCheck.contains(service.getServiceType()))
+                                        .filter(serviceInfo -> shouldCheckService(checkAll, application, serviceInfo))
                                         .forEach(service -> getStatePort(service).ifPresent(port -> servicesToCheck.add(service))));
 
+        log.log(Level.FINE, "Services to check for config convergence: " + servicesToCheck);
         return getServiceGenerations(servicesToCheck, timeoutPerService);
     }
 
-    /** Check all services in given application. Returns the minimum current generation of all services */
-    public JSONResponse getServiceConfigGenerationsResponse(Application application, URI requestUrl, Duration timeoutPerService) {
-        Map<ServiceInfo, Long> currentGenerations = getServiceConfigGenerations(application, timeoutPerService);
+    /** Checks all services in given application. Returns the minimum current generation of all services */
+    public ServiceListResponse checkConvergenceForAllServices(Application application, Duration timeoutPerService) {
+        return checkConvergence(application, timeoutPerService, true);
+    }
+
+    /**
+     * Checks services except those which defer config changes until restart in the given application.
+     * Returns the minimum current generation of those services.
+     */
+    public ServiceListResponse checkConvergenceUnlessDeferringChangesUntilRestart(Application application) {
+        Duration timeoutPerService = Duration.ofSeconds(10);
+        return checkConvergence(application, timeoutPerService, false);
+    }
+
+    private ServiceListResponse checkConvergence(Application application, Duration timeoutPerService, boolean checkAll) {
+        Map<ServiceInfo, Long> currentGenerations = getServiceConfigGenerations(application, timeoutPerService, checkAll);
         long currentGeneration = currentGenerations.values().stream().mapToLong(Long::longValue).min().orElse(-1);
-        return new ServiceListResponse(200, currentGenerations, requestUrl, application.getApplicationGeneration(),
-                                       currentGeneration);
+        return new ServiceListResponse(currentGenerations, application.getApplicationGeneration(), currentGeneration);
     }
 
     /** Check service identified by host and port in given application */
-    public JSONResponse getServiceConfigGenerationResponse(Application application, String hostAndPortToCheck, URI requestUrl, Duration timeout) {
+    public ServiceResponse getServiceConfigGeneration(Application application, String hostAndPortToCheck, Duration timeout) {
         Long wantedGeneration = application.getApplicationGeneration();
         try (CloseableHttpAsyncClient client = createHttpClient()) {
             client.start();
             if ( ! hostInApplication(application, hostAndPortToCheck))
-                return ServiceResponse.createHostNotFoundInAppResponse(requestUrl, hostAndPortToCheck, wantedGeneration);
+                return new ServiceResponse(ServiceResponse.Status.hostNotFound, wantedGeneration);
             long currentGeneration = getServiceGeneration(client, URI.create("http://" + hostAndPortToCheck), timeout).get();
             boolean converged = currentGeneration >= wantedGeneration;
-            return ServiceResponse.createOkResponse(requestUrl, hostAndPortToCheck, wantedGeneration, currentGeneration, converged);
+            return new ServiceResponse(ServiceResponse.Status.ok, wantedGeneration, currentGeneration, converged);
         } catch (InterruptedException | ExecutionException | CancellationException e) { // e.g. if we cannot connect to the service to find generation
-            return ServiceResponse.createNotFoundResponse(requestUrl, hostAndPortToCheck, wantedGeneration, e.getMessage());
+            return new ServiceResponse(ServiceResponse.Status.notFound, wantedGeneration, e.getMessage());
         } catch (Exception e) {
-            return ServiceResponse.createErrorResponse(requestUrl, hostAndPortToCheck, wantedGeneration, e.getMessage());
+            return new ServiceResponse(ServiceResponse.Status.error, wantedGeneration, e.getMessage());
         }
+    }
+
+    private boolean shouldCheckService(boolean checkServicesWithDeferChangesUntilRestart, Application application, ServiceInfo serviceInfo) {
+        if (checkServicesWithDeferChangesUntilRestart) return true;
+        if (isNotContainer(serviceInfo)) return true;
+        return serviceIsInClusterWhichShouldBeChecked(application, serviceInfo);
+    }
+
+    private boolean isNotContainer(ServiceInfo serviceInfo) {
+        return ! List.of(CONTAINER.serviceName, QRSERVER.serviceName, METRICS_PROXY_CONTAINER).contains(serviceInfo.getServiceType());
+    }
+
+    // Don't check service in a cluster which uses restartOnDeploy (new config will not be used until service is restarted)
+    private boolean serviceIsInClusterWhichShouldBeChecked(Application application, ServiceInfo serviceInfo) {
+        Set<ApplicationClusterInfo> excludeFromChecking = application.getModel().applicationClusterInfo()
+                                                                     .stream()
+                                                                     .filter(ApplicationClusterInfo::getDeferChangesUntilRestart)
+                                                                     .collect(Collectors.toSet());
+
+        return excludeFromChecking.stream().noneMatch(info -> info.name().equals(serviceInfo.getProperty("clustername").orElse("")));
     }
 
     /** Gets service generation for a list of services (in parallel). */
@@ -192,11 +237,21 @@ public class ConfigConvergenceChecker extends AbstractComponent {
         return false;
     }
 
-    private static Optional<Integer> getStatePort(ServiceInfo service) {
+    public static Optional<Integer> getStatePort(ServiceInfo service) {
         return service.getPorts().stream()
                       .filter(port -> port.getTags().contains("state"))
                       .map(PortInfo::getPort)
                       .findFirst();
+    }
+
+    @Override
+    public void deconstruct()  {
+        responseHandlerExecutor.shutdown();
+        try {
+            responseHandlerExecutor.awaitTermination(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            log.log(Level.WARNING, "Unable to shutdown executor", e);
+        }
     }
 
     private static long generationFromContainerState(JsonNode state) {
@@ -249,63 +304,70 @@ public class ConfigConvergenceChecker extends AbstractComponent {
                 .build();
     }
 
-    private static class ServiceListResponse extends JSONResponse {
+    public static class ServiceResponse {
 
-        // Pre-condition: servicesToCheck has a state port
-        private ServiceListResponse(int status, Map<ServiceInfo, Long> servicesToCheck, URI uri, long wantedGeneration,
-                                    long currentGeneration) {
-            super(status);
-            Cursor serviceArray = object.setArray("services");
-            servicesToCheck.forEach((service, generation) -> {
-                Cursor serviceObject = serviceArray.addObject();
-                String hostName = service.getHostName();
-                int statePort = getStatePort(service).get();
-                serviceObject.setString("host", hostName);
-                serviceObject.setLong("port", statePort);
-                serviceObject.setString("type", service.getServiceType());
-                serviceObject.setString("url", uri.toString() + "/" + hostName + ":" + statePort);
-                serviceObject.setLong("currentGeneration", generation);
-            });
-            object.setString("url", uri.toString());
-            object.setLong("currentGeneration", currentGeneration);
-            object.setLong("wantedGeneration", wantedGeneration);
-            object.setBool("converged", currentGeneration >= wantedGeneration);
+        public enum Status { ok, notFound, hostNotFound, error }
+
+        public final Status status;
+        public final Long wantedGeneration;
+        public final Long currentGeneration;
+        public final boolean converged;
+        public final Optional<String> errorMessage;
+
+        public ServiceResponse(Status status, long wantedGeneration) {
+            this(status, wantedGeneration, 0);
         }
+
+        public ServiceResponse(Status status, long wantedGeneration, long currentGeneration) {
+            this(status, wantedGeneration, currentGeneration, false);
+        }
+
+        public ServiceResponse(Status status, long wantedGeneration, long currentGeneration, boolean converged) {
+            this(status, wantedGeneration, currentGeneration, converged, Optional.empty());
+        }
+
+        public ServiceResponse(Status status, long wantedGeneration, String errorMessage) {
+            this(status, wantedGeneration, 0, false, Optional.ofNullable(errorMessage));
+        }
+
+        private ServiceResponse(Status status, long wantedGeneration, long currentGeneration, boolean converged, Optional<String> errorMessage) {
+            this.status = status;
+            this.wantedGeneration = wantedGeneration;
+            this.currentGeneration = currentGeneration;
+            this.converged = converged;
+            this.errorMessage = errorMessage;
+        }
+
     }
 
-    private static class ServiceResponse extends JSONResponse {
+    public static class ServiceListResponse {
 
-        private ServiceResponse(int status, URI uri, String hostname, Long wantedGeneration) {
-            super(status);
-            object.setString("url", uri.toString());
-            object.setString("host", hostname);
-            object.setLong("wantedGeneration", wantedGeneration);
+        public final List<Service> services = new ArrayList<>();
+        public final long wantedGeneration;
+        public final long currentGeneration;
+        public final boolean converged;
+
+        public ServiceListResponse(Map<ServiceInfo, Long> services, long wantedGeneration, long currentGeneration) {
+            services.forEach((key, value) -> this.services.add(new Service(key, value)));
+            this.wantedGeneration = wantedGeneration;
+            this.currentGeneration = currentGeneration;
+            this.converged = currentGeneration >= wantedGeneration;
         }
 
-        static ServiceResponse createOkResponse(URI uri, String hostname, Long wantedGeneration, Long currentGeneration, boolean converged) {
-            ServiceResponse serviceResponse = new ServiceResponse(200, uri, hostname, wantedGeneration);
-            serviceResponse.object.setBool("converged", converged);
-            serviceResponse.object.setLong("currentGeneration", currentGeneration);
-            return serviceResponse;
+        public List<Service> services() { return services; }
+
+        public static class Service {
+
+            public final ServiceInfo serviceInfo;
+            public final Long currentGeneration;
+
+            public Service(ServiceInfo serviceInfo, Long currentGeneration) {
+                this.serviceInfo = serviceInfo;
+                this.currentGeneration = currentGeneration;
+            }
+
         }
 
-        static ServiceResponse createHostNotFoundInAppResponse(URI uri, String hostname, Long wantedGeneration) {
-            ServiceResponse serviceResponse = new ServiceResponse(410, uri, hostname, wantedGeneration);
-            serviceResponse.object.setString("problem", "Host:port (service) no longer part of application, refetch list of services.");
-            return serviceResponse;
-        }
-
-        static ServiceResponse createErrorResponse(URI uri, String hostname, Long wantedGeneration, String error) {
-            ServiceResponse serviceResponse = new ServiceResponse(500, uri, hostname, wantedGeneration);
-            serviceResponse.object.setString("error", error);
-            return serviceResponse;
-        }
-
-        static ServiceResponse createNotFoundResponse(URI uri, String hostname, Long wantedGeneration, String error) {
-            ServiceResponse serviceResponse = new ServiceResponse(404, uri, hostname, wantedGeneration);
-            serviceResponse.object.setString("error", error);
-            return serviceResponse;
-        }
     }
 
 }

@@ -18,7 +18,7 @@ HitCollector::sortHitsByScore(size_t topn)
             _scoreOrder.push_back(i);
         }
         ShiftBasedRadixSorter<uint32_t, IndirectScoreRadix, IndirectScoreComparator, 56, true>::
-           radix_sort(IndirectScoreRadix(&_hits[0]), IndirectScoreComparator(&_hits[0]), &_scoreOrder[0], _scoreOrder.size(), 16, topn);
+            radix_sort(IndirectScoreRadix(_hits.data()), IndirectScoreComparator(_hits.data()), _scoreOrder.data(), _scoreOrder.size(), 16, topn);
         _scoreOrder.resize(topn);
     }
 }
@@ -28,7 +28,7 @@ HitCollector::sortHitsByDocId()
 {
     if (_hitsSortOrder != SortOrder::DOC_ID) {
         ShiftBasedRadixSorter<Hit, DocIdRadix, DocIdComparator, 24>::
-           radix_sort(DocIdRadix(), DocIdComparator(), &_hits[0], _hits.size(), 16);
+            radix_sort(DocIdRadix(), DocIdComparator(), _hits.data(), _hits.size(), 16);
         _hitsSortOrder = SortOrder::DOC_ID;
         _scoreOrder.clear();
     }
@@ -37,7 +37,7 @@ HitCollector::sortHitsByDocId()
 HitCollector::HitCollector(uint32_t numDocs,
                            uint32_t maxHitsSize)
     : _numDocs(numDocs),
-      _maxHitsSize(maxHitsSize),
+      _maxHitsSize(std::min(maxHitsSize, numDocs)),
       _maxDocIdVectorSize((numDocs + 31) / 32),
       _hits(),
       _hitsSortOrder(SortOrder::DOC_ID),
@@ -53,7 +53,7 @@ HitCollector::HitCollector(uint32_t numDocs,
     } else {
         _collector = std::make_unique<DocIdCollector<false>>(*this);
     }
-    _hits.reserve(maxHitsSize);
+    _hits.reserve(_maxHitsSize);
 }
 
 HitCollector::~HitCollector() = default;
@@ -105,6 +105,9 @@ HitCollector::RankedHitCollector::collectAndChangeCollector(uint32_t docId, feat
         uint32_t iSize = hc._hits.size();
         for (uint32_t i = 0; i < iSize; ++i) {
             hc._docIdVector.push_back(hc._hits[i].first);
+        }
+        if ((iSize > 0) && (docId < hc._docIdVector.back())) {
+            hc._unordered = true;
         }
         hc._docIdVector.push_back(docId);
         newCollector = std::make_unique<DocIdCollector<true>>(hc);
@@ -170,7 +173,7 @@ HitCollector::getSortedHitSequence(size_t max_hits)
 {
     size_t num_hits = std::min(_hits.size(), max_hits);
     sortHitsByScore(num_hits);
-    return SortedHitSequence(&_hits[0], &_scoreOrder[0], num_hits);
+    return SortedHitSequence(_hits.data(), _scoreOrder.data(), num_hits);
 }
 
 void
@@ -195,7 +198,7 @@ mergeHitsIntoResultSet(const std::vector<HitCollector::Hit> &hits, ResultSet &re
     uint32_t rhCur(0);
     uint32_t rhEnd(result.getArrayUsed());
     for (const auto &hit : hits) {
-        while (rhCur != rhEnd && result[rhCur]._docId != hit.first) {
+        while (rhCur != rhEnd && result[rhCur].getDocId() != hit.first) {
             // just set the iterators right
             ++rhCur;
         }

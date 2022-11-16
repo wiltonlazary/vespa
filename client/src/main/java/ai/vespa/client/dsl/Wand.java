@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.client.dsl;
 
 import java.util.List;
@@ -6,9 +6,9 @@ import java.util.Map;
 
 public class Wand extends QueryChain {
 
-    private String fieldName;
+    private final String fieldName;
+    private final Object value;
     private Annotation annotation;
-    private Object value;
 
 
     Wand(String fieldName, Map<String, Integer> weightedSet) {
@@ -65,7 +65,8 @@ public class Wand extends QueryChain {
     @Override
     public String toString() {
         boolean hasAnnotation = A.hasAnnotation(annotation);
-        String s = Text.format("wand(%s, %s)", fieldName, Q.gson.toJson(value));
-        return hasAnnotation ? Text.format("([%s]%s)", annotation, s) : s;
+        String s = Text.format("wand(%s, %s)", fieldName, Q.toJson(value));
+        return hasAnnotation ? Text.format("(%s%s)", annotation, s) : s;
     }
+
 }

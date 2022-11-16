@@ -1,17 +1,12 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 package com.yahoo.vespa.model;
 
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.provision.NetworkPorts;
-
-import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.ListIterator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.logging.Level;
@@ -193,9 +188,9 @@ public class HostPorts {
         String msg = (service.getClass().equals(otherService.getClass()) && service.requiresWantedPort())
                 ? "You must set port explicitly for all instances of this service type, except the first one. "
                 : "";
-        throw new RuntimeException(service.getServiceName() + " cannot reserve port " + port +
-                    " on " + hostname + ": Already reserved for " + otherService.getServiceName() +
-                    ". " + msg + "Next available port is: " + nextAvailablePort + " ports used: " + portDB);
+        throw new IllegalArgumentException(service.getServiceName() + " cannot reserve port " + port +
+                                           " on " + hostname + ": Already reserved for " + otherService.getServiceName() +
+                                           ". " + msg + "Next available port is: " + nextAvailablePort + " ports used: " + portDB);
     }
 
     private void noMoreAvailablePorts() {

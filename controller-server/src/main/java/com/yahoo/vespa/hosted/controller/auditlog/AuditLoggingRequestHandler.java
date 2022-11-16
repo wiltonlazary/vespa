@@ -1,9 +1,9 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.auditlog;
 
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.jdisc.handler.ContentChannel;
 
 /**
@@ -12,7 +12,7 @@ import com.yahoo.jdisc.handler.ContentChannel;
  *
  * @author mpolden
  */
-public abstract class AuditLoggingRequestHandler extends LoggingRequestHandler {
+public abstract class AuditLoggingRequestHandler extends ThreadedHttpRequestHandler {
 
     private final AuditLogger auditLogger;
 

@@ -2,24 +2,19 @@
 
 #pragma once
 
-#include "summaryfeaturesdfw.h"
+#include "simple_dfw.h"
 
 namespace search::docsummary {
 
-class RankFeaturesDFW : public FeaturesDFW
+class RankFeaturesDFW : public SimpleDFW
 {
-private:
-    RankFeaturesDFW(const RankFeaturesDFW &);
-    RankFeaturesDFW & operator=(const RankFeaturesDFW &);
-
-    IDocsumEnvironment * _env;
-
 public:
     RankFeaturesDFW();
-    ~RankFeaturesDFW();
-    void init(IDocsumEnvironment * env);
-    bool IsGenerated() const override { return true; }
-    void insertField(uint32_t docid, GetDocsumsState *state, ResType type, vespalib::slime::Inserter &target) override;
+    RankFeaturesDFW(const RankFeaturesDFW &) = delete;
+    RankFeaturesDFW & operator=(const RankFeaturesDFW &) = delete;
+    ~RankFeaturesDFW() override;
+    bool isGenerated() const override { return true; }
+    void insertField(uint32_t docid, GetDocsumsState& state, vespalib::slime::Inserter &target) const override;
 };
 
 }

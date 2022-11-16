@@ -2,7 +2,12 @@
 package com.yahoo.vespa.model;
 
 import ai.vespa.rankingexpression.importer.configmodelview.MlModelImporter;
-import com.google.inject.Inject;
+import ai.vespa.rankingexpression.importer.lightgbm.LightGBMImporter;
+import ai.vespa.rankingexpression.importer.onnx.OnnxImporter;
+import ai.vespa.rankingexpression.importer.tensorflow.TensorFlowImporter;
+import ai.vespa.rankingexpression.importer.vespa.VespaImporter;
+import ai.vespa.rankingexpression.importer.xgboost.XGBoostImporter;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.Version;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.config.application.api.ApplicationPackage;
@@ -24,6 +29,7 @@ import com.yahoo.config.provision.TransientException;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.vespa.config.VespaVersion;
 import com.yahoo.vespa.model.application.validation.Validation;
+import com.yahoo.vespa.model.application.validation.Validator;
 import com.yahoo.yolean.Exceptions;
 import org.xml.sax.SAXException;
 
@@ -50,11 +56,12 @@ public class VespaModelFactory implements ModelFactory {
     private final Zone zone;
     private final Clock clock;
     private final Version version;
+    private final List<Validator> additionalValidators;
 
     /** Creates a factory for Vespa models for this version of the source */
     @Inject
     public VespaModelFactory(ComponentRegistry<ConfigModelPlugin> pluginRegistry,
-                             ComponentRegistry<MlModelImporter> modelImporters,
+                             ComponentRegistry<Validator> additionalValidators,
                              Zone zone) {
         this.version = new Version(VespaVersion.major, VespaVersion.minor, VespaVersion.micro);
         List<ConfigModelBuilder> modelBuilders = new ArrayList<>();
@@ -64,25 +71,25 @@ public class VespaModelFactory implements ModelFactory {
             }
         }
         this.configModelRegistry = new MapConfigModelRegistry(modelBuilders);
-        this.modelImporters = modelImporters.allComponents();
+        this.modelImporters = List.of(
+                new VespaImporter(),
+                new OnnxImporter(),
+                new TensorFlowImporter(),
+                new XGBoostImporter(),
+                new LightGBMImporter());
         this.zone = zone;
+        this.additionalValidators = List.copyOf(additionalValidators.allComponents());
 
         this.clock = Clock.systemUTC();
     }
 
     // For testing only
-    public VespaModelFactory(ConfigModelRegistry configModelRegistry) {
-        this(configModelRegistry, Clock.systemUTC());
-    }
-
-    // For testing only
-    public VespaModelFactory(ConfigModelRegistry configModelRegistry, Clock clock) {
+    protected VespaModelFactory(ConfigModelRegistry configModelRegistry) {
         this(new Version(VespaVersion.major, VespaVersion.minor, VespaVersion.micro), configModelRegistry,
-             clock, Zone.defaultZone());
+                Clock.systemUTC(), Zone.defaultZone());
     }
 
-    // For testing only
-    public VespaModelFactory(Version version, ConfigModelRegistry configModelRegistry, Clock clock, Zone zone) {
+    private VespaModelFactory(Version version, ConfigModelRegistry configModelRegistry, Clock clock, Zone zone) {
         this.version = version;
         if (configModelRegistry == null) {
             this.configModelRegistry = new NullConfigModelRegistry();
@@ -91,8 +98,21 @@ public class VespaModelFactory implements ModelFactory {
             this.configModelRegistry = configModelRegistry;
         }
         this.modelImporters = Collections.emptyList();
+        this.additionalValidators = List.of();
         this.zone = zone;
         this.clock = clock;
+    }
+
+    public static VespaModelFactory createTestFactory() {
+        return createTestFactory(new NullConfigModelRegistry(), Clock.systemUTC());
+    }
+    public static VespaModelFactory createTestFactory(ConfigModelRegistry configModelRegistry, Clock clock) {
+        return createTestFactory(new Version(VespaVersion.major, VespaVersion.minor, VespaVersion.micro), configModelRegistry,
+                clock, Zone.defaultZone());
+    }
+
+    public static VespaModelFactory createTestFactory(Version version, ConfigModelRegistry configModelRegistry, Clock clock, Zone zone) {
+        return new VespaModelFactory(version, configModelRegistry, clock, zone);
     }
 
     /** Returns the version this model is build for */
@@ -114,14 +134,12 @@ public class VespaModelFactory implements ModelFactory {
         for (ConfigChangeAction action : changeActions) {
             if (action.getType().equals(ConfigChangeAction.Type.REINDEX)) {
                 VespaModel currentModel = (VespaModel) currentActiveModel.get();
-                var currentVersion = currentModel.version();
                 var currentMeta = currentModel.applicationPackage().getMetaData();
-                var nextVersion = nextModel.version();
                 var nextMeta = nextModel.applicationPackage().getMetaData();
                 log.log(Level.INFO, String.format("Model [%s/%s] -> [%s/%s] triggers reindexing: %s",
                                                   currentModel.version().toString(), currentMeta.toString(),
                                                   nextModel.version().toString(), nextMeta.toString(),
-                                                  action.toString()));
+                                                  action));
             }
         }
     }
@@ -158,7 +176,7 @@ public class VespaModelFactory implements ModelFactory {
         try {
             return new VespaModel(configModelRegistry, deployState);
         } catch (IOException | SAXException e) {
-            throw new RuntimeException(e);
+            throw new IllegalArgumentException(e);
         }
     }
 
@@ -197,7 +215,7 @@ public class VespaModelFactory implements ModelFactory {
 
     private List<ConfigChangeAction> validateModel(VespaModel model, DeployState deployState, ValidationParameters validationParameters) {
         try {
-            return Validation.validate(model, validationParameters, deployState);
+            return new Validation(additionalValidators).validate(model, validationParameters, deployState);
         } catch (ValidationOverrides.ValidationException e) {
             if (deployState.isHosted() && zone.environment().isManuallyDeployed())
                 deployState.getDeployLogger().logApplicationPackage(Level.WARNING,

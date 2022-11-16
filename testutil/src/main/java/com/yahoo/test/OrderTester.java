@@ -15,15 +15,16 @@ import java.util.List;
  *
  */
 
-public abstract class OrderTester<T extends Comparable<T>> {
-    private ArrayList<List<T>> groups = new ArrayList<>();
+public abstract class OrderTester<T extends Comparable<? super T>> {
+    private final ArrayList<List<T>> groups = new ArrayList<>();
 
     abstract protected void lessTest(T a, T b);
     abstract protected void greaterTest(T a, T b);
     abstract protected void equalTest(T a, T b);
 
     @SafeVarargs
-    private final OrderTester<T> addGroup(T... group) {
+    @SuppressWarnings("varargs")
+    private OrderTester<T> addGroup(T... group) {
         groups.add(Arrays.asList(group));
         return this;
     }

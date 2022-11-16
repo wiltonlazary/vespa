@@ -15,7 +15,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * A {@link DeployLogger} which persists messages as a {@link Slime} tree, and holds a tenant and application name.
+ * A {@link DeployLogger} which stores messages in a {@link Slime} tree, and holds a tenant and application name.
  * 
  * @author Ulf Lilleengen
  */
@@ -36,6 +36,7 @@ public class DeployHandlerLogger implements DeployLogger {
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public void log(Level level, String message) {
         if (level.intValue() <= LogLevel.DEBUG.intValue() && !verbose)
             return;
@@ -46,6 +47,7 @@ public class DeployHandlerLogger implements DeployLogger {
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public void logApplicationPackage(Level level, String message) {
         if (level.intValue() <= LogLevel.DEBUG.intValue() && !verbose)
             return;

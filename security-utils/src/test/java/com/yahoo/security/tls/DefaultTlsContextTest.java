@@ -3,11 +3,7 @@ package com.yahoo.security.tls;
 
 import com.yahoo.security.KeyUtils;
 import com.yahoo.security.X509CertificateBuilder;
-import com.yahoo.security.tls.policy.AuthorizedPeers;
-import com.yahoo.security.tls.policy.PeerPolicy;
-import com.yahoo.security.tls.policy.RequiredPeerCredential;
-import com.yahoo.security.tls.policy.Role;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLEngine;
 import javax.security.auth.x500.X500Principal;
@@ -30,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class DefaultTlsContextTest {
 
     @Test
-    public void can_create_sslcontext_from_credentials() {
+    void can_create_sslcontext_from_credentials() {
         KeyPair keyPair = KeyUtils.generateKeypair(EC);
 
         X509Certificate certificate = X509CertificateBuilder
@@ -41,7 +37,6 @@ public class DefaultTlsContextTest {
                 singleton(
                         new PeerPolicy(
                                 "dummy-policy",
-                                singleton(new Role("dummy-role")),
                                 singletonList(RequiredPeerCredential.of(RequiredPeerCredential.Field.CN, "dummy")))));
 
         DefaultTlsContext tlsContext =

@@ -1,7 +1,16 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.prelude.query.parser;
 
-import com.yahoo.prelude.query.*;
+import com.yahoo.prelude.query.AndItem;
+import com.yahoo.prelude.query.BlockItem;
+import com.yahoo.prelude.query.CompositeItem;
+import com.yahoo.prelude.query.Item;
+import com.yahoo.prelude.query.NotItem;
+import com.yahoo.prelude.query.OrItem;
+import com.yahoo.prelude.query.PhraseItem;
+import com.yahoo.prelude.query.RankItem;
+import com.yahoo.prelude.query.TermItem;
+import com.yahoo.prelude.query.TrueItem;
 import com.yahoo.search.query.parser.ParserEnvironment;
 
 import java.util.Iterator;
@@ -50,8 +59,7 @@ abstract class SimpleParser extends StructuredParser {
     private Item anyItemsBody(boolean topLevel) {
         Item topLevelItem = null;
         NotItem not = null;
-        Item item = null;
-
+        Item item;
         do {
             item = positiveItem();
             if (item != null) {
@@ -89,7 +97,7 @@ abstract class SimpleParser extends StructuredParser {
             }
 
             if (item == null) {
-                item = indexableItem();
+                item = indexableItem().getFirst();
                 if (item != null) {
                     if (topLevelItem == null) {
                         topLevelItem = item;
@@ -121,7 +129,7 @@ abstract class SimpleParser extends StructuredParser {
                 return combineItems(topLevelItem, not.getPositiveItem());
             }
         }
-        if (not != null && not.getPositiveItem() == null) {
+        if (not != null && not.getPositiveItem() instanceof TrueItem) {
             // Incomplete not, only negatives -
 
             if (topLevelItem != null && topLevelItem != not) {
@@ -174,9 +182,7 @@ abstract class SimpleParser extends StructuredParser {
                 return null;
             }
 
-            if (item == null) {
-                item = indexableItem();
-            }
+            item = indexableItem().getFirst();
 
             if (item == null) {
                 item = compositeItem();
@@ -197,11 +203,9 @@ abstract class SimpleParser extends StructuredParser {
      * (+ items) are not found, but negatives are.
      */
     private Item getItemAsPositiveItem(Item item, NotItem not) {
-        if (!(item instanceof RankItem)) {
+        if (!(item instanceof RankItem rank)) {
             return item;
         }
-
-        RankItem rank = (RankItem) item;
 
         // Remove the not from the rank item, the rank should generally
         // be the first, but this is not always the case

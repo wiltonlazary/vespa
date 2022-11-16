@@ -2,12 +2,16 @@
 
 #pragma once
 
-#include <vespa/vespalib/datastore/entryref.h>
+#include <vespa/vespalib/datastore/atomic_entry_ref.h>
+#include <vespa/vespalib/datastore/compaction_spec.h>
 #include <vespa/vespalib/util/address_space.h>
 #include <vespa/vespalib/util/rcuvector.h>
 #include <functional>
 
-namespace search { class CompactionStrategy; }
+namespace vespalib::datastore {
+class CompactionSpec;
+class CompactionStrategy;
+}
 
 namespace search::attribute {
 
@@ -17,41 +21,64 @@ namespace search::attribute {
 class MultiValueMappingBase
 {
 public:
+    using CompactionSpec = vespalib::datastore::CompactionSpec;
+    using CompactionStrategy = vespalib::datastore::CompactionStrategy;
+    using AtomicEntryRef = vespalib::datastore::AtomicEntryRef;
     using EntryRef = vespalib::datastore::EntryRef;
-    using RefVector = vespalib::RcuVectorBase<EntryRef>;
+    using RefVector = vespalib::RcuVectorBase<AtomicEntryRef>;
 
 protected:
+    std::shared_ptr<vespalib::alloc::MemoryAllocator> _memory_allocator;
     RefVector _indices;
     size_t    _totalValues;
-    vespalib::MemoryUsage _cachedArrayStoreMemoryUsage;
-    vespalib::AddressSpace _cachedArrayStoreAddressSpaceUsage;
+    CompactionSpec _compaction_spec;
 
-    MultiValueMappingBase(const vespalib::GrowStrategy &gs, vespalib::GenerationHolder &genHolder);
+    MultiValueMappingBase(const vespalib::GrowStrategy &gs, vespalib::GenerationHolder &genHolder, std::shared_ptr<vespalib::alloc::MemoryAllocator> memory_allocator);
     virtual ~MultiValueMappingBase();
 
     void updateValueCount(size_t oldValues, size_t newValues) {
         _totalValues += newValues - oldValues;
     }
+
+    EntryRef acquire_entry_ref(uint32_t docId) const noexcept { return _indices.acquire_elem_ref(docId).load_acquire(); }
+
+    virtual bool has_held_buffers() const noexcept = 0;
 public:
     using RefCopyVector = vespalib::Array<EntryRef>;
 
     virtual vespalib::MemoryUsage getArrayStoreMemoryUsage() const = 0;
     virtual vespalib::AddressSpace getAddressSpaceUsage() const = 0;
     vespalib::MemoryUsage getMemoryUsage() const;
-    vespalib::MemoryUsage updateStat();
+    vespalib::MemoryUsage updateStat(const CompactionStrategy& compaction_strategy);
     size_t getTotalValueCnt() const { return _totalValues; }
     RefCopyVector getRefCopy(uint32_t size) const;
 
-    bool isFull() const { return _indices.isFull(); }
+    /*
+     * isFull() should be called from writer only.
+     * Const type qualifier removed to prevent call from reader.
+     */
+    bool isFull() { return _indices.isFull(); }
     void addDoc(uint32_t &docId);
     void shrink(uint32_t docidLimit);
     void reserve(uint32_t lidLimit);
     void clearDocs(uint32_t lidLow, uint32_t lidLimit, std::function<void(uint32_t)> clearDoc);
-    uint32_t size() const { return _indices.size(); }
+    /*
+     * size() should be called from writer only.
+     * Const type qualifier removed to prevent call from reader.
+     */
+    uint32_t size() { return _indices.size(); }
 
-    uint32_t getNumKeys() const { return _indices.size(); }
-    uint32_t getCapacityKeys() const { return _indices.capacity(); }
-    virtual void compactWorst(bool compatMemory, bool compactAddressSpace) = 0;
+    /*
+     * getNumKeys() should be called from writer only.
+     * Const type qualifier removed to prevent call from reader.
+     */
+    uint32_t getNumKeys() { return _indices.size(); }
+    /*
+     * getCapacityKeys() should be called from writer only.
+     * Const type qualifier removed to prevent call from reader.
+     */
+    uint32_t getCapacityKeys() { return _indices.capacity(); }
+    virtual void compactWorst(CompactionSpec compaction_spec, const CompactionStrategy& compaction_strategy) = 0;
     bool considerCompact(const CompactionStrategy &compactionStrategy);
 };
 

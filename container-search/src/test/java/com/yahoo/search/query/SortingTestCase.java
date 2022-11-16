@@ -5,20 +5,26 @@ import com.ibm.icu.lang.UScript;
 import com.ibm.icu.text.Collator;
 import com.ibm.icu.text.RuleBasedCollator;
 import com.ibm.icu.util.ULocale;
-import org.junit.Ignore;
-import org.junit.Test;
+import com.yahoo.prelude.Index;
+import com.yahoo.prelude.IndexFacts;
+import com.yahoo.prelude.IndexModel;
+import com.yahoo.prelude.SearchDefinition;
+import com.yahoo.search.Query;
+import com.yahoo.search.searchchain.Execution;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 
-import static org.junit.Assert.*;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author baldersheim
  */
 public class SortingTestCase {
+
     @Test
-    public void validAttributeName() {
+    void validAttributeName() {
         assertNotNull(Sorting.fromString("a"));
         assertNotNull(Sorting.fromString("_a"));
         assertNotNull(Sorting.fromString("+a"));
@@ -33,8 +39,20 @@ public class SortingTestCase {
             fail("I only expect 'IllegalArgumentException', not: + " + e.toString());
         }
     }
+
     @Test
-    public void requireThatChineseSortCorrect() {
+    void aliasesAreRecognized() {
+        Query query = new Query();
+        var schema = new SearchDefinition("test");
+        schema.addIndex(new Index("a"));
+        schema.addAlias("aliasOfA", "a");
+        Execution execution = new Execution(Execution.Context.createContextStub(new IndexFacts(new IndexModel(schema))));
+        query.getModel().setExecution(execution);
+        assertEquals("a", new Sorting("aliasOfA", query).fieldOrders().get(0).getFieldName());
+    }
+
+    @Test
+    void requireThatChineseSortCorrect() {
         requireThatChineseHasCorrectRules(Collator.getInstance(new ULocale("zh")));
         Sorting ch = Sorting.fromString("uca(a,zh)");
         assertEquals(1, ch.fieldOrders().size());
@@ -63,15 +81,16 @@ public class SortingTestCase {
 
     private void requireThatChineseHasCorrectRules(Collator col) {
         final int reorderCodes [] = {UScript.HAN};
-        assertEquals("8.0.0.0", col.getUCAVersion().toString());
-        assertEquals("153.64.29.0", col.getVersion().toString());
+        assertEquals("14.0.0.0", col.getUCAVersion().toString());
+        assertEquals("153.112.40.0", col.getVersion().toString());
         assertEquals(Arrays.toString(reorderCodes), Arrays.toString(col.getReorderCodes()));
 
         assertNotEquals("", ((RuleBasedCollator) col).getRules());
     }
+
     @Test
-    @Ignore
-    public void requireThatArabicSortCorrect() {
+    @Disabled
+    void requireThatArabicSortCorrect() {
         requireThatArabicHasCorrectRules(Collator.getInstance(new ULocale("ar")));
         Sorting ar = Sorting.fromString("uca(a,ar)");
         assertEquals(1, ar.fieldOrders().size());

@@ -17,6 +17,20 @@ void overwrite_memory_real(char *ptr, int offset)
 
 void (*overwrite_memory)(char *ptr, int offset) = overwrite_memory_real;
 
+char *new_vec_real(size_t size)
+{
+    return new char[size];
+}
+
+char *(*new_vec)(size_t size) = new_vec_real;
+
+void delete_vec_real(char *ptr)
+{
+    delete [] ptr;
+}
+
+void (*delete_vec)(char *ptr) = delete_vec_real;
+
 class Test : public TestApp
 {
 public:
@@ -40,10 +54,10 @@ void Test::testFillValue(char *a)
 
     // Make sure that enough blocks of memory is allocated and freed.
     for (size_t i(0); i < 100; i++) {
-        char *d = new char[256];
+        char *d = new_vec(256);
         memset(d, 0x77, 256);
         check_ptr(d);
-        delete [] d;
+        delete_vec(d);
         EXPECT_EQUAL((int)d[0], 0x66);
         EXPECT_EQUAL((int)d[1], 0x66);
         EXPECT_EQUAL((int)d[255], 0x66);
@@ -52,13 +66,13 @@ void Test::testFillValue(char *a)
     // Make sure we trigger vespamallocd detection of memory written after delete.
     char *aa[1024];
     for (size_t i(0); i < sizeof(aa)/sizeof(aa[0]); i++) {
-        aa[i] = new char[256];
+        aa[i] = new_vec(256);
     }
 
     // Verify overwrite detection in place after cleaning up.
     for (size_t i(0); i < sizeof(aa)/sizeof(aa[0]); i++) {
         check_ptr(aa[i]);
-        delete [] aa[i];
+        delete_vec(aa[i]);
         EXPECT_EQUAL((int)a[0], 0x66);
         EXPECT_EQUAL((int)a[1], 0x66);
         EXPECT_EQUAL((int)a[255], 0x66);
@@ -67,28 +81,28 @@ void Test::testFillValue(char *a)
 
 void Test::verifyPreWriteDetection()
 {
-    char * a = new char[8];
+    char * a = new_vec(8);
     overwrite_memory(a, -1);
-    delete [] a;
+    delete_vec(a);
 }
 
 void Test::verifyPostWriteDetection()
 {
-    char * a = new char[8];
+    char * a = new_vec(8);
     overwrite_memory(a, 8);
-    delete [] a;
+    delete_vec(a);
 }
 
 void Test::verifyWriteAfterFreeDetection()
 {
     // Make sure that enough blocks of memory is allocated and freed.
-    char * a = new char[256];
+    char * a = new_vec(256);
     check_ptr(a);
-    delete [] a;
+    delete_vec(a);
     for (size_t i(0); i < 100; i++) {
-        char *d = new char[256];
+        char *d = new_vec(256);
         check_ptr(d);
-        delete [] d;
+        delete_vec(d);
     }
     // Write freed memory.
     a[0] = 0;
@@ -96,13 +110,13 @@ void Test::verifyWriteAfterFreeDetection()
     // Make sure we trigger vespamallocd detection of memory written after delete.
     char *aa[1024];
     for (size_t i(0); i < sizeof(aa)/sizeof(aa[0]); i++) {
-        aa[i] = new char[256];
+        aa[i] = new_vec(256);
     }
 
     // Clean up.
     for (size_t i(0); i < sizeof(aa)/sizeof(aa[0]); i++) {
         check_ptr(aa[i]);
-        delete [] aa[i];
+        delete_vec(aa[i]);
     }
 }
 
@@ -110,7 +124,7 @@ int Test::Main()
 {
     TEST_INIT("overwrite_test");
 
-    char * a = new char[256];
+    char * a = new_vec(256);
     memset(a, 0x77, 256);
     a[0] = 0;
     EXPECT_EQUAL((int)a[0], 0);
@@ -119,7 +133,7 @@ int Test::Main()
     char * b = a;
     EXPECT_EQUAL(a, b);
     check_ptr(a);
-    delete [] a;
+    delete_vec(a);
     EXPECT_EQUAL(a, b);
 
     if (_argc > 1) {

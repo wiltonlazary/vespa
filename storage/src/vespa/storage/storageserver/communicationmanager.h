@@ -21,15 +21,18 @@
 #include <vespa/storageapi/mbusprot/storagereply.h>
 #include <vespa/messagebus/imessagehandler.h>
 #include <vespa/messagebus/ireplyhandler.h>
-#include <vespa/config/helper/configfetcher.h>
+#include <vespa/config/helper/ifetchercallback.h>
 #include <vespa/vespalib/util/document_runnable.h>
 #include <vespa/config/subscription/configuri.h>
+#include <vespa/config-bucketspaces.h>
 #include <map>
 #include <queue>
 #include <atomic>
 #include <mutex>
-#include <vespa/config-bucketspaces.h>
 
+namespace config {
+    class ConfigFetcher;
+}
 namespace mbus {
     class RPCMessageBus;
     class SourceSession;
@@ -52,12 +55,10 @@ class RPCRequestWrapper;
 class StorageTransportContext : public api::TransportContext {
 public:
     explicit StorageTransportContext(std::unique_ptr<documentapi::DocumentMessage> msg);
-    explicit StorageTransportContext(std::unique_ptr<mbusprot::StorageCommand> msg);
     explicit StorageTransportContext(std::unique_ptr<RPCRequestWrapper> request);
     ~StorageTransportContext() override;
 
     std::unique_ptr<documentapi::DocumentMessage> _docAPIMsg;
-    std::unique_ptr<mbusprot::StorageCommand>     _storageProtocolMsg;
     std::unique_ptr<RPCRequestWrapper>            _request;
 };
 
@@ -118,10 +119,8 @@ private:
     std::atomic<bool>     _closed;
     DocumentApiConverter  _docApiConverter;
     framework::Thread::UP _thread;
-    std::atomic<bool>     _skip_thread;
 
     void updateMetrics(const MetricLockGuard &) override;
-    void enqueue_or_process(std::shared_ptr<api::StorageMessage> msg);
 
     // Test needs access to configure() for live reconfig testing.
     friend struct CommunicationManagerTest;
@@ -161,6 +160,10 @@ public:
     void updateBucketSpacesConfig(const BucketspacesConfig&);
 
     const CommunicationManagerMetrics& metrics() const noexcept { return _metrics; }
+
+    // Intended primarily for unit tests that fire up multiple nodes and must wait until all
+    // nodes are cross-visible in Slobrok before progressing.
+    [[nodiscard]] bool address_visible_in_slobrok(const api::StorageMessageAddress& addr) const noexcept;
 };
 
 } // storage

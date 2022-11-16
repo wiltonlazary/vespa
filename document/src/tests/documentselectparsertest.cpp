@@ -1,9 +1,19 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include <vespa/document/test/fieldvalue_helpers.h>
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/update/assignvalueupdate.h>
 #include <vespa/document/update/documentupdate.h>
+#include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/fieldvalue/boolfieldvalue.h>
+#include <vespa/document/fieldvalue/bytefieldvalue.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
+#include <vespa/document/fieldvalue/longfieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/floatfieldvalue.h>
+#include <vespa/document/fieldvalue/arrayfieldvalue.h>
+#include <vespa/document/fieldvalue/weightedsetfieldvalue.h>
 #include <vespa/document/base/testdocman.h>
 #include <vespa/document/select/parser.h>
 #include <vespa/document/select/visitor.h>
@@ -34,7 +44,7 @@ protected:
     std::vector<Document::SP > _doc;
     std::vector<DocumentUpdate::SP > _update;
 
-    ~DocumentSelectParserTest();
+    ~DocumentSelectParserTest() override;
 
     Document::SP createDoc(
             vespalib::stringref doctype, vespalib::stringref id, uint32_t hint,
@@ -127,11 +137,11 @@ DocumentUpdate::SP DocumentSelectParserTest::createUpdate(
         const std::string& hstr)
 {
     const DocumentType* type = _repo->getDocumentType(doctype);
-    DocumentUpdate::SP doc(new DocumentUpdate(*_repo, *type, DocumentId(id)));
+    auto doc = std::make_shared<DocumentUpdate>(*_repo, *type, DocumentId(id));
     doc->addUpdate(FieldUpdate(doc->getType().getField("headerval"))
-                      .addUpdate(AssignValueUpdate(IntFieldValue(hint))));
+                      .addUpdate(std::make_unique<AssignValueUpdate>(std::make_unique<IntFieldValue>(hint))));
     doc->addUpdate(FieldUpdate(doc->getType().getField("hstringval"))
-                      .addUpdate(AssignValueUpdate(StringFieldValue(hstr))));
+                      .addUpdate(std::make_unique<AssignValueUpdate>(StringFieldValue::make(hstr))));
     return doc;
 }
 
@@ -144,18 +154,18 @@ DocumentSelectParserTest::createDocs()
         // Add some arrays and structs to doc 1
     {
         StructFieldValue sval(_doc.back()->getField("mystruct").getDataType());
-        sval.set("key", 14);
-        sval.set("value", "structval");
+        sval.setValue("key", IntFieldValue::make(14));
+        sval.setValue("value", StringFieldValue::make("structval"));
         _doc.back()->setValue("mystruct", sval);
         ArrayFieldValue
             aval(_doc.back()->getField("structarray").getDataType());
         {
             StructFieldValue sval1(aval.getNestedType());
-            sval1.set("key", 15);
-            sval1.set("value", "structval1");
+            sval1.setValue("key", IntFieldValue::make(15));
+            sval1.setValue("value", StringFieldValue::make("structval1"));
             StructFieldValue sval2(aval.getNestedType());
-            sval2.set("key", 16);
-            sval2.set("value", "structval2");
+            sval2.setValue("key", IntFieldValue::make(16));
+            sval2.setValue("value", StringFieldValue::make("structval2"));
             aval.add(sval1);
             aval.add(sval2);
         }
@@ -173,11 +183,11 @@ DocumentSelectParserTest::createDocs()
         ArrayFieldValue abval(_doc.back()->getField("structarray").getDataType());
         {
             StructFieldValue sval1(aval.getNestedType());
-            sval1.set("key", 17);
-            sval1.set("value", "structval3");
+            sval1.setValue("key", IntFieldValue::make(17));
+            sval1.setValue("value", StringFieldValue::make("structval3"));
             StructFieldValue sval2(aval.getNestedType());
-            sval2.set("key", 18);
-            sval2.set("value", "structval4");
+            sval2.setValue("key", IntFieldValue::make(18));
+            sval2.setValue("value", StringFieldValue::make("structval4"));
             abval.add(sval1);
             abval.add(sval2);
         }
@@ -185,17 +195,15 @@ DocumentSelectParserTest::createDocs()
         amval.put(StringFieldValue("bar"), abval);
         _doc.back()->setValue("structarrmap", amval);
 
-        WeightedSetFieldValue wsval(
-                _doc.back()->getField("stringweightedset").getDataType());
-        wsval.add("foo");
-        wsval.add("val1");
-        wsval.add("val2");
-        wsval.add("val3");
-        wsval.add("val4");
+        WeightedSetFieldValue wsval(_doc.back()->getField("stringweightedset").getDataType());
+        WSetHelper(wsval).add("foo");
+        WSetHelper(wsval).add("val1");
+        WSetHelper(wsval).add("val2");
+        WSetHelper(wsval).add("val3");
+        WSetHelper(wsval).add("val4");
         _doc.back()->setValue("stringweightedset", wsval);
 
-        WeightedSetFieldValue wsbytes(
-                _doc.back()->getField("byteweightedset").getDataType());
+        WeightedSetFieldValue wsbytes(_doc.back()->getField("byteweightedset").getDataType());
         wsbytes.add(ByteFieldValue(5));
         wsbytes.add(ByteFieldValue(75));
         wsbytes.add(ByteFieldValue(static_cast<int8_t>(255)));
@@ -203,14 +211,12 @@ DocumentSelectParserTest::createDocs()
         _doc.back()->setValue("byteweightedset", wsbytes);
     }
 
-    _doc.push_back(createDoc(
-                           "testdoctype1", "id:myspace:testdoctype1:n=1234:footype1", 15, 1.0, "some", "some", 0));  // DOC 2
+    _doc.push_back(createDoc("testdoctype1", "id:myspace:testdoctype1:n=1234:footype1", 15, 1.0, "some", "some", 0));  // DOC 2
         // Add empty struct and array
     {
         StructFieldValue sval(_doc.back()->getField("mystruct").getDataType());
         _doc.back()->setValue("mystruct", sval);
-        ArrayFieldValue aval(
-                _doc.back()->getField("structarray").getDataType());
+        ArrayFieldValue aval(_doc.back()->getField("structarray").getDataType());
         _doc.back()->setValue("structarray", aval);
     }
     _doc.push_back(createDoc("testdoctype1", "id:myspace:testdoctype1:g=yahoo:bar", 14, 2.4, "Yet", "\xE4\xB8\xBA\xE4\xBB\x80", 0)); // DOC 3
@@ -232,6 +238,14 @@ DocumentSelectParserTest::createDocs()
     _doc.push_back(createDoc(
         "testdoctype1", "id:myspace:testdoctype1:g=xyzzy:foo",
         10, 1.4, "inherited", "", 42)); // DOC 10
+    _doc.push_back(createDoc(
+            "testdoctype1", "id:myspace:testdoctype1::withtruebool",
+            10, 1.4, "inherited", "", 42)); // DOC 11
+    _doc.back()->setValue("boolfield", BoolFieldValue(true));
+    _doc.push_back(createDoc(
+            "testdoctype1", "id:myspace:testdoctype1::withfalsebool",
+            10, 1.4, "inherited", "", 42)); // DOC 12
+    _doc.back()->setValue("boolfield", BoolFieldValue(false));
 
     _update.clear();
     _update.push_back(createUpdate("testdoctype1", "id:myspace:testdoctype1::anything", 20, "hmm"));
@@ -623,6 +637,16 @@ TEST_F(DocumentSelectParserTest, operators_1)
     PARSE("14.3 == null", *_doc[0], False);
     PARSE("null = 0", *_doc[0], False);
 
+    // Boolean literals in comparisons
+    PARSE("true = true", *_doc[0], True);
+    PARSE("true == true", *_doc[0], True);
+    PARSE("true == false", *_doc[0], False);
+    PARSE("false == false", *_doc[0], True);
+    PARSE("true == 1", *_doc[0], True);
+    PARSE("true == 0", *_doc[0], False);
+    PARSE("false == 1", *_doc[0], False);
+    PARSE("false == 0", *_doc[0], True);
+
     // Field values
     PARSE("testdoctype1.headerval = 24", *_doc[0], True);
     PARSE("testdoctype1.headerval = 24", *_doc[1], False);
@@ -649,8 +673,8 @@ TEST_F(DocumentSelectParserTest, operators_1)
     // Inherited doctypes
     PARSE("testdoctype2", *_doc[4], True);
     PARSE("testdoctype2", *_doc[3], False);
-    PARSE("testdoctype1", *_doc[4], True);
-    PARSE("testdoctype1.headerval = 10", *_doc[4], True);
+    PARSE("testdoctype1", *_doc[4], False); // testdoctype2 inherits testdoctype1, but we use exact matching for types
+    PARSE("testdoctype1.headerval = 10", *_doc[4], Invalid);
 }
 
 TEST_F(DocumentSelectParserTest, operators_2)
@@ -909,6 +933,23 @@ TEST_F(DocumentSelectParserTest, operators_9)
     PARSE("testdoctype1.structarray.key >= 17", *_doc[1], False);
 }
 
+TEST_F(DocumentSelectParserTest, can_use_boolean_fields_in_expressions) {
+    createDocs();
+    // Doc 11 has bool field set explicitly to true, doc 12 has field explicitly set to false
+    PARSE("testdoctype1.boolfield == 1", *_doc[11], True);
+    PARSE("testdoctype1.boolfield == true", *_doc[11], True);
+    PARSE("testdoctype1.boolfield == 1", *_doc[12], False);
+    PARSE("testdoctype1.boolfield == true", *_doc[12], False);
+    PARSE("testdoctype1.boolfield == 0", *_doc[12], True);
+    PARSE("testdoctype1.boolfield == false", *_doc[12], True);
+    // FIXME very un-intuitive behavior when nulls are implicitly returned:
+    // Doc 1 does not have the bool field set, but the implicit null value is neither true nor false
+    PARSE("testdoctype1.boolfield == 1", *_doc[1], False);
+    PARSE("testdoctype1.boolfield == true", *_doc[1], False);
+    PARSE("testdoctype1.boolfield == 0", *_doc[1], False);
+    PARSE("testdoctype1.boolfield == false", *_doc[1], False);
+}
+
 namespace {
 
     class TestVisitor : public select::Visitor {
@@ -965,6 +1006,7 @@ namespace {
         void visitFloatValueNode(const select::FloatValueNode &) override {}
         void visitVariableValueNode(const select::VariableValueNode &) override {}
         void visitIntegerValueNode(const select::IntegerValueNode &) override {}
+        void visitBoolValueNode(const select::BoolValueNode &) override {}
         void visitCurrentTimeValueNode(const select::CurrentTimeValueNode &) override {}
         void visitStringValueNode(const select::StringValueNode &) override {}
         void visitNullValueNode(const select::NullValueNode &) override {}
@@ -1140,7 +1182,7 @@ void DocumentSelectParserTest::testDocumentUpdates1()
     // Inherited doctypes
     PARSE("testdoctype2", *_update[4], True);
     PARSE("testdoctype2", *_update[3], False);
-    PARSE("testdoctype1", *_update[4], True);
+    PARSE("testdoctype1", *_update[4], False); // testdoctype2 inherits testdoctype1, but we use exact matching for types
     PARSE("testdoctype1.headerval = 10", *_update[4], Invalid);
 }
 
@@ -1368,6 +1410,9 @@ public:
     void visitIntegerValueNode(const select::IntegerValueNode& node) override {
         data << node.getValue();
     }
+    void visitBoolValueNode(const select::BoolValueNode& node) override {
+        data << node.bool_value_str();
+    }
     void visitCurrentTimeValueNode(const select::CurrentTimeValueNode&) override {}
     void visitStringValueNode(const select::StringValueNode& str) override {
         data << '"' << str.getValue() << '"';
@@ -1465,6 +1510,17 @@ TEST_F(DocumentSelectParserTest, test_ambiguous_field_spec_expression_is_handled
     EXPECT_EQ("(!= (FIELD testdoctype1 foo) null)"s, parse_to_tree("(testdoctype1.foo)"));
     EXPECT_EQ("(AND (!= (FIELD testdoctype1 foo) null) (!= (FIELD testdoctype1 bar) null))"s,
                          parse_to_tree("(testdoctype1.foo) AND (testdoctype1.bar)"));
+}
+
+TEST_F(DocumentSelectParserTest, test_ambiguous_bool_expression_is_handled_correctly)
+{
+    createDocs();
+    using namespace std::string_literals;
+    // Bools both as high level Nodes and low level ValueNodes
+    EXPECT_EQ("(OR (AND true false) (== (FIELD testdoctype1 myfield) true))"s,
+              parse_to_tree("true and false or testdoctype1.myfield == true"));
+    EXPECT_EQ("(!= true false)"s, parse_to_tree("true != false"));
+    EXPECT_EQ("(!= true false)"s, parse_to_tree("(true) != (false)"));
 }
 
 TEST_F(DocumentSelectParserTest, special_tokens_are_allowed_as_freestanding_identifier_names) {

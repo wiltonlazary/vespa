@@ -40,6 +40,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -116,7 +118,8 @@ public abstract class ControllerHttpClient {
                                       POST,
                                       new MultiPartStreamer().addJson("submitOptions", metaToJson(submission))
                                                              .addFile("applicationZip", submission.applicationZip())
-                                                             .addFile("applicationTestZip", submission.applicationTestZip()))));
+                                                             .addFile("applicationTestZip", submission.applicationTestZip())),
+                              1));
     }
 
     /** Sends the given deployment to the given application in the given zone, or throws if this fails. */
@@ -124,7 +127,8 @@ public abstract class ControllerHttpClient {
         return toDeploymentResult(send(request(HttpRequest.newBuilder(deploymentJobPath(id, zone))
                                                           .timeout(Duration.ofMinutes(20)),
                                                POST,
-                                               toDataStream(deployment))));
+                                               toDataStream(deployment)),
+                                       1));
     }
 
     /** Deactivates the deployment of the given application in the given zone. */
@@ -149,10 +153,13 @@ public abstract class ControllerHttpClient {
         return ZoneId.from(environment.value(), rootObject.field("name").asString());
     }
 
-    /** Returns the Vespa version to compile against, for a hosted Vespa application. This is its lowest runtime version. */
-    public String compileVersion(ApplicationId id) {
-        return toInspector(send(request(HttpRequest.newBuilder(compileVersionPath(id.tenant(), id.application()))
-                                                   .timeout(Duration.ofSeconds(20)),
+    /** Returns the Vespa version to compile against, for a hosted Vespa application */
+    public String compileVersion(ApplicationId id, OptionalInt allowMajor) {
+        URI url = compileVersionPath(id.tenant(), id.application());
+        if (allowMajor.isPresent()) {
+            url = withQuery(url, "allowMajor", Integer.toString(allowMajor.getAsInt()));
+        }
+        return toInspector(send(request(HttpRequest.newBuilder(url).timeout(Duration.ofSeconds(20)),
                                         GET)))
                 .field("compileVersion").asString();
     }
@@ -172,10 +179,21 @@ public abstract class ControllerHttpClient {
     }
 
     /** Returns the application package of the given id. */
+    // TODO(mpolden): Remove after all callers have switched to the method below
     public HttpResponse<byte[]> applicationPackage(ApplicationId id) {
-        return send(request(HttpRequest.newBuilder(applicationPackagePath(id))
-                                       .timeout(Duration.ofMinutes(2)),
-                            GET));
+        return applicationPackage(id, false);
+    }
+
+    /**
+     * Returns the latest submitted application package of the given id. If latestDeployed is true, return the latest
+     * package that has been deployed to a production zone.
+     */
+    public HttpResponse<byte[]> applicationPackage(ApplicationId id, boolean latestDeployed) {
+        URI url = applicationPackagePath(id);
+        if (latestDeployed) {
+            url = withQuery(url, "build", "latestDeployed");
+        }
+        return send(request(HttpRequest.newBuilder(url).timeout(Duration.ofMinutes(2)), GET));
     }
 
     /** Returns the tenants in this system. */
@@ -332,8 +350,16 @@ public abstract class ControllerHttpClient {
 
     /** Returns a response with a 2XX status code, with up to 10 attempts, or throws. */
     private HttpResponse<byte[]> send(HttpRequest request) {
+        return send(request, 10);
+    }
+
+    /** Returns a response with a 2XX status code, after the specified number of attempts, or throws. */
+    private HttpResponse<byte[]> send(HttpRequest request, int attempts) {
+        if (attempts < 1)
+            throw new IllegalStateException("Programming error, attempts must be at least 1");
+
         UncheckedIOException thrown = null;
-        for (int attempt = 1; attempt <= 10; attempt++) {
+        for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
                 HttpResponse<byte[]> response = client.send(request, ofByteArray());
                 if (response.statusCode() / 100 == 2)
@@ -403,6 +429,8 @@ public abstract class ControllerHttpClient {
         submission.sourceUrl().ifPresent(url -> rootObject.setString("sourceUrl", url));
         submission.authorEmail().ifPresent(email -> rootObject.setString("authorEmail", email));
         submission.projectId().ifPresent(projectId -> rootObject.setLong("projectId", projectId));
+        submission.risk().ifPresent(risk -> rootObject.setLong("risk", risk));
+        submission.description().ifPresent(description -> rootObject.setString("description", description));
         return toJson(slime);
     }
 
@@ -480,10 +508,11 @@ public abstract class ControllerHttpClient {
 
     // Note: Much more data in response, only the interesting parts of response are included in InstanceInfo for now
     private static InstanceInfo toInstanceInfo(HttpResponse<byte[]> response, ApplicationId applicationId) {
-        Set<ZoneId> zones = new HashSet<>();
+        List<ZoneDeployment> zones = new ArrayList<>();
         toInspector(response).field("instances").traverse((ArrayTraverser) (___, entryObject) ->
-                zones.add(ZoneId.from(entryObject.field("environment").asString(),
-                                   entryObject.field("region").asString())));
+                zones.add(new ZoneDeployment(ZoneId.from(entryObject.field("environment").asString(),
+                                                         entryObject.field("region").asString()),
+                                             entryObject.field("url").valid() ? Optional.of(entryObject.field("url").asString()) : Optional.empty())));
         return new InstanceInfo(applicationId, zones);
     }
 
@@ -549,7 +578,7 @@ public abstract class ControllerHttpClient {
             case "aborted":                    return DeploymentLog.Status.aborted;
             case "error":                      return DeploymentLog.Status.error;
             case "testFailure":                return DeploymentLog.Status.testFailure;
-            case "outOfCapacity":              return DeploymentLog.Status.outOfCapacity;
+            case "nodeAllocationFailure":      return DeploymentLog.Status.nodeAllocationFailure;
             case "installationFailed":         return DeploymentLog.Status.installationFailed;
             case "deploymentFailed":           return DeploymentLog.Status.deploymentFailed;
             case "endpointCertificateTimeout": return DeploymentLog.Status.endpointCertificateTimeout;
@@ -561,20 +590,32 @@ public abstract class ControllerHttpClient {
     public static class InstanceInfo {
 
         private final ApplicationId applicationId;
-        private final Set<ZoneId> zones;
+        private final List<ZoneDeployment> zones;
 
-        InstanceInfo(ApplicationId applicationId, Set<ZoneId> zones) {
+        InstanceInfo(ApplicationId applicationId, List<ZoneDeployment> zones) {
             this.applicationId = applicationId;
             this.zones = zones;
         }
 
-        public ApplicationId applicationId() {
-            return applicationId;
+        public ApplicationId applicationId() { return applicationId; }
+
+        public List<ZoneDeployment> zones() { return zones; }
+
+    }
+
+    public static class ZoneDeployment {
+
+        private final ZoneId zone;
+        private final Optional<String> uri;
+
+        public ZoneDeployment(ZoneId zone, Optional<String> uri) {
+            this.zone = zone;
+            this.uri = uri;
         }
 
-        public Set<ZoneId> zones() {
-            return zones;
-        }
+        public ZoneId zone() { return zone; }
+
+        public boolean isDeployed() { return uri.isPresent(); }
 
     }
 

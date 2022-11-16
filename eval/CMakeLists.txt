@@ -2,7 +2,6 @@
 vespa_define_module(
     DEPENDS
     vespalib
-    staging_vespalib
 
     APPS
     src/apps/analyze_onnx_model
@@ -12,6 +11,7 @@ vespa_define_module(
 
     TESTS
     src/tests/ann
+    src/tests/apps/analyze_onnx_model
     src/tests/apps/eval_expr
     src/tests/eval/addr_to_symbol
     src/tests/eval/aggr
@@ -28,6 +28,7 @@ vespa_define_module(
     src/tests/eval/inline_operation
     src/tests/eval/int8float
     src/tests/eval/interpreted_function
+    src/tests/eval/llvm_stress
     src/tests/eval/multiply_add
     src/tests/eval/nested_loop
     src/tests/eval/node_tools
@@ -70,14 +71,20 @@ vespa_define_module(
     src/tests/instruction/index_lookup_table
     src/tests/instruction/inplace_map_function
     src/tests/instruction/join_with_number
+    src/tests/instruction/l2_distance
+    src/tests/instruction/mapped_lookup
+    src/tests/instruction/mixed_112_dot_product
     src/tests/instruction/mixed_inner_product_function
     src/tests/instruction/mixed_simple_join_function
     src/tests/instruction/pow_as_map_optimizer
     src/tests/instruction/remove_trivial_dimension_optimizer
+    src/tests/instruction/simple_join_count
+    src/tests/instruction/sparse_112_dot_product
     src/tests/instruction/sparse_dot_product_function
     src/tests/instruction/sparse_full_overlap_join_function
     src/tests/instruction/sparse_merge_function
     src/tests/instruction/sparse_no_overlap_join_function
+    src/tests/instruction/sparse_singledim_lookup
     src/tests/instruction/sum_max_dot_product_function
     src/tests/instruction/unpack_bits_function
     src/tests/instruction/vector_from_doubles_function

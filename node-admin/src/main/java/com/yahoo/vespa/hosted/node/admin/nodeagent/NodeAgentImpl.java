@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.nodeagent;
 
+import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.Environment;
@@ -23,12 +24,12 @@ import com.yahoo.vespa.hosted.node.admin.container.ContainerResources;
 import com.yahoo.vespa.hosted.node.admin.container.RegistryCredentials;
 import com.yahoo.vespa.hosted.node.admin.container.RegistryCredentialsProvider;
 import com.yahoo.vespa.hosted.node.admin.maintenance.StorageMaintainer;
+import com.yahoo.vespa.hosted.node.admin.maintenance.WireguardMaintainer;
 import com.yahoo.vespa.hosted.node.admin.maintenance.acl.AclMaintainer;
 import com.yahoo.vespa.hosted.node.admin.maintenance.identity.CredentialsMaintainer;
 import com.yahoo.vespa.hosted.node.admin.maintenance.servicedump.VespaServiceDumper;
 import com.yahoo.vespa.hosted.node.admin.nodeadmin.ConvergenceException;
 
-import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -41,6 +42,7 @@ import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import static com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContextSupplier.ContextSupplierInterruptedException;
 import static com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentImpl.ContainerState.ABSENT;
 import static com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentImpl.ContainerState.STARTING;
 import static com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentImpl.ContainerState.UNKNOWN;
@@ -70,6 +72,7 @@ public class NodeAgentImpl implements NodeAgent {
     private final Duration warmUpDuration;
     private final DoubleFlag containerCpuCap;
     private final VespaServiceDumper serviceDumper;
+    private final Optional<WireguardMaintainer> wireguardMaintainer;
 
     private Thread loopThread;
     private ContainerState containerState = UNKNOWN;
@@ -100,16 +103,15 @@ public class NodeAgentImpl implements NodeAgent {
     }
 
 
-    // Created in NodeAdminImpl
     public NodeAgentImpl(NodeAgentContextSupplier contextSupplier, NodeRepository nodeRepository,
                          Orchestrator orchestrator, ContainerOperations containerOperations,
                          RegistryCredentialsProvider registryCredentialsProvider, StorageMaintainer storageMaintainer,
                          FlagSource flagSource, List<CredentialsMaintainer> credentialsMaintainers,
                          Optional<AclMaintainer> aclMaintainer, Optional<HealthChecker> healthChecker, Clock clock,
-                         VespaServiceDumper serviceDumper) {
+                         VespaServiceDumper serviceDumper, Optional<WireguardMaintainer> wireguardMaintainer) {
         this(contextSupplier, nodeRepository, orchestrator, containerOperations, registryCredentialsProvider,
              storageMaintainer, flagSource, credentialsMaintainers, aclMaintainer, healthChecker, clock,
-             DEFAULT_WARM_UP_DURATION, serviceDumper);
+             DEFAULT_WARM_UP_DURATION, serviceDumper, wireguardMaintainer);
     }
 
     public NodeAgentImpl(NodeAgentContextSupplier contextSupplier, NodeRepository nodeRepository,
@@ -117,7 +119,8 @@ public class NodeAgentImpl implements NodeAgent {
                          RegistryCredentialsProvider registryCredentialsProvider, StorageMaintainer storageMaintainer,
                          FlagSource flagSource, List<CredentialsMaintainer> credentialsMaintainers,
                          Optional<AclMaintainer> aclMaintainer, Optional<HealthChecker> healthChecker, Clock clock,
-                         Duration warmUpDuration, VespaServiceDumper serviceDumper) {
+                         Duration warmUpDuration, VespaServiceDumper serviceDumper,
+                         Optional<WireguardMaintainer> wireguardMaintainer) {
         this.contextSupplier = contextSupplier;
         this.nodeRepository = nodeRepository;
         this.orchestrator = orchestrator;
@@ -131,6 +134,7 @@ public class NodeAgentImpl implements NodeAgent {
         this.warmUpDuration = warmUpDuration;
         this.containerCpuCap = PermanentFlags.CONTAINER_CPU_CAP.bindTo(flagSource);
         this.serviceDumper = serviceDumper;
+        this.wireguardMaintainer = wireguardMaintainer;
     }
 
     @Override
@@ -141,9 +145,8 @@ public class NodeAgentImpl implements NodeAgent {
         loopThread = new Thread(() -> {
             while (!terminated.get()) {
                 try {
-                    NodeAgentContext context = contextSupplier.nextContext();
-                    converge(context);
-                } catch (InterruptedException ignored) { }
+                    converge(contextSupplier.nextContext());
+                } catch (ContextSupplierInterruptedException ignored) { }
             }
         });
         loopThread.setName("tick-" + initialContext.hostname());
@@ -188,48 +191,55 @@ public class NodeAgentImpl implements NodeAgent {
         }
     }
 
-    private void updateNodeRepoWithCurrentAttributes(NodeAgentContext context) {
+    private void updateNodeRepoWithCurrentAttributes(NodeAgentContext context, Optional<Instant> containerCreatedAt) {
         final NodeAttributes currentNodeAttributes = new NodeAttributes();
         final NodeAttributes newNodeAttributes = new NodeAttributes();
+        boolean changed = false;
 
         if (context.node().wantedRestartGeneration().isPresent() &&
                 !Objects.equals(context.node().currentRestartGeneration(), currentRestartGeneration)) {
             currentNodeAttributes.withRestartGeneration(context.node().currentRestartGeneration());
             newNodeAttributes.withRestartGeneration(currentRestartGeneration);
+            changed = true;
         }
 
-        if (!Objects.equals(context.node().currentRebootGeneration(), currentRebootGeneration)) {
+        boolean createdAtAfterRebootedEvent = context.node().events().stream()
+                .filter(event -> event.type().equals("rebooted"))
+                .map(event -> containerCreatedAt
+                        .map(createdAt -> createdAt.isAfter(event.at()))
+                        .orElse(false)) // Container not created
+                .findFirst()
+                .orElse(containerCreatedAt.isPresent()); // No rebooted event
+        if (!Objects.equals(context.node().currentRebootGeneration(), currentRebootGeneration) || createdAtAfterRebootedEvent) {
             currentNodeAttributes.withRebootGeneration(context.node().currentRebootGeneration());
             newNodeAttributes.withRebootGeneration(currentRebootGeneration);
+            changed = true;
         }
 
-        Optional<DockerImage> actualDockerImage = context.node().wantedDockerImage().filter(n -> containerState == UNKNOWN);
-        if (!Objects.equals(context.node().currentDockerImage(), actualDockerImage)) {
+        Optional<DockerImage> wantedDockerImage = context.node().wantedDockerImage().filter(n -> containerState == UNKNOWN);
+        if (!Objects.equals(context.node().currentDockerImage(), wantedDockerImage)) {
             DockerImage currentImage = context.node().currentDockerImage().orElse(DockerImage.EMPTY);
-            DockerImage newImage = actualDockerImage.orElse(DockerImage.EMPTY);
+            DockerImage newImage = wantedDockerImage.orElse(DockerImage.EMPTY);
 
             currentNodeAttributes.withDockerImage(currentImage);
-            currentNodeAttributes.withVespaVersion(currentImage.tagAsVersion());
+            currentNodeAttributes.withVespaVersion(context.node().currentVespaVersion().orElse(Version.emptyVersion));
             newNodeAttributes.withDockerImage(newImage);
-            newNodeAttributes.withVespaVersion(newImage.tagAsVersion());
+            newNodeAttributes.withVespaVersion(context.node().wantedVespaVersion().orElse(Version.emptyVersion));
+            changed = true;
         }
 
-        publishStateToNodeRepoIfChanged(context, currentNodeAttributes, newNodeAttributes);
-    }
-
-    private void publishStateToNodeRepoIfChanged(NodeAgentContext context, NodeAttributes currentAttributes, NodeAttributes newAttributes) {
-        if (!currentAttributes.equals(newAttributes)) {
+        if (changed) {
             context.log(logger, "Publishing new set of attributes to node repo: %s -> %s",
-                    currentAttributes, newAttributes);
-            nodeRepository.updateNodeAttributes(context.hostname().value(), newAttributes);
+                    currentNodeAttributes, newNodeAttributes);
+            nodeRepository.updateNodeAttributes(context.hostname().value(), newNodeAttributes);
         }
     }
 
     private Container startContainer(NodeAgentContext context) {
-        ContainerData containerData = createContainerData(context);
         ContainerResources wantedResources = warmUpDuration(context).isNegative() ?
                 getContainerResources(context) : getContainerResources(context).withUnlimitedCpus();
-        containerOperations.createContainer(context, containerData, wantedResources);
+        ContainerData containerData = containerOperations.createContainer(context, wantedResources);
+        writeContainerData(context, containerData);
         containerOperations.startContainer(context);
 
         currentRebootGeneration = context.node().wantedRebootGeneration();
@@ -238,7 +248,7 @@ public class NodeAgentImpl implements NodeAgent {
         hasResumedNode = false;
         context.log(logger, "Container successfully started, new containerState is " + containerState);
         return containerOperations.getContainer(context).orElseThrow(() ->
-                new ConvergenceException("Did not find container that was just started"));
+                ConvergenceException.ofError("Did not find container that was just started"));
     }
 
     private Optional<Container> removeContainerIfNeededUpdateContainerState(
@@ -254,18 +264,27 @@ public class NodeAgentImpl implements NodeAgent {
                 context.log(logger, "Invoking vespa-nodectl to restart services: " + restartReason);
                 orchestratorSuspendNode(context);
 
+                ContainerResources currentResources = existingContainer.get().resources();
+                ContainerResources wantedResources = currentResources.withUnlimitedCpus();
+                if ( ! warmUpDuration(context).isNegative() && ! wantedResources.equals(currentResources)) {
+                    context.log(logger, "Updating container resources: %s -> %s",
+                            existingContainer.get().resources().toStringCpu(), wantedResources.toStringCpu());
+                    containerOperations.updateContainer(context, existingContainer.get().id(), wantedResources);
+                }
+
                 String output = containerOperations.restartVespa(context);
-                if (!output.isBlank()) {
+                if ( ! output.isBlank()) {
                     context.log(logger, "Restart services output: " + output);
                 }
                 currentRestartGeneration = context.node().wantedRestartGeneration();
+                firstSuccessfulHealthCheckInstant = Optional.empty();
             });
         }
 
         return existingContainer;
     }
 
-    private Optional<String> shouldRestartServices( NodeAgentContext context, Container existingContainer) {
+    private Optional<String> shouldRestartServices(NodeAgentContext context, Container existingContainer) {
         NodeSpec node = context.node();
         if (!existingContainer.state().isRunning() || node.state() != NodeState.active) return Optional.empty();
 
@@ -384,7 +403,7 @@ public class NodeAgentImpl implements NodeAgent {
         // Only update CPU resources
         containerOperations.updateContainer(context, existingContainer.id(), wantedContainerResources.withMemoryBytes(existingContainer.resources().memoryBytes()));
         return containerOperations.getContainer(context).orElseThrow(() ->
-                new ConvergenceException("Did not find container that was just updated"));
+                ConvergenceException.ofError("Did not find container that was just updated"));
     }
 
     private ContainerResources getContainerResources(NodeAgentContext context) {
@@ -420,6 +439,8 @@ public class NodeAgentImpl implements NodeAgent {
             context.log(logger, Level.INFO, "Converged");
         } catch (ConvergenceException e) {
             context.log(logger, e.getMessage());
+            if (e.isError())
+                numberOfUnhandledException++;
         } catch (Throwable e) {
             numberOfUnhandledException++;
             context.log(logger, Level.SEVERE, "Unhandled exception, ignoring", e);
@@ -430,19 +451,19 @@ public class NodeAgentImpl implements NodeAgent {
     void doConverge(NodeAgentContext context) {
         NodeSpec node = context.node();
         Optional<Container> container = getContainer(context);
+
+        // Current reboot generation uninitialized or incremented from outside to cancel reboot
+        if (currentRebootGeneration < node.currentRebootGeneration())
+            currentRebootGeneration = node.currentRebootGeneration();
+
+        // Either we have changed allocation status (restart gen. only available to allocated nodes), or
+        // restart generation has been incremented from outside to cancel restart
+        if (currentRestartGeneration.isPresent() != node.currentRestartGeneration().isPresent() ||
+                currentRestartGeneration.map(current -> current < node.currentRestartGeneration().get()).orElse(false))
+            currentRestartGeneration = node.currentRestartGeneration();
+
         if (!node.equals(lastNode)) {
             logChangesToNodeSpec(context, lastNode, node);
-
-            // Current reboot generation uninitialized or incremented from outside to cancel reboot
-            if (currentRebootGeneration < node.currentRebootGeneration())
-                currentRebootGeneration = node.currentRebootGeneration();
-
-            // Either we have changed allocation status (restart gen. only available to allocated nodes), or
-            // restart generation has been incremented from outside to cancel restart
-            if (currentRestartGeneration.isPresent() != node.currentRestartGeneration().isPresent() ||
-                    currentRestartGeneration.map(current -> current < node.currentRestartGeneration().get()).orElse(false))
-                currentRestartGeneration = node.currentRestartGeneration();
-
             lastNode = node;
         }
 
@@ -452,8 +473,9 @@ public class NodeAgentImpl implements NodeAgent {
             case failed:
             case inactive:
             case parked:
+                storageMaintainer.syncLogs(context, true);
                 removeContainerIfNeededUpdateContainerState(context, container);
-                updateNodeRepoWithCurrentAttributes(context);
+                updateNodeRepoWithCurrentAttributes(context, Optional.empty());
                 stopServicesIfNeeded(context);
                 break;
             case active:
@@ -476,6 +498,7 @@ public class NodeAgentImpl implements NodeAgent {
                 }
 
                 aclMaintainer.ifPresent(maintainer -> maintainer.converge(context));
+                wireguardMaintainer.ifPresent(maintainer -> maintainer.converge(context));
                 startServicesIfNeeded(context);
                 resumeNodeIfNeeded(context);
                 if (healthChecker.isPresent()) {
@@ -485,7 +508,7 @@ public class NodeAgentImpl implements NodeAgent {
 
                     Duration timeLeft = Duration.between(clock.instant(), firstSuccessfulHealthCheckInstant.get().plus(warmUpDuration(context)));
                     if (!container.get().resources().equalsCpu(getContainerResources(context)))
-                        throw new ConvergenceException("Refusing to resume until warm up period ends (" +
+                        throw ConvergenceException.ofTransient("Refusing to resume until warm up period ends (" +
                                 (timeLeft.isNegative() ? "next tick" : "in " + timeLeft) + ")");
                 }
                 serviceDumper.processServiceDumpRequest(context);
@@ -500,7 +523,7 @@ public class NodeAgentImpl implements NodeAgent {
                 //    has been successfully rolled out.
                 //  - Slobrok and internal orchestrator state is used to determine whether
                 //    to allow upgrade (suspend).
-                updateNodeRepoWithCurrentAttributes(context);
+                updateNodeRepoWithCurrentAttributes(context, container.map(Container::createdAt));
                 if (suspendedInOrchestrator || node.orchestratorStatus().isSuspended()) {
                     context.log(logger, "Call resume against Orchestrator");
                     orchestrator.resume(context.hostname().value());
@@ -516,11 +539,11 @@ public class NodeAgentImpl implements NodeAgent {
                 credentialsMaintainers.forEach(maintainer -> maintainer.clearCredentials(context));
                 storageMaintainer.syncLogs(context, false);
                 storageMaintainer.archiveNodeStorage(context);
-                updateNodeRepoWithCurrentAttributes(context);
+                updateNodeRepoWithCurrentAttributes(context, Optional.empty());
                 nodeRepository.setNodeState(context.hostname().value(), NodeState.ready);
                 break;
             default:
-                throw new ConvergenceException("UNKNOWN STATE " + node.state().name());
+                throw ConvergenceException.ofError("UNKNOWN STATE " + node.state().name());
         }
     }
 
@@ -528,7 +551,7 @@ public class NodeAgentImpl implements NodeAgent {
         StringBuilder builder = new StringBuilder();
         appendIfDifferent(builder, "state", lastNode, node, NodeSpec::state);
         if (builder.length() > 0) {
-            context.log(logger, Level.INFO, "Changes to node: " + builder.toString());
+            context.log(logger, Level.INFO, "Changes to node: " + builder);
         }
     }
 
@@ -561,18 +584,6 @@ public class NodeAgentImpl implements NodeAgent {
         return temp;
     }
 
-    // TODO: Also skip orchestration if we're downgrading in test/staging
-    // How to implement:
-    //  - test/staging: We need to figure out whether we're in test/staging, zone is available in Environment
-    //  - downgrading: Impossible to know unless we look at the hosted version, which is
-    //    not available in the docker image (nor its name). Not sure how to solve this. Should
-    //    the node repo return the hosted version or a downgrade bit in addition to
-    //    wanted docker image etc?
-    // Should the tenant pipeline instead use BCP tool to upgrade faster!?
-    //
-    // More generally, the node repo response should contain sufficient info on what the docker image is,
-    // to allow the node admin to make decisions that depend on the docker image. Or, each docker image
-    // needs to contain routines for drain and suspend. For many images, these can just be dummy routines.
     private void orchestratorSuspendNode(NodeAgentContext context) {
         if (context.node().state() != NodeState.active) return;
 
@@ -594,24 +605,7 @@ public class NodeAgentImpl implements NodeAgent {
         }
     }
 
-    protected ContainerData createContainerData(NodeAgentContext context) {
-        return new ContainerData() {
-            @Override
-            public void addFile(Path pathInContainer, String data) {
-                throw new UnsupportedOperationException("addFile not implemented");
-            }
-
-            @Override
-            public void addDirectory(Path pathInContainer) {
-                throw new UnsupportedOperationException("addDirectory not implemented");
-            }
-
-            @Override
-            public void createSymlink(Path symlink, Path target) {
-                throw new UnsupportedOperationException("createSymlink not implemented");
-            }
-        };
-    }
+    protected void writeContainerData(NodeAgentContext context, ContainerData containerData) { }
 
     protected List<CredentialsMaintainer> credentialsMaintainers() {
         return credentialsMaintainers;

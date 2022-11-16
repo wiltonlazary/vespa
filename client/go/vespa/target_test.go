@@ -6,13 +6,15 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vespa-engine/vespa/client/go/mock"
+	"github.com/vespa-engine/vespa/client/go/util"
+	"github.com/vespa-engine/vespa/client/go/version"
 )
 
 type mockVespaApi struct {
@@ -22,10 +24,13 @@ type mockVespaApi struct {
 
 func (v *mockVespaApi) mockVespaHandler(w http.ResponseWriter, req *http.Request) {
 	switch req.URL.Path {
+	case "/cli/v1/":
+		response := `{"minVersion":"8.0.0"}`
+		w.Write([]byte(response))
 	case "/application/v4/tenant/t1/application/a1/instance/i1/environment/dev/region/us-north-1":
 		response := "{}"
 		if v.deploymentConverged {
-			response = fmt.Sprintf(`{"endpoints": [{"url": "%s"}]}`, v.serverURL)
+			response = fmt.Sprintf(`{"endpoints": [{"url": "%s","scope": "zone","cluster": "cluster1"}]}`, v.serverURL)
 		}
 		w.Write([]byte(response))
 	case "/application/v4/tenant/t1/application/a1/instance/i1/job/dev-us-north-1/run/42":
@@ -60,17 +65,17 @@ func (v *mockVespaApi) mockVespaHandler(w http.ResponseWriter, req *http.Request
 }
 
 func TestCustomTarget(t *testing.T) {
-	lt := LocalTarget()
+	lt := LocalTarget(&mock.HTTPClient{})
 	assertServiceURL(t, "http://127.0.0.1:19071", lt, "deploy")
 	assertServiceURL(t, "http://127.0.0.1:8080", lt, "query")
 	assertServiceURL(t, "http://127.0.0.1:8080", lt, "document")
 
-	ct := CustomTarget("http://192.0.2.42")
+	ct := CustomTarget(&mock.HTTPClient{}, "http://192.0.2.42")
 	assertServiceURL(t, "http://192.0.2.42:19071", ct, "deploy")
 	assertServiceURL(t, "http://192.0.2.42:8080", ct, "query")
 	assertServiceURL(t, "http://192.0.2.42:8080", ct, "document")
 
-	ct2 := CustomTarget("http://192.0.2.42:60000")
+	ct2 := CustomTarget(&mock.HTTPClient{}, "http://192.0.2.42:60000")
 	assertServiceURL(t, "http://192.0.2.42:60000", ct2, "deploy")
 	assertServiceURL(t, "http://192.0.2.42:60000", ct2, "query")
 	assertServiceURL(t, "http://192.0.2.42:60000", ct2, "document")
@@ -80,13 +85,13 @@ func TestCustomTargetWait(t *testing.T) {
 	vc := mockVespaApi{}
 	srv := httptest.NewServer(http.HandlerFunc(vc.mockVespaHandler))
 	defer srv.Close()
-	target := CustomTarget(srv.URL)
+	target := CustomTarget(util.CreateClient(time.Second*10), srv.URL)
 
-	_, err := target.Service("query", time.Millisecond, 42)
+	_, err := target.Service("query", time.Millisecond, 42, "")
 	assert.NotNil(t, err)
 
 	vc.deploymentConverged = true
-	_, err = target.Service("query", time.Millisecond, 42)
+	_, err = target.Service("query", time.Millisecond, 42, "")
 	assert.Nil(t, err)
 
 	assertServiceWait(t, 200, target, "deploy")
@@ -104,11 +109,11 @@ func TestCloudTargetWait(t *testing.T) {
 	target := createCloudTarget(t, srv.URL, &logWriter)
 	assertServiceWait(t, 200, target, "deploy")
 
-	_, err := target.Service("query", time.Millisecond, 42)
+	_, err := target.Service("query", time.Millisecond, 42, "")
 	assert.NotNil(t, err)
 
 	vc.deploymentConverged = true
-	_, err = target.Service("query", time.Millisecond, 42)
+	_, err = target.Service("query", time.Millisecond, 42, "")
 	assert.Nil(t, err)
 
 	assertServiceWait(t, 500, target, "query")
@@ -128,13 +133,24 @@ func TestLog(t *testing.T) {
 	vc.deploymentConverged = true
 
 	var buf bytes.Buffer
-	target := createCloudTarget(t, srv.URL, ioutil.Discard)
+	target := createCloudTarget(t, srv.URL, io.Discard)
 	if err := target.PrintLog(LogOptions{Writer: &buf, Level: 3}); err != nil {
 		t.Fatal(err)
 	}
 	expected := "[2021-09-27 10:31:30.905535] host1a.dev.aws-us-east-1c info    logserver-container Container.com.yahoo.container.jdisc.ConfiguredApplication\tSwitching to the latest deployed set of configurations and components. Application config generation: 52532\n" +
 		"[2021-09-27 10:31:38.600189] host1a.dev.aws-us-east-1c config  config-sentinel  sentinel.sentinel.config-owner\tSentinel got 3 service elements [tenant(vespa-team), application(music), instance(mpolden)] for config generation 52532\n"
 	assert.Equal(t, expected, buf.String())
+}
+
+func TestCheckVersion(t *testing.T) {
+	vc := mockVespaApi{}
+	srv := httptest.NewServer(http.HandlerFunc(vc.mockVespaHandler))
+	defer srv.Close()
+
+	target := createCloudTarget(t, srv.URL, io.Discard)
+	assert.Nil(t, target.CheckVersion(version.MustParse("8.0.0")))
+	assert.Nil(t, target.CheckVersion(version.MustParse("8.1.0")))
+	assert.NotNil(t, target.CheckVersion(version.MustParse("7.0.0")))
 }
 
 func createCloudTarget(t *testing.T, url string, logWriter io.Writer) Target {
@@ -146,17 +162,24 @@ func createCloudTarget(t *testing.T, url string, logWriter io.Writer) Target {
 	apiKey, err := CreateAPIKey()
 	assert.Nil(t, err)
 
-	target := CloudTarget(
-		"https://example.com",
-		Deployment{
-			Application: ApplicationID{Tenant: "t1", Application: "a1", Instance: "i1"},
-			Zone:        ZoneID{Environment: "dev", Region: "us-north-1"},
+	target, err := CloudTarget(
+		util.CreateClient(time.Second*10),
+		APIOptions{APIKey: apiKey, System: PublicSystem},
+		CloudDeploymentOptions{
+			Deployment: Deployment{
+				Application: ApplicationID{Tenant: "t1", Application: "a1", Instance: "i1"},
+				Zone:        ZoneID{Environment: "dev", Region: "us-north-1"},
+			},
+			TLSOptions: TLSOptions{KeyPair: x509KeyPair},
 		},
-		apiKey,
-		TLSOptions{KeyPair: x509KeyPair},
-		LogOptions{Writer: logWriter})
+		LogOptions{Writer: logWriter},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ct, ok := target.(*cloudTarget); ok {
-		ct.apiURL = url
+		ct.apiOptions.System.URL = url
+		ct.ztsClient = &mockZTSClient{token: "foo bar"}
 	} else {
 		t.Fatalf("Wrong target type %T", ct)
 	}
@@ -164,16 +187,24 @@ func createCloudTarget(t *testing.T, url string, logWriter io.Writer) Target {
 }
 
 func assertServiceURL(t *testing.T, url string, target Target, service string) {
-	s, err := target.Service(service, 0, 42)
+	s, err := target.Service(service, 0, 42, "")
 	assert.Nil(t, err)
 	assert.Equal(t, url, s.BaseURL)
 }
 
 func assertServiceWait(t *testing.T, expectedStatus int, target Target, service string) {
-	s, err := target.Service(service, 0, 42)
+	s, err := target.Service(service, 0, 42, "")
 	assert.Nil(t, err)
 
 	status, err := s.Wait(0)
 	assert.Nil(t, err)
 	assert.Equal(t, expectedStatus, status)
+}
+
+type mockZTSClient struct {
+	token string
+}
+
+func (c *mockZTSClient) AccessToken(domain string, certificate tls.Certificate) (string, error) {
+	return c.token, nil
 }

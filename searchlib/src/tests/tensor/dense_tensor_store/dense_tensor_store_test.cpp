@@ -32,15 +32,15 @@ struct Fixture
     {}
     void assertSetAndGetTensor(const TensorSpec &tensorSpec) {
         Value::UP expTensor = makeTensor(tensorSpec);
-        EntryRef ref = store.setTensor(*expTensor);
-        Value::UP actTensor = store.getTensor(ref);
+        EntryRef ref = store.store_tensor(*expTensor);
+        Value::UP actTensor = store.get_tensor(ref);
         EXPECT_EQUAL(*expTensor, *actTensor);
         assertTensorView(ref, *expTensor);
     }
     void assertEmptyTensor(const TensorSpec &tensorSpec) {
         Value::UP expTensor = makeTensor(tensorSpec);
         EntryRef ref;
-        Value::UP actTensor = store.getTensor(ref);
+        Value::UP actTensor = store.get_tensor(ref);
         EXPECT_TRUE(actTensor.get() == nullptr);
         assertTensorView(ref, *expTensor);
     }
@@ -75,10 +75,19 @@ assertArraySize(const vespalib::string &tensorType, uint32_t expArraySize) {
 
 TEST("require that array size is calculated correctly")
 {
-    TEST_DO(assertArraySize("tensor(x[1])", 32));
+    TEST_DO(assertArraySize("tensor(x[1])", 8));
     TEST_DO(assertArraySize("tensor(x[10])", 96));
     TEST_DO(assertArraySize("tensor(x[3])", 32));
     TEST_DO(assertArraySize("tensor(x[10],y[10])", 800));
+    TEST_DO(assertArraySize("tensor<int8>(x[1])", 8));
+    TEST_DO(assertArraySize("tensor<int8>(x[8])", 8));
+    TEST_DO(assertArraySize("tensor<int8>(x[9])", 16));
+    TEST_DO(assertArraySize("tensor<int8>(x[16])", 16));
+    TEST_DO(assertArraySize("tensor<int8>(x[17])", 32));
+    TEST_DO(assertArraySize("tensor<int8>(x[32])", 32));
+    TEST_DO(assertArraySize("tensor<int8>(x[33])", 64));
+    TEST_DO(assertArraySize("tensor<int8>(x[64])", 64));
+    TEST_DO(assertArraySize("tensor<int8>(x[65])", 96));
 }
 
 TEST_MAIN() { TEST_RUN_ALL(); }

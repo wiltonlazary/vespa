@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #include <vespa/config-model.h>
 #include <vespa/vespalib/stllike/string.h>
-#include <vespa/config/config.h>
+#include <vespa/config/subscription/configuri.h>
 
 class ModelInspect
 
@@ -20,7 +20,7 @@ public:
         ~Flags();
     };
 
-    ModelInspect(Flags flags, const config::ConfigUri uri, std::ostream &out);
+    ModelInspect(Flags flags, const config::ConfigUri &uri, std::ostream &out);
     virtual ~ModelInspect();
 
     int action(int cnt, char *argv[]);

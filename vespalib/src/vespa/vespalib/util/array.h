@@ -123,10 +123,10 @@ public:
     const_iterator end()              const { return array(_sz); }
     iterator begin()                        { return array(0); }
     iterator end()                          { return array(_sz); }
-    const_reverse_iterator rbegin()   const { return array(_sz) - 1; }
-    const_reverse_iterator rend()     const { return array(0) - 1; }
-    reverse_iterator rbegin()               { return array(_sz) - 1; }
-    reverse_iterator rend()                 { return array(0) - 1; }
+    const_reverse_iterator rbegin()   const { return empty() ? array(0) : array(_sz) - 1; }
+    const_reverse_iterator rend()     const { return empty() ? array(0) : array(0) - 1; }
+    reverse_iterator rbegin()               { return empty() ? array(0) : array(_sz) - 1; }
+    reverse_iterator rend()                 { return empty() ? array(0) : array(0) - 1; }
     size_t size() const                     { return _sz; }
     size_t byteSize() const                 { return _sz * sizeof(T); }
     size_t byteCapacity() const             { return _array.size(); }
@@ -135,7 +135,10 @@ public:
         std::destroy(array(0), array(_sz));
         _sz = 0;
     }
+    void reset();
     bool empty() const                      { return _sz == 0; }
+    T * data() noexcept                     { return static_cast<T *>(_array.get()); }
+    const T * data() const noexcept         { return static_cast<const T *>(_array.get()); }
     T & operator [] (size_t i)              { return *array(i); }
     const T & operator [] (size_t i) const  { return *array(i); }
     bool operator == (const Array & rhs) const;
@@ -145,6 +148,7 @@ public:
         rhs._sz = 0;
         return std::move(rhs._array);
     }
+    Array<T> create() const;
 private:
     T *       array(size_t i)       { return static_cast<T *>(_array.get()) + i; }
     const T * array(size_t i) const { return static_cast<const T *>(_array.get()) + i; }

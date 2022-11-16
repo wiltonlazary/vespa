@@ -77,8 +77,8 @@ public:
         bool operator<(const PendingOp &rhs) const {
             if (_wordIdx != rhs._wordIdx)
                 return _wordIdx < rhs._wordIdx;
-            if (_docId != rhs._docId)
-                return _docId < rhs._docId;
+            if (_docId != rhs.getDocId())
+                return _docId < rhs.getDocId();
             return _seq < rhs._seq;
         } 
     };
@@ -94,9 +94,9 @@ public:
     ~FakeMemTreeOccMgr();
 
     void freeze();
-    void transferHoldLists();
+    void assign_generation();
     void incGeneration();
-    void trimHoldLists();
+    void reclaim_memory();
     void sync();
     void add(uint32_t wordIdx, index::DocIdAndFeatures &features) override;
     void remove(uint32_t wordIdx, uint32_t docId) override;

@@ -7,17 +7,16 @@
  */
 #pragma once
 
-#include <vespa/document/datatype/numericdatatype.h>
-#include <vespa/document/fieldvalue/numericfieldvalue.h>
+#include "numericfieldvalue.h"
+#include <vespa/document/datatype/datatype.h>
 
 namespace document {
 
-class LongFieldValue : public NumericFieldValue<int64_t> {
+class LongFieldValue final : public NumericFieldValue<int64_t> {
 public:
-    typedef std::unique_ptr<LongFieldValue> UP;
     typedef int64_t Number;
 
-    LongFieldValue(Number value = 0) : NumericFieldValue<Number>(value) {}
+    LongFieldValue(Number value = 0) : NumericFieldValue<Number>(Type::LONG, value) {}
 
     void accept(FieldValueVisitor &visitor) override { visitor.visit(*this); }
     void accept(ConstFieldValueVisitor &visitor) const override { visitor.visit(*this); }
@@ -26,8 +25,7 @@ public:
     LongFieldValue* clone() const override { return new LongFieldValue(*this); }
 
     using NumericFieldValue<Number>::operator=;
-
-    DECLARE_IDENTIFIABLE(LongFieldValue);
+    static std::unique_ptr<LongFieldValue> make(Number value=0) { return std::make_unique<LongFieldValue>(value); }
 
 };
 

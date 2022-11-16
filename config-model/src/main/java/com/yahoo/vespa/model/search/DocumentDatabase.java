@@ -3,13 +3,13 @@ package com.yahoo.vespa.model.search;
 
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.search.config.IndexInfoConfig;
-import com.yahoo.searchdefinition.derived.DerivedConfiguration;
+import com.yahoo.search.config.SchemaInfoConfig;
+import com.yahoo.schema.derived.DerivedConfiguration;
 import com.yahoo.vespa.config.search.AttributesConfig;
 import com.yahoo.vespa.config.search.ImportedFieldsConfig;
 import com.yahoo.vespa.config.search.IndexschemaConfig;
 import com.yahoo.vespa.config.search.RankProfilesConfig;
 import com.yahoo.vespa.config.search.SummaryConfig;
-import com.yahoo.vespa.config.search.SummarymapConfig;
 import com.yahoo.vespa.config.search.core.OnnxModelsConfig;
 import com.yahoo.vespa.config.search.core.RankingConstantsConfig;
 import com.yahoo.vespa.config.search.core.RankingExpressionsConfig;
@@ -31,25 +31,25 @@ public class DocumentDatabase extends AbstractConfigProducer<DocumentDatabase> i
         OnnxModelsConfig.Producer,
         IndexschemaConfig.Producer,
         JuniperrcConfig.Producer,
-        SummarymapConfig.Producer,
         SummaryConfig.Producer,
-        ImportedFieldsConfig.Producer {
+        ImportedFieldsConfig.Producer,
+        SchemaInfoConfig.Producer {
 
-    private final String inputDocType;
+    private final String schemaName;
     private final DerivedConfiguration derivedCfg;
 
-    public DocumentDatabase(AbstractConfigProducer<?> parent, String inputDocType, DerivedConfiguration derivedCfg) {
-        super(parent, inputDocType);
-        this.inputDocType = inputDocType;
+    public DocumentDatabase(AbstractConfigProducer<?> parent, String schemaName, DerivedConfiguration derivedCfg) {
+        super(parent, schemaName);
+        this.schemaName = schemaName;
         this.derivedCfg = derivedCfg;
     }
 
     public String getName() {
-        return inputDocType;
+        return schemaName;
     }
 
-    public String getInputDocType() {
-        return inputDocType;
+    public String getSchemaName() {
+        return schemaName;
     }
 
     public DerivedConfiguration getDerivedConfiguration() {
@@ -57,63 +57,39 @@ public class DocumentDatabase extends AbstractConfigProducer<DocumentDatabase> i
     }
 
     @Override
-    public void getConfig(IndexInfoConfig.Builder builder) {
-        derivedCfg.getIndexInfo().getConfig(builder);
-    }
+    public void getConfig(IndexInfoConfig.Builder builder) { derivedCfg.getIndexInfo().getConfig(builder); }
 
     @Override
-    public void getConfig(IlscriptsConfig.Builder builder) {
-        derivedCfg.getIndexingScript().getConfig(builder);
-    }
+    public void getConfig(IlscriptsConfig.Builder builder) { derivedCfg.getIndexingScript().getConfig(builder); }
 
     @Override
-    public void getConfig(AttributesConfig.Builder builder) {
-        derivedCfg.getAttributeFields().getConfig(builder);
-    }
+    public void getConfig(AttributesConfig.Builder builder) { derivedCfg.getConfig(builder); }
 
     @Override
-    public void getConfig(RankProfilesConfig.Builder builder) {
-        derivedCfg.getRankProfileList().getConfig(builder);
-    }
+    public void getConfig(RankProfilesConfig.Builder builder) { derivedCfg.getRankProfileList().getConfig(builder); }
 
     @Override
-    public void getConfig(RankingExpressionsConfig.Builder builder) {
-        derivedCfg.getRankProfileList().getConfig(builder);
-    }
+    public void getConfig(RankingExpressionsConfig.Builder builder) { derivedCfg.getRankProfileList().getConfig(builder); }
 
     @Override
-    public void getConfig(RankingConstantsConfig.Builder builder) {
-        derivedCfg.getRankProfileList().getConfig(builder);
-    }
+    public void getConfig(RankingConstantsConfig.Builder builder) { derivedCfg.getRankProfileList().getConfig(builder); }
 
     @Override
-    public void getConfig(OnnxModelsConfig.Builder builder) {
-        derivedCfg.getRankProfileList().getConfig(builder);
-    }
+    public void getConfig(OnnxModelsConfig.Builder builder) { derivedCfg.getRankProfileList().getConfig(builder); }
 
     @Override
-    public void getConfig(IndexschemaConfig.Builder builder) {
-        derivedCfg.getIndexSchema().getConfig(builder);
-    }
+    public void getConfig(IndexschemaConfig.Builder builder) { derivedCfg.getIndexSchema().getConfig(builder); }
 
     @Override
-    public void getConfig(JuniperrcConfig.Builder builder) {
-        derivedCfg.getJuniperrc().getConfig(builder);
-    }
+    public void getConfig(JuniperrcConfig.Builder builder) { derivedCfg.getJuniperrc().getConfig(builder); }
 
     @Override
-    public void getConfig(SummarymapConfig.Builder builder) {
-        derivedCfg.getSummaryMap().getConfig(builder);
-    }
+    public void getConfig(SummaryConfig.Builder builder) { derivedCfg.getSummaries().getConfig(builder); }
 
     @Override
-    public void getConfig(SummaryConfig.Builder builder) {
-        derivedCfg.getSummaries().getConfig(builder);
-    }
+    public void getConfig(ImportedFieldsConfig.Builder builder) { derivedCfg.getImportedFields().getConfig(builder); }
 
     @Override
-    public void getConfig(ImportedFieldsConfig.Builder builder) {
-        derivedCfg.getImportedFields().getConfig(builder);
-    }
+    public void getConfig(SchemaInfoConfig.Builder builder) { derivedCfg.getSchemaInfo().getConfig(builder); }
 
 }

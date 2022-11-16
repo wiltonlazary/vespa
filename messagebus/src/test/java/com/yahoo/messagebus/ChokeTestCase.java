@@ -10,17 +10,13 @@ import com.yahoo.messagebus.routing.Route;
 import com.yahoo.messagebus.test.Receptor;
 import com.yahoo.messagebus.test.SimpleMessage;
 import com.yahoo.messagebus.test.SimpleProtocol;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author Simon Thoresen Hult
@@ -32,7 +28,7 @@ public class ChokeTestCase {
     SourceSession srcSession;
     DestinationSession dstSession;
 
-    @Before
+    @BeforeEach
     public void setUp() throws ListenFailedException {
         slobrok = new Slobrok();
         dstServer = new TestServer(new MessageBusParams().addProtocol(new SimpleProtocol()),
@@ -45,7 +41,7 @@ public class ChokeTestCase {
         assertTrue(srcServer.waitSlobrok("dst/session", 1));
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         slobrok.stop();
         dstSession.destroy();
@@ -55,7 +51,8 @@ public class ChokeTestCase {
     }
 
     @Test
-    public void testMaxCount() {
+    @SuppressWarnings("deprecation")
+    void testMaxCount() {
         int max = 10;
         dstServer.mb.setMaxPendingCount(max);
         List<Message> lst = new ArrayList<>();
@@ -67,11 +64,11 @@ public class ChokeTestCase {
             }
             assertTrue(srcSession.send(createMessage("msg"), Route.parse("dst/session")).isAccepted());
             if (i < max) {
-                Message msg = ((Receptor)dstSession.getMessageHandler()).getMessage(60);
+                Message msg = ((Receptor) dstSession.getMessageHandler()).getMessage(60);
                 assertNotNull(msg);
                 lst.add(msg);
             } else {
-                Reply reply = ((Receptor)srcSession.getReplyHandler()).getReply(60);
+                Reply reply = ((Receptor) srcSession.getReplyHandler()).getReply(60);
                 assertNotNull(reply);
                 assertEquals(1, reply.getNumErrors());
                 assertEquals(ErrorCode.SESSION_BUSY, reply.getError(0).getCode());
@@ -81,13 +78,13 @@ public class ChokeTestCase {
             Message msg = lst.remove(0);
             dstSession.acknowledge(msg);
 
-            Reply reply = ((Receptor)srcSession.getReplyHandler()).getReply(60);
+            Reply reply = ((Receptor) srcSession.getReplyHandler()).getReply(60);
             assertNotNull(reply);
             assertFalse(reply.hasErrors());
             assertNotNull(msg = reply.getMessage());
             assertTrue(srcSession.send(msg, Route.parse("dst/session")).isAccepted());
 
-            assertNotNull(msg = ((Receptor)dstSession.getMessageHandler()).getMessage(60));
+            assertNotNull(msg = ((Receptor) dstSession.getMessageHandler()).getMessage(60));
             lst.add(msg);
         }
         while (!lst.isEmpty()) {
@@ -95,7 +92,7 @@ public class ChokeTestCase {
             Message msg = lst.remove(0);
             dstSession.acknowledge(msg);
 
-            Reply reply = ((Receptor)srcSession.getReplyHandler()).getReply(60);
+            Reply reply = ((Receptor) srcSession.getReplyHandler()).getReply(60);
             assertNotNull(reply);
             assertFalse(reply.hasErrors());
         }
@@ -103,7 +100,8 @@ public class ChokeTestCase {
     }
 
     @Test
-    public void testMaxSize() {
+    @SuppressWarnings("deprecation")
+    void testMaxSize() {
         int size = createMessage("msg").getApproxSize();
         int max = size * 10;
         dstServer.mb.setMaxPendingSize(max);
@@ -116,11 +114,11 @@ public class ChokeTestCase {
             }
             assertTrue(srcSession.send(createMessage("msg"), Route.parse("dst/session")).isAccepted());
             if (i < max) {
-                Message msg = ((Receptor)dstSession.getMessageHandler()).getMessage(60);
+                Message msg = ((Receptor) dstSession.getMessageHandler()).getMessage(60);
                 assertNotNull(msg);
                 lst.add(msg);
             } else {
-                Reply reply = ((Receptor)srcSession.getReplyHandler()).getReply(60);
+                Reply reply = ((Receptor) srcSession.getReplyHandler()).getReply(60);
                 assertNotNull(reply);
                 assertEquals(1, reply.getNumErrors());
                 assertEquals(ErrorCode.SESSION_BUSY, reply.getError(0).getCode());
@@ -130,13 +128,13 @@ public class ChokeTestCase {
             Message msg = lst.remove(0);
             dstSession.acknowledge(msg);
 
-            Reply reply = ((Receptor)srcSession.getReplyHandler()).getReply(60);
+            Reply reply = ((Receptor) srcSession.getReplyHandler()).getReply(60);
             assertNotNull(reply);
             assertFalse(reply.hasErrors());
             assertNotNull(msg = reply.getMessage());
             assertTrue(srcSession.send(msg, Route.parse("dst/session")).isAccepted());
 
-            assertNotNull(msg = ((Receptor)dstSession.getMessageHandler()).getMessage(60));
+            assertNotNull(msg = ((Receptor) dstSession.getMessageHandler()).getMessage(60));
             lst.add(msg);
         }
         while (!lst.isEmpty()) {
@@ -144,7 +142,7 @@ public class ChokeTestCase {
             Message msg = lst.remove(0);
             dstSession.acknowledge(msg);
 
-            Reply reply = ((Receptor)srcSession.getReplyHandler()).getReply(60);
+            Reply reply = ((Receptor) srcSession.getReplyHandler()).getReply(60);
             assertNotNull(reply);
             assertFalse(reply.hasErrors());
         }

@@ -4,9 +4,12 @@ package com.yahoo.vespa.model.filedistribution;
 import com.yahoo.config.FileReference;
 import com.yahoo.config.application.api.FileRegistry;
 import com.yahoo.config.model.application.provider.MockFileRegistry;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotNull;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * @author bratseth
@@ -14,19 +17,16 @@ import static org.junit.Assert.assertNotNull;
 public class FileReferencesRepositoryTestCase {
 
     @Test
-    public void fileDistributor() {
+    void fileDistributor() {
         FileRegistry fileRegistry = new MockFileRegistry();
-        FileReferencesRepository fileReferencesRepository = new FileReferencesRepository();
+        FileReferencesRepository fileReferencesRepository = new FileReferencesRepository(fileRegistry);
 
         String file1 = "component/path1";
         String file2 = "component/path2";
         FileReference ref1 = fileRegistry.addFile(file1);
         FileReference ref2 = fileRegistry.addFile(file2);
-        fileReferencesRepository.add(ref1);
-        fileReferencesRepository.add(ref2);
-        fileReferencesRepository.add(ref1); // same file reference as above
-        fileReferencesRepository.add(ref2);
 
+        assertEquals(Set.of(ref1, ref2), fileReferencesRepository.allFileReferences());
         assertNotNull(ref1);
         assertNotNull(ref2);
     }

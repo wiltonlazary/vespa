@@ -1,12 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.jdisc.http.filter.security.rule;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.http.filter.DiscFilterRequest;
 import com.yahoo.jdisc.http.filter.security.base.JsonSecurityRequestFilterBase;
-import com.yahoo.jdisc.http.filter.security.rule.RuleBasedFilterConfig.Rule.Action;
+import com.yahoo.vespa.config.jdisc.http.filter.RuleBasedFilterConfig;
+import com.yahoo.vespa.config.jdisc.http.filter.RuleBasedFilterConfig.Rule.Action;
 import com.yahoo.restapi.Path;
 
 import java.net.URI;
@@ -118,8 +119,9 @@ public class RuleBasedRequestFilter extends JsonSecurityRequestFilterBase {
             boolean methodMatches = methods.isEmpty() || methods.contains(method.toUpperCase());
             String host = uri.getHost();
             boolean hostnameMatches = hostnames.isEmpty() || (host != null && hostnames.contains(host));
-            Path pathMatcher = new Path(uri);
-            boolean pathMatches = pathGlobExpressions.isEmpty() || pathGlobExpressions.stream().anyMatch(pathMatcher::matches);
+            // Path segments cannot be validated in this filter, as we don't know what API it protects.
+            // Specifically, /document/v1 must allow _any_ rest path segment, as there is no restriction on document IDs.
+            boolean pathMatches = pathGlobExpressions.isEmpty() || pathGlobExpressions.stream().anyMatch(Path.withoutValidation(uri)::matches);
             return methodMatches && hostnameMatches && pathMatches;
         }
 

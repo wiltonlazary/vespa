@@ -5,8 +5,14 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Enumeration;
-import java.util.logging.*;
 import java.util.Timer;
+import java.util.logging.FileHandler;
+import java.util.logging.Filter;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogManager;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 /**
  * Sets up Vespa logging. Call a setup method to set up this.
@@ -16,15 +22,16 @@ import java.util.Timer;
  */
 public class LogSetup {
 
-    private static Timer taskRunner = new Timer(true);
-    /** A global task thread */
-    public static Timer getTaskRunner() { return taskRunner; }
+    private static final Timer taskRunner = new Timer(true);
+
+    static Timer getTaskRunner() { return taskRunner; }
 
     /** The log handler used by this */
     private static VespaLogHandler logHandler;
 
     private static ZooKeeperFilter zooKeeperFilter = null;
 
+    /** Clear all handlers registered in java.util.logging framework */
     public static void clearHandlers () {
         Enumeration<String> names = LogManager.getLogManager().getLoggerNames();
         while (names.hasMoreElements()) {
@@ -155,14 +162,13 @@ public class LogSetup {
         Logger.getLogger("").addHandler(logHandler);
     }
 
-    /** Returns the log handler set up by this class */
-    public static VespaLogHandler getLogHandler() {
+    static VespaLogHandler getLogHandler() {
         return logHandler;
     }
 
-    /** Returns the log handler set up by this class */
+    /** perform cleanup */
     public static void cleanup() {
-        if (zooKeeperFilter != null)
+         if (zooKeeperFilter != null)
             zooKeeperFilter.close();
     }
 

@@ -18,12 +18,12 @@ public class MessageBusSessionFactory implements SessionFactory {
     public MessageBusSessionFactory(MessagePropertyProcessor processor) {
         this(processor, null, null);
     }
-    
+
     private MessageBusSessionFactory(MessagePropertyProcessor processor,
                                     DocumentmanagerConfig documentmanagerConfig,
                                     SlobroksConfig slobroksConfig) {
         this.processor = processor;
-        MessageBusParams params = new MessageBusParams(processor.getLoadTypes());
+        MessageBusParams params = new MessageBusParams();
         params.setTraceLevel(processor.getFeederOptions().getTraceLevel());
         RPCNetworkParams rpcNetworkParams = processor.getFeederOptions().getNetworkParams();
         if (slobroksConfig != null) // not set: will subscribe

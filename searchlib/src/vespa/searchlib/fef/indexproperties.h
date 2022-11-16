@@ -57,6 +57,34 @@ namespace rank {
 
 } // namespace rank
 
+namespace feature_rename {
+
+    /**
+     * Property for match/summary/dump featuress that should be exposed
+     * with a different name, typically rankingExpression(foo) -> foo
+     **/
+    struct Rename {
+        static const vespalib::string NAME;
+        static std::vector<std::pair<vespalib::string,vespalib::string>> lookup(const Properties &props);
+    };
+
+
+} // namespace featurerename
+
+namespace match {
+
+    /**
+     * Property for the set of features to be inserted into the search
+     * reply (match features).
+     **/
+    struct Feature {
+        static const vespalib::string NAME;
+        static const std::vector<vespalib::string> DEFAULT_VALUE;
+        static std::vector<vespalib::string> lookup(const Properties &props);
+    };
+
+} // namespace match
+
 namespace summary {
 
     /**
@@ -139,29 +167,75 @@ namespace execute::onsummary {
     };
 }
 
+namespace mutate {
+    //TODO Remove October 2022
+    struct AllowQueryOverride {
+        static const vespalib::string NAME;
+        static bool check(const Properties &props);
+    };
+}
+
+namespace mutate::on_match {
+    struct Attribute {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+    struct Operation {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+}
+
+namespace mutate::on_first_phase {
+    struct Attribute {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+    struct Operation {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+}
+
+namespace mutate::on_second_phase {
+    struct Attribute {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+    struct Operation {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+}
+
+namespace mutate::on_summary {
+    struct Attribute {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+    struct Operation {
+        static const vespalib::string NAME;
+        static const vespalib::string DEFAULT_VALUE;
+        static vespalib::string lookup(const Properties &props) { return lookup(props, DEFAULT_VALUE); }
+        static vespalib::string lookup(const Properties &props, const vespalib::string & defaultValue);
+    };
+}
+
 namespace matching {
-
-    /**
-     * When enabled, iterators that unpack posting information as part
-     * of matching may be split into multiple parts (some cheap, some
-     * expensive).
-     **/
-    struct SplitUnpackingIterators {
-        static const vespalib::string NAME;
-        static const bool DEFAULT_VALUE;
-        static bool check(const Properties &props);
-    };
-
-    /**
-     * When enabled, iterators that unpack posting information as part
-     * of matching will be tagged as expensive, in order to delay
-     * their execution within the iterator tree.
-     **/
-    struct DelayUnpackingIterators {
-        static const vespalib::string NAME;
-        static const bool DEFAULT_VALUE;
-        static bool check(const Properties &props);
-    };
 
     /**
      * A number in the range [0,1] indicating how much of the corpus
@@ -203,20 +277,6 @@ namespace matching {
         static const uint32_t DEFAULT_VALUE;
         static uint32_t lookup(const Properties &props);
         static uint32_t lookup(const Properties &props, uint32_t defaultValue);
-    };
-
-    /**
-     * Property to control fallback to brute force search for nearest
-     * neighbor query terms.  If the ratio of candidates in the global
-     * filter (which tracks the documents that can match the query
-     * based on the other parts of the query) is less than this limit
-     * then use brute force search.
-     **/
-    struct NearestNeighborBruteForceLimit {
-        static const vespalib::string NAME;
-        static const double DEFAULT_VALUE;
-        static double lookup(const Properties &props);
-        static double lookup(const Properties &props, double defaultValue);
     };
 
     /**

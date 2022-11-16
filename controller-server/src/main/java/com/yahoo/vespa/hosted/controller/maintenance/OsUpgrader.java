@@ -1,8 +1,9 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.CloudName;
+import com.yahoo.config.provision.zone.NodeSlice;
 import com.yahoo.config.provision.zone.ZoneApi;
 import com.yahoo.text.Text;
 import com.yahoo.vespa.hosted.controller.Controller;
@@ -43,30 +44,28 @@ public class OsUpgrader extends InfrastructureUpgrader<OsVersionTarget> {
 
     @Override
     protected void upgrade(OsVersionTarget target, SystemApplication application, ZoneApi zone) {
-        Duration zoneUpgradeBudget = zoneBudgetOf(target.upgradeBudget(), zone);
-        log.info(Text.format("Upgrading OS of %s to version %s in %s in cloud %s%s", application.id(),
+        log.info(Text.format("Upgrading OS of %s to version %s in %s in cloud %s", application.id(),
                                target.osVersion().version().toFullString(),
-                               zone.getVirtualId(), zone.getCloudName(),
-                               " with time budget " + zoneUpgradeBudget));
+                               zone.getVirtualId(), zone.getCloudName()));
         controller().serviceRegistry().configServer().nodeRepository().upgradeOs(zone.getVirtualId(), application.nodeType(),
-                                                                                 target.osVersion().version(),
-                                                                                 zoneUpgradeBudget);
+                                                                                 target.osVersion().version());
     }
 
     @Override
-    protected boolean convergedOn(OsVersionTarget target, SystemApplication application, ZoneApi zone) {
-        return !currentVersion(zone, application, target.osVersion().version()).isBefore(target.osVersion().version());
+    protected boolean convergedOn(OsVersionTarget target, SystemApplication application, ZoneApi zone, NodeSlice nodeSlice) {
+        Version currentVersion = versionOf(nodeSlice, zone, application, Node::currentOsVersion).orElse(target.osVersion().version());
+        return !currentVersion.isBefore(target.osVersion().version());
     }
 
     @Override
     protected boolean expectUpgradeOf(Node node, SystemApplication application, ZoneApi zone) {
         return cloud.equals(zone.getCloudName()) && // Cloud is managed by this upgrader
                application.shouldUpgradeOs() &&     // Application should upgrade in this cloud
-               canUpgrade(node);                    // Node is in an upgradable state
+               canUpgrade(node, false);
     }
 
     @Override
-    protected Optional<OsVersionTarget> targetVersion() {
+    protected Optional<OsVersionTarget> target() {
         // Return target if we have nodes in this cloud on a lower version
         return controller().osVersionTarget(cloud)
                            .filter(target -> controller().osVersionStatus().nodesIn(cloud).stream()
@@ -83,29 +82,9 @@ public class OsUpgrader extends InfrastructureUpgrader<OsVersionTarget> {
                            .orElse(true);
     }
 
-    private Version currentVersion(ZoneApi zone, SystemApplication application, Version defaultVersion) {
-        return minVersion(zone, application, Node::currentOsVersion).orElse(defaultVersion);
-    }
-
-    /** Returns the available upgrade budget for given zone */
-    private Duration zoneBudgetOf(Duration totalBudget, ZoneApi zone) {
-        if (!spendBudgetOn(zone)) return Duration.ZERO;
-        long consecutiveZones = upgradePolicy.asList().stream()
-                                             .filter(parallelZones -> parallelZones.stream().anyMatch(this::spendBudgetOn))
-                                             .count();
-        return totalBudget.dividedBy(consecutiveZones);
-    }
-
-    /** Returns whether to spend upgrade budget on given zone */
-    private boolean spendBudgetOn(ZoneApi zone) {
-        if (!zone.getEnvironment().isProduction()) return false;
-        if (controller().zoneRegistry().systemZone().getVirtualId().equals(zone.getVirtualId())) return false; // Controller zone
-        return true;
-    }
-
-    /** Returns whether node is in a state where it can be upgraded */
-    public static boolean canUpgrade(Node node) {
-        return upgradableNodeStates.contains(node.state());
+    /** Returns whether node currently allows upgrades */
+    public static boolean canUpgrade(Node node, boolean includeDeferring) {
+        return (includeDeferring || !node.deferOsUpgrade()) && upgradableNodeStates.contains(node.state());
     }
 
     private static String name(CloudName cloud) {

@@ -4,22 +4,18 @@ package com.yahoo.collections;
 import com.yahoo.text.Utf8;
 
 /**
- * <p>A Java port of Michael Susag's BobHash in FastLib. This version is
+ * A Java port of Michael Susag's BobHash in FastLib. This version is
  * specifically done to be bit compatible with the one in FastLib, as it
- * is used in decoding packets from FastServer.</p>
+ * is used in decoding packets from FastServer.
  *
- * <p>Hash function based on
- * <a href="http://burtleburtle.net/bob/hash/index.html">
- * http://burtleburtle.net/bob/hash/index.html</a>
+ * Hash function based on
+ * <a href="http://burtleburtle.net/bob/hash/index.html">http://burtleburtle.net/bob/hash/index.html</a>
  * by Bob Jenkins, 1996. bob_jenkins@burtleburtle.net. You may use this
- * code any way you wish, private, educational, or commercial. It's free.</p>
+ * code any way you wish, private, educational, or commercial. It's free.
  *
- * @author        Michael Susag
- * @author        <a href="mailto:steinar@yahoo-inc.com">Steinar Knutsen</a>
- *
- *
+ * @author Michael Susag
+ * @author Steinar Knutsen
  */
-
 public class BobHash {
 
     /**
@@ -157,44 +153,45 @@ public class BobHash {
         // handle the last 11 bytes
         c += k.length;
         switch (len) {
-        // all the case statements fall through
-        case 11:
-            c += (unsign(k[offset + 10]) << 24);
+            // all the case statements fall through
+            case 11:
+                c += (unsign(k[offset + 10]) << 24);
 
-        case 10:
-            c += (unsign(k[offset + 9]) << 16);
+            case 10:
+                c += (unsign(k[offset + 9]) << 16);
 
-        case 9:
-            c += (unsign(k[offset + 8]) << 8);
+            case 9:
+                c += (unsign(k[offset + 8]) << 8);
 
-        /* the first byte of c is reserved for the length */
-        case 8:
-            b += (unsign(k[offset + 7]) << 24);
+                /* the first byte of c is reserved for the length */
+            case 8:
+                b += (unsign(k[offset + 7]) << 24);
 
-        case 7:
-            b += (unsign(k[offset + 6]) << 16);
+            case 7:
+                b += (unsign(k[offset + 6]) << 16);
 
-        case 6:
-            b += (unsign(k[offset + 5]) << 8);
+            case 6:
+                b += (unsign(k[offset + 5]) << 8);
 
-        case 5:
-            b += unsign(k[offset + 4]);
+            case 5:
+                b += unsign(k[offset + 4]);
 
-        case 4:
-            a += (unsign(k[offset + 3]) << 24);
+            case 4:
+                a += (unsign(k[offset + 3]) << 24);
 
-        case 3:
-            a += (unsign(k[offset + 2]) << 16);
+            case 3:
+                a += (unsign(k[offset + 2]) << 16);
 
-        case 2:
-            a += (unsign(k[offset + 1]) << 8);
+            case 2:
+                a += (unsign(k[offset + 1]) << 8);
 
-        case 1:
-            a += unsign(k[offset + 0]);
+            case 1:
+                a += unsign(k[offset + 0]);
 
-        /* case 0: nothing left to add */
+                /* case 0: nothing left to add */
         }
         abcBuffer = mix(a, b, c);
         return abcBuffer[2];
     }
+
 }

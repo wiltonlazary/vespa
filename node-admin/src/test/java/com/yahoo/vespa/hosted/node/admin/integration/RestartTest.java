@@ -2,10 +2,10 @@
 package com.yahoo.vespa.hosted.node.admin.integration;
 
 import com.yahoo.config.provision.DockerImage;
-import com.yahoo.vespa.hosted.node.admin.container.ContainerName;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeAttributes;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeSpec;
-import org.junit.Test;
+import com.yahoo.vespa.hosted.node.admin.container.ContainerName;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
@@ -21,15 +21,18 @@ import static org.mockito.ArgumentMatchers.eq;
 public class RestartTest {
 
     @Test
-    public void test() {
-        DockerImage dockerImage = DockerImage.fromString("registry.example.com/dockerImage:1.2.3");
+    void test() {
+        DockerImage dockerImage = DockerImage.fromString("registry.example.com/repo/image:1.2.3");
         try (ContainerTester tester = new ContainerTester(List.of(dockerImage))) {
             String hostname = "host1.test.yahoo.com";
-            NodeSpec nodeSpec = NodeSpec.Builder.testSpec(hostname).wantedDockerImage(dockerImage).build();
+            NodeSpec nodeSpec = NodeSpec.Builder.testSpec(hostname)
+                                                .wantedDockerImage(dockerImage)
+                                                .wantedVespaVersion(dockerImage.tagAsVersion())
+                                                .build();
             tester.addChildNodeRepositoryNode(nodeSpec);
 
             ContainerName host1 = new ContainerName("host1");
-            tester.inOrder(tester.containerOperations).createContainer(containerMatcher(host1), any(), any());
+            tester.inOrder(tester.containerOperations).createContainer(containerMatcher(host1), any());
             tester.inOrder(tester.nodeRepository).updateNodeAttributes(
                     eq(hostname), eq(new NodeAttributes().withDockerImage(dockerImage).withVespaVersion(dockerImage.tagAsVersion())));
 

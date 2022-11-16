@@ -4,7 +4,9 @@ package com.yahoo.vespa.config.server.http.v2;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
 import com.yahoo.config.application.api.ApplicationMetaData;
+import com.yahoo.config.model.application.provider.BaseDeployLogger;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.container.jdisc.HttpResponse;
@@ -24,7 +26,6 @@ import com.yahoo.vespa.config.server.tenant.Tenant;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
 import com.yahoo.vespa.config.server.tenant.TestTenantRepository;
 import com.yahoo.vespa.model.VespaModelFactory;
-import org.hamcrest.core.Is;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -43,10 +44,7 @@ import static com.yahoo.jdisc.Response.Status.OK;
 import static com.yahoo.vespa.config.server.http.SessionHandlerTest.Cmd;
 import static com.yahoo.vespa.config.server.http.SessionHandlerTest.createTestRequest;
 import static com.yahoo.vespa.config.server.http.SessionHandlerTest.getRenderedString;
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
 public class SessionActiveHandlerTest {
@@ -134,12 +132,14 @@ public class SessionActiveHandlerTest {
 
         void invoke() {
             long sessionId = applicationRepository.createSession(applicationId(),
+                                                                 Tags.empty(),
                                                                  new TimeoutBudget(clock, Duration.ofSeconds(10)),
-                                                                 testApp);
+                                                                 testApp,
+                                                                 new BaseDeployLogger());
             applicationRepository.prepare(sessionId, new PrepareParams.Builder().applicationId(applicationId()).build());
             actResponse = handler.handle(createTestRequest(pathPrefix, HttpRequest.Method.PUT, Cmd.ACTIVE, sessionId, subPath));
             Tenant tenant = applicationRepository.getTenant(applicationId());
-            Session session = applicationRepository.getActiveLocalSession(tenant, applicationId());
+            Session session = applicationRepository.getActiveLocalSession(tenant, applicationId()).get();
             metaData = session.getMetaData();
             this.sessionId = sessionId;
         }
@@ -150,25 +150,28 @@ public class SessionActiveHandlerTest {
         activateRequest.invoke();
         HttpResponse actResponse = activateRequest.getActResponse();
         String message = getRenderedString(actResponse);
-        assertThat(message, actResponse.getStatus(), Is.is(OK));
+        assertEquals(message, OK, actResponse.getStatus());
         assertActivationMessageOK(activateRequest, message);
     }
 
     private void assertActivationMessageOK(ActivateRequest activateRequest, String message) throws IOException {
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         new JsonFormat(true).encode(byteArrayOutputStream, activateRequest.getMetaData().getSlime());
-        assertThat(message, containsString("\"tenant\":\"" + tenantName + "\",\"message\":\"Session " + activateRequest.getSessionId() + activatedMessage));
-        assertThat(message, containsString("/application/v2/tenant/" + tenantName +
+        long sessionId = activateRequest.getSessionId();
+        assertTrue(message.contains("\"tenant\":\"" + tenantName));
+        assertTrue(message.contains("\"session-id\":\"" + sessionId));
+        assertTrue(message.contains("\"message\":\"Session " + sessionId + activatedMessage));
+        assertTrue(message.contains("/application/v2/tenant/" + tenantName +
                 "/application/" + appName +
                 "/environment/" + "prod" +
                 "/region/" + "default" +
                 "/instance/" + "default"));
         assertTrue(provisioner.activated());
-        assertThat(provisioner.lastHosts().size(), is(1));
+        assertEquals(1, provisioner.lastHosts().size());
     }
 
     private SessionActiveHandler createHandler() {
-        return new SessionActiveHandler(SessionActiveHandler.testOnlyContext(),
+        return new SessionActiveHandler(SessionActiveHandler.testContext(),
                                         applicationRepository,
                                         Zone.defaultZone());
     }

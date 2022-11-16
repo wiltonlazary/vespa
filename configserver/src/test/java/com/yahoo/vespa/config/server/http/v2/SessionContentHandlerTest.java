@@ -31,9 +31,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.time.Clock;
 
-import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
 
 /**
  * @author Ulf Lilleengen
@@ -70,7 +69,7 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
                 .build();
         applicationRepository.deploy(testApp, new PrepareParams.Builder().applicationId(applicationId()).build());
         Tenant tenant = applicationRepository.getTenant(applicationId());
-        sessionId = applicationRepository.getActiveLocalSession(tenant, applicationId()).getSessionId();
+        sessionId = applicationRepository.getActiveLocalSession(tenant, applicationId()).get().getSessionId();
 
         handler = createHandler();
         pathPrefix = "/application/v2/tenant/" + tenantName + "/session/";
@@ -92,14 +91,14 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
     public void require_that_mkdir_with_body_is_illegal(){
         HttpResponse response = put("/foobio/", "foo");
         assertNotNull(response);
-        assertThat(response.getStatus(), is(Response.Status.BAD_REQUEST));
+        assertEquals(Response.Status.BAD_REQUEST, response.getStatus());
     }
 
     @Test
     public void require_that_nonexistent_session_returns_not_found() {
         HttpResponse response = doRequest(HttpRequest.Method.GET, "/test.txt", 9999);
         assertNotNull(response);
-        assertThat(response.getStatus(), is(Response.Status.NOT_FOUND));
+        assertEquals(Response.Status.NOT_FOUND, response.getStatus());
     }
 
     protected HttpResponse put(String path, String content) {
@@ -111,7 +110,7 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
     public void require_that_file_write_without_body_is_illegal() {
         HttpResponse response = doRequest(HttpRequest.Method.PUT, "/foobio.txt");
         assertNotNull(response);
-        assertThat(response.getStatus(), is(Response.Status.BAD_REQUEST));
+        assertEquals(Response.Status.BAD_REQUEST, response.getStatus());
     }
 
     @Test
@@ -122,13 +121,13 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
 
     @Test
     public void require_that_nonexistent_file_returns_not_found_when_deleted() throws IOException {
-        assertDeleteFile(Response.Status.NOT_FOUND, "/test2.txt", "{\"error-code\":\"NOT_FOUND\",\"message\":\"Session " + sessionId + " does not contain a file 'test2.txt'\"}");
+        assertDeleteFile(Response.Status.NOT_FOUND, "/test2.txt", "{\"error-code\":\"NOT_FOUND\",\"message\":\"Session " + sessionId + " does not contain a file at path '/test2.txt'\"}");
     }
 
     @Test
     public void require_that_files_can_be_deleted() throws IOException {
         assertDeleteFile(Response.Status.OK, "/test.txt");
-        assertDeleteFile(Response.Status.NOT_FOUND, "/test.txt", "{\"error-code\":\"NOT_FOUND\",\"message\":\"Session "  + sessionId + " does not contain a file 'test.txt'\"}");
+        assertDeleteFile(Response.Status.NOT_FOUND, "/test.txt", "{\"error-code\":\"NOT_FOUND\",\"message\":\"Session "  + sessionId + " does not contain a file at path '/test.txt'\"}");
         assertDeleteFile(Response.Status.BAD_REQUEST, "/newtest", "{\"error-code\":\"BAD_REQUEST\",\"message\":\"File 'newtest' is not an empty directory\"}");
         assertDeleteFile(Response.Status.OK, "/newtest/testfile.txt");
         assertDeleteFile(Response.Status.OK, "/newtest");
@@ -146,10 +145,9 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
     private void assertWriteFile(String path, String content) throws IOException {
         HttpResponse response = put(path, content);
         assertNotNull(response);
-        assertThat(response.getStatus(), is(Response.Status.OK));
+        assertEquals(Response.Status.OK, response.getStatus());
         assertContent(path, content);
-        assertThat(SessionHandlerTest.getRenderedString(response),
-                   is("{\"prepared\":\"http://foo:1337" + pathPrefix + sessionId + "/prepared\"}"));
+        assertEquals("{\"prepared\":\"http://foo:1337" + pathPrefix + sessionId + "/prepared\"}", SessionHandlerTest.getRenderedString(response));
     }
 
     private void assertDeleteFile(int statusCode, String filePath) throws IOException {
@@ -159,16 +157,16 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
     private void assertDeleteFile(int statusCode, String filePath, String expectedResponse) throws IOException {
         HttpResponse response = doRequest(HttpRequest.Method.DELETE, filePath);
         assertNotNull(response);
-        assertThat(response.getStatus(), is(statusCode));
-        assertThat(SessionHandlerTest.getRenderedString(response), is(expectedResponse));
+        assertEquals(statusCode, response.getStatus());
+        assertEquals(expectedResponse, SessionHandlerTest.getRenderedString(response));
     }
 
     private void assertMkdir(String path) throws IOException {
         HttpResponse response = doRequest(HttpRequest.Method.PUT, path);
         assertNotNull(response);
-        assertThat(response.getStatus(), is(Response.Status.OK));
-        assertThat(SessionHandlerTest.getRenderedString(response),
-                   is("{\"prepared\":\"http://foo:1337" + pathPrefix + sessionId + "/prepared\"}"));
+        assertEquals(Response.Status.OK, response.getStatus());
+        assertEquals("{\"prepared\":\"http://foo:1337" + pathPrefix + sessionId + "/prepared\"}",
+                SessionHandlerTest.getRenderedString(response));
     }
 
     protected HttpResponse doRequest(HttpRequest.Method method, String path) {
@@ -185,7 +183,7 @@ public class SessionContentHandlerTest extends ContentHandlerTestBase {
 
     private SessionContentHandler createHandler() {
         return new SessionContentHandler(
-                SessionContentHandler.testOnlyContext(),
+                SessionContentHandler.testContext(),
                 new ApplicationRepository.Builder()
                         .withTenantRepository(tenantRepository)
                         .withProvisioner(new MockProvisioner())

@@ -2,7 +2,6 @@
 package com.yahoo.jdisc.http.server.jetty;
 
 import com.yahoo.jdisc.http.HttpRequest;
-import com.yahoo.jdisc.http.servlet.ServletRequest;
 import com.yahoo.jdisc.service.CurrentContainer;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.util.Utf8Appendable;
@@ -14,6 +13,7 @@ import java.security.cert.X509Certificate;
 import java.util.Enumeration;
 
 import static com.yahoo.jdisc.Response.Status.BAD_REQUEST;
+import static com.yahoo.jdisc.Response.Status.METHOD_NOT_ALLOWED;
 import static com.yahoo.jdisc.http.server.jetty.RequestUtils.getConnection;
 import static com.yahoo.jdisc.http.server.jetty.RequestUtils.getConnectorLocalPort;
 
@@ -28,14 +28,25 @@ class HttpRequestFactory {
             HttpRequest httpRequest = HttpRequest.newServerRequest(
                     container,
                     getUri(servletRequest),
-                    HttpRequest.Method.valueOf(servletRequest.getMethod()),
+                    getMethod(servletRequest),
                     HttpRequest.Version.fromString(servletRequest.getProtocol()),
                     new InetSocketAddress(servletRequest.getRemoteAddr(), servletRequest.getRemotePort()),
                     getConnection((Request) servletRequest).getCreatedTimeStamp());
-            httpRequest.context().put(ServletRequest.JDISC_REQUEST_X509CERT, getCertChain(servletRequest));
+            httpRequest.context().put(RequestUtils.JDISC_REQUEST_X509CERT, getCertChain(servletRequest));
+            httpRequest.context().put(RequestUtils.JDICS_REQUEST_PORT, servletRequest.getLocalPort());
+            servletRequest.setAttribute(HttpRequest.class.getName(), httpRequest);
             return httpRequest;
         } catch (Utf8Appendable.NotUtf8Exception e) {
             throw createBadQueryException(e);
+        }
+    }
+
+    private static HttpRequest.Method getMethod(HttpServletRequest servletRequest) {
+        String method = servletRequest.getMethod();
+        try {
+            return HttpRequest.Method.valueOf(method);
+        } catch (IllegalArgumentException e) {
+            throw new RequestException(METHOD_NOT_ALLOWED, "Invalid method '" + method + "'");
         }
     }
 

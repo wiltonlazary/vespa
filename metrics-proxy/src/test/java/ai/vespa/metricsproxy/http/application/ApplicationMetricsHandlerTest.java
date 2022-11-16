@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.http.application;
 
 import ai.vespa.metricsproxy.core.ConsumersConfig;
@@ -46,7 +46,6 @@ import static org.junit.Assert.fail;
 /**
  * @author gjoranv
  */
-@SuppressWarnings("UnstableApiUsage")
 public class ApplicationMetricsHandlerTest {
 
     private static final ObjectMapper jsonMapper = new ObjectMapper();
@@ -79,8 +78,8 @@ public class ApplicationMetricsHandlerTest {
     public void setup() {
         setupWireMock();
 
-        ApplicationMetricsRetriever applicationMetricsRetriever = new ApplicationMetricsRetriever(
-                nodesConfig(MOCK_METRICS_PATH));
+        ApplicationMetricsRetriever applicationMetricsRetriever =
+                new ApplicationMetricsRetriever(nodesConfig(MOCK_METRICS_PATH));
 
         ApplicationMetricsHandler handler = new ApplicationMetricsHandler(Executors.newSingleThreadExecutor(),
                                                                           applicationMetricsRetriever,
@@ -189,7 +188,7 @@ public class ApplicationMetricsHandlerTest {
         assertEquals("us-west", dimensions.get(PublicDimensions.ZONE));
         assertEquals("search/", dimensions.get(PublicDimensions.API));
         assertEquals("music", dimensions.get(PublicDimensions.DOCUMENT_TYPE));
-        assertEquals("qrserver0", dimensions.get(PublicDimensions.SERVICE_ID));
+        assertEquals("default0", dimensions.get(PublicDimensions.SERVICE_ID));
         assertFalse(dimensions.containsKey("non-public"));
     }
 

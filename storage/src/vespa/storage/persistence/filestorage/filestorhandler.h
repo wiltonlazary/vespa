@@ -16,6 +16,7 @@
 #include <vespa/document/bucket/bucket.h>
 #include <vespa/storage/storageutil/resumeguard.h>
 #include <vespa/storage/common/messagesender.h>
+#include <vespa/storage/persistence/shared_operation_throttler.h>
 #include <vespa/storageapi/messageapi/storagemessage.h>
 
 namespace storage {
@@ -29,6 +30,7 @@ namespace framework {
     class HttpUrlPath;
 }
 
+class ActiveOperationsStats;
 class FileStorHandlerImpl;
 struct FileStorMetrics;
 struct MessageSender;
@@ -48,17 +50,54 @@ public:
         {}
     };
 
-    class BucketLockInterface {
+    // Interface that is used for "early ACKing" a potentially longer-running async
+    // operation when the persistence thread processing the operation has completed
+    // the synchronous aspects of the operation (such as dispatching one or more
+    // async operations over the SPI).
+    class OperationSyncPhaseDoneNotifier {
+    public:
+        virtual ~OperationSyncPhaseDoneNotifier() = default;
+
+        // Informs the caller if the operation wants to know when the persistence thread is
+        // done with the synchronous aspects of the operation. Returning false allows the caller
+        // to optimize for the case where this does _not_ need to happen.
+        [[nodiscard]] virtual bool wants_sync_phase_done_notification() const noexcept = 0;
+        // Invoked at most once at the point where the persistence thread is done handling the synchronous
+        // aspects of the operation iff wants_sync_phase_done_notification() was initially true.
+        virtual void signal_operation_sync_phase_done() noexcept = 0;
+    };
+
+    class BucketLockInterface : public OperationSyncPhaseDoneNotifier {
     public:
         using SP = std::shared_ptr<BucketLockInterface>;
 
-        virtual const document::Bucket &getBucket() const = 0;
-        virtual api::LockingRequirements lockingRequirements() const noexcept = 0;
-
-        virtual ~BucketLockInterface() = default;
+        [[nodiscard]] virtual const document::Bucket &getBucket() const = 0;
+        [[nodiscard]] virtual api::LockingRequirements lockingRequirements() const noexcept = 0;
     };
 
-    using LockedMessage = std::pair<BucketLockInterface::SP, api::StorageMessage::SP>;
+    struct LockedMessage {
+        std::shared_ptr<BucketLockInterface> lock;
+        std::shared_ptr<api::StorageMessage> msg;
+        ThrottleToken                        throttle_token;
+
+        LockedMessage() noexcept = default;
+        LockedMessage(std::shared_ptr<BucketLockInterface> lock_,
+                      std::shared_ptr<api::StorageMessage> msg_) noexcept
+            : lock(std::move(lock_)),
+              msg(std::move(msg_)),
+              throttle_token()
+        {}
+        LockedMessage(std::shared_ptr<BucketLockInterface> lock_,
+                      std::shared_ptr<api::StorageMessage> msg_,
+                      ThrottleToken token) noexcept
+                : lock(std::move(lock_)),
+                  msg(std::move(msg_)),
+                  throttle_token(std::move(token))
+        {}
+        LockedMessage(LockedMessage&&) noexcept = default;
+        ~LockedMessage();
+    };
+
     class ScheduleAsyncResult {
     private:
         bool _was_scheduled;
@@ -74,7 +113,7 @@ public:
             return _was_scheduled;
         }
         bool has_async_message() const {
-            return _async_message.first.get() != nullptr;
+            return _async_message.lock.get() != nullptr;
         }
         const LockedMessage& async_message() const {
             return _async_message;
@@ -89,6 +128,7 @@ public:
         CLOSED
     };
 
+    FileStorHandler() : _getNextMessageTimout(100ms) { }
     virtual ~FileStorHandler() = default;
 
 
@@ -131,7 +171,12 @@ public:
      *
      * @param stripe The stripe to get messages for
      */
-    virtual LockedMessage getNextMessage(uint32_t stripeId) = 0;
+    virtual LockedMessage getNextMessage(uint32_t stripeId, vespalib::steady_time deadline) = 0;
+
+    /** Only used for testing, should be removed */
+    LockedMessage getNextMessage(uint32_t stripeId) {
+        return getNextMessage(stripeId, vespalib::steady_clock::now() + _getNextMessageTimout);
+    }
 
     /**
      * Lock a bucket. By default, each file stor thread has the locks of all
@@ -200,13 +245,13 @@ public:
     virtual void addMergeStatus(const document::Bucket&, std::shared_ptr<MergeStatus>) = 0;
 
     /**
-     * Returns the reference to the current merge status for the given bucket.
+     * Returns a shared pointer to the current merge status for the given bucket.
      * This allows unlocked access to an internal variable, so users should
      * first check that noone else is using it by calling isMerging() first.
      *
      * @param bucket The bucket to start merging.
      */
-    virtual MergeStatus& editMergeStatus(const document::Bucket& bucket) = 0;
+    virtual std::shared_ptr<MergeStatus> editMergeStatus(const document::Bucket& bucket) = 0;
 
     /**
      * Returns true if the bucket is currently being merged on this node.
@@ -229,10 +274,21 @@ public:
     virtual uint32_t getQueueSize() const = 0;
 
     // Commands used by testing
-    virtual void setGetNextMessageTimeout(vespalib::duration timeout) = 0;
+    void setGetNextMessageTimeout(vespalib::duration timeout) { _getNextMessageTimout = timeout; }
 
     virtual std::string dumpQueue() const = 0;
 
+    virtual ActiveOperationsStats get_active_operations_stats(bool reset_min_max) const = 0;
+
+    virtual vespalib::SharedOperationThrottler& operation_throttler() const noexcept = 0;
+
+    virtual void reconfigure_dynamic_throttler(const vespalib::SharedOperationThrottler::DynamicThrottleParams& params) = 0;
+
+    virtual void use_dynamic_operation_throttling(bool use_dynamic) noexcept = 0;
+
+    virtual void set_throttle_apply_bucket_diff_ops(bool throttle_apply_bucket_diff) noexcept = 0;
+private:
+    vespalib::duration _getNextMessageTimout;
 };
 
 } // storage

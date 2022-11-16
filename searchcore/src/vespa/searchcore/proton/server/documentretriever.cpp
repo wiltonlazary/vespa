@@ -5,6 +5,7 @@
 #include <vespa/document/datatype/positiondatatype.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/fieldvalue/arrayfieldvalue.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/searchcommon/attribute/attributecontent.h>
@@ -127,6 +128,7 @@ DocumentRetriever::needFetchFromDocStore(const FieldSet & fieldSet) const {
         case FieldSet::Type::NONE:
         case FieldSet::Type::DOCID:
             return false;
+        case FieldSet::Type::DOCUMENT_ONLY:
         case FieldSet::Type::ALL:
             return ! _areAllFieldsAttributes;
         case FieldSet::Type::FIELD: {
@@ -156,9 +158,9 @@ positionFromZcurve(int64_t zcurve) {
     ZCurve::decode(zcurve, &x, &y);
 
     FieldValue::UP value = PositionDataType::getInstance().createFieldValue();
-    auto *position = static_cast<StructFieldValue *>(value.get());
-    position->set(PositionDataType::FIELD_X, x);
-    position->set(PositionDataType::FIELD_Y, y);
+    auto *pos = static_cast<StructFieldValue *>(value.get());
+    pos->setValue(pos->getField(PositionDataType::FIELD_X), std::make_unique<document::IntFieldValue>(x));
+    pos->setValue(pos->getField(PositionDataType::FIELD_Y), std::make_unique<document::IntFieldValue>(y));
     return value;
 }
 
@@ -255,6 +257,14 @@ DocumentRetriever::getPartialDocument(search::DocumentIdT lid, const document::D
             case FieldSet::Type::SET: {
                 const auto &set = static_cast<const document::FieldCollection &>(fieldSet);
                 populate(lid, *doc, set.getFields());
+                break;
+            }
+            case FieldSet::Type::DOCUMENT_ONLY: {
+                const auto * actual = getDocumentType().getFieldSet(document::DocumentOnly::NAME);
+                if (actual != nullptr) {
+                    const auto &set = actual->asCollection();
+                    populate(lid, *doc, set.getFields());
+                }
                 break;
             }
             case FieldSet::Type::NONE:

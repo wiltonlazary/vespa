@@ -30,6 +30,7 @@ struct BucketSpaceDistributionConfigs;
 class BucketSpaceDistributionContext;
 class ClusterStateBundleActivationListener;
 class DistributorInterface;
+class NodeSupportedFeaturesRepo;
 class StripeAccessor;
 class StripeAccessGuard;
 
@@ -84,7 +85,7 @@ private:
 
     bool should_defer_state_enabling() const noexcept;
     bool has_pending_cluster_state() const;
-    bool pending_cluster_state_accepted(const std::shared_ptr<api::RequestBucketInfoReply>& repl);
+    void attempt_accept_reply_by_current_pending_state(const std::shared_ptr<api::RequestBucketInfoReply>& repl);
     bool is_pending_cluster_state_completed() const;
     void process_completed_pending_cluster_state(StripeAccessGuard& guard);
     void activate_pending_cluster_state(StripeAccessGuard& guard);
@@ -122,6 +123,7 @@ private:
     ChainedMessageSender& _chained_sender;
     OutdatedNodesMap         _outdated_nodes_map;
     framework::MilliSecTimer _transition_timer;
+    std::shared_ptr<const NodeSupportedFeaturesRepo> _node_supported_features_repo;
     std::atomic<bool> _stale_reads_enabled;
 };
 

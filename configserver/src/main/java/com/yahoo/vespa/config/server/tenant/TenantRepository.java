@@ -2,11 +2,10 @@
 package com.yahoo.vespa.config.server.tenant;
 
 import com.google.common.collect.ImmutableSet;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.cloud.config.ZookeeperServerConfig;
 import com.yahoo.concurrent.DaemonThreadFactory;
-import com.yahoo.concurrent.InThreadExecutorService;
 import com.yahoo.concurrent.Lock;
 import com.yahoo.concurrent.Locks;
 import com.yahoo.concurrent.StripedExecutor;
@@ -20,7 +19,7 @@ import com.yahoo.path.Path;
 import com.yahoo.text.Utf8;
 import com.yahoo.transaction.Transaction;
 import com.yahoo.vespa.config.server.ConfigServerDB;
-import com.yahoo.vespa.config.server.ReloadListener;
+import com.yahoo.vespa.config.server.ConfigActivationListener;
 import com.yahoo.vespa.config.server.application.PermanentApplicationPackage;
 import com.yahoo.vespa.config.server.application.TenantApplications;
 import com.yahoo.vespa.config.server.deploy.TenantFileSystemDirs;
@@ -36,7 +35,6 @@ import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.transaction.CuratorOperations;
 import com.yahoo.vespa.curator.transaction.CuratorTransaction;
 import com.yahoo.vespa.flags.FlagSource;
-import com.yahoo.vespa.flags.Flags;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
 import org.apache.curator.framework.state.ConnectionState;
@@ -117,7 +115,7 @@ public class TenantRepository {
     private final Clock clock;
     private final ModelFactoryRegistry modelFactoryRegistry;
     private final ConfigDefinitionRepo configDefinitionRepo;
-    private final ReloadListener reloadListener;
+    private final ConfigActivationListener configActivationListener;
     private final ScheduledExecutorService checkForRemovedApplicationsService =
             new ScheduledThreadPoolExecutor(1, new DaemonThreadFactory("check for removed applications"));
     private final Curator.DirectoryCache directoryCache;
@@ -138,7 +136,7 @@ public class TenantRepository {
                             Zone zone,
                             ModelFactoryRegistry modelFactoryRegistry,
                             ConfigDefinitionRepo configDefinitionRepo,
-                            ReloadListener reloadListener,
+                            ConfigActivationListener configActivationListener,
                             TenantListener tenantListener,
                             ZookeeperServerConfig zookeeperServerConfig) {
         this(hostRegistry,
@@ -157,7 +155,7 @@ public class TenantRepository {
              Clock.systemUTC(),
              modelFactoryRegistry,
              configDefinitionRepo,
-             reloadListener,
+             configActivationListener,
              tenantListener,
              zookeeperServerConfig);
     }
@@ -178,7 +176,7 @@ public class TenantRepository {
                             Clock clock,
                             ModelFactoryRegistry modelFactoryRegistry,
                             ConfigDefinitionRepo configDefinitionRepo,
-                            ReloadListener reloadListener,
+                            ConfigActivationListener configActivationListener,
                             TenantListener tenantListener,
                             ZookeeperServerConfig zookeeperServerConfig) {
         this.hostRegistry = hostRegistry;
@@ -198,11 +196,11 @@ public class TenantRepository {
         this.clock = clock;
         this.modelFactoryRegistry = modelFactoryRegistry;
         this.configDefinitionRepo = configDefinitionRepo;
-        this.reloadListener = reloadListener;
+        this.configActivationListener = configActivationListener;
         this.tenantListener = tenantListener;
         this.zookeeperServerConfig = zookeeperServerConfig;
         // This we should control with a feature flag.
-        this.deployHelperExecutor = createModelBuilderExecutor(Flags.NUM_DEPLOY_HELPER_THREADS.bindTo(flagSource).value());
+        this.deployHelperExecutor = createModelBuilderExecutor();
 
         curator.framework().getConnectionStateListenable().addListener(this::stateChanged);
 
@@ -220,11 +218,11 @@ public class TenantRepository {
                                                                   TimeUnit.SECONDS);
     }
 
-    private ExecutorService createModelBuilderExecutor(int numThreads) {
-        if (numThreads == 0) return new InThreadExecutorService();
-        if (numThreads < 0) {
-            numThreads = Runtime.getRuntime().availableProcessors();
-        }
+    private ExecutorService createModelBuilderExecutor() {
+        final long GB = 1024*1024*1024;
+        long maxHeap = Runtime.getRuntime().maxMemory();
+        int maxThreadsToFitInMemory = (int)((maxHeap + (GB - 1))/(1*GB));
+        int numThreads = Math.min(Runtime.getRuntime().availableProcessors(), maxThreadsToFitInMemory);
         return Executors.newFixedThreadPool(numThreads, ThreadFactoryFactory.getDaemonThreadFactory("deploy-helper"));
     }
 
@@ -332,7 +330,7 @@ public class TenantRepository {
     private Tenant createTenant(TenantName tenantName, Instant created) {
         if (tenants.containsKey(tenantName)) return getTenant(tenantName);
 
-        Instant start = Instant.now();
+        Instant start = clock.instant();
         log.log(Level.FINE, () -> "Adding tenant '" + tenantName);
         TenantApplications applicationRepo =
                 new TenantApplications(tenantName,
@@ -340,15 +338,16 @@ public class TenantRepository {
                                        zkApplicationWatcherExecutor,
                                        zkCacheExecutor,
                                        metrics,
-                                       reloadListener,
+                                       configActivationListener,
                                        configserverConfig,
                                        hostRegistry,
                                        new TenantFileSystemDirs(configServerDB, tenantName),
-                                       clock);
+                                       clock,
+                                       flagSource);
         PermanentApplicationPackage permanentApplicationPackage = new PermanentApplicationPackage(configserverConfig);
         SessionPreparer sessionPreparer = new SessionPreparer(modelFactoryRegistry,
                                                               fileDistributionFactory,
-                deployHelperExecutor,
+                                                              deployHelperExecutor,
                                                               hostProvisionerProvider,
                                                               permanentApplicationPackage,
                                                               configserverConfig,
@@ -377,7 +376,7 @@ public class TenantRepository {
                                                                     configDefinitionRepo,
                                                                     zookeeperServerConfig.juteMaxBuffer());
         log.log(Level.INFO, "Adding tenant '" + tenantName + "'" + ", created " + created +
-                            ". Bootstrapping in " + Duration.between(start, Instant.now()));
+                            ". Bootstrapping in " + Duration.between(start, clock.instant()));
         Tenant tenant = new Tenant(tenantName, sessionRepository, applicationRepo, created);
         createAndWriteTenantMetaData(tenant);
         tenants.putIfAbsent(tenantName, tenant);

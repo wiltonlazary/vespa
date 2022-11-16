@@ -48,6 +48,10 @@ public class VespaChangeRequest extends ChangeRequest {
         return new VespaChangeRequest(getId(), source, getImpactedSwitches(), getImpactedHosts(), getApproval(), getImpact(), status, hostActionPlan, zoneId);
     }
 
+    public VespaChangeRequest withImpact(Impact impact) {
+        return new VespaChangeRequest(getId(), getChangeRequestSource(), getImpactedSwitches(), getImpactedHosts(), getApproval(), impact, status, hostActionPlan, zoneId);
+    }
+
     public VespaChangeRequest withApproval(Approval approval) {
         return new VespaChangeRequest(getId(), getChangeRequestSource(), getImpactedSwitches(), getImpactedHosts(), approval, getImpact(), status, hostActionPlan, zoneId);
     }
@@ -94,6 +98,7 @@ public class VespaChangeRequest extends ChangeRequest {
         PENDING_ACTION,
         PENDING_ASSESSMENT,
         REQUIRES_OPERATOR_ACTION,
+        OUT_OF_SYNC,
         NOOP
     }
 }

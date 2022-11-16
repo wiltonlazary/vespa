@@ -10,7 +10,7 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../parent/pom.xml</relativePath>
     </parent>
     <dependencies>
@@ -93,8 +93,19 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.yahoo.vespa</groupId>
+            <artifactId>orchestrator</artifactId>
+            <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -107,12 +118,32 @@
             <artifactId>application</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>junit</groupId>
+                    <artifactId>junit</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
             <artifactId>testutil</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>junit</groupId>
+                    <artifactId>junit</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.hamcrest</groupId>
+                    <artifactId>hamcrest-core</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.hamcrest</groupId>
+                    <artifactId>hamcrest-library</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
@@ -138,13 +169,15 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <compilerArgs>
-                        <arg>-Xlint:all</arg>
-                        <arg>-Xlint:-deprecation</arg>
-                        <arg>-Xlint:-serial</arg>
-                        <arg>-Werror</arg>
-                    </compilerArgs>
+                    <!-- Illegal reflective access by guice. TODO: try to remove for guice >3.0 -->
+                    <argLine>
+                        --add-opens=java.base/java.lang=ALL-UNNAMED
+                    </argLine>
                 </configuration>
             </plugin>
         </plugins>

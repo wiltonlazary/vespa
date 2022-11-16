@@ -1,16 +1,21 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container;
 
 import ai.vespa.metricsproxy.http.application.ApplicationMetricsHandler;
+import com.yahoo.cloud.config.CuratorConfig;
 import com.yahoo.cloud.config.ZookeeperServerConfig;
 import com.yahoo.component.ComponentId;
 import com.yahoo.component.ComponentSpecification;
 import com.yahoo.config.FileReference;
 import com.yahoo.config.application.api.ComponentInfo;
+import com.yahoo.config.model.api.ApplicationClusterEndpoint;
+import com.yahoo.config.model.api.ApplicationClusterInfo;
+import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.Model;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.config.provision.AllocatedHosts;
+import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.container.bundle.BundleInstantiationSpecification;
 import com.yahoo.container.di.config.ApplicationBundlesConfig;
@@ -19,31 +24,32 @@ import com.yahoo.container.handler.metrics.MetricsV2Handler;
 import com.yahoo.container.handler.metrics.PrometheusV1Handler;
 import com.yahoo.container.jdisc.ContainerMbusConfig;
 import com.yahoo.container.jdisc.messagebus.MbusServerProvider;
-import com.yahoo.jdisc.http.ServletPathsConfig;
 import com.yahoo.osgi.provider.model.ComponentModel;
 import com.yahoo.search.config.QrStartConfig;
 import com.yahoo.vespa.config.search.RankProfilesConfig;
 import com.yahoo.vespa.config.search.core.OnnxModelsConfig;
 import com.yahoo.vespa.config.search.core.RankingConstantsConfig;
 import com.yahoo.vespa.config.search.core.RankingExpressionsConfig;
+import com.yahoo.vespa.model.AbstractService;
 import com.yahoo.vespa.model.admin.metricsproxy.MetricsProxyContainer;
 import com.yahoo.vespa.model.container.component.BindingPattern;
 import com.yahoo.vespa.model.container.component.Component;
-import com.yahoo.vespa.model.container.component.ConfigProducerGroup;
 import com.yahoo.vespa.model.container.component.Handler;
-import com.yahoo.vespa.model.container.component.Servlet;
 import com.yahoo.vespa.model.container.component.SystemBindingPattern;
 import com.yahoo.vespa.model.container.configserver.ConfigserverCluster;
 import com.yahoo.vespa.model.utils.FileSender;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashSet;
-import java.util.Map;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
+
+import static com.yahoo.config.model.api.ApplicationClusterEndpoint.RoutingMethod.sharedLayer4;
+import static com.yahoo.vespa.model.container.docproc.DocprocChains.DOCUMENT_TYPE_MANAGER_CLASS;
 
 /**
  * A container cluster that is typically set up from the user application.
@@ -57,10 +63,10 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
         RankingConstantsConfig.Producer,
         OnnxModelsConfig.Producer,
         RankingExpressionsConfig.Producer,
-        ServletPathsConfig.Producer,
         ContainerMbusConfig.Producer,
         MetricsProxyApiConfig.Producer,
-        ZookeeperServerConfig.Producer {
+        ZookeeperServerConfig.Producer,
+        ApplicationClusterInfo {
 
     public static final String METRICS_V2_HANDLER_CLASS = MetricsV2Handler.class.getName();
     public static final BindingPattern METRICS_V2_HANDLER_BINDING_1 = SystemBindingPattern.fromHttpPath(MetricsV2Handler.V2_PATH);
@@ -70,13 +76,11 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
     private static final BindingPattern PROMETHEUS_V1_HANDLER_BINDING_1 = SystemBindingPattern.fromHttpPath(PrometheusV1Handler.V1_PATH);
     private static final BindingPattern PROMETHEUS_V1_HANDLER_BINDING_2 = SystemBindingPattern.fromHttpPath(PrometheusV1Handler.V1_PATH + "/*");
 
-    public static final int heapSizePercentageOfTotalNodeMemory = 70;
+    public static final int defaultHeapSizePercentageOfTotalNodeMemory = 70;
     public static final int heapSizePercentageOfTotalNodeMemoryWhenCombinedCluster = 18;
-
 
     private final Set<FileReference> applicationBundles = new LinkedHashSet<>();
 
-    private final ConfigProducerGroup<Servlet> servletGroup;
     private final Set<String> previousHosts;
 
     private ContainerModelEvaluation modelEvaluation;
@@ -85,44 +89,52 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
 
     private MbusParams mbusParams;
     private boolean messageBusEnabled = true;
+    private int zookeeperSessionTimeoutSeconds = 30;
+    private final int transport_events_before_wakeup;
+    private final int transport_connections_per_target;
+    private final int heapSizePercentageOfTotalNodeMemory;
 
     private Integer memoryPercentage = null;
 
+    private List<ApplicationClusterEndpoint> endpointList = List.of();
+
     public ApplicationContainerCluster(AbstractConfigProducer<?> parent, String configSubId, String clusterId, DeployState deployState) {
-        super(parent, configSubId, clusterId, deployState, true);
+        super(parent, configSubId, clusterId, deployState, true, 10);
         this.tlsClientAuthority = deployState.tlsClientAuthority();
-        servletGroup = new ConfigProducerGroup<>(this, "servlet");
-        previousHosts = deployState.getPreviousModel().stream()
-                                   .map(Model::allocatedHosts)
-                                   .map(AllocatedHosts::getHosts)
-                                   .flatMap(Collection::stream)
-                                   .map(HostSpec::hostname)
-                                   .collect(Collectors.toUnmodifiableSet());
+        previousHosts = Collections.unmodifiableSet(deployState.getPreviousModel().stream()
+                                                               .map(Model::allocatedHosts)
+                                                               .map(AllocatedHosts::getHosts)
+                                                               .flatMap(Collection::stream)
+                                                               .map(HostSpec::hostname)
+                                                               .collect(Collectors.toCollection(() -> new LinkedHashSet<>())));
 
         addSimpleComponent("com.yahoo.language.provider.DefaultLinguisticsProvider");
         addSimpleComponent("com.yahoo.language.provider.DefaultEmbedderProvider");
         addSimpleComponent("com.yahoo.container.jdisc.SecretStoreProvider");
-        addSimpleComponent("com.yahoo.container.jdisc.DeprecatedSecretStoreProvider");
         addSimpleComponent("com.yahoo.container.jdisc.CertificateStoreProvider");
         addSimpleComponent("com.yahoo.container.jdisc.AthenzIdentityProviderProvider");
         addSimpleComponent(com.yahoo.container.core.documentapi.DocumentAccessProvider.class.getName());
+        addSimpleComponent(DOCUMENT_TYPE_MANAGER_CLASS);
 
         addMetricsHandlers();
         addTestrunnerComponentsIfTester(deployState);
+        transport_connections_per_target = deployState.featureFlags().mbusJavaRpcNumTargets();
+        transport_events_before_wakeup = deployState.featureFlags().mbusJavaEventsBeforeWakeup();
+        heapSizePercentageOfTotalNodeMemory = deployState.featureFlags().heapSizePercentage() > 0
+                ? Math.min(99, deployState.featureFlags().heapSizePercentage())
+                : defaultHeapSizePercentageOfTotalNodeMemory;
     }
 
     @Override
     protected void doPrepare(DeployState deployState) {
         addAndSendApplicationBundles(deployState);
-        if (modelEvaluation != null)
-            modelEvaluation.prepare(containers);
         sendUserConfiguredFiles(deployState);
+        createEndpointList(deployState);
     }
 
     private void addAndSendApplicationBundles(DeployState deployState) {
         for (ComponentInfo component : deployState.getApplicationPackage().getComponentsInfo(deployState.getVespaVersion())) {
             FileReference reference = deployState.getFileRegistry().addFile(component.getPathRelativeToAppDir());
-            FileSender.send(reference, containers);
             applicationBundles.add(reference);
         }
     }
@@ -141,7 +153,7 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
    }
 
     private void addMetricsHandler(String handlerClass, BindingPattern rootBinding, BindingPattern innerBinding) {
-        Handler<AbstractConfigProducer<?>> handler = new Handler<>(
+        Handler handler = new Handler(
                 new ComponentModel(handlerClass, null, null, null));
         handler.addServerBindings(rootBinding, innerBinding);
         addComponent(handler);
@@ -162,43 +174,69 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
         this.modelEvaluation = modelEvaluation;
     }
 
-    public Map<ComponentId, Servlet> getServletMap() {
-        return servletGroup.getComponentMap();
+    public void setMemoryPercentage(Integer memoryPercentage) { this.memoryPercentage = memoryPercentage; }
+
+    @Override
+    public Optional<Integer> getMemoryPercentage() {
+        if (memoryPercentage != null) {
+            return Optional.of(memoryPercentage);
+        } else if (isHostedVespa()) {
+            return getHostClusterId().isPresent() ?
+                    Optional.of(heapSizePercentageOfTotalNodeMemoryWhenCombinedCluster) :
+                    Optional.of(heapSizePercentageOfTotalNodeMemory);
+        }
+        return Optional.empty();
     }
 
-    public final void addServlet(Servlet servlet) {
-        servletGroup.addComponent(servlet.getGlobalComponentId(), servlet);
-    }
+    /** Create list of endpoints, these will be consumed later by LbServicesProducer */
+    private void createEndpointList(DeployState deployState) {
+        if(!deployState.isHosted()) return;
+        if(deployState.getProperties().applicationId().instance().isTester()) return;
+        List<ApplicationClusterEndpoint> endpoints = new ArrayList<>();
 
-    public Collection<Servlet> getAllServlets() {
-        return allServlets().collect(Collectors.toCollection(ArrayList::new));
-    }
+        // Add zone local endpoints using zone dns suffixes, tenant, application and cluster id.
+        List<String> hosts = getContainers().stream()
+                .map(AbstractService::getHostName)
+                .sorted()
+                .collect(Collectors.toList());
 
-    private Stream<Servlet> allServlets() {
-        return servletGroup.getComponents().stream();
-    }
+        for (String suffix : deployState.getProperties().zoneDnsSuffixes()) {
+            ApplicationClusterEndpoint.DnsName l4Name = ApplicationClusterEndpoint.DnsName.sharedL4NameFrom(
+                    deployState.zone().system(),
+                    ClusterSpec.Id.from(getName()),
+                    deployState.getProperties().applicationId(),
+                    suffix);
+            endpoints.add(ApplicationClusterEndpoint.builder()
+                                  .zoneScope()
+                                  .sharedL4Routing()
+                                  .dnsName(l4Name)
+                                  .hosts(hosts)
+                                  .clusterId(getName())
+                                  .build());
+        }
 
-    public void setMemoryPercentage(Integer memoryPercentage) { this.memoryPercentage = memoryPercentage;
+        // Include all endpoints provided by controller
+        Set<ContainerEndpoint> endpointsFromController = deployState.getEndpoints();
+        endpointsFromController.stream()
+                .filter(ce -> ce.clusterId().equals(getName()))
+                .filter(ce -> ce.routingMethod() == sharedLayer4)
+                .forEach(ce -> ce.names().forEach(
+                        name -> endpoints.add(ApplicationClusterEndpoint.builder()
+                                                      .scope(ce.scope())
+                                                      .weight(Long.valueOf(ce.weight().orElse(1)).intValue()) // Default to weight=1 if not set
+                                                      .routingMethod(ce.routingMethod())
+                                                      .dnsName(ApplicationClusterEndpoint.DnsName.from(name))
+                                                      .hosts(hosts)
+                                                      .clusterId(getName())
+                                                      .build())
+                ));
+        endpointList = List.copyOf(endpoints);
     }
-
-    /**
-     * Returns the percentage of host physical memory this application has specified for nodes in this cluster,
-     * or empty if this is not specified by the application.
-     */
-    public Optional<Integer> getMemoryPercentage() { return Optional.ofNullable(memoryPercentage); }
 
     @Override
     public void getConfig(ApplicationBundlesConfig.Builder builder) {
         applicationBundles.stream().map(FileReference::value)
                 .forEach(builder::bundles);
-    }
-
-    @Override
-    public void getConfig(ServletPathsConfig.Builder builder) {
-        allServlets().forEach(servlet ->
-                                      builder.servlets(servlet.getComponentId().stringValue(),
-                                                       servlet.toConfigBuilder())
-        );
     }
 
     @Override
@@ -232,6 +270,8 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
         }
         if (getDocproc() != null)
             getDocproc().getConfig(builder);
+        builder.transport_events_before_wakeup(transport_events_before_wakeup);
+        builder.numconnectionspertarget(transport_connections_per_target);
     }
 
     @Override
@@ -251,10 +291,6 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
                 .heapsize(1536);
         if (getMemoryPercentage().isPresent()) {
             builder.jvm.heapSizeAsPercentageOfPhysicalMemory(getMemoryPercentage().get());
-        } else if (isHostedVespa()) {
-            builder.jvm.heapSizeAsPercentageOfPhysicalMemory(getHostClusterId().isPresent() ?
-                                                             heapSizePercentageOfTotalNodeMemoryWhenCombinedCluster :
-                                                             heapSizePercentageOfTotalNodeMemory);
         }
     }
 
@@ -267,11 +303,21 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
             ZookeeperServerConfig.Server.Builder serverBuilder = new ZookeeperServerConfig.Server.Builder();
             serverBuilder.hostname(container.getHostName())
                          .id(container.index())
-                         .joining(!previousHosts.isEmpty() &&
-                                  !previousHosts.contains(container.getHostName()));
+                         .joining( ! previousHosts.isEmpty() &&
+                                   ! previousHosts.contains(container.getHostName()))
+                         .retired(container.isRetired());
             builder.server(serverBuilder);
             builder.dynamicReconfiguration(true);
         }
+    }
+
+    @Override
+    public void getConfig(CuratorConfig.Builder builder) {
+        super.getConfig(builder);
+        if (getParent() instanceof ConfigserverCluster) return; // Produces its own config
+
+        // Will be bounded by 2x and 20x ZookeeperServerConfig.tickTime(), which is currently 6s.
+        builder.zookeeperSessionTimeoutSeconds(zookeeperSessionTimeoutSeconds);
     }
 
     public Optional<String> getTlsClientAuthority() {
@@ -282,7 +328,11 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
         this.mbusParams = mbusParams;
     }
 
-    public final void setMessageBusEnabled(boolean messageBusEnabled) { this.messageBusEnabled = messageBusEnabled; }
+    public void setMessageBusEnabled(boolean messageBusEnabled) { this.messageBusEnabled = messageBusEnabled; }
+
+    public void setZookeeperSessionTimeoutSeconds(int timeoutSeconds) {
+        this.zookeeperSessionTimeoutSeconds = timeoutSeconds;
+    }
 
     protected boolean messageBusEnabled() { return messageBusEnabled; }
 
@@ -295,6 +345,14 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
                         ComponentSpecification.fromString(MbusServerProvider.class.getName()),
                         null))));
     }
+
+    @Override
+    public List<ApplicationClusterEndpoint> endpoints() {
+        return endpointList;
+    }
+
+    @Override
+    public String name() { return getName(); }
 
     public static class MbusParams {
         // the amount of the maxpendingbytes to process concurrently, typically 0.2 (20%)
@@ -312,4 +370,5 @@ public final class ApplicationContainerCluster extends ContainerCluster<Applicat
             this.containerCoreMemory = containerCoreMemory;
         }
     }
+
 }

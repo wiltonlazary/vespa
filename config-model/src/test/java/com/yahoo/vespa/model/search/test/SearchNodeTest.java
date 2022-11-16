@@ -4,7 +4,6 @@ package com.yahoo.vespa.model.search.test;
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.deploy.TestProperties;
-import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.config.model.test.MockRoot;
 import com.yahoo.searchlib.TranslogserverConfig;
 import com.yahoo.vespa.config.search.core.ProtonConfig;
@@ -14,15 +13,11 @@ import com.yahoo.vespa.model.HostResource;
 import com.yahoo.vespa.model.search.NodeSpec;
 import com.yahoo.vespa.model.search.SearchNode;
 import com.yahoo.vespa.model.search.TransactionLogServer;
-import org.hamcrest.CoreMatchers;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for search node.
@@ -43,56 +38,84 @@ public class SearchNodeTest {
         TransactionLogServer tls = new TransactionLogServer(root, "mycluster", useFsync);
         tls.setHostResource(new HostResource(host));
         tls.setBasePort(100);
-        tls.initService(root.deployLogger());
+        tls.initService(root.getDeployState());
         node.setTls(tls);
         node.setHostResource(new HostResource(host));
         node.setBasePort(200);
-        node.initService(root.deployLogger());
+        node.initService(root.getDeployState());
         root.freezeModelTopology();
     }
 
-    private static SearchNode createSearchNode(MockRoot root, String name, int distributionKey,
-                                               NodeSpec nodeSpec, boolean flushOnShutDown, boolean isHosted, boolean combined) {
-        return SearchNode.create(root, name, distributionKey, nodeSpec, "mycluster", null, flushOnShutDown, Optional.empty(), Optional.empty(), isHosted, combined);
+    private static SearchNode createSearchNode(MockRoot root, String name, int distributionKey, NodeSpec nodeSpec,
+                                               boolean flushOnShutDown, boolean isHosted, ModelContext.FeatureFlags featureFlags) {
+        return SearchNode.create(root, name, distributionKey, nodeSpec, "mycluster", null, flushOnShutDown,
+                Optional.empty(), Optional.empty(), isHosted, 0.0, featureFlags);
     }
 
     private static SearchNode createSearchNode(MockRoot root) {
-        return createSearchNode(root, "mynode", 3, new NodeSpec(7, 5), true, true, false);
+        return createSearchNode(root, "mynode", 3, new NodeSpec(7, 5), true, true, new TestProperties());
     }
 
     @Test
-    public void requireThatSyncIsHonoured() {
+    void requireThatSyncIsHonoured() {
         assertTrue(getTlsConfig(new TestProperties(), null).usefsync());
         assertTrue(getTlsConfig(new TestProperties(), true).usefsync());
         assertFalse(getTlsConfig(new TestProperties(), false).usefsync());
     }
 
     @Test
-    public void requireThatBasedirIsCorrectForElasticMode() {
+    void requireThatBasedirIsCorrectForElasticMode() {
         MockRoot root = new MockRoot("");
-        SearchNode node = createSearchNode(root, "mynode", 3, new NodeSpec(7, 5), false, root.getDeployState().isHosted(), false);
+        SearchNode node = createSearchNode(root, "mynode", 3, new NodeSpec(7, 5), false, root.getDeployState().isHosted(), new TestProperties());
         prepare(root, node, true);
         assertBaseDir(Defaults.getDefaults().underVespaHome("var/db/vespa/search/cluster.mycluster/n3"), node);
     }
 
     @Test
-    public void requireThatPreShutdownCommandIsEmptyWhenNotActivated() {
+    void requireThatPreShutdownCommandIsEmptyWhenNotActivated() {
         MockRoot root = new MockRoot("");
-        SearchNode node = createSearchNode(root, "mynode", 3, new NodeSpec(7, 5), false, root.getDeployState().isHosted(), false);
+        SearchNode node = createSearchNode(root, "mynode", 3, new NodeSpec(7, 5), false, root.getDeployState().isHosted(), new TestProperties());
         node.setHostResource(new HostResource(new Host(node, "mynbode")));
-        node.initService(root.deployLogger());
+        node.initService(root.getDeployState());
         assertFalse(node.getPreShutdownCommand().isPresent());
     }
 
     @Test
-    public void requireThatPreShutdownCommandUsesPrepareRestartWhenActivated() {
+    void requireThatPreShutdownCommandUsesPrepareRestartWhenActivated() {
         MockRoot root = new MockRoot("");
-        SearchNode node = createSearchNode(root, "mynode2", 4, new NodeSpec(7, 5), true, root.getDeployState().isHosted(), false);
+        SearchNode node = createSearchNode(root, "mynode2", 4, new NodeSpec(7, 5), true, root.getDeployState().isHosted(), new TestProperties());
         node.setHostResource(new HostResource(new Host(node, "mynbode2")));
-        node.initService(root.deployLogger());
+        node.initService(root.getDeployState());
         assertTrue(node.getPreShutdownCommand().isPresent());
-        Assert.assertThat(node.getPreShutdownCommand().get(),
-                CoreMatchers.containsString("vespa-proton-cmd " + node.getRpcPort() + " prepareRestart"));
+        assertTrue(node.getPreShutdownCommand().get().contains("vespa-proton-cmd " + node.getRpcPort() + " prepareRestart"));
+    }
+
+    private void verifyCodePlacement(boolean hugePages) {
+        MockRoot root = new MockRoot("");
+        SearchNode node = createSearchNode(root, "mynode2", 4, new NodeSpec(7, 5), true, false, new TestProperties().loadCodeAsHugePages(hugePages));
+        node.setHostResource(new HostResource(new Host(node, "mynbode2")));
+        node.initService(root.getDeployState());
+        assertEquals(hugePages, node.getEnvVars().get("VESPA_LOAD_CODE_AS_HUGEPAGES") != null);
+    }
+
+    @Test
+    void requireThatCodePageTypeCanBeControlled() {
+        verifyCodePlacement(true);
+        verifyCodePlacement(false);
+    }
+
+    private void verifySharedStringRepoReclaim(boolean sharedStringRepoNoReclaim) {
+        MockRoot root = new MockRoot("");
+        SearchNode node = createSearchNode(root, "mynode2", 4, new NodeSpec(7, 5), true, false, new TestProperties().sharedStringRepoNoReclaim(sharedStringRepoNoReclaim));
+        node.setHostResource(new HostResource(new Host(node, "mynbode2")));
+        node.initService(root.getDeployState());
+        assertEquals(sharedStringRepoNoReclaim, node.getEnvVars().get("VESPA_SHARED_STRING_REPO_NO_RECLAIM") != null);
+    }
+
+    @Test
+    void requireThatSharedRepoReclaimCanBeControlled() {
+        verifySharedStringRepoReclaim(true);
+        verifySharedStringRepoReclaim(false);
     }
 
     private MockRoot createRoot(ModelContext.Properties properties) {

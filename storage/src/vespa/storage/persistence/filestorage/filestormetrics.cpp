@@ -7,7 +7,6 @@ namespace storage {
 
 using metrics::MetricSet;
 
-// TODO Vespa 8 all metrics with .sum in the name should have that removed.
 FileStorThreadMetrics::Op::Op(const std::string& id, const std::string& name, MetricSet* owner)
     : MetricSet(id, {}, name + " load in filestor thread", owner),
       _name(name),
@@ -108,7 +107,7 @@ FileStorThreadMetrics::OpWithNotFound::clone(std::vector<Metric::UP>& ownerList,
 }
 
 FileStorThreadMetrics::Update::Update(MetricSet* owner)
-    : OpWithTestAndSetFailed("update.sum", "Update", owner),
+    : OpWithTestAndSetFailed("update", "Update", owner),
       latencyRead("latency_read", {}, "Latency of the source read in the request.", this)
 { }
 
@@ -127,7 +126,7 @@ FileStorThreadMetrics::Update::clone(std::vector<Metric::UP>& ownerList,
 }
 
 FileStorThreadMetrics::Visitor::Visitor(MetricSet* owner)
-    : Op("visit.sum", "Visit", owner),
+    : Op("visit", "Visit", owner),
       documentsPerIterate("docs", {}, "Number of entries read per iterate call", this)
 { }
 
@@ -149,16 +148,15 @@ FileStorThreadMetrics::FileStorThreadMetrics(const std::string& name, const std:
     : MetricSet(name, {{"filestor"},{"partofsum"}}, desc),
       operations("operations", {}, "Number of operations processed.", this),
       failedOperations("failedoperations", {}, "Number of operations throwing exceptions.", this),
-      put("put.sum", "Put", this),
-      get("get.sum", "Get", this),
-      remove("remove.sum", "Remove", this),
-      removeLocation("remove_location.sum", "Remove location", this),
+      put("put", "Put", this),
+      get("get", "Get", this),
+      remove("remove", "Remove", this),
+      removeLocation("remove_location", "Remove location", this),
       statBucket("stat_bucket", "Stat bucket", this),
       update(this),
       revert("revert", "Revert", this),
       createIterator("createiterator", {}, this),
       visit(this),
-      multiOp("multioperations", "The number of multioperations that have been created", this),
       createBuckets("createbuckets", "Number of buckets that has been created.", this),
       deleteBuckets("deletebuckets", "Number of buckets that has been deleted.", this),
       repairs("bucketverified", "Number of times buckets have been checked.", this),
@@ -181,41 +179,55 @@ FileStorThreadMetrics::FileStorThreadMetrics(const std::string& name, const std:
       applyBucketDiff("applybucketdiff", "Number of applybucketdiff commands that have been processed.", this),
       getBucketDiffReply("getbucketdiffreply", {}, "Number of getbucketdiff replies that have been processed.", this),
       applyBucketDiffReply("applybucketdiffreply", {}, "Number of applybucketdiff replies that have been processed.", this),
-      merge_handler_metrics(this),
-      batchingSize("batchingsize", {}, "Number of operations batched per bucket (only counts "
-                   "batches of size > 1)", this)
+      merge_handler_metrics(this)
 { }
 
 FileStorThreadMetrics::~FileStorThreadMetrics() = default;
 
 FileStorStripeMetrics::FileStorStripeMetrics(const std::string& name, const std::string& description)
     : MetricSet(name, {{"partofsum"}}, description),
-      averageQueueWaitingTime("averagequeuewait", {}, "Average time an operation spends in input queue.", this)
+      averageQueueWaitingTime("averagequeuewait", {}, "Average time an operation spends in input queue.", this),
+      throttled_rpc_direct_dispatches("throttled_rpc_direct_dispatches", {},
+                                      "Number of times an RPC thread could not directly dispatch an async operation "
+                                      "directly to Proton because it was disallowed by the throttle policy", this),
+      throttled_persistence_thread_polls("throttled_persistence_thread_polls", {},
+                                         "Number of times a persistence thread could not immediately dispatch a "
+                                         "queued async operation because it was disallowed by the throttle policy", this),
+      timeouts_waiting_for_throttle_token("timeouts_waiting_for_throttle_token", {},
+                                          "Number of times a persistence thread timed out waiting for an available "
+                                          "throttle policy token", this)
 {
 }
 
 FileStorStripeMetrics::~FileStorStripeMetrics() = default;
 
-FileStorDiskMetrics::FileStorDiskMetrics(const std::string& name, const std::string& description, MetricSet* owner)
-    : MetricSet(name, {{"partofsum"}}, description, owner),
+FileStorMetrics::FileStorMetrics()
+    : MetricSet("filestor", {{"filestor"}}, ""),
       sumThreads("allthreads", {{"sum"}}, "", this),
       sumStripes("allstripes", {{"sum"}}, "", this),
-      averageQueueWaitingTime("averagequeuewait.sum", {}, "Average time an operation spends in input queue.", this),
+      averageQueueWaitingTime("averagequeuewait", {}, "Average time an operation spends in input queue.", this),
       queueSize("queuesize", {}, "Size of input message queue.", this),
       pendingMerges("pendingmerge", {}, "Number of buckets currently being merged.", this),
+      throttle_window_size("throttle_window_size", {}, "Current size of async operation throttler window size", this),
+      throttle_waiting_threads("throttle_waiting_threads", {}, "Number of threads waiting to acquire a throttle token", this),
+      throttle_active_tokens("throttle_active_tokens", {}, "Current number of active throttle tokens", this),
       waitingForLockHitRate("waitingforlockrate", {},
-              "Amount of times a filestor thread has needed to wait for "
-              "lock to take next message in queue.", this),
-      lockWaitTime("lockwaittime", {}, "Amount of time waiting used waiting for lock.", this)
+                            "Amount of times a filestor thread has needed to wait for "
+                            "lock to take next message in queue.", this),
+      active_operations(this),
+      directoryEvents("directoryevents", {}, "Number of directory events received.", this),
+      partitionEvents("partitionevents", {}, "Number of partition events received.", this),
+      diskEvents("diskevents", {}, "Number of disk events received.", this),
+      bucket_db_init_latency("bucket_db_init_latency", {}, "Time taken (in ms) to initialize bucket databases with "
+                                                           "information from the persistence provider", this)
 {
     pendingMerges.unsetOnZeroValue();
     waitingForLockHitRate.unsetOnZeroValue();
 }
 
-FileStorDiskMetrics::~FileStorDiskMetrics() = default;
+FileStorMetrics::~FileStorMetrics() = default;
 
-void
-FileStorDiskMetrics::initDiskMetrics(uint32_t numStripes, uint32_t threadsPerDisk)
+void FileStorMetrics::initDiskMetrics(uint32_t numStripes, uint32_t threadsPerDisk)
 {
     threads.clear();
     threads.resize(threadsPerDisk);
@@ -239,28 +251,6 @@ FileStorDiskMetrics::initDiskMetrics(uint32_t numStripes, uint32_t threadsPerDis
         registerMetric(*stripes[i]);
         sumStripes.addMetricToSum(*stripes[i]);
     }
-}
-
-FileStorMetrics::FileStorMetrics()
-    : MetricSet("filestor", {{"filestor"}}, ""),
-      sum("alldisks", {{"sum"}}, "", this),
-      directoryEvents("directoryevents", {}, "Number of directory events received.", this),
-      partitionEvents("partitionevents", {}, "Number of partition events received.", this),
-      diskEvents("diskevents", {}, "Number of disk events received.", this),
-      bucket_db_init_latency("bucket_db_init_latency", {}, "Time taken (in ms) to initialize bucket databases with "
-                                                           "information from the persistence provider", this)
-{ }
-
-FileStorMetrics::~FileStorMetrics() = default;
-
-void FileStorMetrics::initDiskMetrics(uint32_t numStripes, uint32_t threadsPerDisk)
-{
-    assert( ! disk);
-    // Currently FileStorHandlerImpl expects metrics to exist for
-    // disks that are not in use too.
-    disk = std::make_shared<FileStorDiskMetrics>( "disk_0", "Disk 0", this);
-    sum.addMetricToSum(*disk);
-    disk->initDiskMetrics(numStripes, threadsPerDisk);
 }
 
 }

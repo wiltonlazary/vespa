@@ -8,6 +8,7 @@
 #include <vespa/log/log.h>
 LOG_SETUP(".fnet.scheduler");
 
+const vespalib::duration FNET_Scheduler::tick_ms = vespalib::adjustTimeoutByDetectedHz(10ms);
 
 FNET_Scheduler::FNET_Scheduler(vespalib::steady_time *sampler)
     : _cond(),
@@ -65,7 +66,7 @@ FNET_Scheduler::Schedule(FNET_Task *task, double seconds)
 {
     constexpr double ONE_MONTH_S = 3600 * 24 * 30;
     seconds = std::min(seconds, ONE_MONTH_S);
-    uint32_t ticks = 2 + (uint32_t) std::ceil(seconds * (1000.0 / tick_ms.count()));
+    uint32_t ticks = 2 + (uint32_t) std::ceil(seconds * (1000.0 / vespalib::count_ms(tick_ms)));
 
     std::lock_guard<std::mutex> guard(_lock);
     if (!task->_killed) {
@@ -137,15 +138,8 @@ FNET_Scheduler::Print(FILE *dst)
 void
 FNET_Scheduler::CheckTasks()
 {
+    std::unique_lock guard(_lock);
     _now = _sampler ? *_sampler : vespalib::steady_clock::now();
-
-    // assume timely value propagation
-
-    if (_slots[NUM_SLOTS] == nullptr && _now < _next)
-        return;
-
-    std::unique_lock<std::mutex> guard(_lock);
-
     // perform urgent tasks
 
     PerformTasks(guard, NUM_SLOTS, 0);

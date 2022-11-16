@@ -2,9 +2,19 @@
 
 #pragma once
 
-#include "attributevector.h"
+#include "atomic_utils.h"
 #include "readerbase.h"
 #include <vespa/vespalib/util/arrayref.h>
+#include <vespa/searchcommon/attribute/multi_value_traits.h>
+
+namespace vespalib::datastore {
+    class AtomicEntryRef;
+    class EntryRef;
+}
+
+namespace vespalib { class GenerationHolder; }
+
+namespace search { class AttributeVector; }
 
 namespace search::attribute {
 
@@ -38,7 +48,7 @@ template <class MvMapping, class Saver>
 uint32_t
 loadFromEnumeratedMultiValue(MvMapping &mapping,
                              ReaderBase &attrReader,
-                             vespalib::ConstArrayRef<typename MvMapping::MultiValueType::ValueType> enumValueToValueMap,
+                             vespalib::ConstArrayRef<atomic_utils::NonAtomicValue_t<multivalue::ValueType_t<typename MvMapping::MultiValueType>>> enumValueToValueMap,
                              vespalib::ConstArrayRef<uint32_t> enum_value_remapping,
                              Saver saver) __attribute((noinline));
 
@@ -51,7 +61,7 @@ void
 loadFromEnumeratedSingleValue(Vector &vector,
                               vespalib::GenerationHolder &genHolder,
                               ReaderBase &attrReader,
-                              vespalib::ConstArrayRef<typename Vector::ValueType> enumValueToValueMap,
+                              vespalib::ConstArrayRef<atomic_utils::NonAtomicValue_t<typename Vector::ValueType>> enumValueToValueMap,
                               vespalib::ConstArrayRef<uint32_t> enum_value_remapping,
                               Saver saver) __attribute((noinline));
 

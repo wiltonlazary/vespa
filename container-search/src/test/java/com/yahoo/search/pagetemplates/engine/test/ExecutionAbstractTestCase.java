@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.pagetemplates.engine.test;
 
-import com.google.common.util.concurrent.ListenableFuture;
 import com.yahoo.io.IOUtils;
 import com.yahoo.search.Result;
 import com.yahoo.search.pagetemplates.PageTemplate;
@@ -11,10 +10,11 @@ import com.yahoo.search.result.Hit;
 import com.yahoo.search.result.HitGroup;
 import com.yahoo.text.Utf8;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author bratseth
@@ -25,7 +25,7 @@ public class ExecutionAbstractTestCase {
 
     protected PageTemplate importPage(String name) {
         PageTemplate template=new PageTemplateXMLReader().readFile(root + name);
-        assertNotNull("Could look up page template '" + name + "'",template);
+        assertNotNull(template,"Could look up page template '" + name + "'");
         return template;
     }
 
@@ -53,13 +53,12 @@ public class ExecutionAbstractTestCase {
         assertRendered(result,resultFileName,false);
     }
 
-    @SuppressWarnings("deprecation")
     protected void assertRendered(Result result, String resultFileName, boolean print) {
         try {
             PageTemplatesXmlRenderer renderer = new PageTemplatesXmlRenderer();
             renderer.init();
             ByteArrayOutputStream stream = new ByteArrayOutputStream();
-            ListenableFuture<Boolean> f = renderer.render(stream, result, null, null);
+            CompletableFuture<Boolean> f = renderer.renderResponse(stream, result, null, null);
             assertTrue(f.get());
             String renderedResult = Utf8.toString(stream.toByteArray());
             if (print)

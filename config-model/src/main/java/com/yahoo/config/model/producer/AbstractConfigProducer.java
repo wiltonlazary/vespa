@@ -1,12 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.model.producer;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.config.ConfigInstance;
 import com.yahoo.config.model.ApplicationConfigProducerRoot;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.subscription.ConfigInstanceUtil;
-import java.util.logging.Level;
 import com.yahoo.vespa.config.ConfigDefinitionKey;
 import com.yahoo.vespa.config.ConfigPayload;
 import com.yahoo.vespa.config.ConfigPayloadBuilder;
@@ -19,7 +18,6 @@ import com.yahoo.vespa.model.SimpleConfigProducer;
 import com.yahoo.vespa.model.admin.Admin;
 import com.yahoo.vespa.model.admin.monitoring.Monitoring;
 import com.yahoo.vespa.model.utils.FreezableMap;
-
 import java.io.PrintStream;
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -27,6 +25,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -160,7 +159,7 @@ public abstract class AbstractConfigProducer<CHILD extends AbstractConfigProduce
      * because config IDs must be registered through setConfigId().
      */
     public final String getConfigId() {
-        if (configId == null) throw new RuntimeException("The system topology must be frozen first.");
+        if (configId == null) throw new IllegalStateException("The system topology must be frozen first.");
         return configId;
     }
 
@@ -203,15 +202,14 @@ public abstract class AbstractConfigProducer<CHILD extends AbstractConfigProduce
 
     @Override
     public final boolean cascadeConfig(ConfigInstance.Builder builder) {
-        boolean found=false;
+        boolean found = false;
         if (parent != null)
             found = parent.cascadeConfig(builder);
 
         boolean foundHere = builder.dispatchGetConfig(this);
-        if (log.isLoggable(Level.FINE)) {
-            log.log(Level.FINE, "cascadeconfig in " + this + ", getting config " +
-                    builder.getClass().getDeclaringClass().getName() + " for config id '" + configId + "' found here=" + foundHere);
-        }
+        log.log(Level.FINE, () -> "cascadeconfig in " + this + ", getting config " +
+                                  builder.getClass().getDeclaringClass().getName() + " for config id '" + configId +
+                                  "' found here=" + foundHere);
         found = found || foundHere;
         return found;
     }

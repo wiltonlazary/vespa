@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.subscription;
 
-
 import com.yahoo.config.ConfigInstance;
 
 /**
@@ -13,11 +12,12 @@ import com.yahoo.config.ConfigInstance;
  * command-line tools.
  *
  * @author gjoranv
+ * @deprecated Use config builders where possible
  */
+@Deprecated
 public class ConfigGetter<T extends ConfigInstance> {
 
     private final Class<T> clazz;
-    private final ConfigSource source;
 
     /**
      * Creates a ConfigGetter for class <code>clazz</code>
@@ -25,19 +25,7 @@ public class ConfigGetter<T extends ConfigInstance> {
      * @param clazz a config class
      */
     public ConfigGetter(Class<T> clazz) {
-        this(null, clazz);
-    }
-
-    /**
-     * Creates a ConfigGetter for class <code>clazz</code> with the specified
-     * {@link ConfigSource}.
-     *
-     * @param source a {@link ConfigSource}
-     * @param clazz  a config class
-     */
-    public ConfigGetter(ConfigSource source, Class<T> clazz) {
         this.clazz = clazz;
-        this.source = source;
     }
 
     /**
@@ -47,8 +35,7 @@ public class ConfigGetter<T extends ConfigInstance> {
      * @return an instance of a config class
      */
     public synchronized T getConfig(String configId) {
-        try (ConfigSubscriber subscriber =
-                     source == null ? new ConfigSubscriber() : new ConfigSubscriber(source)) {
+        try (ConfigSubscriber subscriber = new ConfigSubscriber()) {
             ConfigHandle<T> handle = subscriber.subscribe(clazz, configId);
             subscriber.nextConfig(true);
             return handle.getConfig();
@@ -67,16 +54,4 @@ public class ConfigGetter<T extends ConfigInstance> {
         return getter.getConfig(configId);
     }
 
-    /**
-     * Creates a ConfigGetter instance and returns an instance of the config class <code>c</code>.
-     *
-     * @param c        a config class
-     * @param configId a config id to use when getting the config
-     * @param source   a {@link ConfigSource}
-     * @return an instance of a config class
-     */
-    public static <T extends ConfigInstance> T getConfig(Class<T> c, String configId, ConfigSource source) {
-        ConfigGetter<T> getter = new ConfigGetter<>(source, c);
-        return getter.getConfig(configId);
-    }
 }

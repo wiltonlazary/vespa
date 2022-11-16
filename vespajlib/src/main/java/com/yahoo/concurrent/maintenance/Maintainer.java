@@ -1,9 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.concurrent.maintenance;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.net.HostName;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -44,7 +46,7 @@ public abstract class Maintainer implements Runnable {
         Objects.requireNonNull(startedAt);
         Objects.requireNonNull(clusterHostnames);
         Duration initialDelay = staggeredDelay(interval, startedAt, HostName.getLocalhost(), clusterHostnames)
-                                .plus(Duration.ofSeconds(30)); // Let the system  stabilize before maintenance
+                                .plus(Duration.ofSeconds(30)); // Let the system stabilize before maintenance
         service = new ScheduledThreadPoolExecutor(1, r -> new Thread(r, name() + "-worker"));
         service.scheduleAtFixedRate(this, initialDelay.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
         jobControl.started(name(), this);
@@ -94,7 +96,8 @@ public abstract class Maintainer implements Runnable {
 
     /** Convenience methods to convert attempts and failures into a success factor */
     protected final double asSuccessFactor(int attempts, int failures) {
-        return attempts == 0 ? 1.0 : 1 - (double)failures / attempts;
+        double factor = attempts == 0 ? 1.0 : 1 - (double)failures / attempts;
+        return new BigDecimal(factor).setScale(2, RoundingMode.HALF_UP).doubleValue();
     }
 
     /** Returns the interval at which this job is set to run */
@@ -110,7 +113,9 @@ public abstract class Maintainer implements Runnable {
             successFactor = maintain();
         }
         catch (UncheckedTimeoutException e) {
-            if ( ! ignoreCollision)
+            if (ignoreCollision)
+                successFactor = 1;
+            else
                 log.log(Level.WARNING, this + " collided with another run. Will retry in " + interval);
         }
         catch (Throwable e) {

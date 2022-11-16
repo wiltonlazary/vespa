@@ -3,14 +3,15 @@ vespa_add_library(searchlib_tensor OBJECT
     SOURCES
     angular_distance.cpp
     bitvector_visited_tracker.cpp
+    blob_sequence_reader.cpp
     default_nearest_neighbor_index_factory.cpp
     dense_tensor_attribute.cpp
-    dense_tensor_attribute_saver.cpp
     dense_tensor_store.cpp
     direct_tensor_attribute.cpp
-    direct_tensor_saver.cpp
     direct_tensor_store.cpp
+    distance_calculator.cpp
     distance_function_factory.cpp
+    empty_subspace.cpp
     euclidean_distance.cpp
     geo_degrees_distance.cpp
     hamming_distance.cpp
@@ -18,18 +19,24 @@ vespa_add_library(searchlib_tensor OBJECT
     hnsw_graph.cpp
     hnsw_index.cpp
     hnsw_index_saver.cpp
+    hnsw_nodeid_mapping.cpp
     imported_tensor_attribute_vector.cpp
     imported_tensor_attribute_vector_read_guard.cpp
     inner_product_distance.cpp
     inv_log_level_generator.cpp
+    large_subspaces_buffer_type.cpp
     nearest_neighbor_index.cpp
     nearest_neighbor_index_saver.cpp
     serialized_fast_value_attribute.cpp
-    streamed_value_saver.cpp
-    streamed_value_store.cpp
+    small_subspaces_buffer_type.cpp
+    subspace_type.cpp
     tensor_attribute.cpp
+    tensor_attribute_loader.cpp
+    tensor_attribute_saver.cpp
+    tensor_buffer_operations.cpp
+    tensor_buffer_store.cpp
+    tensor_buffer_type_mapper.cpp
     tensor_deserialize.cpp
     tensor_store.cpp
-    reusable_set_visited_tracker.cpp
     DEPENDS
 )

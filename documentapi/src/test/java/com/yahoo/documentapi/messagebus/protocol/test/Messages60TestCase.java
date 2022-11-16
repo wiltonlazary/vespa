@@ -151,7 +151,6 @@ public class Messages60TestCase extends MessagesTestBase {
             for (Language lang : LANGUAGES) {
                 msg = (GetBucketListMessage)deserialize("GetBucketListMessage", DocumentProtocol.MESSAGE_GETBUCKETLIST, lang);
                 assertEquals(new BucketId(16, 123), msg.getBucketId());
-                assertEquals("default", msg.getLoadType().getName());
                 assertEquals(BUCKET_SPACE, msg.getBucketSpace());
             }
         }
@@ -164,7 +163,6 @@ public class Messages60TestCase extends MessagesTestBase {
         @Override
         public void run() {
             StatBucketMessage msg = new StatBucketMessage(new BucketId(16, 123), "id.user=123");
-            msg.setLoadType(null);
             msg.setBucketSpace(BUCKET_SPACE);
             assertEquals(BASE_MESSAGE_LENGTH + 27 + serializedLength(BUCKET_SPACE), serialize("StatBucketMessage", msg));
 
@@ -172,7 +170,6 @@ public class Messages60TestCase extends MessagesTestBase {
                 msg = (StatBucketMessage)deserialize("StatBucketMessage", DocumentProtocol.MESSAGE_STATBUCKET, lang);
                 assertEquals(new BucketId(16, 123), msg.getBucketId());
                 assertEquals("id.user=123", msg.getDocumentSelection());
-                assertEquals("default", msg.getLoadType().getName());
                 assertEquals(BUCKET_SPACE, msg.getBucketSpace());
             }
         }
@@ -282,8 +279,6 @@ public class Messages60TestCase extends MessagesTestBase {
             reply.getVisitorStatistics().setBytesVisited(1024000);
             reply.getVisitorStatistics().setDocumentsReturned(123);
             reply.getVisitorStatistics().setBytesReturned(512000);
-            reply.getVisitorStatistics().setSecondPassDocumentsReturned(456);
-            reply.getVisitorStatistics().setSecondPassBytesReturned(789100);
 
             assertEquals(65, serialize("CreateVisitorReply", reply));
 
@@ -296,8 +291,6 @@ public class Messages60TestCase extends MessagesTestBase {
                 assertEquals(1024000, reply.getVisitorStatistics().getBytesVisited());
                 assertEquals(123, reply.getVisitorStatistics().getDocumentsReturned());
                 assertEquals(512000, reply.getVisitorStatistics().getBytesReturned());
-                assertEquals(456, reply.getVisitorStatistics().getSecondPassDocumentsReturned());
-                assertEquals(789100, reply.getVisitorStatistics().getSecondPassBytesReturned());
             }
         }
     }

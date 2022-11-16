@@ -3,7 +3,10 @@
 
 #include <new>
 #include <atomic>
+#include <cassert>
+#include <cstdio>
 #include <vespamalloc/util/osmem.h>
+#include <thread>
 
 extern "C" void MallocRecurseOnSuspend(bool recurse) __attribute__ ((noinline));
 
@@ -55,35 +58,31 @@ static constexpr uint32_t NUM_THREADS = 16384;
 using OSMemory = MmapMemory;
 using SizeClassT = int;
 
-constexpr size_t ALWAYS_REUSE_LIMIT = 0x200000ul;
-   
-inline constexpr int msbIdx(uint64_t v) {
-    return (sizeof(v)*8 - 1) - __builtin_clzl(v);
-}    
+constexpr size_t ALWAYS_REUSE_LIMIT = 0x100000ul;
 
-template <size_t MinClassSizeC>
-class CommonT
-{
+inline constexpr int
+msbIdx(uint64_t v) {
+    return (sizeof(v) * 8 - 1) - __builtin_clzl(v);
+}
+
+template<size_t MinClassSizeC>
+class CommonT {
 public:
     static constexpr size_t MAX_ALIGN = 0x200000ul;
-    enum {MinClassSize = MinClassSizeC};
-    static inline constexpr SizeClassT sizeClass(size_t sz) {
+    enum {
+        MinClassSize = MinClassSizeC
+    };
+    static constexpr SizeClassT sizeClass(size_t sz) noexcept {
         SizeClassT tmp(msbIdx(sz - 1) - (MinClassSizeC - 1));
-        return (sz <= (1 << MinClassSizeC )) ? 0 : tmp;
+        return (sz <= (1 << MinClassSizeC)) ? 0 : tmp;
     }
-    static inline constexpr size_t classSize(SizeClassT sc) { return (size_t(1) << (sc + MinClassSizeC)); }
+    static constexpr size_t classSize(SizeClassT sc) noexcept { return (size_t(1) << (sc + MinClassSizeC)); }
 };
 
-inline void crash() { *((volatile unsigned *) nullptr) = 0; }
-
-template <typename T>
-inline void swap(T & a, T & b)      { T tmp(a); a = b; b = tmp; }
-
-class Mutex
-{
+class Mutex {
 public:
     Mutex() : _mutex(), _use(false) { }
-    ~Mutex()           { quit(); }
+    ~Mutex() { quit(); }
     void lock();
     void unlock();
     static void addThread()      { _threadCount.fetch_add(1); }
@@ -94,34 +93,44 @@ public:
     void quit();
 private:
     static std::atomic<uint32_t> _threadCount;
-    static bool     _stopRecursion;
-    Mutex(const Mutex & org);
-    Mutex & operator = (const Mutex & org);
-    pthread_mutex_t  _mutex;
-    bool             _use;
+    static bool _stopRecursion;
+    Mutex(const Mutex &org);
+    Mutex &operator=(const Mutex &org);
+    pthread_mutex_t _mutex;
+    bool _use;
 };
 
-class Guard
-{
+class Guard {
 public:
     Guard(Mutex & m);
-    ~Guard()                      { _mutex->unlock(); }
+    ~Guard() { _mutex->unlock(); }
 private:
-    Mutex * _mutex;
+    Mutex *_mutex;
 };
 
-class IAllocator
-{
+class IAllocator {
 public:
     virtual ~IAllocator() {}
     virtual bool initThisThread() = 0;
     virtual bool quitThisThread() = 0;
     virtual void enableThreadSupport() = 0;
-    virtual void setReturnAddressStop(const void * returnAddressStop) = 0;
+    virtual void setReturnAddressStop(const void *returnAddressStop) = 0;
     virtual size_t getMaxNumThreads() const = 0;
 };
 
 void info();
+void logBigBlock(const void *ptr, size_t exact, size_t adjusted, size_t gross) __attribute__((noinline));
+void logStackTrace() __attribute__((noinline));
+
+#define ASSERT_STACKTRACE(a) { \
+    if ( __builtin_expect(!(a), false) ) {  \
+        vespamalloc::logStackTrace();       \
+        assert(a);                          \
+    }                                       \
+}
+
+extern FILE * _G_logFile;
+extern size_t _G_bigBlockLimit;
 
 }
 

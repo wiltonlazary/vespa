@@ -64,6 +64,7 @@ SourceSelector::SaveInfo::SaveInfo(const vespalib::string & baseFileName,
     sourceStore.save(_memSaver, _header._baseFileName);
 }
 
+SourceSelector::SaveInfo::~SaveInfo() = default;
 bool
 SourceSelector::SaveInfo::save(const TuneFileAttributes &tuneFileAttributes,
                                const FileHeaderContext &fileHeaderContext)
@@ -95,25 +96,24 @@ SourceSelector::LoadInfo::load()
     if (fileHeader.hasTag(docIdLimitTag)) {
         _header._docIdLimit = fileHeader.getTag(docIdLimitTag).asInteger();
     }
-    file.Close();
 }
 
 SourceSelector::SourceSelector(Source defaultSource, AttributeVector::SP realSource) :
     ISourceSelector(defaultSource),
-    _realSource(realSource)
+    _realSource(std::move(realSource))
 { }
 
 SourceSelector::SaveInfo::UP
 SourceSelector::extractSaveInfo(const vespalib::string & baseFileName)
 {
-    return SaveInfo::UP(new SaveInfo(baseFileName, getDefaultSource(), getBaseId(),
-                                     getDocIdLimit(), *_realSource));
+    return std::make_unique<SaveInfo>(baseFileName, getDefaultSource(), getBaseId(),
+                                      getDocIdLimit(), *_realSource);
 }
 
 SourceSelector::LoadInfo::UP
 SourceSelector::extractLoadInfo(const vespalib::string & baseFileName)
 {
-    return LoadInfo::UP(new LoadInfo(baseFileName));
+    return std::make_unique<LoadInfo>(baseFileName);
 }
 
 SourceSelector::Histogram SourceSelector::getDistribution() const

@@ -11,8 +11,8 @@
     <logserver hostalias="logserver" />
     <slobroks>
       <slobrok hostalias="configserver" />
-      <slobrok hostalias="qrserver" />
-      <slobrok hostalias="rtc-1" />
+      <slobrok hostalias="container" />
+      <slobrok hostalias="searchnode-1" />
     </slobroks>
     <metrics>
 
@@ -58,27 +58,12 @@
       <group name="foo" environment="aws_stage" />
     </secret-store>
 
-    <servlet id="my-servlet" class="com.yahoo.MyServlet" bundle="my-bundle">
-      <path>p/a/t/h</path>
-    </servlet>
-
-    <servlet id="my-servlet" class="com.yahoo.MyServlet" bundle="my-bundle">
-      <path>Apps/app_1.3-4/*</path>
-      <config name="foo">
-        <intVal>0</intVal>
-      </config>
-      <servlet-config>
-        <foo>bar</foo>
-      </servlet-config>
-    </servlet>
-
     <http>
       <filtering strict-mode="true">
-        <access-control domain="my.athens-domain" read="true">
+        <access-control>
           <exclude>
             <binding>http//*/foo/*</binding>
           </exclude>
-          <vespa-domain>vespa.vespa.cd</vespa-domain>
         </access-control>
 
         <filter id="com.yahoo.YcaFilter" bundle="mybundle">
@@ -135,9 +120,9 @@
     </http>
 
     <accesslog type='json'
-           fileNamePattern='logs/vespa/qrs/access-json.%Y%m%d%H%M%S' compressOnRotation='true'  compressionType='zstd' queueSize='13' bufferSize='65536'/>
+           fileNamePattern='logs/vespa/access/access-json.%Y%m%d%H%M%S' compressOnRotation='true'  compressionType='zstd' queueSize='13' bufferSize='65536'/>
     <accesslog type='vespa'
-           fileNamePattern='logs/vespa/qrs/access-vespa.%Y%m%d%H%M%S' />
+           fileNamePattern='logs/vespa/access/access-vespa.%Y%m%d%H%M%S' />
 
     <document-api>
       <binding>http://*/document-api/</binding>
@@ -156,14 +141,14 @@
     </document-api>
 
     <search>
+      <binding>http://*/mysearch/</binding>
       <searcher id='outer-searcher' />
       <chain id='common'>
         <searcher id='outer-searcher' />
         <searcher id='inner-searcher' />
       </chain>
 
-      <provider id='yca-provider' type='vespa' yca-application-id='my-app'>
-        <yca-proxy host='myhost' port='80'/>
+      <provider id='yca-provider' type='vespa'>
         <nodes>
           <node host='sourcehost' port='12'/>
         </nodes>
@@ -209,16 +194,10 @@
     <handler id="jdisc-handler">
       <binding>http://*:*/HelloWorld</binding>
       <binding>http://*:*/Status</binding>
-      <clientBinding>http://*:*/foo</clientBinding>
-      <clientBinding>http://*:*/bar</clientBinding>
+      <component id="injected-to-handler">
+        <config name="foo"/>
+      </component>
     </handler>
-
-    <client id="client-provider">
-      <binding>http://*:*/HelloWorld</binding>
-      <binding>http://*:*/Status</binding>
-      <serverBinding>http://*:*/foo</serverBinding>
-      <serverBinding>http://*:*/bar</serverBinding>
-    </client>
 
     <server id="server-provider">
 

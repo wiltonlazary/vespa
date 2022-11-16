@@ -44,14 +44,15 @@ public:
      *                          The caller must keep it alive for the semantic
      *                          lifetime of the log data store.
      */
-    LogDocumentStore(vespalib::ThreadExecutor & executor, const vespalib::string & baseDir, const Config & config,
+    LogDocumentStore(vespalib::Executor & executor, const vespalib::string & baseDir, const Config & config,
                      const GrowStrategy & growStrategy, const TuneFileSummary &tuneFileSummary,
                      const common::FileHeaderContext &fileHeaderContext,
                      transactionlog::SyncProxy &tlSyncer, IBucketizer::SP bucketizer);
     ~LogDocumentStore() override;
     void reconfigure(const Config & config);
 private:
-    void compact(uint64_t syncToken) override       { _backingStore.compact(syncToken); }
+    void compactBloat(uint64_t syncToken) override  { _backingStore.compactBloat(syncToken); }
+    void compactSpread(uint64_t syncToken) override { _backingStore.compactSpread(syncToken); }
     LogDataStore _backingStore;
 };
 

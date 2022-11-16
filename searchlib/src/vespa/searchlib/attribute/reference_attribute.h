@@ -4,6 +4,7 @@
 
 #include "not_implemented_attribute.h"
 #include "reference.h"
+#include "reference_attribute_compaction_spec.h"
 #include "reference_mappings.h"
 #include <vespa/vespalib/datastore/unique_store.h>
 #include <vespa/vespalib/util/rcuvector.h>
@@ -25,10 +26,12 @@ namespace search::attribute {
 class ReferenceAttribute : public NotImplementedAttribute
 {
 public:
+    using AtomicEntryRef = vespalib::datastore::AtomicEntryRef;
+    using CompactionStrategy = vespalib::datastore::CompactionStrategy;
     using EntryRef = vespalib::datastore::EntryRef;
     using GlobalId = document::GlobalId;
     using ReferenceStore = vespalib::datastore::UniqueStore<Reference>;
-    using ReferenceStoreIndices = vespalib::RcuVectorBase<EntryRef>;
+    using ReferenceStoreIndices = vespalib::RcuVectorBase<AtomicEntryRef>;
     using IndicesCopyVector = std::vector<EntryRef, vespalib::allocator_large<EntryRef>>;
     // Class used to map from target lid to source lids
     using ReverseMapping = vespalib::btree::BTreeStore<uint32_t, vespalib::btree::BTreeNoLeafData,
@@ -42,14 +45,13 @@ public:
 private:
     ReferenceStore _store;
     ReferenceStoreIndices _indices;
-    vespalib::MemoryUsage _cached_unique_store_values_memory_usage;
-    vespalib::MemoryUsage _cached_unique_store_dictionary_memory_usage;
+    ReferenceAttributeCompactionSpec _compaction_spec;
     std::shared_ptr<IGidToLidMapperFactory> _gidToLidMapperFactory;
     ReferenceMappings _referenceMappings;
 
     void onAddDocs(DocId docIdLimit) override;
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
     void onCommit() override;
     void onUpdateStat() override;
     std::unique_ptr<AttributeSaver> onInitSave(vespalib::stringref fileName) override;
@@ -57,7 +59,7 @@ private:
     uint64_t getUniqueValueCount() const override;
 
     bool consider_compact_values(const CompactionStrategy &compactionStrategy);
-    void compact_worst_values();
+    void compact_worst_values(const CompactionStrategy& compaction_strategy);
     bool consider_compact_dictionary(const CompactionStrategy& compaction_strategy);
     IndicesCopyVector getIndicesCopy(uint32_t size) const;
     void removeReverseMapping(EntryRef oldRef, uint32_t lid);
@@ -67,9 +69,8 @@ private:
 
 public:
     using SP = std::shared_ptr<ReferenceAttribute>;
-    DECLARE_IDENTIFIABLE_ABSTRACT(ReferenceAttribute);
-    ReferenceAttribute(const vespalib::stringref baseFileName,
-                       const Config & cfg);
+    ReferenceAttribute(const vespalib::stringref baseFileName);
+    ReferenceAttribute(const vespalib::stringref baseFileName, const Config & cfg);
     ~ReferenceAttribute() override;
     bool addDoc(DocId &doc) override;
     uint32_t clearDoc(DocId doc) override;
@@ -84,9 +85,10 @@ public:
 
     void notifyReferencedPutNoCommit(const GlobalId &gid, DocId targetLid);
     void notifyReferencedPut(const GlobalId &gid, DocId targetLid);
+    bool notifyReferencedRemoveNoCommit(const GlobalId &gid);
     void notifyReferencedRemove(const GlobalId &gid);
-    void populateTargetLids();
-    void clearDocs(DocId lidLow, DocId lidLimit) override;
+    void populateTargetLids(const std::vector<GlobalId>& removes);
+    void clearDocs(DocId lidLow, DocId lidLimit, bool in_shrink_lid_space) override;
     void onShrinkLidSpace() override;
 
     template <typename FunctionType>
@@ -95,7 +97,7 @@ public:
         _referenceMappings.foreach_lid(targetLid, std::forward<FunctionType>(func));
     }
 
-    SearchContext::UP getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams& params) const override;
+    std::unique_ptr<SearchContext> getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams& params) const override;
 };
 
 }

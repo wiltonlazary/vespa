@@ -1,24 +1,36 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include <vespa/document/datatype/datatype.h>
+#include <vespa/document/fieldvalue/arrayfieldvalue.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/weightedsetfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
 #include <vespa/searchlib/diskindex/fusion.h>
 #include <vespa/searchlib/diskindex/indexbuilder.h>
 #include <vespa/searchlib/diskindex/zcposoccrandread.h>
 #include <vespa/searchlib/fef/fieldpositionsiterator.h>
 #include <vespa/searchlib/fef/termfieldmatchdata.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/docidandfeatures.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/memoryindex/document_inverter.h>
+#include <vespa/searchlib/memoryindex/document_inverter_context.h>
 #include <vespa/searchlib/memoryindex/field_index_collection.h>
 #include <vespa/searchlib/memoryindex/field_inverter.h>
 #include <vespa/searchlib/memoryindex/ordered_field_index_inserter.h>
 #include <vespa/searchlib/memoryindex/posting_iterator.h>
 #include <vespa/searchlib/queryeval/iterators.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchlib/test/string_field_builder.h>
 #include <vespa/searchlib/test/index/mock_field_length_inspector.h>
 #include <vespa/searchlib/test/memoryindex/wrap_inserter.h>
 #include <vespa/vespalib/btree/btreenodeallocator.hpp>
 #include <vespa/vespalib/btree/btreeroot.hpp>
+#include <vespa/vespalib/util/gate.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
+#include <unordered_set>
 
 #include <vespa/vespalib/gtest/gtest.h>
 
@@ -33,12 +45,17 @@ namespace search {
 using namespace fef;
 using namespace index;
 
+using document::ArrayFieldValue;
+using document::DataType;
 using document::Document;
+using document::StringFieldValue;
+using document::WeightedSetFieldValue;
 using queryeval::RankedSearchIteratorBase;
 using queryeval::SearchIterator;
-using search::index::schema::CollectionType;
-using search::index::schema::DataType;
 using search::index::test::MockFieldLengthInspector;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
+using search::test::StringFieldBuilder;
 using vespalib::GenerationHandler;
 using vespalib::ISequencedTaskExecutor;
 using vespalib::SequencedTaskExecutor;
@@ -287,33 +304,21 @@ public:
 MockFieldIndex::~MockFieldIndex() = default;
 
 /**
- * MockWordStoreScan is a helper class to ensure that previous word is
+ * MockWordStoreScan is a helper class to ensure that previous words are
  * still stored safely in memory, to satisfy OrderedFieldIndexInserter
  * needs.
  */
 class MockWordStoreScan {
-    vespalib::string _word0;
-    vespalib::string _word1;
-    vespalib::string *_prevWord;
-    vespalib::string *_word;
+    std::unordered_set<vespalib::string, vespalib::hash<vespalib::string>> _words;
 
 public:
     MockWordStoreScan()
-        : _word0(),
-          _word1(),
-          _prevWord(&_word0),
-          _word(&_word1)
+        : _words()
     { }
     ~MockWordStoreScan();
 
-    const vespalib::string &getWord() const {
-        return *_word;
-    }
-
     const vespalib::string &setWord(const vespalib::string &word) {
-        std::swap(_prevWord, _word);
-        *_word = word;
-        return *_word;
+        return *_words.insert(word).first;
     }
 };
 
@@ -411,12 +416,12 @@ public:
 MyInserter::~MyInserter() = default;
 
 void
-myremove(uint32_t docId, DocumentInverter &inv,
-         ISequencedTaskExecutor &invertThreads)
+myremove(uint32_t docId, DocumentInverter &inv)
 {
     inv.removeDocument(docId);
-    invertThreads.sync();
-    inv.pushDocuments(std::shared_ptr<vespalib::IDestructorCallback>());
+    vespalib::Gate gate;
+    inv.pushDocuments(std::make_shared<vespalib::GateCallback>(gate));
+    gate.await();
 }
 
 class MyDrainRemoves : IFieldIndexRemoveListener {
@@ -442,7 +447,9 @@ public:
 void
 myPushDocument(DocumentInverter &inv)
 {
-    inv.pushDocuments(std::shared_ptr<vespalib::IDestructorCallback>());
+    vespalib::Gate gate;
+    inv.pushDocuments(std::make_shared<vespalib::GateCallback>(gate));
+    gate.await();
 }
 
 const FeatureStore *
@@ -457,14 +464,13 @@ featureStoreRef(const FieldIndexCollection &fieldIndexes, uint32_t fieldId)
     return fieldIndexes.getFieldIndex(fieldId)->getFeatureStore();
 }
 
-DataStoreBase::MemStats
+MemoryStats
 getFeatureStoreMemStats(const FieldIndexCollection &fieldIndexes)
 {
-    DataStoreBase::MemStats res;
+    MemoryStats res;
     uint32_t numFields = fieldIndexes.getNumFields();
     for (uint32_t fieldId = 0; fieldId < numFields; ++fieldId) {
-        DataStoreBase::MemStats stats =
-            fieldIndexes.getFieldIndex(fieldId)->getFeatureStore().getMemStats();
+        auto stats = fieldIndexes.getFieldIndex(fieldId)->getFeatureStore().getMemStats();
         res += stats;
     }
     return res;
@@ -473,14 +479,21 @@ getFeatureStoreMemStats(const FieldIndexCollection &fieldIndexes)
 void
 myCommit(FieldIndexCollection &fieldIndexes, ISequencedTaskExecutor &pushThreads)
 {
-    uint32_t fieldId = 0;
-    for (auto &fieldIndex : fieldIndexes.getFieldIndexes()) {
-        pushThreads.execute(fieldId,
-                            [fieldIndex(fieldIndex.get())]()
-                            { fieldIndex->commit(); });
-        ++fieldId;
+    vespalib::Gate gate;
+    {
+        auto gate_callback = std::make_shared<vespalib::GateCallback>(gate);
+        uint32_t fieldId = 0;
+        for (auto &fieldIndex : fieldIndexes.getFieldIndexes()) {
+            pushThreads.execute(fieldId,
+                                [fieldIndex(fieldIndex.get()), gate_callback]()
+                                {
+                                    (void) gate_callback;
+                                    fieldIndex->commit();
+                                });
+            ++fieldId;
+        }
     }
-    pushThreads.sync();
+    gate.await();
 }
 
 void
@@ -498,11 +511,16 @@ myCompactFeatures(FieldIndexCollection &fieldIndexes, ISequencedTaskExecutor &pu
 }
 
 Schema
-make_single_field_schema()
+make_all_index_schema(DocBuilder::AddFieldsType add_fields)
 {
-    Schema result;
-    result.addIndexField(Schema::IndexField("f0", DataType::STRING));
-    return result;
+    DocBuilder db(add_fields);
+    return SchemaBuilder(db).add_all_indexes().build();
+}
+
+DocBuilder::AddFieldsType
+make_single_add_fields()
+{
+    return [](auto& header) { header.addField("f0", DataType::T_STRING); };
 }
 
 template <typename FieldIndexType>
@@ -510,7 +528,7 @@ struct FieldIndexTest : public ::testing::Test {
     Schema schema;
     FieldIndexType idx;
     FieldIndexTest()
-        : schema(make_single_field_schema()),
+        : schema(make_all_index_schema(make_single_add_fields())),
           idx(schema, 0)
     {
     }
@@ -695,22 +713,22 @@ TEST_F(FieldIndexInterleavedFeaturesTest, interleaved_features_are_capped)
     EXPECT_EQ(std::numeric_limits<uint16_t>::max(), entry.get_field_length());
 }
 
-Schema
-make_multi_field_schema()
+DocBuilder::AddFieldsType
+make_multi_field_add_fields()
 {
-    Schema result;
-    result.addIndexField(Schema::IndexField("f0", DataType::STRING));
-    result.addIndexField(Schema::IndexField("f1", DataType::STRING));
-    result.addIndexField(Schema::IndexField("f2", DataType::STRING, CollectionType::ARRAY));
-    result.addIndexField(Schema::IndexField("f3", DataType::STRING, CollectionType::WEIGHTEDSET));
-    return result;
+    return [](auto& header) { using namespace document::config_builder;
+        header.addField("f0", DataType::T_STRING)
+            .addField("f1", DataType::T_STRING)
+            .addField("f2", Array(DataType::T_STRING))
+            .addField("f3", Wset(DataType::T_STRING));
+           };
 }
 
 struct FieldIndexCollectionTest : public ::testing::Test {
     Schema schema;
     FieldIndexCollection fic;
     FieldIndexCollectionTest()
-        : schema(make_multi_field_schema()),
+        : schema(make_all_index_schema(make_multi_field_add_fields())),
           fic(schema, MockFieldLengthInspector())
     {
     }
@@ -747,11 +765,10 @@ TEST_F(FieldIndexCollectionTest, require_that_multiple_insert_and_remove_works)
             for (uint32_t di = 0; di < (uint32_t) w; ++di) { // insert
                 inserter.add(di * 3);
             }
-            EXPECT_EQ((w - 'a' + 1u) + ('z' - 'a' +1u) * fi,
-                      inserter.getNumUniqueWords());
         }
     }
     EXPECT_TRUE(inserter.assertPostings());
+    EXPECT_EQ(('z' - 'a' +1u) * numFields, inserter.getNumUniqueWords());
     inserter.rewind();
     for (uint32_t fi = 0; fi < numFields; ++fi) {
         MyDrainRemoves drainRemoves(inserter.getFieldIndexes(), fi);
@@ -879,6 +896,7 @@ struct FieldIndexCollectionTypeTest : public ::testing::Test {
     }
     static Schema make_schema() {
         Schema result;
+        using DataType = search::index::schema::DataType;
         result.addIndexField(Schema::IndexField("normal", DataType::STRING));
         Schema::IndexField interleaved("interleaved", DataType::STRING);
         interleaved.set_interleaved_features(true);
@@ -906,20 +924,22 @@ VESPA_THREAD_STACK_TAG(push_executor)
 
 class InverterTest : public ::testing::Test {
 public:
+    DocBuilder _b;
     Schema _schema;
     FieldIndexCollection _fic;
-    DocBuilder _b;
     std::unique_ptr<ISequencedTaskExecutor> _invertThreads;
     std::unique_ptr<ISequencedTaskExecutor> _pushThreads;
+    DocumentInverterContext _inv_context;
     DocumentInverter _inv;
 
-    InverterTest(const Schema& schema)
-        : _schema(schema),
+    InverterTest(DocBuilder::AddFieldsType add_fields)
+        : _b(add_fields),
+          _schema(SchemaBuilder(_b).add_all_indexes().build()),
           _fic(_schema, MockFieldLengthInspector()),
-          _b(_schema),
           _invertThreads(SequencedTaskExecutor::create(invert_executor, 2)),
           _pushThreads(SequencedTaskExecutor::create(push_executor, 2)),
-          _inv(_schema, *_invertThreads, *_pushThreads, _fic)
+          _inv_context(_schema, *_invertThreads, *_pushThreads, _fic),
+          _inv(_inv_context)
     {
     }
     NormalFieldIndex::PostingList::Iterator find(const vespalib::stringref word, uint32_t field_id) const {
@@ -937,108 +957,69 @@ public:
 
 class BasicInverterTest : public InverterTest {
 public:
-    BasicInverterTest() : InverterTest(make_multi_field_schema()) {}
+    BasicInverterTest() : InverterTest(make_multi_field_add_fields()) {}
 };
 
 TEST_F(BasicInverterTest, require_that_inversion_is_working)
 {
     Document::UP doc;
+    StringFieldBuilder sfb(_b);
 
-    _b.startDocument("id:ns:searchdocument::10");
-    _b.startIndexField("f0").
-        addStr("a").addStr("b").addStr("c").addStr("d").
-        endField();
-    doc = _b.endDocument();
-    _inv.invertDocument(10, *doc);
-    _invertThreads->sync();
+    doc = _b.make_document("id:ns:searchdocument::10");
+    doc->setValue("f0", sfb.tokenize("a b c d").build());
+    _inv.invertDocument(10, *doc, {});
     myPushDocument(_inv);
-    _pushThreads->sync();
 
-    _b.startDocument("id:ns:searchdocument::20");
-    _b.startIndexField("f0").
-        addStr("a").addStr("a").addStr("b").addStr("c").addStr("d").
-        endField();
-    doc = _b.endDocument();
-    _inv.invertDocument(20, *doc);
-    _invertThreads->sync();
+    doc = _b.make_document("id:ns:searchdocument::20");
+    doc->setValue("f0", sfb.tokenize("a a b c d").build());
+    _inv.invertDocument(20, *doc, {});
     myPushDocument(_inv);
-    _pushThreads->sync();
 
-    _b.startDocument("id:ns:searchdocument::30");
-    _b.startIndexField("f0").
-        addStr("a").addStr("b").addStr("c").addStr("d").
-        addStr("e").addStr("f").
-        endField();
-    _b.startIndexField("f1").
-        addStr("\nw2").addStr("w").addStr("x").
-        addStr("\nw3").addStr("y").addStr("z").
-        endField();
-    _b.startIndexField("f2").
-        startElement(4).
-        addStr("w").addStr("x").
-        endElement().
-        startElement(5).
-        addStr("y").addStr("z").
-        endElement().
-        endField();
-    _b.startIndexField("f3").
-        startElement(6).
-        addStr("w").addStr("x").
-        endElement().
-        startElement(7).
-        addStr("y").addStr("z").
-        endElement().
-        endField();
-    doc = _b.endDocument();
-    _inv.invertDocument(30, *doc);
-    _invertThreads->sync();
+    doc = _b.make_document("id:ns:searchdocument::30");
+    doc->setValue("f0", sfb.tokenize("a b c d e f").build());
+    doc->setValue("f1", sfb.word("\nw2").tokenize(" w x ").
+                  word("\nw3").tokenize(" y z").build());
+    {
+        auto string_array = _b.make_array("f2");
+        string_array.add(sfb.tokenize("w x").build());
+        string_array.add(sfb.tokenize("y z").build());
+        doc->setValue("f2", string_array);
+    }
+    {
+        auto string_wset = _b.make_wset("f3");
+        string_wset.add(sfb.tokenize("w x").build(), 6);
+        string_wset.add(sfb.tokenize("y z").build(), 7);
+        doc->setValue("f3", string_wset);
+    }
+    _inv.invertDocument(30, *doc, {});
     myPushDocument(_inv);
-    _pushThreads->sync();
 
-    _b.startDocument("id:ns:searchdocument::40");
-    _b.startIndexField("f0").
-        addStr("a").addStr("a").addStr("b").addStr("c").addStr("a").
-        addStr("e").addStr("f").
-        endField();
-    doc = _b.endDocument();
-    _inv.invertDocument(40, *doc);
-    _invertThreads->sync();
+    doc = _b.make_document("id:ns:searchdocument::40");
+    doc->setValue("f0", sfb.tokenize("a a b c a e f").build());
+    _inv.invertDocument(40, *doc, {});
     myPushDocument(_inv);
-    _pushThreads->sync();
 
-    _b.startDocument("id:ns:searchdocument::999");
-    _b.startIndexField("f0").
-        addStr("this").addStr("is").addStr("_a_").addStr("test").
-        addStr("for").addStr("insertion").addStr("speed").addStr("with").
-        addStr("more").addStr("than").addStr("just").addStr("__a__").
-        addStr("few").addStr("words").addStr("present").addStr("in").
-        addStr("some").addStr("of").addStr("the").addStr("fields").
-        endField();
-    _b.startIndexField("f1").
-        addStr("the").addStr("other").addStr("field").addStr("also").
-        addStr("has").addStr("some").addStr("content").
-        endField();
-    _b.startIndexField("f2").
-        startElement(1).
-        addStr("strange").addStr("things").addStr("here").
-        addStr("has").addStr("some").addStr("content").
-        endElement().
-        endField();
-    _b.startIndexField("f3").
-        startElement(3).
-        addStr("not").addStr("a").addStr("weighty").addStr("argument").
-        endElement().
-        endField();
-    doc = _b.endDocument();
+    doc = _b.make_document("id:ns:searchdocument::999");
+    doc->setValue("f0", sfb.tokenize("this is ").word("_a_").
+                  tokenize(" test for insertion speed with more than just ").
+                  word("__a__").tokenize(" few words present in some of the fields").build());
+    doc->setValue("f1", sfb.tokenize("the other field also has some content").build());
+    {
+        auto string_array = _b.make_array("f2");
+        string_array.add(sfb.tokenize("strange things here has some content").build());
+        doc->setValue("f2", string_array);
+    }
+    {
+        auto string_wset = _b.make_wset("f3");
+        string_wset.add(sfb.tokenize("not a weighty argument").build(), 3);
+        doc->setValue("f3", string_wset);
+    }
     for (uint32_t docId = 10000; docId < 20000; ++docId) {
-        _inv.invertDocument(docId, *doc);
-        _invertThreads->sync();
+        _inv.invertDocument(docId, *doc, {});
         myPushDocument(_inv);
-        _pushThreads->sync();
     }
 
-    _pushThreads->sync();
-    DataStoreBase::MemStats beforeStats = getFeatureStoreMemStats(_fic);
+    auto beforeStats = getFeatureStoreMemStats(_fic);
     LOG(info,
         "Before feature compaction: allocElems=%zu, usedElems=%zu"
         ", deadElems=%zu, holdElems=%zu"
@@ -1058,7 +1039,7 @@ TEST_F(BasicInverterTest, require_that_inversion_is_working)
                          (fieldIndex->takeGenerationGuard()));
     }
     myCommit(_fic, *_pushThreads);
-    DataStoreBase::MemStats duringStats = getFeatureStoreMemStats(_fic);
+    auto duringStats = getFeatureStoreMemStats(_fic);
     LOG(info,
         "During feature compaction: allocElems=%zu, usedElems=%zu"
         ", deadElems=%zu, holdElems=%zu"
@@ -1073,7 +1054,7 @@ TEST_F(BasicInverterTest, require_that_inversion_is_working)
         duringStats._holdBuffers);
     guards.clear();
     myCommit(_fic, *_pushThreads);
-    DataStoreBase::MemStats afterStats = getFeatureStoreMemStats(_fic);
+    auto afterStats = getFeatureStoreMemStats(_fic);
     LOG(info,
         "After feature compaction: allocElems=%zu, usedElems=%zu"
         ", deadElems=%zu, holdElems=%zu"
@@ -1142,24 +1123,18 @@ TEST_F(BasicInverterTest, require_that_inversion_is_working)
 
 TEST_F(BasicInverterTest, require_that_inverter_handles_remove_via_document_remover)
 {
-    Document::UP doc;
+    StringFieldBuilder sfb(_b);
 
-    _b.startDocument("id:ns:searchdocument::1");
-    _b.startIndexField("f0").addStr("a").addStr("b").endField();
-    _b.startIndexField("f1").addStr("a").addStr("c").endField();
-    Document::UP doc1 = _b.endDocument();
-    _inv.invertDocument(1, *doc1.get());
-    _invertThreads->sync();
+    auto doc1 = _b.make_document("id:ns:searchdocument::1");
+    doc1->setValue("f0", sfb.tokenize("a b").build());
+    doc1->setValue("f1", sfb.tokenize("a c").build());
+    _inv.invertDocument(1, *doc1, {});
     myPushDocument(_inv);
-    _pushThreads->sync();
 
-    _b.startDocument("id:ns:searchdocument::2");
-    _b.startIndexField("f0").addStr("b").addStr("c").endField();
-    Document::UP doc2 = _b.endDocument();
-    _inv.invertDocument(2, *doc2.get());
-    _invertThreads->sync();
+    auto doc2 = _b.make_document("id:ns:searchdocument::2");
+    doc2->setValue("f0", sfb.tokenize("b c").build());
+    _inv.invertDocument(2, *doc2, {});
     myPushDocument(_inv);
-    _pushThreads->sync();
 
     EXPECT_TRUE(assertPostingList("[1]", find("a", 0)));
     EXPECT_TRUE(assertPostingList("[1,2]", find("b", 0)));
@@ -1167,8 +1142,7 @@ TEST_F(BasicInverterTest, require_that_inverter_handles_remove_via_document_remo
     EXPECT_TRUE(assertPostingList("[1]", find("a", 1)));
     EXPECT_TRUE(assertPostingList("[1]", find("c", 1)));
 
-    myremove(1, _inv, *_invertThreads);
-    _pushThreads->sync();
+    myremove(1, _inv);
 
     EXPECT_TRUE(assertPostingList("[]", find("a", 0)));
     EXPECT_TRUE(assertPostingList("[2]", find("b", 0)));
@@ -1177,151 +1151,38 @@ TEST_F(BasicInverterTest, require_that_inverter_handles_remove_via_document_remo
     EXPECT_TRUE(assertPostingList("[]", find("c", 1)));
 }
 
-Schema
-make_uri_schema()
+DocBuilder::AddFieldsType
+make_uri_add_fields()
 {
-    Schema result;
-    result.addUriIndexFields(Schema::IndexField("iu", DataType::STRING));
-    result.addUriIndexFields(Schema::IndexField("iau", DataType::STRING, CollectionType::ARRAY));
-    result.addUriIndexFields(Schema::IndexField("iwu", DataType::STRING, CollectionType::WEIGHTEDSET));
-    return result;
+    return [](auto& header) { using namespace document::config_builder;
+        header.addField("iu", DataType::T_URI)
+            .addField("iau", Array(DataType::T_URI))
+            .addField("iwu", Wset(DataType::T_URI));
+           };
 }
 
 class UriInverterTest : public InverterTest {
 public:
-    UriInverterTest() : InverterTest(make_uri_schema()) {}
+    UriInverterTest() : InverterTest(make_uri_add_fields()) {}
 };
 
 TEST_F(UriInverterTest, require_that_uri_indexing_is_working)
 {
     Document::UP doc;
+    StringFieldBuilder sfb(_b);
 
-    _b.startDocument("id:ns:searchdocument::10");
-    _b.startIndexField("iu").
-        startSubField("all").
-        addUrlTokenizedString("http://www.example.com:81/fluke?ab=2#4").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.example.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("81").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("4").
-        endSubField().
-        endField();
-    _b.startIndexField("iau").
-        startElement(1).
-        startSubField("all").
-        addUrlTokenizedString("http://www.example.com:82/fluke?ab=2#8").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.example.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("82").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("8").
-        endSubField().
-        endElement().
-        startElement(1).
-        startSubField("all").
-        addUrlTokenizedString("http://www.flickr.com:82/fluke?ab=2#9").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.flickr.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("82").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("9").
-        endSubField().
-        endElement().
-        endField();
-    _b.startIndexField("iwu").
-        startElement(4).
-        startSubField("all").
-        addUrlTokenizedString("http://www.example.com:83/fluke?ab=2#12").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.example.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("83").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("12").
-        endSubField().
-        endElement().
-        startElement(7).
-        startSubField("all").
-        addUrlTokenizedString("http://www.flickr.com:85/fluke?ab=2#13").
-        endSubField().
-        startSubField("scheme").
-        addUrlTokenizedString("http").
-        endSubField().
-        startSubField("host").
-        addUrlTokenizedString("www.flickr.com").
-        endSubField().
-        startSubField("port").
-        addUrlTokenizedString("85").
-        endSubField().
-        startSubField("path").
-        addUrlTokenizedString("/fluke").
-        endSubField().
-        startSubField("query").
-        addUrlTokenizedString("ab=2").
-        endSubField().
-        startSubField("fragment").
-        addUrlTokenizedString("13").
-        endSubField().
-        endElement().
-        endField();
-    doc = _b.endDocument();
-    _inv.invertDocument(10, *doc);
-    _invertThreads->sync();
+    doc = _b.make_document("id:ns:searchdocument::10");
+    doc->setValue("iu", StringFieldValue("http://www.example.com:81/fluke?ab=2#4"));
+    auto url_array = _b.make_array("iau");
+    url_array.add(StringFieldValue("http://www.example.com:82/fluke?ab=2#8"));
+    url_array.add(StringFieldValue("http://www.flickr.com:82/fluke?ab=2#9"));
+    doc->setValue("iau", url_array);
+    auto url_wset = _b.make_wset("iwu");
+    url_wset.add(StringFieldValue("http://www.example.com:83/fluke?ab=2#12"), 4);
+    url_wset.add(StringFieldValue("http://www.flickr.com:85/fluke?ab=2#13"), 7);
+    doc->setValue("iwu", url_wset);
+    _inv.invertDocument(10, *doc, {});
     myPushDocument(_inv);
-
-    _pushThreads->sync();
 
     SimpleMatchData match_data;
     {
@@ -1378,26 +1239,18 @@ TEST_F(UriInverterTest, require_that_uri_indexing_is_working)
 
 class CjkInverterTest : public InverterTest {
 public:
-    CjkInverterTest() : InverterTest(make_single_field_schema()) {}
+    CjkInverterTest() : InverterTest(make_single_add_fields()) {}
 };
 
 TEST_F(CjkInverterTest, require_that_cjk_indexing_is_working)
 {
     Document::UP doc;
+    StringFieldBuilder sfb(_b);
 
-    _b.startDocument("id:ns:searchdocument::10");
-    _b.startIndexField("f0").
-        addStr("我就是那个").
-        setAutoSpace(false).
-        addStr("大灰狼").
-        setAutoSpace(true).
-        endField();
-    doc = _b.endDocument();
-    _inv.invertDocument(10, *doc);
-    _invertThreads->sync();
+    doc = _b.make_document("id:ns:searchdocument::10");
+    doc->setValue("f0", sfb.word("我就是那个").word("大灰狼").build());
+    _inv.invertDocument(10, *doc, {});
     myPushDocument(_inv);
-
-    _pushThreads->sync();
 
     SimpleMatchData match_data;
     uint32_t fieldId = _schema.getIndexFieldId("f0");
@@ -1470,9 +1323,9 @@ struct RemoverTest : public FieldIndexCollectionTest {
         EXPECT_TRUE(assertPostingList(e3, find("b", 1)));
     }
     void remove(uint32_t docId) {
-        DocumentInverter inv(schema, *_invertThreads, *_pushThreads, fic);
-        myremove(docId, inv, *_invertThreads);
-        _pushThreads->sync();
+        DocumentInverterContext inv_context(schema, *_invertThreads, *_pushThreads, fic);
+        DocumentInverter inv(inv_context);
+        myremove(docId, inv);
         EXPECT_FALSE(fic.getFieldIndex(0u)->getDocumentRemover().
                      getStore().get(docId).valid());
     }

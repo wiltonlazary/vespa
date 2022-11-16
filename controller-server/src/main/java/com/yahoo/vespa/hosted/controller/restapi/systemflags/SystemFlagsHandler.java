@@ -1,20 +1,20 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.systemflags;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.JacksonJsonResponse;
 import com.yahoo.restapi.Path;
-import com.yahoo.vespa.athenz.identity.ServiceIdentityProvider;
+import com.yahoo.vespa.hosted.controller.api.integration.ControllerIdentityProvider;
 import com.yahoo.vespa.hosted.controller.api.integration.zone.ZoneRegistry;
 import com.yahoo.vespa.hosted.controller.api.systemflags.v1.FlagsTarget;
 import com.yahoo.vespa.hosted.controller.api.systemflags.v1.SystemFlagsDataArchive;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 
 import java.util.concurrent.Executor;
-import java.util.logging.Level;
 
 /**
  * Handler implementation for '/system-flags/v1', an API for controlling system-wide feature flags
@@ -22,7 +22,7 @@ import java.util.logging.Level;
  * @author bjorncs
  */
 @SuppressWarnings("unused") // Request handler listed in controller's services.xml
-public class SystemFlagsHandler extends LoggingRequestHandler {
+public class SystemFlagsHandler extends ThreadedHttpRequestHandler {
 
     private static final String API_PREFIX = "/system-flags/v1";
 
@@ -30,7 +30,7 @@ public class SystemFlagsHandler extends LoggingRequestHandler {
 
     @Inject
     public SystemFlagsHandler(ZoneRegistry zoneRegistry,
-                              ServiceIdentityProvider identityProvider,
+                              ControllerIdentityProvider identityProvider,
                               Executor executor) {
         super(executor);
         this.deployer = new SystemFlagsDeployer(identityProvider, zoneRegistry.system(), FlagsTarget.getAllTargetsInSystem(zoneRegistry, true));
@@ -38,12 +38,10 @@ public class SystemFlagsHandler extends LoggingRequestHandler {
 
     @Override
     public HttpResponse handle(HttpRequest request) {
-        switch (request.getMethod()) {
-            case PUT:
-                return put(request);
-            default:
-                return ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is unsupported");
-        }
+        return switch (request.getMethod()) {
+            case PUT -> put(request);
+            default -> ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is unsupported");
+        };
     }
 
     private HttpResponse put(HttpRequest request) {
@@ -63,9 +61,7 @@ public class SystemFlagsHandler extends LoggingRequestHandler {
             SystemFlagsDeployResult result = deployer.deployFlags(archive, dryRun);
             return new JacksonJsonResponse<>(200, result.toWire());
         } catch (Exception e) {
-            String errorMessage = "System flags deploy failed: " + e.getMessage();
-            log.log(Level.SEVERE, errorMessage, e);
-            return ErrorResponse.internalServerError(errorMessage);
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
 

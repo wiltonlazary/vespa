@@ -3,8 +3,9 @@ package com.yahoo.vespa.hosted.controller.notification;
 
 import com.yahoo.collections.Pair;
 import com.yahoo.config.provision.ClusterSpec;
+import com.yahoo.config.provision.TenantName;
 import com.yahoo.text.Text;
-import com.yahoo.vespa.curator.Lock;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.ClusterMetrics;
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
@@ -15,7 +16,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -32,14 +32,20 @@ public class NotificationsDb {
 
     private final Clock clock;
     private final CuratorDb curatorDb;
+    private final Notifier notifier;
 
     public NotificationsDb(Controller controller) {
-        this(controller.clock(), controller.curator());
+        this(controller.clock(), controller.curator(), controller.notifier());
     }
 
-    NotificationsDb(Clock clock, CuratorDb curatorDb) {
+    NotificationsDb(Clock clock, CuratorDb curatorDb, Notifier notifier) {
         this.clock = clock;
         this.curatorDb = curatorDb;
+        this.notifier = notifier;
+    }
+
+    public List<TenantName> listTenantsWithNotifications() {
+        return curatorDb.listTenantsWithNotifications();
     }
 
     public List<Notification> listNotifications(NotificationSource source, boolean productionOnly) {
@@ -57,18 +63,25 @@ public class NotificationsDb {
      * already exists, it'll be replaced by this one instead
      */
     public void setNotification(NotificationSource source, Type type, Level level, List<String> messages) {
-        try (Lock lock = curatorDb.lockNotifications(source.tenant())) {
-            List<Notification> notifications = curatorDb.readNotifications(source.tenant()).stream()
+        Optional<Notification> changed = Optional.empty();
+        try (Mutex lock = curatorDb.lockNotifications(source.tenant())) {
+            var existingNotifications = curatorDb.readNotifications(source.tenant());
+            List<Notification> notifications = existingNotifications.stream()
                     .filter(notification -> !source.equals(notification.source()) || type != notification.type())
                     .collect(Collectors.toCollection(ArrayList::new));
-            notifications.add(new Notification(clock.instant(), type, level, source, messages));
+            var notification = new Notification(clock.instant(), type, level, source, messages);
+            if (!notificationExists(notification, existingNotifications, false)) {
+                changed = Optional.of(notification);
+            }
+            notifications.add(notification);
             curatorDb.writeNotifications(source.tenant(), notifications);
         }
+        changed.ifPresent(notifier::dispatch);
     }
 
     /** Remove the notification with the given source and type */
     public void removeNotification(NotificationSource source, Type type) {
-        try (Lock lock = curatorDb.lockNotifications(source.tenant())) {
+        try (Mutex lock = curatorDb.lockNotifications(source.tenant())) {
             List<Notification> initial = curatorDb.readNotifications(source.tenant());
             List<Notification> filtered = initial.stream()
                     .filter(notification -> !source.equals(notification.source()) || type != notification.type())
@@ -80,7 +93,7 @@ public class NotificationsDb {
 
     /** Remove all notifications for this source or sources contained by this source */
     public void removeNotifications(NotificationSource source) {
-        try (Lock lock = curatorDb.lockNotifications(source.tenant())) {
+        try (Mutex lock = curatorDb.lockNotifications(source.tenant())) {
             if (source.application().isEmpty()) { // Source is tenant
                 curatorDb.deleteNotifications(source.tenant());
                 return;
@@ -105,6 +118,7 @@ public class NotificationsDb {
      */
     public void setDeploymentMetricsNotifications(DeploymentId deploymentId, List<ClusterMetrics> clusterMetrics) {
         Instant now = clock.instant();
+        List<Notification> changed = List.of();
         List<Notification> newNotifications = clusterMetrics.stream()
                 .flatMap(metric -> {
                     NotificationSource source = NotificationSource.from(deploymentId, ClusterSpec.Id.from(metric.getClusterId()));
@@ -115,7 +129,7 @@ public class NotificationsDb {
                 .collect(Collectors.toUnmodifiableList());
 
         NotificationSource deploymentSource = NotificationSource.from(deploymentId);
-        try (Lock lock = curatorDb.lockNotifications(deploymentSource.tenant())) {
+        try (Mutex lock = curatorDb.lockNotifications(deploymentSource.tenant())) {
             List<Notification> initial = curatorDb.readNotifications(deploymentSource.tenant());
             List<Notification> updated = Stream.concat(
                     initial.stream()
@@ -126,10 +140,20 @@ public class NotificationsDb {
                     // ... and add the new notifications for this deployment
                     newNotifications.stream())
                     .collect(Collectors.toUnmodifiableList());
-
-            if (!initial.equals(updated))
+            if (!initial.equals(updated)) {
                 curatorDb.writeNotifications(deploymentSource.tenant(), updated);
+            }
+            changed = newNotifications.stream().filter(n -> !notificationExists(n, initial, true)).collect(Collectors.toList());
         }
+        notifier.dispatch(changed, deploymentSource);
+    }
+
+    private boolean notificationExists(Notification notification, List<Notification> existing, boolean mindHigherLevel) {
+        // Be conservative for now, only dispatch notifications if they are from new source or with new type.
+        // the message content and level is ignored for now
+        return existing.stream().anyMatch(e ->
+                notification.source().contains(e.source()) && notification.type().equals(e.type()) &&
+                        (!mindHigherLevel || notification.level().ordinal() <= e.level().ordinal()));
     }
 
     private static Optional<Notification> createFeedBlockNotification(NotificationSource source, Instant at, ClusterMetrics metric) {
@@ -168,7 +192,7 @@ public class NotificationsDb {
             String resource, Optional<Double> util, Optional<Double> feedBlockLimit) {
         if (util.isEmpty() || feedBlockLimit.isEmpty()) return Optional.empty();
         double utilRelativeToLimit = util.get() / feedBlockLimit.get();
-        if (utilRelativeToLimit < 0.9) return Optional.empty();
+        if (utilRelativeToLimit < 0.95) return Optional.empty();
 
         String message = Text.format("%s (usage: %.1f%%, feed block limit: %.1f%%)",
                 resource, 100 * util.get(), 100 * feedBlockLimit.get());

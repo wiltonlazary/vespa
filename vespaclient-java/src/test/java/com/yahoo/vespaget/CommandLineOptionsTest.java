@@ -2,11 +2,10 @@
 package com.yahoo.vespaget;
 
 import com.yahoo.document.fieldset.AllFields;
+import com.yahoo.document.fieldset.DocumentOnly;
 import com.yahoo.document.fieldset.DocIdOnly;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -16,9 +15,7 @@ import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.util.Iterator;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Test class for {@link CommandLineOptions}
@@ -36,9 +33,6 @@ public class CommandLineOptionsTest {
         }
     };
 
-    @Rule
-    public final ExpectedException exception = ExpectedException.none();
-
     private ClientParameters getParsedOptions(InputStream in, String... args) {
         CommandLineOptions options = new CommandLineOptions(in);
         return options.parseCommandLineArguments(args);
@@ -49,12 +43,12 @@ public class CommandLineOptionsTest {
     }
 
     @Test
-    public void testDefaultOptions() {
+    void testDefaultOptions() {
         ClientParameters params = getParsedOptions();
         assertFalse(params.help);
         assertFalse(params.documentIds.hasNext());
         assertFalse(params.printIdsOnly);
-        assertEquals(AllFields.NAME, params.fieldSet);
+        assertEquals(DocumentOnly.NAME, params.fieldSet);
         assertEquals("default-get", params.route);
         assertTrue(params.cluster.isEmpty());
         assertEquals("client", params.configId);
@@ -63,11 +57,10 @@ public class CommandLineOptionsTest {
         assertFalse(params.noRetry);
         assertEquals(0, params.traceLevel);
         assertEquals(DocumentProtocol.Priority.NORMAL_2, params.priority);
-        assertTrue(params.loadTypeName.isEmpty());
     }
 
     @Test
-    public void testValidOptions() {
+    void testValidOptions() {
         ClientParameters params = getParsedOptions(
                 "--fieldset", "[fieldset]",
                 "--route", "dummyroute",
@@ -77,7 +70,6 @@ public class CommandLineOptionsTest {
                 "--noretry",
                 "--trace", "1",
                 "--priority", Integer.toString(DocumentProtocol.Priority.HIGH_3.getValue()),
-                "--loadtype", "dummyloadtype",
                 "id:1", "id:2"
         );
 
@@ -89,7 +81,6 @@ public class CommandLineOptionsTest {
         assertTrue(params.noRetry);
         assertEquals(1, params.traceLevel);
         assertEquals(DocumentProtocol.Priority.HIGH_3, params.priority);
-        assertEquals("dummyloadtype", params.loadTypeName);
 
         Iterator<String> documentsIds = params.documentIds;
         assertEquals("id:1", documentsIds.next());
@@ -98,73 +89,78 @@ public class CommandLineOptionsTest {
     }
 
     @Test
-    public void testInvalidCombination3() {
-        exception.expect(IllegalArgumentException.class);
-        exception.expectMessage("Field set option can not be used in combination with print ids option.");
-        getParsedOptions("--printids", "--fieldset", AllFields.NAME);
+    void testInvalidCombination3() {
+        Throwable exception = assertThrows(IllegalArgumentException.class, () -> {
+            getParsedOptions("--printids", "--fieldset", AllFields.NAME);
+        });
+        assertTrue(exception.getMessage().contains("Field set option can not be used in combination with print ids option."));
     }
 
     @Test
-    public void testInvalidCombination4() {
-        exception.expect(IllegalArgumentException.class);
-        exception.expectMessage("Cluster and route options are mutually exclusive.");
-        getParsedOptions("--route", "dummyroute", "--cluster", "dummycluster");
+    void testInvalidCombination4() {
+        Throwable exception = assertThrows(IllegalArgumentException.class, () -> {
+            getParsedOptions("--route", "dummyroute", "--cluster", "dummycluster");
+        });
+        assertTrue(exception.getMessage().contains("Cluster and route options are mutually exclusive."));
     }
 
     @Test
-    public void testInvalidPriority() {
-        exception.expect(IllegalArgumentException.class);
-        exception.expectMessage("Invalid priority: 16");
-        getParsedOptions("--priority", "16");
+    void testInvalidPriority() {
+        Throwable exception = assertThrows(IllegalArgumentException.class, () -> {
+            getParsedOptions("--priority", "16");
+        });
+        assertTrue(exception.getMessage().contains("Invalid priority: 16"));
     }
 
     @Test
-    public void TestHighestPriority() {
+    void TestHighestPriority() {
         ClientParameters params = getParsedOptions("--priority", "HIGHEST");
         assertEquals(DocumentProtocol.Priority.HIGHEST, params.priority);
     }
 
     @Test
-    public void TestHigh1PriorityAsNumber() {
+    void TestHigh1PriorityAsNumber() {
         ClientParameters params = getParsedOptions("--priority", "2");
         assertEquals(DocumentProtocol.Priority.HIGH_1, params.priority);
     }
 
     @Test
-    public void testInvalidTraceLevel1() {
-        exception.expect(IllegalArgumentException.class);
-        exception.expectMessage("Invalid tracelevel: -1");
-        getParsedOptions("--trace", "-1");
+    void testInvalidTraceLevel1() {
+        Throwable exception = assertThrows(IllegalArgumentException.class, () -> {
+            getParsedOptions("--trace", "-1");
+        });
+        assertTrue(exception.getMessage().contains("Invalid tracelevel: -1"));
     }
 
     @Test
-    public void testInvalidTraceLevel2() {
-        exception.expect(IllegalArgumentException.class);
-        exception.expectMessage("Invalid tracelevel: 10");
-        getParsedOptions("--trace", "10");
+    void testInvalidTraceLevel2() {
+        Throwable exception = assertThrows(IllegalArgumentException.class, () -> {
+            getParsedOptions("--trace", "10");
+        });
+        assertTrue(exception.getMessage().contains("Invalid tracelevel: 10"));
     }
 
     @Test
-    public void testPrintids() {
+    void testPrintids() {
         ClientParameters params = getParsedOptions("--printids");
         assertEquals(DocIdOnly.NAME, params.fieldSet);
     }
 
     @Test
-    public void testCluster() {
+    void testCluster() {
         ClientParameters params = getParsedOptions("--cluster", "dummycluster");
         assertEquals("dummycluster", params.cluster);
         assertTrue(params.route.isEmpty());
     }
 
     @Test
-    public void testHelp() {
+    void testHelp() {
         ClientParameters params = getParsedOptions("--help");
         assertTrue(params.help);
     }
 
     @Test
-    public void testDocumentIdsFromInputStream() throws UnsupportedEncodingException {
+    void testDocumentIdsFromInputStream() throws UnsupportedEncodingException {
         InputStream in = new ByteArrayInputStream("id:1 id:2 id:3".getBytes("UTF-8"));
         ClientParameters params = getParsedOptions(in, "");
 
@@ -176,7 +172,7 @@ public class CommandLineOptionsTest {
     }
 
     @Test
-    public void testPrintHelp() {
+    void testPrintHelp() {
         ByteArrayOutputStream outContent = new ByteArrayOutputStream();
         PrintStream oldOut = System.out;
         System.setOut(new PrintStream(outContent));

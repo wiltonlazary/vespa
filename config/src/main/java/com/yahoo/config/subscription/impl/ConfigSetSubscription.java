@@ -4,7 +4,6 @@ package com.yahoo.config.subscription.impl;
 import com.yahoo.config.ConfigInstance;
 import com.yahoo.config.subscription.ConfigSet;
 import com.yahoo.config.subscription.ConfigSource;
-import com.yahoo.config.subscription.ConfigSubscriber;
 import com.yahoo.vespa.config.ConfigKey;
 
 import java.lang.reflect.Constructor;
@@ -19,34 +18,41 @@ public class ConfigSetSubscription<T extends ConfigInstance> extends ConfigSubsc
     private final ConfigSet set;
     private final ConfigKey<T> subKey;
 
-    ConfigSetSubscription(ConfigKey<T> key, ConfigSubscriber subscriber, ConfigSource cset) {
-        super(key, subscriber);
-        if (!(cset instanceof ConfigSet)) throw new IllegalArgumentException("Source is not a ConfigSet: " + cset);
-        this.set = (ConfigSet) cset;
-        subKey = new ConfigKey<>(configClass, key.getConfigId());
-        if (!set.contains(subKey)) {
+    ConfigSetSubscription(ConfigKey<T> key, ConfigSet cset) {
+        super(key);
+        this.set = cset;
+        this.subKey = new ConfigKey<>(configClass, key.getConfigId());
+        if ( ! set.contains(subKey)) {
             throw new IllegalArgumentException("The given ConfigSet " + set + " does not contain a config for " + subKey);
         }
         setGeneration(0L);
     }
 
+    private boolean hasConfigChanged() {
+        T myInstance = getNewInstance();
+        ConfigState<T> configState = getConfigState();
+        // User forced reload
+        if (checkReloaded()) {
+            setConfigIfChanged(myInstance);
+            return true;
+        }
+        if (!myInstance.equals(configState.getConfig())) {
+            setConfigIncGen(myInstance);
+            return true;
+        }
+        return false;
+    }
+
     @Override
     public boolean nextConfig(long timeout) {
-        long end = System.currentTimeMillis() + timeout;
+        if (hasConfigChanged()) return true;
+        if (timeout <= 0) return false;
+
+        long end = System.nanoTime() + timeout * 1_000_000;
         do {
-            T myInstance = getNewInstance();
-            ConfigState<T> configState = getConfigState();
-            // User forced reload
-            if (checkReloaded()) {
-                setConfigIfChanged(myInstance);
-                return true;
-            }
-            if (!myInstance.equals(configState.getConfig())) {
-                setConfigIncGen(myInstance);
-                return true;
-            }
             sleep();
-        } while (System.currentTimeMillis() < end);
+            if (hasConfigChanged()) return true;
+        } while (System.nanoTime() < end);
         return false;
     }
 

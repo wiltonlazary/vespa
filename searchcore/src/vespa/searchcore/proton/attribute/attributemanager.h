@@ -31,26 +31,30 @@ class ShrinkLidSpaceFlushTarget;
 class AttributeManager : public proton::IAttributeManager
 {
 private:
-    typedef search::attribute::Config Config;
-    typedef search::SerialNum SerialNum;
-    typedef AttributeCollectionSpec Spec;
-    using FlushableAttributeSP = std::shared_ptr<FlushableAttribute>;
-    using ShrinkerSP = std::shared_ptr<ShrinkLidSpaceFlushTarget>;
-    using IFlushTargetSP = std::shared_ptr<searchcorespi::IFlushTarget>;
-    using AttributeVectorSP = std::shared_ptr<search::AttributeVector>;
     using AttributeReadGuard = search::attribute::AttributeReadGuard;
+    using AttributeVectorSP = std::shared_ptr<search::AttributeVector>;
+    using Config = search::attribute::Config;
+    using FlushableAttributeSP = std::shared_ptr<FlushableAttribute>;
+    using IFlushTargetSP = std::shared_ptr<searchcorespi::IFlushTarget>;
+    using SerialNum = search::SerialNum;
+    using ShrinkerSP = std::shared_ptr<ShrinkLidSpaceFlushTarget>;
+    using Spec = AttributeCollectionSpec;
 
     class AttributeWrap
     {
     private:
         AttributeVectorSP _attr;
         bool _isExtra;
-        AttributeWrap(const AttributeVectorSP & a, bool isExtra_);
+        AttributeWrap(AttributeVectorSP a, bool isExtra_);
     public:
         AttributeWrap();
+        AttributeWrap(const AttributeWrap &) = default;
+        AttributeWrap & operator=(const AttributeWrap &) = delete;
+        AttributeWrap(AttributeWrap &&) noexcept = default;
+        AttributeWrap & operator=(AttributeWrap &&) noexcept = default;
         ~AttributeWrap();
-        static AttributeWrap extraAttribute(const AttributeVectorSP &a);
-        static AttributeWrap normalAttribute(const AttributeVectorSP &a);
+        static AttributeWrap extraAttribute(AttributeVectorSP a);
+        static AttributeWrap normalAttribute(AttributeVectorSP a);
         bool isExtra() const { return _isExtra; }
         const AttributeVectorSP & getAttribute() const { return _attr; }
     };
@@ -67,8 +71,8 @@ private:
         const ShrinkerSP &getShrinker() const { return _shrinker; }
     };
 
-    typedef vespalib::hash_map<vespalib::string, AttributeWrap> AttributeMap;
-    typedef vespalib::hash_map<vespalib::string, FlushableWrap> FlushableMap;
+    using AttributeMap = vespalib::hash_map<vespalib::string, AttributeWrap>;
+    using FlushableMap = vespalib::hash_map<vespalib::string, FlushableWrap>;
 
     AttributeMap _attributes;
     FlushableMap _flushables;
@@ -80,50 +84,44 @@ private:
     IAttributeFactory::SP _factory;
     std::shared_ptr<search::attribute::Interlock> _interlock;
     vespalib::ISequencedTaskExecutor &_attributeFieldWriter;
-    vespalib::ThreadExecutor& _shared_executor;
+    vespalib::Executor& _shared_executor;
     HwInfo _hwInfo;
     std::unique_ptr<ImportedAttributesRepo> _importedAttributes;
 
-    AttributeVectorSP internalAddAttribute(const AttributeSpec &spec, uint64_t serialNum, const IAttributeFactory &factory);
-
-    void addAttribute(const AttributeWrap &attribute, const ShrinkerSP &shrinker);
-
+    AttributeVectorSP internalAddAttribute(AttributeSpec && spec, uint64_t serialNum, const IAttributeFactory &factory);
+    void addAttribute(AttributeWrap attribute, const ShrinkerSP &shrinker);
     AttributeVectorSP findAttribute(const vespalib::string &name) const;
-
     const FlushableWrap *findFlushable(const vespalib::string &name) const;
-
-    void transferExistingAttributes(const AttributeManager &currMgr, const Spec &newSpec, Spec::AttributeList &toBeAdded);
-
-    void addNewAttributes(const Spec &newSpec, const Spec::AttributeList &toBeAdded,
-                          IAttributeInitializerRegistry &initializerRegistry);
-
+    Spec::AttributeList transferExistingAttributes(const AttributeManager &currMgr, Spec::AttributeList && newAttributes);
+    void addNewAttributes(const Spec &newSpec, Spec::AttributeList && toBeAdded, IAttributeInitializerRegistry &initializerRegistry);
     void transferExtraAttributes(const AttributeManager &currMgr);
-
 public:
-    typedef std::shared_ptr<AttributeManager> SP;
+    using SP = std::shared_ptr<AttributeManager>;
 
     AttributeManager(const vespalib::string &baseDir,
                      const vespalib::string &documentSubDbName,
                      const search::TuneFileAttributes &tuneFileAttributes,
                      const search::common::FileHeaderContext & fileHeaderContext,
+                     std::shared_ptr<search::attribute::Interlock> interlock,
                      vespalib::ISequencedTaskExecutor &attributeFieldWriter,
-                     vespalib::ThreadExecutor& shared_executor,
+                     vespalib::Executor& shared_executor,
                      const HwInfo &hwInfo);
 
     AttributeManager(const vespalib::string &baseDir,
                      const vespalib::string &documentSubDbName,
                      const search::TuneFileAttributes &tuneFileAttributes,
                      const search::common::FileHeaderContext & fileHeaderContext,
+                     std::shared_ptr<search::attribute::Interlock> interlock,
                      vespalib::ISequencedTaskExecutor &attributeFieldWriter,
-                     vespalib::ThreadExecutor& shared_executor,
-                     const IAttributeFactory::SP &factory,
+                     vespalib::Executor& shared_executor,
+                     IAttributeFactory::SP factory,
                      const HwInfo &hwInfo);
 
-    AttributeManager(const AttributeManager &currMgr, const Spec &newSpec,
+    AttributeManager(const AttributeManager &currMgr, Spec && newSpec,
                      IAttributeInitializerRegistry &initializerRegistry);
     ~AttributeManager() override;
 
-    AttributeVectorSP addAttribute(const AttributeSpec &spec, uint64_t serialNum);
+    AttributeVectorSP addAttribute(AttributeSpec && spec, uint64_t serialNum);
 
     void addInitializedAttributes(const std::vector<AttributeInitializerResult> &attributes);
 
@@ -153,7 +151,7 @@ public:
 
     // Implements proton::IAttributeManager
 
-    proton::IAttributeManager::SP create(const Spec &spec) const override;
+    proton::IAttributeManager::SP create(Spec && spec) const override;
 
     std::vector<IFlushTargetSP> getFlushTargets() const override;
 
@@ -171,13 +169,14 @@ public:
 
     vespalib::ISequencedTaskExecutor &getAttributeFieldWriter() const override;
 
-    vespalib::ThreadExecutor& get_shared_executor() const override;
+    vespalib::Executor& get_shared_executor() const override { return _shared_executor; }
 
     search::AttributeVector *getWritableAttribute(const vespalib::string &name) const override;
 
     const std::vector<search::AttributeVector *> &getWritableAttributes() const override;
 
     void asyncForEachAttribute(std::shared_ptr<IConstAttributeFunctor> func) const override;
+    void asyncForEachAttribute(std::shared_ptr<IAttributeFunctor> func, OnDone onDone) const override;
     void asyncForAttribute(const vespalib::string &name, std::unique_ptr<IAttributeFunctor> func) const override;
 
     ExclusiveAttributeReadAccessor::UP getExclusiveReadAccessor(const vespalib::string &name) const override;

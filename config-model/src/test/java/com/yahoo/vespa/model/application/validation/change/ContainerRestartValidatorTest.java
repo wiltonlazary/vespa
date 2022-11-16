@@ -2,20 +2,17 @@
 package com.yahoo.vespa.model.application.validation.change;
 
 import com.yahoo.config.model.api.ConfigChangeAction;
-import com.yahoo.container.QrConfig;
 import com.yahoo.vespa.defaults.Defaults;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithMockPkg;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author bjorncs
@@ -23,7 +20,7 @@ import static org.junit.Assert.assertTrue;
 public class ContainerRestartValidatorTest {
 
     @Test
-    public void validator_returns_action_for_containers_with_restart_on_deploy_enabled() {
+    void validator_returns_action_for_containers_with_restart_on_deploy_enabled() {
         VespaModel current = createModel(true);
         VespaModel next = createModel(true);
         List<ConfigChangeAction> result = validateModel(current, next);
@@ -31,7 +28,7 @@ public class ContainerRestartValidatorTest {
     }
 
     @Test
-    public void validator_returns_empty_list_for_containers_with_restart_on_deploy_disabled() {
+    void validator_returns_empty_list_for_containers_with_restart_on_deploy_disabled() {
         VespaModel current = createModel(false);
         VespaModel next = createModel(false);
         List<ConfigChangeAction> result = validateModel(current, next);
@@ -39,7 +36,7 @@ public class ContainerRestartValidatorTest {
     }
 
     @Test
-    public void validator_returns_empty_list_for_containers_with_restart_on_deploy_disabled_where_previously_enabled() {
+    void validator_returns_empty_list_for_containers_with_restart_on_deploy_disabled_where_previously_enabled() {
         VespaModel current = createModel(true);
         VespaModel next = createModel(false);
         List<ConfigChangeAction> result = validateModel(current, next);
@@ -47,7 +44,7 @@ public class ContainerRestartValidatorTest {
     }
 
     @Test
-    public void restart_on_deploy_is_propagated_to_cluster() {
+    void restart_on_deploy_is_propagated_to_cluster() {
         VespaModel model1 = createModel(false);
         assertFalse(model1.getContainerClusters().get("cluster1").getDeferChangesUntilRestart());
         assertFalse(model1.getContainerClusters().get("cluster2").getDeferChangesUntilRestart());

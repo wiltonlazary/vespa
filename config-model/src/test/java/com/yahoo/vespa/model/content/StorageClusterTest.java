@@ -21,13 +21,10 @@ import static com.yahoo.config.model.test.TestUtil.joinLines;
 import com.yahoo.vespa.model.content.cluster.ContentCluster;
 import com.yahoo.vespa.model.content.storagecluster.StorageCluster;
 import com.yahoo.vespa.model.content.utils.ContentClusterUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class StorageClusterTest {
 
@@ -83,8 +80,9 @@ public class StorageClusterTest {
                 group(),
                 "</content>");
     }
+
     @Test
-    public void testBasics() {
+    void testBasics() {
         StorageCluster storage = parse(cluster("foofighters", ""));
 
         assertEquals(1, storage.getChildren().size());
@@ -95,45 +93,38 @@ public class StorageClusterTest {
         assertEquals("foofighters", config.cluster_name());
         assertEquals(4, config.content_node_bucket_db_stripe_bits());
     }
+
     @Test
-    public void testCommunicationManagerDefaults() {
+    void testCommunicationManagerDefaults() {
         StorageCluster storage = parse(cluster("foofighters", ""));
         StorCommunicationmanagerConfig.Builder builder = new StorCommunicationmanagerConfig.Builder();
         storage.getChildren().get("0").getConfig(builder);
         StorCommunicationmanagerConfig config = new StorCommunicationmanagerConfig(builder);
-        assertFalse(config.mbus().dispatch_on_encode());
-        assertFalse(config.mbus().dispatch_on_decode());
-        assertEquals(4, config.mbus().num_threads());
-        assertEquals(StorCommunicationmanagerConfig.Mbus.Optimize_for.LATENCY, config.mbus().optimize_for());
-        assertFalse(config.skip_thread());
-        assertFalse(config.mbus().skip_request_thread());
-        assertFalse(config.mbus().skip_reply_thread());
+        assertEquals(1, config.mbus().num_network_threads());
     }
 
     @Test
-    public void testMergeDefaults() {
+    void testMergeDefaults() {
         StorServerConfig.Builder builder = new StorServerConfig.Builder();
         parse(cluster("foofighters", "")).getConfig(builder);
 
         StorServerConfig config = new StorServerConfig(builder);
         assertEquals(16, config.max_merges_per_node());
-        assertEquals(1024, config.max_merge_queue_size());
-        assertFalse(config.disable_queue_limits_for_chained_merges());
+        assertEquals(100, config.max_merge_queue_size());
+        assertTrue(config.disable_queue_limits_for_chained_merges());
     }
 
     @Test
-    public void testMerges() {
+    void testMerges() {
         StorServerConfig.Builder builder = new StorServerConfig.Builder();
         parse(cluster("foofighters", joinLines(
                 "<tuning>",
                 "  <merges max-per-node=\"1K\" max-queue-size=\"10K\"/>",
-                "</tuning>")),
-                new TestProperties().setMaxMergeQueueSize(1919).setMaxConcurrentMergesPerNode(37)
-        ).getConfig(builder);
+                "</tuning>"))).getConfig(builder);
 
         StorServerConfig config = new StorServerConfig(builder);
         assertEquals(1024, config.max_merges_per_node());
-        assertEquals(1024*10, config.max_merge_queue_size());
+        assertEquals(1024 * 10, config.max_merge_queue_size());
     }
 
     private StorServerConfig configFromProperties(TestProperties properties) {
@@ -142,32 +133,66 @@ public class StorageClusterTest {
         return new StorServerConfig(builder);
     }
 
-    @Test
-    public void testMergeFeatureFlags() {
-        var config = configFromProperties(new TestProperties().setMaxMergeQueueSize(1919).setMaxConcurrentMergesPerNode(37));
-        assertEquals(37, config.max_merges_per_node());
-        assertEquals(1919, config.max_merge_queue_size());
+    private StorCommunicationmanagerConfig communicationmanagerConfigFromProperties(TestProperties properties) {
+        StorCommunicationmanagerConfig.Builder builder = new StorCommunicationmanagerConfig.Builder();
+        parse(cluster("foofighters", ""), properties).getChildren().values().iterator().next().getConfig(builder);
+        return new StorCommunicationmanagerConfig(builder);
+    }
+
+    private StorFilestorConfig filestorConfigFromProducer(StorFilestorConfig.Producer producer) {
+        var builder = new StorFilestorConfig.Builder();
+        producer.getConfig(builder);
+        return new StorFilestorConfig(builder);
     }
 
     @Test
-    public void ignore_merge_queue_limit_can_be_controlled_by_feature_flag() {
-        var config = configFromProperties(new TestProperties().setIgnoreMergeQueueLimit(true));
-        assertTrue(config.disable_queue_limits_for_chained_merges());
-
-        config = configFromProperties(new TestProperties().setIgnoreMergeQueueLimit(false));
-        assertFalse(config.disable_queue_limits_for_chained_merges());
+    void verifyDefaultMbusConfig() {
+        var confg = communicationmanagerConfigFromProperties(new TestProperties());
+        assertEquals(1, confg.mbus().num_network_threads());
+        assertEquals(1, confg.mbus().num_rpc_targets());
+        assertEquals(1, confg.mbus().events_before_wakeup());
+        assertEquals(1, confg.rpc().num_targets_per_node());
+        assertEquals(1, confg.rpc().events_before_wakeup());
     }
 
     @Test
-    public void testVisitors() {
+    void verifyDefaultMbusConfigControl() {
+        var confg = communicationmanagerConfigFromProperties(new TestProperties()
+                .setMbusNetworkThreads(7)
+                .setRpcNumTargets(11)
+                .setRpcEventsBeforeWakeup(12)
+                .setMbusCppRpcNumTargets(8)
+                .setMbusCppEventsBeforeWakeup(9));
+        assertEquals(7, confg.mbus().num_network_threads());
+        assertEquals(8, confg.mbus().num_rpc_targets());
+        assertEquals(9, confg.mbus().events_before_wakeup());
+        assertEquals(11, confg.rpc().num_targets_per_node());
+        assertEquals(12, confg.rpc().events_before_wakeup());
+    }
+
+    @Test
+    void testMergeFeatureFlags() {
+        var config = configFromProperties(new TestProperties());
+        assertEquals(16, config.max_merges_per_node());
+        assertEquals(100, config.max_merge_queue_size());
+    }
+
+    @Test
+    void merge_throttling_policy_config_defaults_to_static() {
+        var config = configFromProperties(new TestProperties());
+        assertEquals(StorServerConfig.Merge_throttling_policy.Type.STATIC, config.merge_throttling_policy().type());
+    }
+
+    @Test
+    void testVisitors() {
         StorVisitorConfig.Builder builder = new StorVisitorConfig.Builder();
         parse(cluster("bees",
                 joinLines(
-                "<tuning>",
-                "  <visitors thread-count=\"7\" max-queue-size=\"1000\">",
-                "    <max-concurrent fixed=\"42\" variable=\"100\"/>",
-                "  </visitors>",
-                "</tuning>"))
+                        "<tuning>",
+                        "  <visitors thread-count=\"7\" max-queue-size=\"1000\">",
+                        "    <max-concurrent fixed=\"42\" variable=\"100\"/>",
+                        "  </visitors>",
+                        "</tuning>"))
         ).getConfig(builder);
 
         StorVisitorConfig config = new StorVisitorConfig(builder);
@@ -178,9 +203,9 @@ public class StorageClusterTest {
     }
 
     @Test
-    public void testPersistenceThreads() {
+    void testPersistenceThreads() {
 
-        StorageCluster stc = parse(cluster("bees",joinLines(
+        StorageCluster stc = parse(cluster("bees", joinLines(
                 "<tuning>",
                 "  <persistence-threads count=\"7\"/>",
                 "</tuning>")),
@@ -188,9 +213,7 @@ public class StorageClusterTest {
         );
 
         {
-            StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-            stc.getConfig(builder);
-            StorFilestorConfig config = new StorFilestorConfig(builder);
+            var config = filestorConfigFromProducer(stc);
 
             assertEquals(7, config.num_threads());
             assertFalse(config.enable_multibit_split_optimalization());
@@ -199,32 +222,28 @@ public class StorageClusterTest {
         {
             assertEquals(1, stc.getChildren().size());
             StorageNode sn = stc.getChildren().values().iterator().next();
-            StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-            sn.getConfig(builder);
-            StorFilestorConfig config = new StorFilestorConfig(builder);
+            var config = filestorConfigFromProducer(sn);
             assertEquals(7, config.num_threads());
         }
     }
 
     @Test
-    public void testResponseThreads() {
+    void testResponseThreads() {
 
-        StorageCluster stc = parse(cluster("bees",joinLines(
+        StorageCluster stc = parse(cluster("bees", joinLines(
                 "<tuning>",
                 "  <persistence-threads count=\"7\"/>",
                 "</tuning>")),
                 new Flavor(new FlavorsConfig.Flavor.Builder().name("test-flavor").minCpuCores(9).build())
         );
-        StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-        stc.getConfig(builder);
-        StorFilestorConfig config = new StorFilestorConfig(builder);
+        var config = filestorConfigFromProducer(stc);
         assertEquals(2, config.num_response_threads());
         assertEquals(StorFilestorConfig.Response_sequencer_type.ADAPTIVE, config.response_sequencer_type());
         assertEquals(7, config.num_threads());
     }
 
     @Test
-    public void testPersistenceThreadsOld() {
+    void testPersistenceThreadsOld() {
 
         StorageCluster stc = parse(cluster("bees", joinLines(
                 "<tuning>",
@@ -238,9 +257,7 @@ public class StorageClusterTest {
         );
 
         {
-            StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-            stc.getConfig(builder);
-            StorFilestorConfig config = new StorFilestorConfig(builder);
+            var config = filestorConfigFromProducer(stc);
 
             assertEquals(4, config.num_threads());
             assertFalse(config.enable_multibit_split_optimalization());
@@ -248,31 +265,25 @@ public class StorageClusterTest {
         {
             assertEquals(1, stc.getChildren().size());
             StorageNode sn = stc.getChildren().values().iterator().next();
-            StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-            sn.getConfig(builder);
-            StorFilestorConfig config = new StorFilestorConfig(builder);
+            var config = filestorConfigFromProducer(sn);
             assertEquals(4, config.num_threads());
         }
     }
 
     @Test
-    public void testNoPersistenceThreads() {
+    void testNoPersistenceThreads() {
         StorageCluster stc = parse(cluster("bees", ""),
                 new Flavor(new FlavorsConfig.Flavor.Builder().name("test-flavor").minCpuCores(9).build())
         );
 
         {
-            StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-            stc.getConfig(builder);
-            StorFilestorConfig config = new StorFilestorConfig(builder);
+            var config = filestorConfigFromProducer(stc);
             assertEquals(8, config.num_threads());
         }
         {
             assertEquals(1, stc.getChildren().size());
             StorageNode sn = stc.getChildren().values().iterator().next();
-            StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-            sn.getConfig(builder);
-            StorFilestorConfig config = new StorFilestorConfig(builder);
+            var config = filestorConfigFromProducer(sn);
             assertEquals(9, config.num_threads());
         }
     }
@@ -284,28 +295,37 @@ public class StorageClusterTest {
     }
 
     @Test
-    public void testFeatureFlagControlOfResponseSequencer() {
-        StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-        simpleCluster(new TestProperties().setResponseNumThreads(13).setResponseSequencerType("THROUGHPUT")).getConfig(builder);
-        StorFilestorConfig config = new StorFilestorConfig(builder);
+    void testFeatureFlagControlOfResponseSequencer() {
+        var config = filestorConfigFromProducer(simpleCluster(new TestProperties().setResponseNumThreads(13).setResponseSequencerType("THROUGHPUT")));
         assertEquals(13, config.num_response_threads());
         assertEquals(StorFilestorConfig.Response_sequencer_type.THROUGHPUT, config.response_sequencer_type());
     }
 
     private void verifyAsyncMessageHandlingOnSchedule(boolean expected, boolean value) {
-        StorFilestorConfig.Builder builder = new StorFilestorConfig.Builder();
-        simpleCluster(new TestProperties().setAsyncMessageHandlingOnSchedule(value)).getConfig(builder);
-        StorFilestorConfig config = new StorFilestorConfig(builder);
+        var config = filestorConfigFromProducer(simpleCluster(new TestProperties().setAsyncMessageHandlingOnSchedule(value)));
         assertEquals(expected, config.use_async_message_handling_on_schedule());
     }
+
     @Test
-    public void testFeatureFlagControlOfAsyncMessageHandlingOnSchedule() {
+    void testFeatureFlagControlOfAsyncMessageHandlingOnSchedule() {
         verifyAsyncMessageHandlingOnSchedule(false, false);
         verifyAsyncMessageHandlingOnSchedule(true, true);
     }
 
     @Test
-    public void integrity_checker_explicitly_disabled_when_not_running_with_vds_provider() {
+    void persistence_dynamic_throttling_parameters_have_sane_defaults() {
+        var config = filestorConfigFromProducer(simpleCluster(new TestProperties()));
+        assertEquals(StorFilestorConfig.Async_operation_throttler.Type.DYNAMIC, config.async_operation_throttler().type());
+        assertEquals(1.2, config.async_operation_throttler().window_size_decrement_factor(), 0.0001);
+        assertEquals(0.95, config.async_operation_throttler().window_size_backoff(), 0.0001);
+        assertEquals(20, config.async_operation_throttler().min_window_size());
+        assertEquals(-1, config.async_operation_throttler().max_window_size()); // <=0 implies +inf
+        assertEquals(3.0, config.async_operation_throttler().resize_rate(), 0.0001);
+        assertTrue(config.async_operation_throttler().throttle_individual_merge_feed_ops());
+    }
+
+    @Test
+    void integrity_checker_explicitly_disabled_when_not_running_with_vds_provider() {
         StorIntegritycheckerConfig.Builder builder = new StorIntegritycheckerConfig.Builder();
         parse(cluster("bees", "")).getConfig(builder);
         StorIntegritycheckerConfig config = new StorIntegritycheckerConfig(builder);
@@ -314,7 +334,7 @@ public class StorageClusterTest {
     }
 
     @Test
-    public void testCapacity() {
+    void testCapacity() {
         String xml = joinLines(
                 "<cluster id=\"storage\">",
                 "  <documents/>",
@@ -333,12 +353,12 @@ public class StorageClusterTest {
             cluster.getStorageCluster().getConfig(builder);
             node.getConfig(builder);
             StorServerConfig config = new StorServerConfig(builder);
-            assertEquals(1.0 + (double)i * 0.5, config.node_capacity(), 0.001);
+            assertEquals(1.0 + (double) i * 0.5, config.node_capacity(), 0.001);
         }
     }
 
     @Test
-    public void testRootFolder() {
+    void testRootFolder() {
         ContentCluster cluster = ContentClusterUtils.createCluster(cluster("storage", ""), new MockRoot());
 
         StorageNode node = cluster.getStorageCluster().getChildren().get("0");
@@ -361,7 +381,7 @@ public class StorageClusterTest {
     }
 
     @Test
-    public void testGenericPersistenceTuning() {
+    void testGenericPersistenceTuning() {
         String xml = joinLines(
                 "<cluster id=\"storage\">",
                 "  <documents/>",
@@ -387,7 +407,7 @@ public class StorageClusterTest {
     }
 
     @Test
-    public void requireThatUserDoesNotSpecifyBothGroupAndNodes() {
+    void requireThatUserDoesNotSpecifyBothGroupAndNodes() {
         String xml = joinLines(
                 "<cluster id=\"storage\">",
                 "  <documents/>",
@@ -412,13 +432,13 @@ public class StorageClusterTest {
             ContentClusterUtils.createCluster(xml, root);
             fail("Did not fail when having both group and nodes");
         } catch (RuntimeException e) {
-            e.printStackTrace();
-            assertEquals("Both group and nodes exists, only one of these tags is legal", e.getMessage());
+            assertEquals("Both <group> and <nodes> is specified: Only one of these tags can be used in the same configuration",
+                    e.getMessage());
         }
     }
 
     @Test
-    public void requireThatGroupNamesMustBeUniqueAmongstSiblings() {
+    void requireThatGroupNamesMustBeUniqueAmongstSiblings() {
         String xml = joinLines(
                 "<cluster id=\"storage\">",
                 "  <redundancy>2</redundancy>",
@@ -439,12 +459,12 @@ public class StorageClusterTest {
             fail("Did not get exception with duplicate group names");
         } catch (RuntimeException e) {
             assertEquals("Cluster 'storage' has multiple groups with name 'bar' in the same subgroup. " +
-                         "Group sibling names must be unique.", e.getMessage());
+                    "Group sibling names must be unique.", e.getMessage());
         }
     }
 
     @Test
-    public void requireThatGroupNamesCanBeDuplicatedAcrossLevels() {
+    void requireThatGroupNamesCanBeDuplicatedAcrossLevels() {
         String xml = joinLines(
                 "<cluster id=\"storage\">",
                 "  <redundancy>2</redundancy>",
@@ -469,7 +489,7 @@ public class StorageClusterTest {
     }
 
     @Test
-    public void requireThatNestedGroupsRequireDistribution() {
+    void requireThatNestedGroupsRequireDistribution() {
         String xml = joinLines(
                 "<cluster id=\"storage\">",
                 "  <documents/>",

@@ -21,7 +21,6 @@ public class MapDataType extends DataType {
         super("Map<"+keyType.getName()+","+valueType.getName()+">", id);
         this.keyType=keyType;
         this.valueType = valueType;
-
     }
 
     public MapDataType(DataType keyType, DataType valueType) {
@@ -52,21 +51,6 @@ public class MapDataType extends DataType {
     public DataType getValueType() {
         return valueType;
     }
-
-    /**
-     * Sets the key type of this MapDataType.&nbsp;WARNING! Do not use! Only to be used by config system!
-     */
-    public void setKeyType(DataType keyType) {
-        this.keyType = keyType;
-    }
-
-    /**
-     * Sets the key type of this MapDataType.&nbsp;WARNING! Do not use! Only to be used by config system!
-     */
-    public void setValueType(DataType valueType) {
-        this.valueType = valueType;
-    }
-
 
     @Override
     public MapFieldValue createFieldValue() {

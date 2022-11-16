@@ -25,8 +25,8 @@ public class NodeRepositoryNode {
     public Set<String> ipAddresses;
     @JsonProperty("additionalIpAddresses")
     public Set<String> additionalIpAddresses;
-    @JsonProperty("openStackId")
-    public String openStackId;
+    @JsonProperty("id")
+    public String id;
     @JsonProperty("flavor")
     public String flavor;
     @JsonProperty("resources")
@@ -77,6 +77,8 @@ public class NodeRepositoryNode {
     public Boolean wantToRetire;
     @JsonProperty("wantToDeprovision")
     public Boolean wantToDeprovision;
+    @JsonProperty("wantToRebuild")
+    public Boolean wantToRebuild;
     @JsonProperty("orchestratorStatus")
     public String orchestratorStatus;
     @JsonProperty("archiveUri")
@@ -95,42 +97,44 @@ public class NodeRepositoryNode {
     @Override
     public String toString() {
         return "NodeRepositoryNode{" +
-                "state='" + state + '\'' +
-                ", hostname='" + hostname + '\'' +
-                ", ipAddresses=" + ipAddresses +
-                ", additionalIpAddresses=" + additionalIpAddresses +
-                ", openStackId='" + openStackId + '\'' +
-                ", modelName='" + modelName + '\'' +
-                ", flavor='" + flavor + '\'' +
-                ", resources=" + resources +
-                ", realResources=" + realResources +
-                ", membership=" + membership +
-                ", owner=" + owner +
-                ", restartGeneration=" + restartGeneration +
-                ", rebootGeneration=" + rebootGeneration +
-                ", currentRestartGeneration=" + currentRestartGeneration +
-                ", currentRebootGeneration=" + currentRebootGeneration +
-                ", vespaVersion='" + vespaVersion + '\'' +
-                ", wantedVespaVersion='" + wantedVespaVersion + '\'' +
-                ", currentOsVersion='" + currentOsVersion + '\'' +
-                ", wantedOsVersion='" + wantedOsVersion + '\'' +
-                ", currentFirmwareCheck=" + currentFirmwareCheck +
-                ", wantedFirmwareCheck=" + wantedFirmwareCheck +
-                ", failCount=" + failCount +
-                ", environment='" + environment + '\'' +
-                ", reservedTo='" + reservedTo + "'" +
-                ", type='" + type + '\'' +
-                ", wantedDockerImage='" + wantedDockerImage + '\'' +
-                ", currentDockerImage='" + currentDockerImage + '\'' +
-                ", parentHostname='" + parentHostname + '\'' +
-                ", wantToRetire=" + wantToRetire +
-                ", wantToDeprovision=" + wantToDeprovision +
-                ", orchestratorStatus=" + orchestratorStatus +
-                ", archiveUri=" + archiveUri +
-                ", reports=" + reports +
-                ", exclusiveTo=" + exclusiveTo +
-                ", history=" + history +
-                '}';
+               "state='" + state + '\'' +
+               ", hostname='" + hostname + '\'' +
+               ", ipAddresses=" + ipAddresses +
+               ", additionalIpAddresses=" + additionalIpAddresses +
+               ", id='" + id + '\'' +
+               ", flavor='" + flavor + '\'' +
+               ", resources=" + resources +
+               ", realResources=" + realResources +
+               ", membership=" + membership +
+               ", owner=" + owner +
+               ", restartGeneration=" + restartGeneration +
+               ", rebootGeneration=" + rebootGeneration +
+               ", currentRestartGeneration=" + currentRestartGeneration +
+               ", currentRebootGeneration=" + currentRebootGeneration +
+               ", vespaVersion='" + vespaVersion + '\'' +
+               ", wantedVespaVersion='" + wantedVespaVersion + '\'' +
+               ", currentOsVersion='" + currentOsVersion + '\'' +
+               ", wantedOsVersion='" + wantedOsVersion + '\'' +
+               ", currentFirmwareCheck=" + currentFirmwareCheck +
+               ", wantedFirmwareCheck=" + wantedFirmwareCheck +
+               ", modelName='" + modelName + '\'' +
+               ", failCount=" + failCount +
+               ", environment='" + environment + '\'' +
+               ", reservedTo='" + reservedTo + '\'' +
+               ", type='" + type + '\'' +
+               ", wantedDockerImage='" + wantedDockerImage + '\'' +
+               ", currentDockerImage='" + currentDockerImage + '\'' +
+               ", parentHostname='" + parentHostname + '\'' +
+               ", wantToRetire=" + wantToRetire +
+               ", wantToDeprovision=" + wantToDeprovision +
+               ", wantToRebuild=" + wantToRebuild +
+               ", orchestratorStatus='" + orchestratorStatus + '\'' +
+               ", archiveUri='" + archiveUri + '\'' +
+               ", exclusiveTo='" + exclusiveTo + '\'' +
+               ", history=" + history +
+               ", trustStore=" + trustStore +
+               ", reports=" + reports +
+               '}';
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -191,6 +195,8 @@ public class NodeRepositoryNode {
         public String diskSpeed;
         @JsonProperty
         public String storageType;
+        @JsonProperty
+        public String architecture;
 
         @Override
         public String toString() {
@@ -201,6 +207,7 @@ public class NodeRepositoryNode {
                     ", bandwidthGbps=" + bandwidthGbps +
                     ", diskSpeed='" + diskSpeed + '\'' +
                     ", storageType='" + storageType + '\'' +
+                    ", architecture='" + architecture + '\'' +
                     '}';
         }
     }

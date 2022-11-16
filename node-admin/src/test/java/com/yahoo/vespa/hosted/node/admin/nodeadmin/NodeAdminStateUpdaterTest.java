@@ -3,8 +3,6 @@ package com.yahoo.vespa.hosted.node.admin.nodeadmin;
 
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.NodeType;
-import com.yahoo.test.ManualClock;
-import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.Acl;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeSpec;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeState;
@@ -12,7 +10,7 @@ import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.Orchestrato
 import com.yahoo.vespa.hosted.node.admin.configserver.orchestrator.Orchestrator;
 import com.yahoo.vespa.hosted.node.admin.integration.NodeRepoMock;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContextFactory;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -25,8 +23,8 @@ import java.util.stream.IntStream;
 import static com.yahoo.vespa.hosted.node.admin.nodeadmin.NodeAdminStateUpdater.State.RESUMED;
 import static com.yahoo.vespa.hosted.node.admin.nodeadmin.NodeAdminStateUpdater.State.SUSPENDED;
 import static com.yahoo.vespa.hosted.node.admin.nodeadmin.NodeAdminStateUpdater.State.SUSPENDED_NODE_ADMIN;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -49,20 +47,18 @@ public class NodeAdminStateUpdaterTest {
     private final NodeRepoMock nodeRepository = spy(new NodeRepoMock());
     private final Orchestrator orchestrator = mock(Orchestrator.class);
     private final NodeAdmin nodeAdmin = mock(NodeAdmin.class);
-    private final HostName hostHostname = HostName.from("basehost1.test.yahoo.com");
-    private final ManualClock clock = new ManualClock();
-    private final InMemoryFlagSource flagSource = new InMemoryFlagSource();
+    private final HostName hostHostname = HostName.of("basehost1.test.yahoo.com");
 
     private final NodeAdminStateUpdater updater = spy(new NodeAdminStateUpdater(
-            nodeAgentContextFactory, nodeRepository, orchestrator, nodeAdmin, hostHostname, clock, flagSource));
+            nodeAgentContextFactory, nodeRepository, orchestrator, nodeAdmin, hostHostname));
 
 
     @Test
-    public void state_convergence() {
+    void state_convergence() {
         mockNodeRepo(NodeState.active, 4);
         List<String> activeHostnames = nodeRepository.getNodes(hostHostname.value()).stream()
                 .map(NodeSpec::hostname)
-                .collect(Collectors.toList());
+                .toList();
         List<String> suspendHostnames = new ArrayList<>(activeHostnames);
         suspendHostnames.add(hostHostname.value());
         when(nodeAdmin.subsystemFreezeDuration()).thenReturn(Duration.ofSeconds(1));
@@ -136,7 +132,7 @@ public class NodeAdminStateUpdaterTest {
     }
 
     @Test
-    public void half_transition_revert() {
+    void half_transition_revert() {
         final String exceptionMsg = "Cannot allow to suspend because some reason";
         mockNodeRepo(NodeState.active, 3);
 
@@ -178,7 +174,7 @@ public class NodeAdminStateUpdaterTest {
     }
 
     @Test
-    public void do_not_orchestrate_host_when_not_active() {
+    void do_not_orchestrate_host_when_not_active() {
         when(nodeAdmin.subsystemFreezeDuration()).thenReturn(Duration.ofHours(1));
         when(nodeAdmin.setFrozen(anyBoolean())).thenReturn(true);
         mockNodeRepo(NodeState.ready, 3);
@@ -200,7 +196,7 @@ public class NodeAdminStateUpdaterTest {
     }
 
     @Test
-    public void node_spec_and_acl_aligned() {
+    void node_spec_and_acl_aligned() {
         Acl acl = new Acl.Builder().withTrustedPorts(22).build();
         mockNodeRepo(NodeState.active, 3);
         mockAcl(acl, 1, 2, 3);
@@ -217,7 +213,7 @@ public class NodeAdminStateUpdaterTest {
     }
 
     @Test
-    public void node_spec_and_acl_mismatch_missing_one_acl() {
+    void node_spec_and_acl_mismatch_missing_one_acl() {
         Acl acl = new Acl.Builder().withTrustedPorts(22).build();
         mockNodeRepo(NodeState.active, 3);
         mockAcl(acl, 1, 2); // Acl for 3 is missing
@@ -235,7 +231,7 @@ public class NodeAdminStateUpdaterTest {
     }
 
     @Test
-    public void node_spec_and_acl_mismatch_additional_acl() {
+    void node_spec_and_acl_mismatch_additional_acl() {
         Acl acl = new Acl.Builder().withTrustedPorts(22).build();
         mockNodeRepo(NodeState.active, 2);
         mockAcl(acl, 1, 2, 3); // Acl for 3 is extra

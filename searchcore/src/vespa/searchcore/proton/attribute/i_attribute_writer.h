@@ -50,7 +50,7 @@ public:
      * Update the underlying struct field attributes based on updated document.
      */
     virtual void update(SerialNum serialNum, const Document &doc, DocumentIdT lid, OnWriteDoneType onWriteDone) = 0;
-    virtual void heartBeat(SerialNum serialNum) = 0;
+    virtual void heartBeat(SerialNum serialNum, OnWriteDoneType onDone) = 0;
     /**
      * Compact the lid space of the underlying attribute vectors.
      */
@@ -64,6 +64,7 @@ public:
 
     virtual void onReplayDone(uint32_t docIdLimit) = 0;
     virtual bool hasStructFieldAttribute() const = 0;
+    virtual void drain(OnWriteDoneType onWriteDone) = 0;
 };
 
 } // namespace proton

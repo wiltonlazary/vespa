@@ -66,17 +66,25 @@ public class Notification {
     }
 
     public enum Type {
-        /** Related to contents of application package, e.g. usage of deprecated features/syntax */
+
+        /** Related to contents of application package, e.g., usage of deprecated features/syntax */
         applicationPackage,
 
-        /** Related to deployment of application, e.g. system test failure, out of capacity, internal errors, etc. */
+        /** Related to contents of application package detectable by the controller on submission */
+        submission,
+
+        /** Related to contents of application test package, e.g., mismatch between deployment spec and provided tests */
+        testPackage,
+
+        /** Related to deployment of application, e.g., system test failure, node allocation failure, internal errors, etc. */
         deployment,
 
         /** Application cluster is (near) external feed blocked */
         feedBlock,
 
         /** Application cluster is reindexing document(s) */
-        reindex;
+        reindex
+
     }
 
 }

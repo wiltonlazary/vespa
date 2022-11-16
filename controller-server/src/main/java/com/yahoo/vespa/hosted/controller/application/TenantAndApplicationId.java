@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.application;
 
 import com.yahoo.config.provision.ApplicationId;
@@ -11,7 +11,7 @@ import java.util.Objects;
 /**
  * Tenant and application name pair.
  *
- * TODO jonmv: rename to ApplicationId if ApplicationId is renamed.
+ * @author jonmv
  */
 public class TenantAndApplicationId implements Comparable<TenantAndApplicationId> {
 

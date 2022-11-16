@@ -67,10 +67,19 @@ public interface IPAddresses {
         if (ipv6addresses.size() <= 1) return ipv6addresses.stream().findFirst();
 
         String addresses = ipv6addresses.stream().map(InetAddresses::toAddrString).collect(Collectors.joining(","));
-        throw new ConvergenceException(
+        throw ConvergenceException.ofError(
                 String.format(
                         "Multiple IPv6 addresses found: %s. Perhaps a missing DNS entry or multiple AAAA records in DNS?",
                         addresses));
+    }
+
+    /** Returns the hostname of given inetAddress */
+    default String getHostname(InetAddress inetAddress) {
+        String hostname = inetAddress.getHostName();
+        if (hostname.equals(inetAddress.getHostAddress())) {
+            throw new IllegalArgumentException("Could not find hostname for address " + inetAddress.getHostAddress());
+        }
+        return hostname;
     }
 
     /**
@@ -94,7 +103,7 @@ public interface IPAddresses {
         if (siteLocalIPv4Addresses.size() == 1) return Optional.of(siteLocalIPv4Addresses.get(0));
 
         String addresses = ipv4Addresses.stream().map(InetAddresses::toAddrString).collect(Collectors.joining(","));
-        throw new ConvergenceException(
+        throw ConvergenceException.ofError(
                 String.format(
                         "Multiple IPv4 addresses found: %s. Perhaps a missing DNS entry or multiple A records in DNS?",
                         addresses));

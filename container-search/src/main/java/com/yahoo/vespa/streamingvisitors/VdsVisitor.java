@@ -1,23 +1,19 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.streamingvisitors;
 
+import com.yahoo.document.fieldset.AllFields;
 import com.yahoo.document.select.parser.ParseException;
 import com.yahoo.documentapi.AckToken;
-import com.yahoo.documentapi.DocumentAccess;
 import com.yahoo.documentapi.VisitorControlHandler;
 import com.yahoo.documentapi.VisitorDataHandler;
 import com.yahoo.documentapi.VisitorParameters;
 import com.yahoo.documentapi.VisitorSession;
-import com.yahoo.documentapi.messagebus.MessageBusDocumentAccess;
-import com.yahoo.documentapi.messagebus.MessageBusParams;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadType;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
 import com.yahoo.documentapi.messagebus.protocol.DocumentSummaryMessage;
 import com.yahoo.documentapi.messagebus.protocol.QueryResultMessage;
 import com.yahoo.documentapi.messagebus.protocol.SearchResultMessage;
 import com.yahoo.io.GrowableByteBuffer;
-import java.util.logging.Level;
+
 import com.yahoo.messagebus.Message;
 import com.yahoo.messagebus.Trace;
 import com.yahoo.messagebus.routing.Route;
@@ -35,14 +31,14 @@ import com.yahoo.vespa.objects.BufferSerializer;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
+import java.util.logging.Level;
 
 /**
  * A visitor data handler that performs a query in VDS with the
@@ -60,7 +56,6 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
     private static final CompoundName streamingSelection=new CompoundName("streaming.selection");
     private static final CompoundName streamingFromtimestamp=new CompoundName("streaming.fromtimestamp");
     private static final CompoundName streamingTotimestamp=new CompoundName("streaming.totimestamp");
-    private static final CompoundName streamingLoadtype=new CompoundName("streaming.loadtype");
     private static final CompoundName streamingPriority=new CompoundName("streaming.priority");
     private static final CompoundName streamingMaxbucketspervisitor=new CompoundName("streaming.maxbucketspervisitor");
 
@@ -74,13 +69,12 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
     private final Map<String, DocumentSummary.Summary> summaryMap = new HashMap<>();
     private final Map<Integer, Grouping> groupingMap = new ConcurrentHashMap<>();
     private Query query = null;
-    private VisitorSessionFactory visitorSessionFactory;
+    private final VisitorSessionFactory visitorSessionFactory;
     private final int traceLevelOverride;
     private Trace sessionTrace;
 
     public interface VisitorSessionFactory {
         VisitorSession createVisitorSession(VisitorParameters params) throws ParseException;
-        LoadTypeSet getLoadTypeSet();
     }
 
     public VdsVisitor(Query query, String searchCluster, Route route,
@@ -100,7 +94,7 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
         } else if (log.isLoggable(Level.FINE)) {
             implicitLevel = 7;
         }
-        return Math.max(query.getTraceLevel(), implicitLevel);
+        return Math.max(query.getTrace().getLevel(), implicitLevel);
     }
 
     private static String createSelectionString(String documentType, String selection) {
@@ -135,16 +129,9 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
         if (query.properties().getDouble(streamingTotimestamp) != null) {
             params.setToTimestamp(query.properties().getDouble(streamingTotimestamp).longValue());
         }
+        params.setFieldSet(AllFields.NAME); // Streaming searches need to look at _all_ fields by default.
         params.visitInconsistentBuckets(true);
         params.setPriority(DocumentProtocol.Priority.VERY_HIGH);
-
-        if (query.properties().getString(streamingLoadtype) != null) {
-            LoadType loadType = visitorSessionFactory.getLoadTypeSet().getNameMap().get(query.properties().getString(streamingLoadtype));
-            if (loadType != null) {
-                params.setLoadType(loadType);
-                params.setPriority(loadType.getPriority());
-            }
-        }
 
         if (query.properties().getString(streamingPriority) != null) {
             params.setPriority(DocumentProtocol.getPriorityByName(
@@ -171,6 +158,10 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
         } else {
             params.setLibraryParameter("summaryclass", "default");
         }
+        Set<String> summaryFields = query.getPresentation().getSummaryFields();
+        if (summaryFields != null && !summaryFields.isEmpty()) {
+            params.setLibraryParameter("summary-fields", String.join(" ", summaryFields));
+        }
         params.setLibraryParameter("summarycount", String.valueOf(query.getOffset() + query.getHits()));
         params.setLibraryParameter("rankprofile", query.getRanking().getProfile());
         params.setLibraryParameter("allowslimedocsums", "true");
@@ -187,7 +178,7 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
             params.setLibraryParameter("location", af);
         }
 
-        if (query.hasEncodableProperties()) {
+        if (QueryEncoder.hasEncodableProperties(query)) {
             encodeQueryData(query, 1, ed);
             params.setLibraryParameter("rankproperties", ed.getEncodedData());
         }
@@ -215,11 +206,9 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
     static int getQueryFlags(Query query) {
         int flags = 0;
 
-        boolean requestCoverage = true; // Always request coverage information
-
         flags |= query.properties().getBoolean(Model.ESTIMATE) ? 0x00000080 : 0;
         flags |= (query.getRanking().getFreshness() != null) ? 0x00002000 : 0;
-        flags |= requestCoverage ? 0x00008000 : 0;
+        flags |= 0x00008000;
         flags |= query.getNoCache() ? 0x00010000 : 0;
         flags |= 0x00020000;                         // was PARALLEL
         flags |= query.properties().getBoolean(Ranking.RANKFEATURES,false) ? 0x00040000 : 0;
@@ -254,7 +243,7 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
                         ed.setReturned(query.getModel().getQueryTree().getRoot().encode(buf));
                         break;
                     case 1:
-                        ed.setReturned(query.encodeAsProperties(buf, true));
+                        ed.setReturned(QueryEncoder.encodeAsProperties(query, buf));
                         break;
                     case 2:
                         throw new IllegalArgumentException("old aggregation no longer exists!");
@@ -309,13 +298,11 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
 
     @Override
     public void onMessage(Message m, AckToken token) {
-        if (m instanceof QueryResultMessage) {
-            QueryResultMessage qm = (QueryResultMessage)m;
+        if (m instanceof QueryResultMessage qm) {
             onQueryResult(qm.getResult(), qm.getSummary());
         } else if (m instanceof SearchResultMessage) {
             onSearchResult(((SearchResultMessage) m).getResult());
-        } else if (m instanceof DocumentSummaryMessage) {
-            DocumentSummaryMessage dsm = (DocumentSummaryMessage)m;
+        } else if (m instanceof DocumentSummaryMessage dsm) {
             onDocumentSummary(dsm.getResult());
         } else {
             throw new UnsupportedOperationException("Received unsupported message " + m + ". VdsVisitor can only accept query result, search result, and documentsummary messages.");
@@ -429,8 +416,7 @@ class VdsVisitor extends VisitorDataHandler implements Visitor {
         for (Grouping g : groupings) {
             g.postMerge();
         }
-        Grouping[] array = groupings.toArray(new Grouping[groupings.size()]);
-        return Arrays.asList(array);
+        return new ArrayList<>(groupings);
     }
 
 }

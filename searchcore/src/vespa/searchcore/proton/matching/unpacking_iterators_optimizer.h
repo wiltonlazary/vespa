@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -14,8 +14,7 @@ namespace proton::matching {
 struct UnpackingIteratorsOptimizer {
     static search::query::Node::UP optimize(search::query::Node::UP root,
                                             bool has_white_list,
-                                            bool split_unpacking_iterators,
-                                            bool delay_unpacking_iterators);
+                                            bool split_unpacking_iterators);
 };
 
 }

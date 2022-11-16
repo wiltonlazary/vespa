@@ -3,6 +3,7 @@
 #include "generic_join.h"
 #include <vespa/eval/eval/inline_operation.h>
 #include <vespa/eval/eval/wrap_param.h>
+#include <vespa/eval/eval/value_builder_factory.h>
 #include <vespa/vespalib/util/overload.h>
 #include <vespa/vespalib/util/stash.h>
 #include <vespa/vespalib/util/typify.h>
@@ -35,7 +36,7 @@ generic_mixed_join(const Value &lhs, const Value &rhs, const JoinParam &param)
     SparseJoinState sparse(param.sparse_plan, lhs.index(), rhs.index());
     size_t expected_subspaces = sparse.first_index.size();
     if (param.sparse_plan.lhs_overlap.empty() && param.sparse_plan.rhs_overlap.empty()) {
-        expected_subspaces = sparse.first_index.size() * sparse.second_index.size();
+        expected_subspaces = expected_subspaces * sparse.second_index.size();
     }
     auto builder = param.factory.create_transient_value_builder<OCT>(param.res_type, param.sparse_plan.sources.size(), param.dense_plan.out_size, expected_subspaces);
     auto outer = sparse.first_index.create_view({});
@@ -50,7 +51,7 @@ generic_mixed_join(const Value &lhs, const Value &rhs, const JoinParam &param)
         }
     }
     return builder->build(std::move(builder));
-};
+}
 
 namespace {
 
@@ -63,7 +64,7 @@ void my_mixed_join_op(State &state, uint64_t param_in) {
     auto &result = state.stash.create<std::unique_ptr<Value>>(std::move(up));
     const Value &result_ref = *(result.get());
     state.pop_pop_push(result_ref);
-};
+}
 
 //-----------------------------------------------------------------------------
 
@@ -94,7 +95,7 @@ void my_mixed_dense_join_op(State &state, uint64_t param_in) {
         assert(rhs == rhs_cells.end());
     }
     state.pop_pop_push(state.stash.create<ValueView>(param.res_type, index, TypedCells(out_cells)));
-};
+}
 
 //-----------------------------------------------------------------------------
 
@@ -109,7 +110,7 @@ void my_dense_join_op(State &state, uint64_t param_in) {
     auto join_cells = [&](size_t lhs_idx, size_t rhs_idx) { *dst++ = fun(lhs_cells[lhs_idx], rhs_cells[rhs_idx]); };
     param.dense_plan.execute(0, 0, join_cells);
     state.pop_pop_push(state.stash.create<DenseValueView>(param.res_type, TypedCells(out_cells)));
-};
+}
 
 //-----------------------------------------------------------------------------
 
@@ -118,7 +119,7 @@ void my_double_join_op(State &state, uint64_t param_in) {
     Fun fun(unwrap_param<JoinParam>(param_in).function);
     state.pop_pop_push(state.stash.create<DoubleValue>(fun(state.peek(1).as_double(),
                                                            state.peek(0).as_double())));
-};
+}
 
 //-----------------------------------------------------------------------------
 

@@ -9,6 +9,7 @@
 #include "config.h"
 #include "transport_thread.h"
 #include "transport.h"
+#include <vespa/vespalib/net/connection_auth_context.h>
 #include <vespa/vespalib/net/socket_spec.h>
 
 #include <vespa/log/log.h>
@@ -125,8 +126,8 @@ FNET_Connection::SetState(State state)
 
     std::vector<FNET_Channel::UP> toDelete;
     std::unique_lock<std::mutex> guard(_ioc_lock);
-    oldstate = _state;
-    _state = state;
+    oldstate = GetState();
+    _state.store(state, std::memory_order_relaxed);
     if (LOG_WOULD_LOG(debug) && state != oldstate) {
         LOG(debug, "Connection(%s): State transition: %s -> %s", GetSpec(),
             GetStateString(oldstate), GetStateString(state));
@@ -148,14 +149,9 @@ FNET_Connection::SetState(State state)
     }
 
     if ( ! toDelete.empty() ) {
-        FNET_Channel *ach        = _adminChannel;
-
         for (const FNET_Channel::UP & ch : toDelete) {
-            if (ch.get() == ach) {
-                _adminChannel = nullptr;
-            } else {
-                SubRef_NoLock();
-            }
+            (void) ch;
+            SubRef_NoLock();
         }
     }
 }
@@ -189,11 +185,7 @@ FNET_Connection::HandlePacket(uint32_t plen, uint32_t pcode,
             _channels.Unregister(channel);
 
             if (hp_rc == FNET_IPacketHandler::FNET_FREE_CHANNEL) {
-                if (channel == _adminChannel) {
-                    _adminChannel = nullptr;
-                } else {
-                    SubRef_NoLock();
-                }
+                SubRef_NoLock();
                 toDelete.reset(channel);
             }
         }
@@ -250,6 +242,8 @@ FNET_Connection::handshake()
         break;
     case vespalib::CryptoSocket::HandshakeResult::DONE: {
         LOG(debug, "Connection(%s): handshake done with peer %s", GetSpec(), GetPeerSpec().c_str());
+        _auth_context = _socket->make_auth_context();
+        assert(_auth_context);
         EnableReadEvent(true);
         EnableWriteEvent(writePendingAfterConnect());
         _flags._framed = (_socket->min_read_buffer_size() > 1);
@@ -480,7 +474,6 @@ FNET_Connection::FNET_Connection(FNET_TransportThread *owner,
     : FNET_IOComponent(owner, socket.get(), spec, /* time-out = */ true),
       _streamer(streamer),
       _serverAdapter(serverAdapter),
-      _adminChannel(nullptr),
       _socket(owner->owner().create_server_crypto_socket(std::move(socket))),
       _resolve_handler(nullptr),
       _context(),
@@ -507,14 +500,11 @@ FNET_Connection::FNET_Connection(FNET_TransportThread *owner,
 FNET_Connection::FNET_Connection(FNET_TransportThread *owner,
                                  FNET_IPacketStreamer *streamer,
                                  FNET_IServerAdapter *serverAdapter,
-                                 FNET_IPacketHandler *adminHandler,
-                                 FNET_Context adminContext,
                                  FNET_Context context,
                                  const char *spec)
     : FNET_IOComponent(owner, -1, spec, /* time-out = */ true),
       _streamer(streamer),
       _serverAdapter(serverAdapter),
-      _adminChannel(nullptr),
       _socket(),
       _resolve_handler(nullptr),
       _context(context),
@@ -533,21 +523,12 @@ FNET_Connection::FNET_Connection(FNET_TransportThread *owner,
       _callbackTarget(nullptr),
       _cleanup(nullptr)
 {
-    if (adminHandler != nullptr) {
-        FNET_Channel::UP admin(new FNET_Channel(FNET_NOID, this, adminHandler, adminContext));
-        _adminChannel = admin.get();
-        _channels.Register(admin.release());
-    }
     _num_connections.fetch_add(1, std::memory_order_relaxed);
 }
 
 
 FNET_Connection::~FNET_Connection()
 {
-    if (_adminChannel != nullptr) {
-        _channels.Unregister(_adminChannel);
-        delete _adminChannel;
-    }
     assert(_cleanup == nullptr);
     _num_connections.fetch_sub(1, std::memory_order_relaxed);
 }
@@ -560,20 +541,6 @@ FNET_Connection::Init()
     EnableReadEvent(true);
     EnableWriteEvent(true);
 
-    // init server admin channel
-    if (CanAcceptChannels() && _adminChannel == nullptr) {
-        FNET_Channel::UP ach(new FNET_Channel(FNET_NOID, this));
-        if (_serverAdapter->InitAdminChannel(ach.get())) {
-            AddRef_NoLock();
-            _channels.Register(ach.release());
-        }
-    }
-
-    // handle close by admin channel init
-    if (_state == FNET_CLOSED) {
-        return false;
-    }
-
     // initiate async resolve
     if (IsClient()) {
         _resolve_handler = std::make_shared<ResolveHandler>(this);
@@ -582,6 +549,11 @@ FNET_Connection::Init()
     return true;
 }
 
+FNET_IServerAdapter *
+FNET_Connection::server_adapter()
+{
+    return _serverAdapter;
+}
 
 bool
 FNET_Connection::handle_add_event()
@@ -600,7 +572,7 @@ FNET_Connection::handle_handshake_act()
 {
     assert(_flags._handshake_work_pending);
     _flags._handshake_work_pending = false;
-    return ((_state == FNET_CONNECTING) && handshake());
+    return ((GetState() == FNET_CONNECTING) && handshake());
 }
 
 void
@@ -619,7 +591,7 @@ FNET_Connection::OpenChannel(FNET_IPacketHandler *handler,
     FNET_Channel * ret = nullptr;
 
     std::unique_lock<std::mutex> guard(_ioc_lock);
-    if (__builtin_expect(_state < FNET_CLOSING, true)) {
+    if (__builtin_expect(GetState() < FNET_CLOSING, true)) {
         newChannel->SetID(GetNextID());
         if (chid != nullptr) {
             *chid = newChannel->GetID();
@@ -675,22 +647,6 @@ FNET_Connection::CloseAndFreeChannel(FNET_Channel *channel)
 }
 
 
-void
-FNET_Connection::CloseAdminChannel()
-{
-    FNET_Channel::UP toDelete;
-    std::unique_lock<std::mutex> guard(_ioc_lock);
-    if (_adminChannel != nullptr) {
-        WaitCallback(guard, _adminChannel);
-        if (_adminChannel != nullptr) {
-            _channels.Unregister(_adminChannel);
-            toDelete.reset(_adminChannel);
-            _adminChannel = nullptr;
-        }
-    }
-}
-
-
 bool
 FNET_Connection::PostPacket(FNET_Packet *packet, uint32_t chid)
 {
@@ -698,7 +654,7 @@ FNET_Connection::PostPacket(FNET_Packet *packet, uint32_t chid)
 
     assert(packet != nullptr);
     std::unique_lock<std::mutex> guard(_ioc_lock);
-    if (_state >= FNET_CLOSING) {
+    if (GetState() >= FNET_CLOSING) {
         if (_flags._discarding) {
             _queue.QueuePacket_NoLock(packet, FNET_Context(chid));
         } else {
@@ -710,7 +666,7 @@ FNET_Connection::PostPacket(FNET_Packet *packet, uint32_t chid)
     writeWork = _writeWork;
     _writeWork++;
     _queue.QueuePacket_NoLock(packet, FNET_Context(chid));
-    if ((writeWork == 0) && (_state == FNET_CONNECTED)) {
+    if ((writeWork == 0) && (GetState() == FNET_CONNECTED)) {
         AddRef_NoLock();
         guard.unlock();
         Owner()->EnableWrite(this, /* needRef = */ false);
@@ -756,7 +712,7 @@ FNET_Connection::HandleReadEvent()
 {
     bool broken = false;  // is connection broken ?
 
-    switch(_state) {
+    switch(GetState()) {
     case FNET_CONNECTING:
         broken = !handshake();
         break;
@@ -776,7 +732,7 @@ bool
 FNET_Connection::writePendingAfterConnect()
 {
     std::lock_guard<std::mutex> guard(_ioc_lock);
-    _state = FNET_CONNECTED; // SetState(FNET_CONNECTED)
+    _state.store(FNET_CONNECTED, std::memory_order_relaxed); // SetState(FNET_CONNECTED)
     LOG(debug, "Connection(%s): State transition: %s -> %s", GetSpec(),
         GetStateString(FNET_CONNECTING), GetStateString(FNET_CONNECTED));
     return (_writeWork > 0);
@@ -787,7 +743,7 @@ FNET_Connection::HandleWriteEvent()
 {
     bool broken = false;  // is connection broken ?
 
-    switch(_state) {
+    switch(GetState()) {
     case FNET_CONNECTING:
         broken = !handshake();
         break;
@@ -810,4 +766,11 @@ vespalib::string
 FNET_Connection::GetPeerSpec() const
 {
     return vespalib::SocketAddress::peer_address(_socket->get_fd()).spec();
+}
+
+const vespalib::net::ConnectionAuthContext&
+FNET_Connection::auth_context() const noexcept
+{
+    assert(_auth_context);
+    return *_auth_context;
 }

@@ -8,11 +8,11 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>container-search-and-docproc</artifactId>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <packaging>container-plugin</packaging>
   <dependencies>
 
@@ -199,8 +199,9 @@
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>org.json</groupId>
-      <artifactId>json</artifactId>
+      <groupId>com.yahoo.vespa</groupId>
+      <artifactId>hosted-zone-api</artifactId>
+      <version>${project.version}</version>
       <scope>provided</scope>
     </dependency>
 
@@ -208,11 +209,6 @@
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.hamcrest</groupId>
-      <artifactId>hamcrest-library</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>

@@ -10,8 +10,10 @@ public interface HorizonClient {
 
     HorizonResponse getUser();
 
-    HorizonResponse getDashboard();
+    HorizonResponse getDashboard(int dashboardId);
 
     HorizonResponse getTopFolders();
+
+    HorizonResponse getMetaData(byte[] query);
 
 }

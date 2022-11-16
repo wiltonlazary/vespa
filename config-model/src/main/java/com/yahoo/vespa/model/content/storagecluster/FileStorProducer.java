@@ -44,7 +44,7 @@ public class FileStorProducer implements StorFilestorConfig.Producer {
 
     private final Integer numThreads;
     private final ContentCluster cluster;
-    private final int reponseNumThreads;
+    private final int responseNumThreads;
     private final StorFilestorConfig.Response_sequencer_type.Enum responseSequencerType;
     private final boolean useAsyncMessageHandlingOnSchedule;
 
@@ -59,9 +59,9 @@ public class FileStorProducer implements StorFilestorConfig.Producer {
     public FileStorProducer(ModelContext.FeatureFlags featureFlags, ContentCluster parent, Integer numThreads) {
         this.numThreads = numThreads;
         this.cluster = parent;
-        this.reponseNumThreads = featureFlags.defaultNumResponseThreads();
+        this.responseNumThreads = featureFlags.defaultNumResponseThreads();
         this.responseSequencerType = convertResponseSequencerType(featureFlags.responseSequencerType());
-        useAsyncMessageHandlingOnSchedule = featureFlags.useAsyncMessageHandlingOnSchedule();
+        this.useAsyncMessageHandlingOnSchedule = featureFlags.useAsyncMessageHandlingOnSchedule();
     }
 
     @Override
@@ -70,9 +70,11 @@ public class FileStorProducer implements StorFilestorConfig.Producer {
             builder.num_threads(numThreads);
         }
         builder.enable_multibit_split_optimalization(cluster.getPersistence().enableMultiLevelSplitting());
-        builder.num_response_threads(reponseNumThreads);
+        builder.num_response_threads(responseNumThreads);
         builder.response_sequencer_type(responseSequencerType);
         builder.use_async_message_handling_on_schedule(useAsyncMessageHandlingOnSchedule);
+        var throttleBuilder = new StorFilestorConfig.Async_operation_throttler.Builder();
+        builder.async_operation_throttler(throttleBuilder);
     }
 
 }

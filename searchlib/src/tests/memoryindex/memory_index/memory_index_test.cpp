@@ -1,18 +1,26 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
 #include <vespa/searchlib/common/scheduletaskcallback.h>
 #include <vespa/searchlib/fef/matchdata.h>
 #include <vespa/searchlib/fef/matchdatalayout.h>
 #include <vespa/searchlib/fef/termfieldmatchdata.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/i_field_length_inspector.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchlib/test/string_field_builder.h>
 #include <vespa/searchlib/memoryindex/memory_index.h>
 #include <vespa/searchlib/query/tree/simplequery.h>
 #include <vespa/searchlib/queryeval/booleanmatchiteratorwrapper.h>
 #include <vespa/searchlib/queryeval/fake_requestcontext.h>
-#include <vespa/searchlib/queryeval/fake_search.h>
 #include <vespa/searchlib/queryeval/fake_searchable.h>
+#include <vespa/searchlib/queryeval/leaf_blueprints.h>
 #include <vespa/searchlib/queryeval/searchiterator.h>
+#include <vespa/searchlib/queryeval/simpleresult.h>
+#include <vespa/searchlib/queryeval/simple_phrase_blueprint.h>
+#include <vespa/searchlib/queryeval/blueprint.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/stringfmt.h>
@@ -22,16 +30,19 @@
 #include <vespa/log/log.h>
 LOG_SETUP("memory_index_test");
 
+using document::DataType;
 using document::Document;
 using document::FieldValue;
 using search::ScheduleTaskCallback;
-using search::index::schema::DataType;
 using search::index::FieldLengthInfo;
 using search::index::IFieldLengthInspector;
 using vespalib::makeLambdaTask;
 using search::query::Node;
 using search::query::SimplePhrase;
 using search::query::SimpleStringTerm;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
+using search::test::StringFieldBuilder;
 using vespalib::ISequencedTaskExecutor;
 using vespalib::SequencedTaskExecutor;
 using namespace search::fef;
@@ -42,10 +53,10 @@ using namespace search::queryeval;
 //-----------------------------------------------------------------------------
 
 struct MySetup : public IFieldLengthInspector {
-    Schema schema;
+    std::vector<vespalib::string> fields;
     std::map<vespalib::string, FieldLengthInfo> field_lengths;
     MySetup &field(const std::string &name) {
-        schema.addIndexField(Schema::IndexField(name, DataType::STRING));
+        fields.emplace_back(name);
         return *this;
     }
     MySetup& field_length(const vespalib::string& field_name, const FieldLengthInfo& info) {
@@ -60,41 +71,58 @@ struct MySetup : public IFieldLengthInspector {
         return FieldLengthInfo();
     }
 
+    void add_fields(document::config_builder::Struct& header) const {
+        for (auto& field : fields) {
+            header.addField(field, DataType::T_STRING);
+        }
+    }
+
+    Schema make_all_index_schema() const {
+        DocBuilder db([this](auto& header) { add_fields(header); });
+        return SchemaBuilder(db).add_all_indexes().build();
+    }
+
 };
 
 //-----------------------------------------------------------------------------
 
 struct Index {
-    Schema       schema;
     vespalib::ThreadStackExecutor _executor;
     std::unique_ptr<ISequencedTaskExecutor> _invertThreads;
     std::unique_ptr<ISequencedTaskExecutor> _pushThreads;
     MemoryIndex  index;
     DocBuilder builder;
+    StringFieldBuilder sfb;
+    std::unique_ptr<Document> builder_doc;
     uint32_t     docid;
     std::string  currentField;
+    bool         add_space;
 
     Index(const MySetup &setup);
     ~Index();
     void closeField() {
         if (!currentField.empty()) {
-            builder.endField();
+            builder_doc->setValue(currentField, sfb.build());
             currentField.clear();
         }
     }
     Index &doc(uint32_t id) {
         docid = id;
-        builder.startDocument(vespalib::make_string("id:ns:searchdocument::%u", id));
+        builder_doc = builder.make_document(vespalib::make_string("id:ns:searchdocument::%u", id));
         return *this;
     }
     Index &field(const std::string &name) {
         closeField();
-        builder.startIndexField(name);
         currentField = name;
+        add_space = false;
         return *this;
     }
     Index &add(const std::string &token) {
-        builder.addStr(token);
+        if (add_space) {
+            sfb.space();
+        }
+        add_space = true;
+        sfb.word(token);
         return *this;
     }
     void internalSyncCommit() {
@@ -106,13 +134,15 @@ struct Index {
     }
     Document::UP commit() {
         closeField();
-        Document::UP d = builder.endDocument();
-        index.insertDocument(docid, *d);
+        Document::UP d = std::move(builder_doc);
+        index.insertDocument(docid, *d, {});
         internalSyncCommit();
         return d;
     }
     Index &remove(uint32_t id) {
-        index.removeDocument(id);
+        std::vector<uint32_t> lids;
+        lids.push_back(id);
+        index.removeDocuments(std::move(lids));
         internalSyncCommit();
         return *this;
     }
@@ -126,14 +156,16 @@ VESPA_THREAD_STACK_TAG(invert_executor)
 VESPA_THREAD_STACK_TAG(push_executor)
 
 Index::Index(const MySetup &setup)
-    : schema(setup.schema),
-      _executor(1, 128_Ki),
+    : _executor(1, 128_Ki),
       _invertThreads(SequencedTaskExecutor::create(invert_executor, 2)),
       _pushThreads(SequencedTaskExecutor::create(push_executor, 2)),
-      index(schema, setup, *_invertThreads, *_pushThreads),
-      builder(schema),
+      index(setup.make_all_index_schema(), setup, *_invertThreads, *_pushThreads),
+      builder([&setup](auto& header) { setup.add_fields(header); }),
+      sfb(builder),
+      builder_doc(),
       docid(1),
-      currentField()
+      currentField(),
+      add_space(false)
 {
 }
 Index::~Index() = default;
@@ -196,8 +228,10 @@ verifyResult(const FakeResult &expect,
     TermFieldMatchData &tmd = *match_data->resolveTermField(handle);
 
     FakeResult actual;
+    SimpleResult exp_simple;
     search->initFullRange();
     for (search->seek(1); !search->isAtEnd(); search->seek(search->getDocId() + 1)) {
+        exp_simple.addHit(search->getDocId());
         actual.doc(search->getDocId());
         search->unpack(search->getDocId());
         EXPECT_EQ(search->getDocId(), tmd.getDocId());
@@ -207,8 +241,25 @@ verifyResult(const FakeResult &expect,
             actual.pos(p.getPosition());
         }
     }
-    EXPECT_EQ(expect, actual);
-    return expect == actual;
+    bool success = true;
+    EXPECT_EQ(expect, actual) << (success = false, "");
+    using FilterConstraint = Blueprint::FilterConstraint;
+    for (auto constraint : { FilterConstraint::LOWER_BOUND, FilterConstraint::UPPER_BOUND }) {
+        constexpr uint32_t docid_limit = 10u;
+        auto filter_search = result->createFilterSearch(true, constraint);
+        auto act_simple = SimpleResult().search(*filter_search, docid_limit);
+        if (constraint == FilterConstraint::LOWER_BOUND) {
+            EXPECT_TRUE(exp_simple.contains(act_simple)) << (success = false, "");
+        }
+        if (constraint == FilterConstraint::UPPER_BOUND) {
+            EXPECT_TRUE(act_simple.contains(exp_simple)) << (success = false, "");
+        }
+        if (dynamic_cast<FakeBlueprint*>(result.get()) == nullptr &&
+            dynamic_cast<SimplePhraseBlueprint*>(result.get()) == nullptr) {
+            EXPECT_EQ(exp_simple, act_simple) << (success = false, "");
+        }
+    }
+    return success;
 }
 
 namespace {
@@ -217,12 +268,12 @@ SimpleStringTerm makeTerm(const std::string &term) {
 }
 
 Node::UP makePhrase(const std::string &term1, const std::string &term2) {
-    SimplePhrase * phrase = new SimplePhrase("field", 0, search::query::Weight(0));
-    Node::UP node(phrase);
-    phrase->append(Node::UP(new SimpleStringTerm(makeTerm(term1))));
-    phrase->append(Node::UP(new SimpleStringTerm(makeTerm(term2))));
-    return node;
+    auto phrase = std::make_unique<SimplePhrase>("field", 0, search::query::Weight(0));
+    phrase->append(std::make_unique<SimpleStringTerm>(makeTerm(term1)));
+    phrase->append(std::make_unique<SimpleStringTerm>(makeTerm(term2)));
+    return phrase;
 }
+
 }  // namespace
 
 // tests basic usage; index some documents in docid order and perform

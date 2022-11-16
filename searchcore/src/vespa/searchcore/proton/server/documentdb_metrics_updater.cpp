@@ -1,10 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "documentdb_metrics_updater.h"
 #include "ddbstate.h"
 #include "document_meta_store_read_guards.h"
-#include "documentdb_metrics_updater.h"
 #include "documentsubdbcollection.h"
 #include "executorthreadingservice.h"
+#include "feedhandler.h"
 #include "idocumentsubdb.h"
 #include <vespa/searchcommon/attribute/status.h>
 #include <vespa/searchcore/proton/attribute/attribute_usage_filter.h>
@@ -15,7 +16,7 @@
 #include <vespa/searchcore/proton/metrics/documentdb_job_trackers.h>
 #include <vespa/searchcore/proton/metrics/executor_threading_service_stats.h>
 #include <vespa/searchlib/attribute/attributevector.h>
-#include <vespa/searchlib/docstore/cachestats.h>
+#include <vespa/vespalib/stllike/cache_stats.h>
 #include <vespa/searchlib/util/searchable_stats.h>
 #include <vespa/vespalib/util/memoryusage.h>
 
@@ -23,7 +24,7 @@
 LOG_SETUP(".proton.server.documentdb_metrics_updater");
 
 using search::LidUsageStats;
-using search::CacheStats;
+using vespalib::CacheStats;
 using vespalib::MemoryUsage;
 
 namespace proton {
@@ -34,12 +35,16 @@ DocumentDBMetricsUpdater::DocumentDBMetricsUpdater(const DocumentSubDBCollection
                                                    ExecutorThreadingService &writeService,
                                                    DocumentDBJobTrackers &jobTrackers,
                                                    matching::SessionManager &sessionManager,
-                                                   const AttributeUsageFilter &writeFilter)
+                                                   const AttributeUsageFilter &writeFilter,
+                                                   FeedHandler& feed_handler)
     : _subDBs(subDBs),
       _writeService(writeService),
       _jobTrackers(jobTrackers),
       _sessionManager(sessionManager),
-      _writeFilter(writeFilter)
+      _writeFilter(writeFilter),
+      _feed_handler(feed_handler),
+      _lastDocStoreCacheStats(),
+      _last_feed_handler_stats()
 {
 }
 
@@ -248,7 +253,7 @@ updateDocumentStoreMetrics(DocumentDBTaggedMetrics::SubDBMetrics::DocumentStoreM
     metrics.maxBucketSpread.set(storageStats.maxBucketSpread());
     updateMemoryUsageMetrics(metrics.memoryUsage, backingStore.getMemoryUsage(), totalStats);
 
-    search::CacheStats cacheStats = backingStore.getCacheStats();
+    vespalib::CacheStats cacheStats = backingStore.getCacheStats();
     totalStats.memoryUsage.incAllocatedBytes(cacheStats.memory_used);
     metrics.cache.memoryUsage.set(cacheStats.memory_used);
     metrics.cache.elements.set(cacheStats.elements);
@@ -280,6 +285,27 @@ updateLidSpaceMetrics(MetricSetType &metrics, const search::IDocumentMetaStore &
     metrics.lidFragmentationFactor.set(stats.getLidFragmentationFactor());
 }
 
+void
+update_feeding_metrics(DocumentDBFeedingMetrics& metrics, FeedHandlerStats stats, std::optional<FeedHandlerStats>& last_stats)
+{
+    auto delta_stats = stats;
+    if (last_stats.has_value()) {
+        delta_stats -= last_stats.value();
+    }
+    last_stats = stats;
+    uint32_t commits = delta_stats.get_commits();
+    if (commits != 0) {
+        double min_operations = delta_stats.get_min_operations().value_or(0);
+        double max_operations = delta_stats.get_max_operations().value_or(0);
+        double avg_operations = ((double) delta_stats.get_operations()) / commits;
+        metrics.commit.operations.addValueBatch(avg_operations, commits, min_operations, max_operations);
+        double min_latency = delta_stats.get_min_latency().value_or(0.0);
+        double max_latency = delta_stats.get_max_latency().value_or(0.0);
+        double avg_latency = delta_stats.get_total_latency() / commits;
+        metrics.commit.latency.addValueBatch(avg_latency, commits, min_latency, max_latency);
+    }
+}
+
 }
 
 void
@@ -297,6 +323,7 @@ DocumentDBMetricsUpdater::updateMetrics(const metrics::MetricLockGuard & guard, 
 
     metrics.totalMemoryUsage.update(totalStats.memoryUsage);
     metrics.totalDiskUsage.set(totalStats.diskUsage);
+    update_feeding_metrics(metrics.feeding, _feed_handler.get_stats(true), _last_feed_handler_stats);
 }
 
 void

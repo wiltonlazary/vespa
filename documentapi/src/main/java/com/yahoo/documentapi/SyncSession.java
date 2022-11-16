@@ -14,8 +14,9 @@ import java.time.Duration;
 import static com.yahoo.documentapi.DocumentOperationParameters.parameters;
 
 /**
- * A session for synchronous access to a document repository. This class
+ * A session for synchronous access to a document repository,
  * provides simple document access where throughput is not a concern.
+ * This is multithread safe.
  *
  * @author Simon Thoresen Hult
  * @author bjorncs
@@ -29,16 +30,6 @@ public interface SyncSession extends Session {
      * @param documentPut the DocumentPut operation
      */
     void put(DocumentPut documentPut);
-
-    /**
-     * Puts a document. When this method returns, the document is safely received.
-     *
-     * @param documentPut the DocumentPut operation
-     * @param priority the priority with which to perform this operation
-     */
-    default void put(DocumentPut documentPut, DocumentProtocol.Priority priority) {
-        put(documentPut, parameters().withPriority(priority));
-    }
 
     /**
      * Puts a document. When this method returns, the document is safely received.
@@ -60,19 +51,6 @@ public interface SyncSession extends Session {
     default Document get(DocumentId id) { return get(id, null); }
 
     /**
-     * Gets a document with an unspecified timeout
-     *
-     * @param id       the id of the document to get
-     * @param fieldSet a comma-separated list of fields to retrieve
-     * @param priority the priority with which to perform this operation
-     * @return the document with this id, or null if there is none
-     * @throws UnsupportedOperationException thrown if this does not support retrieving
-     */
-    default Document get(DocumentId id, String fieldSet, DocumentProtocol.Priority priority) {
-        return get(id, fieldSet, priority, null);
-    }
-
-    /**
      * Gets a document with timeout.
      *
      * @param id the id of the document to get
@@ -87,26 +65,13 @@ public interface SyncSession extends Session {
      * Gets a document with timeout.
      *
      * @param id       the id of the document to get
-     * @param fieldSet a comma-separated list of fields to retrieve
-     * @param priority the priority with which to perform this operation
-     * @param timeout timeout. If timeout is null, an unspecified default will be used
-     * @return the known document having this id, or null if there is no document having this id
-     * @throws UnsupportedOperationException thrown if this access does not support retrieving
-     * @throws DocumentAccessException on any messagebus error, including timeout ({@link com.yahoo.messagebus.ErrorCode#TIMEOUT})
-     */
-    Document get(DocumentId id, String fieldSet, DocumentProtocol.Priority priority, Duration timeout);
-
-    /**
-     * Gets a document with timeout.
-     *
-     * @param id       the id of the document to get
      * @param parameters parameters for the operation
      * @param timeout timeout. If timeout is null, an unspecified default will be used
      * @return the known document having this id, or null if there is no document having this id
      * @throws UnsupportedOperationException thrown if this access does not support retrieving
      * @throws DocumentAccessException on any messagebus error, including timeout ({@link com.yahoo.messagebus.ErrorCode#TIMEOUT})
      */
-    default Document get(DocumentId id, DocumentOperationParameters parameters,  Duration timeout) {
+    default Document get(DocumentId id, DocumentOperationParameters parameters, Duration timeout) {
         return get(id, timeout);
     }
 
@@ -117,16 +82,6 @@ public interface SyncSession extends Session {
      * @return true if the document with this id was removed, false otherwise
      */
     boolean remove(DocumentRemove documentRemove);
-
-    /**
-     * Removes a document if it is present.
-     *
-     * @param documentRemove document remove operation
-     * @param priority the priority with which to perform this operation
-     * @return true if the document with this id was removed, false otherwise.
-     * @throws UnsupportedOperationException thrown if this access does not support removal
-     */
-    boolean remove(DocumentRemove documentRemove, DocumentProtocol.Priority priority);
 
     /**
      * Removes a document if it is present.
@@ -151,19 +106,6 @@ public interface SyncSession extends Session {
      * is not met.
      */
     boolean update(DocumentUpdate update);
-
-    /**
-     * Updates a document.
-     *
-     * @param update   the updates to perform.
-     * @param priority the priority with which to perform this operation
-     * @return false if the updates could not be applied as the document does not exist and
-     * {@link DocumentUpdate#setCreateIfNonExistent(boolean) create-if-non-existent} is not set.
-     * @throws DocumentAccessException on update error, including but not limited to: 1. timeouts,
-     * 2. the document exists but the {@link DocumentUpdate#setCondition(TestAndSetCondition) condition}
-     * is not met.
-     */
-    boolean update(DocumentUpdate update, DocumentProtocol.Priority priority);
 
     /**
      * Updates a document.

@@ -1,60 +1,30 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.provision;
 
+import ai.vespa.validation.PatternedStringWrapper;
+
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Represents a cloud provider used in a hosted Vespa system.
  *
  * @author mpolden
  */
-public class CloudName implements Comparable<CloudName> {
+public class CloudName extends PatternedStringWrapper<CloudName> {
 
-    private final static CloudName defaultCloud = from("default");
-
-    private final String cloud;
+    private static final Pattern pattern = Pattern.compile("[a-z]([a-z0-9-]*[a-z0-9])*");
+    public static final CloudName AWS = from("aws");
+    public static final CloudName GCP = from("gcp");
+    public static final CloudName DEFAULT = from("default");
+    public static final CloudName YAHOO = from("yahoo");
 
     private CloudName(String cloud) {
-        this.cloud = cloud;
-    }
-
-    public String value() {
-        return cloud;
-    }
-
-    public boolean isDefault() {
-        return defaultName().equals(this);
-    }
-
-    public static CloudName defaultName() {
-        return defaultCloud;
+        super(cloud, pattern, "cloud name");
     }
 
     public static CloudName from(String cloud) {
         return new CloudName(cloud);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        CloudName cloudName = (CloudName) o;
-        return Objects.equals(cloud, cloudName.cloud);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(cloud);
-    }
-
-    @Override
-    public String toString() {
-        return cloud;
-    }
-
-    @Override
-    public int compareTo(CloudName o) {
-        return cloud.compareTo(o.cloud);
     }
 
 }

@@ -1,15 +1,55 @@
 {
   "url": "http://localhost:8080/nodes/v2/node/cfg2.yahoo.com",
-  "id": "cfg2.yahoo.com",
-  "state": "ready",
+  "id": "cfg2",
+  "state": "active",
   "type": "config",
   "hostname": "cfg2.yahoo.com",
-  "openStackId": "cfg2",
   "flavor": "default",
   "cpuCores": 2.0,
-  "resources":{"vcpu":2.0,"memoryGb":16.0,"diskGb":400.0,"bandwidthGbps":10.0,"diskSpeed":"fast","storageType":"remote"},
-  "realResources":{"vcpu":2.0,"memoryGb":16.0,"diskGb":400.0,"bandwidthGbps":10.0,"diskSpeed":"fast","storageType":"remote"},
+  "resources": {
+    "vcpu": 2.0,
+    "memoryGb": 16.0,
+    "diskGb": 400.0,
+    "bandwidthGbps": 10.0,
+    "diskSpeed": "fast",
+    "storageType": "remote",
+    "architecture": "x86_64"
+  },
+  "realResources": {
+    "vcpu": 2.0,
+    "memoryGb": 16.0,
+    "diskGb": 400.0,
+    "bandwidthGbps": 10.0,
+    "diskSpeed": "fast",
+    "storageType": "remote",
+    "architecture": "x86_64"
+  },
   "environment": "BARE_METAL",
+  "owner": {
+    "tenant": "cfg",
+    "application": "cfg",
+    "instance": "cfg"
+  },
+  "membership": {
+    "clustertype": "container",
+    "clusterid": "configservers",
+    "group": "0",
+    "index": 1,
+    "retired": false
+  },
+  "restartGeneration": 0,
+  "currentRestartGeneration": 0,
+  "wantedDockerImage": "docker-registry.domain.tld:8080/dist/vespa:6.42.0",
+  "wantedVespaVersion": "6.42.0",
+  "requestedResources": {
+    "vcpu": 2.0,
+    "memoryGb": 16.0,
+    "diskGb": 400.0,
+    "bandwidthGbps": 10.0,
+    "diskSpeed": "fast",
+    "storageType": "remote",
+    "architecture": "x86_64"
+  },
   "rebootGeneration": 0,
   "currentRebootGeneration": 0,
   "failCount": 0,
@@ -17,6 +57,7 @@
   "preferToRetire": false,
   "wantToDeprovision": false,
   "wantToRebuild": false,
+  "down": false,
   "history": [
     {
       "event": "provisioned",
@@ -27,6 +68,48 @@
       "event": "readied",
       "at": 123,
       "agent": "system"
+    },
+    {
+      "event": "reserved",
+      "at": 123,
+      "agent": "application"
+    },
+    {
+      "event": "activated",
+      "at": 123,
+      "agent": "application"
+    }
+  ],
+  "log": [
+    {
+      "event": "provisioned",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "deallocated",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "readied",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "reserved",
+      "at": 123,
+      "agent": "application"
+    },
+    {
+      "event": "reserved",
+      "at": 123,
+      "agent": "application"
+    },
+    {
+      "event": "activated",
+      "at": 123,
+      "agent": "application"
     }
   ],
   "ipAddresses": [

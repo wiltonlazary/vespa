@@ -18,11 +18,9 @@ namespace document {
 
 using namespace fieldvalue;
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(WeightedSetFieldValue, CollectionFieldValue);
-
 namespace {
 const DataType &getKeyType(const DataType &type) {
-    const WeightedSetDataType *wtype = Identifiable::cast<const WeightedSetDataType *>(&type);
+    const WeightedSetDataType *wtype = dynamic_cast<const WeightedSetDataType *>(&type);
     if (!wtype) {
         throw IllegalArgumentException("Cannot generate a weighted set value with non-weighted set "
                                        "type " + type.toString() + ".", VESPA_STRLOC);
@@ -32,15 +30,14 @@ const DataType &getKeyType(const DataType &type) {
 }  // namespace
 
 WeightedSetFieldValue::WeightedSetFieldValue(const DataType &type)
-    : CollectionFieldValue(type),
-      _map_type(new MapDataType(getKeyType(type), *DataType::INT)),
-      _map(*_map_type),
-      _altered(true)
+    : CollectionFieldValue(Type::WSET, type),
+      _map_type(std::make_shared<MapDataType>(getKeyType(type), *DataType::INT)),
+      _map(*_map_type)
 { }
 
 WeightedSetFieldValue::WeightedSetFieldValue(const WeightedSetFieldValue &) = default;
 WeightedSetFieldValue & WeightedSetFieldValue::operator = (const WeightedSetFieldValue &) = default;
-WeightedSetFieldValue::~WeightedSetFieldValue() { }
+WeightedSetFieldValue::~WeightedSetFieldValue() = default;
 
 void WeightedSetFieldValue::verifyKey(const FieldValue & v)
 {
@@ -54,27 +51,24 @@ WeightedSetFieldValue::add(const FieldValue& key, int weight)
 {
     verifyKey(key);
     const WeightedSetDataType & wdt(static_cast<const WeightedSetDataType&>(*_type));
-    _altered = true;
     if (wdt.removeIfZero() && (weight == 0)) {
         _map.erase(key);
         return false;
     }
-    return _map.insert(FieldValue::UP(key.clone()), std::make_unique<IntFieldValue>(weight));
+    return _map.insert(FieldValue::UP(key.clone()), IntFieldValue::make(weight));
 }
 
 bool
 WeightedSetFieldValue::addIgnoreZeroWeight(const FieldValue& key, int32_t weight)
 {
     verifyKey(key);
-    _altered = true;
-    return _map.insert(FieldValue::UP(key.clone()), std::make_unique<IntFieldValue>(weight));
+    return _map.insert(FieldValue::UP(key.clone()), IntFieldValue::make(weight));
 }
 
 void
 WeightedSetFieldValue::push_back(FieldValue::UP key, int weight)
 {
-    _altered = true;
-    _map.push_back(std::move(key), std::make_unique<IntFieldValue>(weight));
+    _map.push_back(std::move(key), IntFieldValue::make(weight));
 }
 
 void
@@ -103,7 +97,6 @@ WeightedSetFieldValue::increment(const FieldValue& key, int val)
             _map.erase(key);
         }
     }
-    _altered = true;
 }
 
 int32_t
@@ -125,7 +118,6 @@ bool
 WeightedSetFieldValue::removeValue(const FieldValue& key)
 {
     bool result = _map.erase(key);
-    _altered |= result;
     return result;
 }
 
@@ -177,14 +169,6 @@ WeightedSetFieldValue::print(std::ostream& out, bool verbose, const std::string&
     }
     if (_map.size() > 0) out << "\n" << indent;
     out << ")";
-}
-
-bool
-WeightedSetFieldValue::hasChanged() const
-{
-    // Keys are not allowed to change in a map, so the keys should not be
-    // referred to externally, and should thus not need to be checked.
-    return _altered;
 }
 
 WeightedSetFieldValue::const_iterator

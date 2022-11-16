@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #include "rpcmessagebus.h"
 #include <vespa/messagebus/network/rpcnetworkparams.h>
-#include <vespa/config/subscription/configuri.h>
+#include <vespa/config/helper/configfetcher.hpp>
 
 namespace mbus {
 
@@ -25,7 +25,7 @@ RPCMessageBus::RPCMessageBus(const ProtocolSet &protocols,
                              const RPCNetworkParams &rpcParams,
                              const config::ConfigUri &routingCfgUri) :
     _net(rpcParams),
-    _bus(_net, protocols, rpcParams.getSkipRequestThread(), rpcParams.getSkipReplyThread()),
+    _bus(_net, protocols),
     _agent(_bus),
     _subscriber(routingCfgUri.getContext())
 {

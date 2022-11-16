@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <cstdlib>
+#include <cassert>
 
 DirectIOException::DirectIOException(const char * fileName, const void * buffer, size_t length, int64_t offset) :
     std::exception(),
@@ -34,12 +35,12 @@ int FastOS_FileInterface::_defaultFAdviseOptions = POSIX_FADV_NORMAL;
 int FastOS_FileInterface::_defaultFAdviseOptions = 0;
 #endif
 
-static const size_t MAX_WRITE_CHUNK_SIZE = 0x4000000; // 64 MB
+static const size_t MAX_CHUNK_SIZE = 0x4000000; // 64 MB
 
 FastOS_FileInterface::FastOS_FileInterface(const char *filename)
     : _fAdviseOptions(_defaultFAdviseOptions),
-      _writeChunkSize(MAX_WRITE_CHUNK_SIZE),
-      _filename(nullptr),
+      _chunkSize(MAX_CHUNK_SIZE),
+      _filename(),
       _openFlags(0),
       _directIOEnabled(false),
       _syncWritesEnabled(false)
@@ -49,20 +50,7 @@ FastOS_FileInterface::FastOS_FileInterface(const char *filename)
 }
 
 
-FastOS_FileInterface::~FastOS_FileInterface()
-{
-    free(_filename);
-}
-
-bool FastOS_FileInterface::InitializeClass ()
-{
-    return true;
-}
-
-bool FastOS_FileInterface::CleanupClass ()
-{
-    return true;
-}
+FastOS_FileInterface::~FastOS_FileInterface() = default;
 
 void
 FastOS_FileInterface::ReadBuf(void *buffer, size_t length)
@@ -143,13 +131,6 @@ FastOS_FileInterface::EnableDirectIO()
 
 
 void
-FastOS_FileInterface::SetWriteChunkSize(size_t writeChunkSize)
-{
-    _writeChunkSize = writeChunkSize;
-}
-
-
-void
 FastOS_FileInterface::EnableSyncWrites()
 {
     if (!IsOpened())
@@ -226,150 +207,17 @@ FastOS_FileInterface::IsMemoryMapped() const
     return false;
 }
 
-bool
-FastOS_FileInterface::CopyFile( const char *src, const char *dst )
-{
-    FastOS_File s, d;
-    FastOS_StatInfo statInfo;
-    bool success = false;
-
-    if ( src != nullptr &&
-        dst != nullptr &&
-        strcmp(src, dst) != 0 &&
-        FastOS_File::Stat( src, &statInfo )) {
-
-        if ( s.OpenReadOnly( src ) && d.OpenWriteOnlyTruncate( dst ) ) {
-
-            unsigned int bufSize = 1024*1024;
-            int64_t bufSizeBound = statInfo._size;
-            if (bufSizeBound < 1)
-                bufSizeBound = 1;
-            if (bufSizeBound < static_cast<int64_t>(bufSize))
-                bufSize = static_cast<unsigned int>(bufSizeBound);
-            char *tmpBuf = new char[ bufSize ];
-
-            if ( tmpBuf != nullptr ) {
-                int64_t copied = 0;
-                success = true;
-                do {
-                    unsigned int readBytes = s.Read( tmpBuf, bufSize );
-                    if (readBytes > 0) {
-
-                        if ( !d.CheckedWrite( tmpBuf, readBytes)) {
-                            success = false;
-                        }
-                        copied += readBytes;
-                    } else {
-                        // Could not read from src.
-                        success = false;
-                    }
-                } while (copied < statInfo._size && success);
-
-                delete [] tmpBuf;
-            } // else out of memory ?
-
-            s.Close();
-            d.Close();
-        } // else Could not open source or destination file.
-    } // else Source file does not exist, or input args are invalid.
-
-    return success;
-}
-
-
-bool
-FastOS_FileInterface::MoveFile(const char* src, const char* dst)
-{
-    bool rc = FastOS_File::Rename(src, dst);
-    if (!rc) {
-        // Try copy and remove.
-        if (CopyFile(src, dst)) {
-            rc = FastOS_File::Delete(src);
-        }
-    }
-    return rc;
-}
-
-
-void
-FastOS_FileInterface::EmptyDirectory( const char *dir,
-                                     const char *keepFile /* = nullptr */ )
-{
-    FastOS_StatInfo statInfo;
-    if (!FastOS_File::Stat(dir, &statInfo))
-        return;             // Fail if the directory does not exist
-    FastOS_DirectoryScan dirScan( dir );
-
-    while (dirScan.ReadNext()) {
-        if (strcmp(dirScan.GetName(), ".") != 0 &&
-            strcmp(dirScan.GetName(), "..") != 0 &&
-            (keepFile == nullptr || strcmp(dirScan.GetName(), keepFile) != 0))
-        {
-            std::string name = dir;
-            name += GetPathSeparator();
-            name += dirScan.GetName();
-            if (dirScan.IsDirectory()) {
-                EmptyAndRemoveDirectory(name.c_str());
-            } else {
-                if ( ! FastOS_File::Delete(name.c_str()) ) {
-                    std::ostringstream os;
-                    os << "Failed deleting file '" << name << "' due to " << getLastErrorString();
-                    throw std::runtime_error(os.str().c_str());
-                }
-            }
-        }
-    }
-}
-
-
-void
-FastOS_FileInterface::EmptyAndRemoveDirectory(const char *dir)
-{
-    EmptyDirectory(dir);
-    FastOS_File::RemoveDirectory(dir);
-}
-
-void
-FastOS_FileInterface::MakeDirIfNotPresentOrExit(const char *name)
-{
-    FastOS_StatInfo statInfo;
-
-    if (FastOS_File::Stat(name, &statInfo)) {
-        if (statInfo._isDirectory)
-            return;
-
-        fprintf(stderr, "%s is not a directory\n", name);
-        std::_Exit(1);
-    }
-
-    if (statInfo._error != FastOS_StatInfo::FileNotFound) {
-        std::error_code ec(errno, std::system_category());
-        fprintf(stderr, "Could not stat %s: %s\n", name, ec.message().c_str());
-        std::_Exit(1);
-    }
-
-    if (!FastOS_File::MakeDirectory(name)) {
-        std::error_code ec(errno, std::system_category());
-        fprintf(stderr, "Could not mkdir(\"%s\", 0775): %s\n", name, ec.message().c_str());
-        std::_Exit(1);
-    }
-}
-
 void
 FastOS_FileInterface::SetFileName(const char *filename)
 {
-    if (_filename != nullptr) {
-        free(_filename);
-    }
-
-    _filename = strdup(filename);
+    _filename = filename;
 }
 
 
 const char *
 FastOS_FileInterface::GetFileName() const
 {
-    return (_filename != nullptr) ? _filename : "";
+    return _filename.c_str();
 }
 
 
@@ -502,11 +350,8 @@ void FastOS_FileInterface::dropFromCache() const
 }
 
 FastOS_DirectoryScanInterface::FastOS_DirectoryScanInterface(const char *path)
-    : _searchPath(strdup(path))
+    : _searchPath(path)
 {
 }
 
-FastOS_DirectoryScanInterface::~FastOS_DirectoryScanInterface()
-{
-    free(_searchPath);
-}
+FastOS_DirectoryScanInterface::~FastOS_DirectoryScanInterface() = default;

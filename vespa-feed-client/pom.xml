@@ -5,17 +5,12 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>vespa-feed-client</artifactId>
   <packaging>jar</packaging>
-  <version>7-SNAPSHOT</version>
-
-  <properties>
-    <!-- Used by internal properties that are still using JDK8-->
-    <maven.compiler.release>8</maven.compiler.release>
-  </properties>
+  <version>8-SNAPSHOT</version>
 
   <dependencies>
     <!-- compile scope -->
@@ -26,7 +21,7 @@
     </dependency>
     <dependency>
       <groupId>org.bouncycastle</groupId>
-      <artifactId>bcpkix-jdk15on</artifactId>
+      <artifactId>bcpkix-jdk18on</artifactId>
       <scope>compile</scope>
     </dependency>
     <dependency>
@@ -38,6 +33,11 @@
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-core</artifactId>
       <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.yahoo.vespa</groupId>
+      <artifactId>vespa-feed-client-api</artifactId>
+      <version>${project.version}</version>
     </dependency>
 
     <!-- test scope -->
@@ -53,19 +53,33 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <jdkToolchain>
-            <version>${java.version}</version>
-          </jdkToolchain>
-          <source>${java.version}</source>
-          <target>${java.version}</target>
-          <showDeprecation>true</showDeprecation>
-          <compilerArgs>
-            <arg>-Xlint:all</arg>
-            <arg>-Xlint:-serial</arg>
-            <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
+        <executions>
+          <execution>
+            <id>compile-java-${vespaClients.jdk.releaseVersion}</id>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+            <configuration>
+              <release>${vespaClients.jdk.releaseVersion}</release>
+              <showDeprecation>true</showDeprecation>
+            </configuration>
+          </execution>
+          <execution>
+            <id>compile-java-9</id>
+            <phase>compile</phase>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+            <configuration>
+              <release>9</release>
+              <compileSourceRoots>
+                <compileSourceRoot>${project.basedir}/src/main/java9</compileSourceRoot>
+              </compileSourceRoots>
+              <outputDirectory>${project.build.outputDirectory}/META-INF/versions/9</outputDirectory>
+              <showDeprecation>true</showDeprecation>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
@@ -81,16 +95,12 @@
               <executable>src/main/sh/vespa-version-generator.sh</executable>
               <arguments>
                 <argument>${project.basedir}/../dist/vtag.map</argument>
-                <argument>${project.build.directory}/generated-sources/vespa-version/ai/vespa/feed/client/Vespa.java</argument>
+                <argument>${project.build.directory}/generated-sources/vespa-version/ai/vespa/feed/client/impl/Vespa.java</argument>
               </arguments>
               <sourceRoot>${project.build.directory}/generated-sources/vespa-version</sourceRoot>
             </configuration>
           </execution>
         </executions>
-      </plugin>
-      <plugin>
-        <groupId>com.yahoo.vespa</groupId>
-        <artifactId>abi-check-plugin</artifactId>
       </plugin>
     </plugins>
   </build>

@@ -1,12 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.cloud;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author bratseth
@@ -14,19 +14,24 @@ import static org.junit.Assert.fail;
 public class SystemInfoTest {
 
     @Test
-    public void testSystemInfo() {
+    @SuppressWarnings("removal")
+    void testSystemInfo() {
+        ApplicationId application = new ApplicationId("tenant1", "application1", "instance1");
         Zone zone = new Zone(Environment.dev, "us-west-1");
-        Cluster cluster = new Cluster(1, List.of());
+        Cloud cloud = new Cloud("aws");
+        String cluster = "clusterName";
         Node node = new Node(0);
 
-        SystemInfo info = new SystemInfo(zone, cluster, node);
+        SystemInfo info = new SystemInfo(application, zone, cloud, cluster, node);
+        assertEquals(application, info.application());
         assertEquals(zone, info.zone());
-        assertEquals(cluster, info.cluster());
+        assertEquals(cloud, info.cloud());
+        assertEquals(cluster, info.clusterName());
         assertEquals(node, info.node());
     }
 
     @Test
-    public void testZone() {
+    void testZone() {
         Zone zone = Zone.from("dev.us-west-1");
         zone = Zone.from(zone.toString());
         assertEquals(Environment.dev, zone.environment());
@@ -54,16 +59,18 @@ public class SystemInfoTest {
     }
 
     @Test
-    public void testCluster() {
+    void testCluster() {
+        String id = "clusterId";
         int size = 1;
         var indices = List.of(1);
-        Cluster cluster = new Cluster(size, indices);
+        Cluster cluster = new Cluster("clusterId", size, indices);
+        assertEquals(id, cluster.id());
         assertEquals(size, cluster.size());
         assertEquals(indices, cluster.indices());
     }
 
     @Test
-    public void testNode() {
+    void testNode() {
         int index = 0;
         Node node = new Node(index);
         assertEquals(index, node.index());

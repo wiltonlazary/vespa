@@ -9,7 +9,7 @@ namespace vespamalloc {
 class MemBlockBoundsCheckBaseTBase : public CommonT<5>
 {
 public:
-    typedef StackEntry<StackReturnEntry> Stack;
+    using Stack = StackEntry;
     void * rawPtr()          { return _ptr; }
     void *ptr()              {
         char *p((char*)_ptr);
@@ -24,7 +24,7 @@ public:
     bool allocated()                const { return (static_cast<uint32_t*>(_ptr)[3] == ALLOC_MAGIC); }
     size_t size()                   const { return static_cast<const uint32_t *>(_ptr)[0]; }
     size_t alignment()              const { return static_cast<const uint32_t *>(_ptr)[1]; }
-    uint32_t threadId()                  const { return static_cast<uint32_t *>(_ptr)[2]; }
+    uint32_t threadId()             const { return static_cast<uint32_t *>(_ptr)[2]; }
     Stack * callStack()                   { return reinterpret_cast<Stack *>((char *)_ptr + size() + alignment()); }
     const Stack * callStack()       const { return reinterpret_cast<const Stack *>((const char *)_ptr + size() + alignment()); }
     void fillMemory(size_t sz) {
@@ -52,7 +52,7 @@ protected:
     void verifyFill() const __attribute__((noinline));
 
     void setSize(size_t sz) {
-        assert(sz < 0x100000000ul);
+        ASSERT_STACKTRACE(sz < 0x100000000ul);
         static_cast<uint32_t *>(_ptr)[0] = sz;
     }
     void setAlignment(size_t alignment) { static_cast<uint32_t *>(_ptr)[1] = alignment; }

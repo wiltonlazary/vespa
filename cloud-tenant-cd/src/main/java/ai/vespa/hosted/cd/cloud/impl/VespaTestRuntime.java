@@ -10,6 +10,7 @@ import ai.vespa.hosted.api.TestConfig;
 import ai.vespa.hosted.cd.Deployment;
 import ai.vespa.hosted.cd.TestRuntime;
 import ai.vespa.hosted.cd.commons.HttpDeployment;
+import ai.vespa.hosted.cd.commons.FeedClientBuilder;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.zone.ZoneId;
@@ -21,6 +22,7 @@ import java.nio.file.Paths;
  * @author mortent
  */
 public class VespaTestRuntime implements TestRuntime {
+
     private final TestConfig config;
     private final Deployment deploymentToTest;
 
@@ -37,16 +39,29 @@ public class VespaTestRuntime implements TestRuntime {
     public VespaTestRuntime(byte[] config) {
         this(fromByteArray(config));
     }
+
     private VespaTestRuntime(TestConfig config) {
         this.config = config;
-        this.deploymentToTest = new HttpDeployment(config.deployments().get(config.zone()), new DefaultEndpointAuthenticator(config.system()));
+        DefaultEndpointAuthenticator authenticator = new DefaultEndpointAuthenticator(config.system());
+        this.deploymentToTest = new HttpDeployment(config.platformVersion(), config.applicationVersion(), config.deployedAt(),
+                                                   config.deployments().get(config.zone()), authenticator);
+        FeedClientBuilder.setEndpointAuthenticator(authenticator);
+        ai.vespa.feed.client.FeedClientBuilder.setFeedClientBuilderSupplier(FeedClientBuilder::new);
     }
 
     @Override
     public Zone zone() {
         return new Zone(
                 ai.vespa.cloud.Environment.valueOf(config.zone().environment().name()),
-                config.zone().region().value()); }
+                config.zone().region().value());
+    }
+
+    @Override
+    public ai.vespa.cloud.ApplicationId application() {
+        return new ai.vespa.cloud.ApplicationId(config.application().tenant().value(),
+                                                config.application().application().value(),
+                                                config.application().instance().value());
+    }
 
     /** Returns the deployment this is testing. */
     @Override
@@ -87,4 +102,5 @@ public class VespaTestRuntime implements TestRuntime {
         System.out.println("TestRuntime: Zone: " + zone.toString());
         return controller.testConfig(id, zone);
     }
+
 }

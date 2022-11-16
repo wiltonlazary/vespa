@@ -25,16 +25,19 @@ import com.yahoo.document.datatypes.Struct;
 import com.yahoo.document.datatypes.StructuredFieldValue;
 import com.yahoo.document.datatypes.TensorFieldValue;
 import com.yahoo.document.datatypes.WeightedSet;
+import com.yahoo.document.internal.GeoPosType;
 import com.yahoo.document.json.readers.TensorReader;
 import com.yahoo.document.json.readers.TensorRemoveUpdateReader;
 import com.yahoo.document.serialization.FieldWriter;
 import com.yahoo.tensor.Tensor;
 import com.yahoo.tensor.TensorAddress;
 import com.yahoo.tensor.TensorType;
+import com.yahoo.tensor.serialization.JsonFormat;
 import com.yahoo.vespa.objects.FieldBase;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Iterator;
 import java.util.Map;
@@ -68,6 +71,19 @@ public class JsonSerializationHelper {
         } catch (IOException e) {
             throw new JsonSerializationException(e);
         }
+    }
+
+    public static void serializeTensorFieldShortForm(JsonGenerator generator, FieldBase field, TensorFieldValue value) {
+        wrapIOException(() -> {
+            fieldNameIfNotNull(generator, field);
+            if (value.getTensor().isPresent()) {
+                Tensor tensor = value.getTensor().get();
+                generator.writeRawValue(new String(JsonFormat.encodeShortForm(tensor), StandardCharsets.UTF_8));
+            } else {
+                generator.writeStartObject();
+                generator.writeEndObject();
+            }
+        });
     }
 
     public static void serializeTensorField(JsonGenerator generator, FieldBase field, TensorFieldValue value) {
@@ -153,12 +169,27 @@ public class JsonSerializationHelper {
         });
     }
 
-    public static void serializeStructField(FieldWriter fieldWriter, JsonGenerator generator, FieldBase field, Struct value) {
-        if (value.getDataType() == PositionDataType.INSTANCE) {
-            serializeString(generator, field, PositionDataType.renderAsString(value));
-            return;
-        }
+    private static void serializeGeoPos(JsonGenerator generator, FieldBase field, Struct value, GeoPosType dataType) {
+        fieldNameIfNotNull(generator, field);
+        wrapIOException(() -> {
+                generator.writeStartObject();
+                generator.writeFieldName("lat");
+                generator.writeRawValue(dataType.fmtLatitude(value));
+                generator.writeFieldName("lng");
+                generator.writeRawValue(dataType.fmtLongitude(value));
+                generator.writeEndObject();
+        });
+    }
 
+    public static void serializeStructField(FieldWriter fieldWriter, JsonGenerator generator, FieldBase field, Struct value) {
+        DataType dt = value.getDataType();
+        if (dt instanceof GeoPosType) {
+            var gpt = (GeoPosType)dt;
+            if (gpt.renderJsonAsVespa8()) {
+                serializeGeoPos(generator, field, value, gpt);
+                return;
+            }
+        }
         serializeStructuredField(fieldWriter, generator, field, value);
     }
 

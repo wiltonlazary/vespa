@@ -1,10 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.query.profile.types;
 
-import com.yahoo.language.process.Embedder;
+import com.yahoo.processing.request.Properties;
+import com.yahoo.search.schema.internal.TensorConverter;
 import com.yahoo.search.query.profile.QueryProfileRegistry;
+import com.yahoo.search.query.profile.SubstituteString;
 import com.yahoo.tensor.Tensor;
 import com.yahoo.tensor.TensorType;
+
+import java.util.Map;
 
 /**
  * A tensor field type in a query profile
@@ -43,25 +47,34 @@ public class TensorFieldType extends FieldType {
 
     @Override
     public Object convertFrom(Object o, ConversionContext context) {
-        if (o instanceof Tensor) return o;
-        if (o instanceof String && ((String)o).startsWith("embed(")) return encode((String)o, context);
-        if (o instanceof String) return Tensor.from(type, (String)o);
-        return null;
-    }
-
-    private Tensor encode(String s, ConversionContext context) {
-        if ( ! s.endsWith(")"))
-            throw new IllegalArgumentException("Expected any string enclosed in embed(), but the argument does not end by ')'");
-        String text = s.substring("embed(".length(), s.length() - 1);
-        return context.embedder().embed(text, toEmbedderContext(context), type);
-    }
-
-    private Embedder.Context toEmbedderContext(ConversionContext context) {
-        return new Embedder.Context(context.destination()).setLanguage(context.language());
+        if (o instanceof SubstituteString) return new SubstituteStringTensor((SubstituteString) o, type);
+        return new TensorConverter(context.embedders()).convertTo(type, context.destination(), o, context.language());
     }
 
     public static TensorFieldType fromTypeString(String s) {
         return new TensorFieldType(TensorType.fromSpec(s));
+    }
+
+    /**
+     * A substitute string that should become a tensor once the substitution is performed at lookup time.
+     * This is to support substitution strings in tensor values by parsing (only) such tensors at
+     * lookup time rather than at construction time.
+     */
+    private static class SubstituteStringTensor extends SubstituteString {
+
+        private final TensorType type;
+
+        SubstituteStringTensor(SubstituteString string, TensorType type) {
+            super(string.components(), string.stringValue());
+            this.type = type;
+        }
+
+        @Override
+        public Object substitute(Map<String, String> context, Properties substitution) {
+            String substituted = super.substitute(context, substitution).toString();
+            return Tensor.from(type, substituted);
+        }
+
     }
 
 }

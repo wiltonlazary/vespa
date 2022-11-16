@@ -19,7 +19,7 @@ public class ConfigSentinel extends AbstractService implements SentinelConfig.Pr
 
     private final ApplicationId applicationId;
     private final Zone zone;
-    private final boolean requireConnectivityCheck;
+    private final boolean ignoreRequestedStackSizes;
 
     /**
      * Constructs a new ConfigSentinel for the given host.
@@ -32,7 +32,7 @@ public class ConfigSentinel extends AbstractService implements SentinelConfig.Pr
         super(host, "sentinel");
         this.applicationId = applicationId;
         this.zone = zone;
-        this.requireConnectivityCheck = featureFlags.requireConnectivityCheck();
+        this.ignoreRequestedStackSizes = featureFlags.ignoreThreadStackSizes();
         portsMeta.on(0).tag("rpc").tag("admin");
         portsMeta.on(1).tag("telnet").tag("interactive").tag("http").tag("state");
         setProp("clustertype", "hosts");
@@ -75,21 +75,10 @@ public class ConfigSentinel extends AbstractService implements SentinelConfig.Pr
     @Override
     public void getConfig(SentinelConfig.Builder builder) {
         builder.application(getApplicationConfig());
+        builder.ignoreRequestedStackSizes(ignoreRequestedStackSizes);
         for (Service s : getHostResource().getServices()) {
-            if (s.getStartupCommand() != null) {
-                builder.service(getServiceConfig(s));
-            }
+            s.getStartupCommand().ifPresent(command -> builder.service(getServiceConfig(s, command)));
         }
-        builder.connectivity(getConnectivityConfig(requireConnectivityCheck));
-    }
-
-    private SentinelConfig.Connectivity.Builder getConnectivityConfig(boolean enable) {
-        var builder = new SentinelConfig.Connectivity.Builder();
-        if (! enable) {
-            builder.minOkPercent(0);
-            builder.maxBadCount(Integer.MAX_VALUE);
-        }
-        return builder;
     }
 
     private SentinelConfig.Application.Builder getApplicationConfig() {
@@ -102,12 +91,15 @@ public class ConfigSentinel extends AbstractService implements SentinelConfig.Pr
         return builder;
     }
 
-    private SentinelConfig.Service.Builder getServiceConfig(Service s) {
+    private SentinelConfig.Service.Builder getServiceConfig(Service s, String startupCommand) {
         SentinelConfig.Service.Builder serviceBuilder = new SentinelConfig.Service.Builder();
-        serviceBuilder.command(s.getStartupCommand());
+        serviceBuilder.command(startupCommand);
         serviceBuilder.name(s.getServiceName());
         serviceBuilder.id(s.getConfigId());
         serviceBuilder.affinity(getServiceAffinity(s));
+        for (var entry : s.getEnvVars().entrySet()) {
+            serviceBuilder.environ(b -> b.varname(entry.getKey()).varvalue(entry.getValue().toString()));
+        }
         setPreShutdownCommand(serviceBuilder, s);
         return serviceBuilder;
     }

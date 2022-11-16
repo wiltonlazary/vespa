@@ -6,12 +6,12 @@
 #include <vespa/config-indexschema.h>
 #include <vespa/config-rank-profiles.h>
 #include <vespa/config-summary.h>
-#include <vespa/config-summarymap.h>
+#include <vespa/config-bucketspaces.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/fileacquirer/config-filedistributorrpc.h>
 #include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/server/bootstrapconfig.h>
-#include <vespa/searchcore/proton/server/bootstrapconfigmanager.h>
 #include <vespa/searchcore/proton/server/documentdbconfigmanager.h>
 #include <vespa/searchcore/proton/server/document_db_config_owner.h>
 #include <vespa/searchcore/proton/server/proton_config_snapshot.h>
@@ -20,14 +20,11 @@
 #include <vespa/searchcore/proton/server/i_proton_disk_layout.h>
 #include <vespa/searchcore/proton/server/threading_service_config.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
-#include <vespa/searchcore/config/config-ranking-constants.h>
-#include <vespa/searchcore/config/config-onnx-models.h>
-#include <vespa/vespalib/gtest/gtest.h>
-#include <vespa/searchcommon/common/schemaconfigurer.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/test/insertion_operators.h>
-#include <vespa/config-bucketspaces.h>
+#include <vespa/config/subscription/configuri.h>
+#include <vespa/vespalib/gtest/gtest.h>
 
 using namespace config;
 using namespace proton;
@@ -41,12 +38,9 @@ using vespa::config::content::core::BucketspacesConfigBuilder;
 using InitializeThreads = std::shared_ptr<vespalib::ThreadStackExecutorBase>;
 using config::ConfigUri;
 using document::DocumentTypeRepo;
-using document::DocumenttypesConfig;
-using document::DocumenttypesConfigBuilder;
 using search::TuneFileDocumentDB;
 using std::map;
 using search::index::Schema;
-using search::index::SchemaBuilder;
 using proton::matching::RankingConstants;
 using proton::matching::RankingExpressions;
 using proton::matching::OnnxModels;
@@ -57,30 +51,25 @@ struct DBConfigFixture {
     RankProfilesConfigBuilder _rankProfilesBuilder;
     IndexschemaConfigBuilder _indexschemaBuilder;
     SummaryConfigBuilder _summaryBuilder;
-    SummarymapConfigBuilder _summarymapBuilder;
     JuniperrcConfigBuilder _juniperrcBuilder;
     ImportedFieldsConfigBuilder _importedFieldsBuilder;
 
     Schema::SP buildSchema()
     {
-        Schema::SP schema(std::make_shared<Schema>());
-        SchemaBuilder::build(_attributesBuilder, *schema);
-        SchemaBuilder::build(_summaryBuilder, *schema);
-        SchemaBuilder::build(_indexschemaBuilder, *schema);
-        return schema;
+        return DocumentDBConfig::build_schema(_attributesBuilder, _indexschemaBuilder);
     }
 
-    RankingConstants::SP buildRankingConstants()
+    static RankingConstants::SP buildRankingConstants()
     {
         return std::make_shared<RankingConstants>();
     }
 
-    RankingExpressions::SP buildRankingExpressions()
+    static RankingExpressions::SP buildRankingExpressions()
     {
         return std::make_shared<RankingExpressions>();
     }
 
-    OnnxModels::SP buildOnnxModels()
+    static OnnxModels::SP buildOnnxModels()
     {
         return std::make_shared<OnnxModels>();
     }
@@ -100,17 +89,16 @@ struct DBConfigFixture {
              std::make_shared<IndexschemaConfig>(_indexschemaBuilder),
              std::make_shared<AttributesConfig>(_attributesBuilder),
              std::make_shared<SummaryConfig>(_summaryBuilder),
-             std::make_shared<SummarymapConfig>(_summarymapBuilder),
              std::make_shared<JuniperrcConfig>(_juniperrcBuilder),
-             documentTypes,
-             repo,
+             std::move(documentTypes),
+             std::move(repo),
              std::make_shared<ImportedFieldsConfig>(_importedFieldsBuilder),
              std::make_shared<TuneFileDocumentDB>(),
              buildSchema(),
              std::make_shared<DocumentDBMaintenanceConfig>(),
              search::LogDocumentStore::Config(),
-             std::make_shared<const ThreadingServiceConfig>(ThreadingServiceConfig::make(1)),
-             std::make_shared<const AllocConfig>(),
+             ThreadingServiceConfig::make(),
+             AllocConfig::makeDefault(),
              configId,
              docTypeName);
     }
@@ -127,7 +115,7 @@ struct ConfigFixture {
     int64_t _generation;
     std::shared_ptr<ProtonConfigSnapshot> _cachedConfigSnapshot;
 
-    ConfigFixture(const std::string & id)
+    explicit ConfigFixture(const std::string & id)
         : _configId(id),
           _protonBuilder(),
           _documenttypesBuilder(),
@@ -141,7 +129,7 @@ struct ConfigFixture {
         addDocType("_alwaysthere_", "default");
     }
 
-    ~ConfigFixture() { }
+    ~ConfigFixture();
 
     DBConfigFixture *addDocType(const std::string & name, const std::string& bucket_space) {
         DocumenttypesConfigBuilder::Documenttype dt;
@@ -197,13 +185,13 @@ struct ConfigFixture {
     }
 
     BootstrapConfig::SP getBootstrapConfig(int64_t generation) const {
-        return BootstrapConfig::SP(new BootstrapConfig(generation,
-                                                       BootstrapConfig::DocumenttypesConfigSP(new DocumenttypesConfig(_documenttypesBuilder)),
-                                                       std::shared_ptr<const DocumentTypeRepo>(new DocumentTypeRepo(_documenttypesBuilder)),
-                                                       BootstrapConfig::ProtonConfigSP(new ProtonConfig(_protonBuilder)),
-                                                       std::make_shared<FiledistributorrpcConfig>(),
-                                                       std::make_shared<BucketspacesConfig>(_bucketspacesBuilder),
-                                                       std::make_shared<TuneFileDocumentDB>(), HwInfo()));
+        return std::make_shared<BootstrapConfig>(generation,
+                                                 std::make_shared<DocumenttypesConfig>(_documenttypesBuilder),
+                                                 std::make_shared<DocumentTypeRepo>(_documenttypesBuilder),
+                                                 std::make_shared<ProtonConfig>(_protonBuilder),
+                                                 std::make_shared<FiledistributorrpcConfig>(),
+                                                 std::make_shared<BucketspacesConfig>(_bucketspacesBuilder),
+                                                 std::make_shared<TuneFileDocumentDB>(), HwInfo());
     }
 
     std::shared_ptr<ProtonConfigSnapshot> getConfigSnapshot()
@@ -232,6 +220,8 @@ struct ConfigFixture {
 
 };
 
+ConfigFixture::~ConfigFixture() = default;
+
 struct MyProtonConfigurerOwner;
 
 struct MyDocumentDBConfigOwner : public DocumentDBConfigOwner
@@ -248,9 +238,9 @@ struct MyDocumentDBConfigOwner : public DocumentDBConfigOwner
           _owner(owner)
     {
     }
-    ~MyDocumentDBConfigOwner() { }
+    ~MyDocumentDBConfigOwner() override;
 
-    void reconfigure(const DocumentDBConfig::SP & config) override;
+    void reconfigure(DocumentDBConfig::SP config) override;
     document::BucketSpace getBucketSpace() const override { return _bucket_space; }
 };
 
@@ -262,12 +252,15 @@ struct MyLog
         : _log()
     {
     }
+    ~MyLog();
 
-    void appendLog(vespalib::string logEntry)
+    void appendLog(const vespalib::string & logEntry)
     {
         _log.emplace_back(logEntry);
     }
 };
+
+MyLog::~MyLog() = default;
 
 struct MyProtonConfigurerOwner : public IProtonConfigurerOwner,
                                  public MyLog
@@ -282,7 +275,7 @@ struct MyProtonConfigurerOwner : public IProtonConfigurerOwner,
           _dbs()
     {
     }
-    ~MyProtonConfigurerOwner() { }
+    ~MyProtonConfigurerOwner() override;
 
     std::shared_ptr<DocumentDBConfigOwner> addDocumentDB(const DocTypeName &docTypeName,
                                                                  document::BucketSpace bucketSpace,
@@ -300,7 +293,7 @@ struct MyProtonConfigurerOwner : public IProtonConfigurerOwner,
         _dbs.insert(std::make_pair(docTypeName, db));
         std::ostringstream os;
         os << "add db " << docTypeName.getName() << " " << documentDBConfig->getGeneration();
-        _log.push_back(os.str());
+        _log.emplace_back(os.str());
         return db;
     }
     void removeDocumentDB(const DocTypeName &docTypeName) override {
@@ -308,34 +301,37 @@ struct MyProtonConfigurerOwner : public IProtonConfigurerOwner,
         _dbs.erase(docTypeName);
         std::ostringstream os;
         os << "remove db " << docTypeName.getName();
-        _log.push_back(os.str());
+        _log.emplace_back(os.str());
     }
     void applyConfig(const std::shared_ptr<BootstrapConfig> &bootstrapConfig) override {
         std::ostringstream os;
         os << "apply config " << bootstrapConfig->getGeneration();
-        _log.push_back(os.str());
+        _log.emplace_back(os.str());
         
     }
-    void reconfigureDocumentDB(const vespalib::string &name, const DocumentDBConfig::SP &config)
+    void reconfigureDocumentDB(const vespalib::string &name, const DocumentDBConfig & config)
     {
         std::ostringstream os;
-        os << "reconf db " << name << " " << config->getGeneration();
-        _log.push_back(os.str());
+        os << "reconf db " << name << " " << config.getGeneration();
+        _log.emplace_back(os.str());
     }
     void sync() { _executor.sync(); }
 };
 
+MyProtonConfigurerOwner::~MyProtonConfigurerOwner() = default;
+MyDocumentDBConfigOwner::~MyDocumentDBConfigOwner() = default;
+
 void
-MyDocumentDBConfigOwner::reconfigure(const DocumentDBConfig::SP & config)
+MyDocumentDBConfigOwner::reconfigure(DocumentDBConfig::SP config)
 {
-    _owner.reconfigureDocumentDB(_name, config);
+    _owner.reconfigureDocumentDB(_name, *config);
 }
 
 struct MyProtonDiskLayout : public IProtonDiskLayout
 {
     MyLog &_log;
 
-    MyProtonDiskLayout(MyLog &myLog)
+    explicit MyProtonDiskLayout(MyLog &myLog)
         : _log(myLog)
     {
     }

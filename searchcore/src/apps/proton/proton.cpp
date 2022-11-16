@@ -5,12 +5,17 @@
 #include <vespa/metrics/metricmanager.h>
 #include <vespa/vespalib/util/signalhandler.h>
 #include <vespa/vespalib/util/programoptions.h>
-#include <vespa/vespalib/io/fileutil.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <vespa/config/common/exceptions.h>
-#include <vespa/fastos/app.h>
+#include <vespa/config/common/configcontext.h>
+#include <vespa/fnet/transport.h>
+#include <vespa/fastos/thread.h>
+#include <vespa/fastos/file.h>
+#include <filesystem>
 #include <iostream>
 #include <thread>
+#include <fcntl.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("proton");
@@ -34,13 +39,15 @@ Params::Params()
 {}
 Params::~Params() = default;
 
-class App : public FastOS_Application
+class App
 {
 private:
     static void setupSignals();
-    Params parseParams();
+    static void setup_fadvise();
+    Params parseParams(int argc, char **argv);
+    void startAndRun(FastOS_ThreadPool & threadPool, FNET_Transport & transport, int argc, char **argv);
 public:
-    int Main() override;
+    int main(int argc, char **argv);
 };
 
 void
@@ -49,13 +56,31 @@ App::setupSignals()
     SIG::PIPE.ignore();
     SIG::INT.hook();
     SIG::TERM.hook();
+    SIG::enable_cross_thread_stack_tracing();
+}
+
+void
+App::setup_fadvise()
+{
+#ifdef __linux__
+    char * fadvise = getenv("VESPA_FADVISE_OPTIONS");
+    if (fadvise != nullptr) {
+        int fadviseOptions(0);
+        if (strstr(fadvise, "SEQUENTIAL")) { fadviseOptions |= POSIX_FADV_SEQUENTIAL; }
+        if (strstr(fadvise, "RANDOM"))     { fadviseOptions |= POSIX_FADV_RANDOM; }
+        if (strstr(fadvise, "WILLNEED"))   { fadviseOptions |= POSIX_FADV_WILLNEED; }
+        if (strstr(fadvise, "DONTNEED"))   { fadviseOptions |= POSIX_FADV_DONTNEED; }
+        if (strstr(fadvise, "NOREUSE"))    { fadviseOptions |= POSIX_FADV_NOREUSE; }
+        FastOS_FileInterface::setDefaultFAdviseOptions(fadviseOptions);
+    }
+#endif
 }
 
 Params
-App::parseParams()
+App::parseParams(int argc, char **argv)
 {
     Params params;
-    vespalib::ProgramOptions parser(_argc, _argv);
+    vespalib::ProgramOptions parser(argc, argv);
     parser.setSyntaxMessage("proton -- the nextgen search core");
     parser.addOption("identity", params.identity, "Node identity and config id");
     std::string empty;
@@ -173,60 +198,94 @@ ExitOnSignal::operator()()
     }
 }
 
+fnet::TransportConfig
+buildTransportConfig() {
+    uint32_t numProcs = std::thread::hardware_concurrency();
+    return fnet::TransportConfig(std::max(1u, std::min(4u, numProcs/8)));
+}
+
+class Transport {
+public:
+    Transport(const fnet::TransportConfig & config, FastOS_ThreadPool & threadPool)
+        : _transport(config)
+    {
+        _transport.Start(&threadPool);
+    }
+    ~Transport() {
+        _transport.ShutDown(true);
+    }
+    FNET_Transport & transport() { return _transport; }
+private:
+    FNET_Transport _transport;
+};
+
+}
+
+void
+App::startAndRun(FastOS_ThreadPool & threadPool, FNET_Transport & transport, int argc, char **argv) {
+    Params params = parseParams(argc, argv);
+    LOG(debug, "identity: '%s'", params.identity.c_str());
+    LOG(debug, "serviceidentity: '%s'", params.serviceidentity.c_str());
+    LOG(debug, "subscribeTimeout: '%" PRIu64 "'", params.subscribeTimeout);
+    std::chrono::milliseconds subscribeTimeout(params.subscribeTimeout);
+
+    config::ConfigServerSpec configServerSpec(transport);
+    config::ConfigUri identityUri(params.identity, std::make_shared<config::ConfigContext>(configServerSpec));
+    auto protonUP = std::make_unique<proton::Proton>(threadPool, transport, identityUri,
+                                                     (argc > 0) ? argv[0] : "proton", subscribeTimeout);
+    proton::Proton & proton = *protonUP;
+    proton::BootstrapConfig::SP configSnapshot = proton.init();
+    if (proton.hasAbortedInit()) {
+        EV_STOPPING("proton", "shutdown after aborted init");
+    } else {
+        const ProtonConfig &protonConfig = configSnapshot->getProtonConfig();
+        vespalib::string basedir = protonConfig.basedir;
+        std::filesystem::create_directories(std::filesystem::path(basedir));
+        {
+            ExitOnSignal exit_on_signal;
+            proton.init(configSnapshot);
+        }
+        configSnapshot.reset();
+        std::unique_ptr<ProtonServiceLayerProcess> spiProton;
+
+        if ( ! params.serviceidentity.empty()) {
+            spiProton = std::make_unique<ProtonServiceLayerProcess>(identityUri.createWithNewId(params.serviceidentity), proton);
+            spiProton->setupConfig(subscribeTimeout);
+            spiProton->createNode();
+            EV_STARTED("servicelayer");
+        } else {
+            proton.getMetricManager().init(identityUri, threadPool);
+        }
+        EV_STARTED("proton");
+        while (!(SIG::INT.check() || SIG::TERM.check() || (spiProton && spiProton->getNode().attemptedStopped()))) {
+            std::this_thread::sleep_for(1000ms);
+            if (spiProton && spiProton->configUpdated()) {
+                storage::ResumeGuard guard(spiProton->getNode().pause());
+                spiProton->updateConfig();
+            }
+        }
+        // Ensure metric manager and state server are shut down before we start tearing
+        // down any service layer components that they may end up transitively using.
+        protonUP->shutdown_config_fetching_and_state_exposing_components_once();
+        if (spiProton) {
+            spiProton->getNode().requestShutdown("controlled shutdown");
+            spiProton->shutdown();
+            EV_STOPPING("servicelayer", "clean shutdown");
+        }
+        protonUP.reset();
+        EV_STOPPING("proton", "clean shutdown");
+    }
 }
 
 int
-App::Main()
+App::main(int argc, char **argv)
 {
-    proton::Proton::UP protonUP;
     try {
         setupSignals();
-        Params params = parseParams();
-        LOG(debug, "identity: '%s'", params.identity.c_str());
-        LOG(debug, "serviceidentity: '%s'", params.serviceidentity.c_str());
-        LOG(debug, "subscribeTimeout: '%" PRIu64 "'", params.subscribeTimeout);
-        protonUP = std::make_unique<proton::Proton>(params.identity, _argc > 0 ? _argv[0] : "proton", std::chrono::milliseconds(params.subscribeTimeout));
-        proton::Proton & proton = *protonUP;
-        proton::BootstrapConfig::SP configSnapshot = proton.init();
-        if (proton.hasAbortedInit()) {
-            EV_STOPPING("proton", "shutdown after aborted init");
-        } else {
-            const ProtonConfig &protonConfig = configSnapshot->getProtonConfig();
-            vespalib::string basedir = protonConfig.basedir;
-            vespalib::mkdir(basedir, true);
-            {
-                ExitOnSignal exit_on_signal;
-                proton.init(configSnapshot);
-            }
-            configSnapshot.reset();
-            std::unique_ptr<ProtonServiceLayerProcess> spiProton;
-            if ( ! params.serviceidentity.empty()) {
-                spiProton = std::make_unique<ProtonServiceLayerProcess>(params.serviceidentity, proton);
-                spiProton->setupConfig(std::chrono::milliseconds(params.subscribeTimeout));
-                spiProton->createNode();
-                EV_STARTED("servicelayer");
-            } else {
-                proton.getMetricManager().init(params.identity, proton.getThreadPool());
-            }
-            EV_STARTED("proton");
-            while (!(SIG::INT.check() || SIG::TERM.check() || (spiProton && spiProton->getNode().attemptedStopped()))) {
-                std::this_thread::sleep_for(1000ms);
-                if (spiProton && spiProton->configUpdated()) {
-                    storage::ResumeGuard guard(spiProton->getNode().pause());
-                    spiProton->updateConfig();
-                }
-            }
-            // Ensure metric manager and state server are shut down before we start tearing
-            // down any service layer components that they may end up transitively using.
-            protonUP->shutdown_config_fetching_and_state_exposing_components_once();
-            if (spiProton) {
-                spiProton->getNode().requestShutdown("controlled shutdown");
-                spiProton->shutdown();
-                EV_STOPPING("servicelayer", "clean shutdown");
-            }
-            protonUP.reset();
-            EV_STOPPING("proton", "clean shutdown");
-        }
+        setup_fadvise();
+        FastOS_ThreadPool threadPool(128_Ki);
+        Transport transport(buildTransportConfig(), threadPool);
+        startAndRun(threadPool, transport.transport(), argc, argv);
     } catch (const vespalib::InvalidCommandLineArgumentsException &e) {
         LOG(warning, "Invalid commandline arguments: '%s'", e.what());
         return 1;
@@ -247,12 +306,11 @@ App::Main()
         LOG(error, "Unknown IllegalStateException: '%s'", e.what());
         throw;
     }
-    protonUP.reset();
     LOG(debug, "Fully stopped, all destructors run.)");
     return 0;
 }
 
 int main(int argc, char **argv) {
     App app;
-    return app.Entry(argc, argv);
+    return app.main(argc, argv);
 }

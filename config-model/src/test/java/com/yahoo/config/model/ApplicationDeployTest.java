@@ -10,19 +10,18 @@ import com.yahoo.config.model.application.provider.DeployData;
 import com.yahoo.config.model.application.provider.FilesApplicationPackage;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.document.DataType;
 import com.yahoo.io.IOUtils;
 import com.yahoo.path.Path;
-import com.yahoo.searchdefinition.DocumentOnlySearch;
-import com.yahoo.searchdefinition.Search;
+import com.yahoo.schema.DocumentOnlySchema;
+import com.yahoo.schema.Schema;
 import com.yahoo.vespa.config.ConfigDefinition;
 import com.yahoo.vespa.config.ConfigDefinitionKey;
 import com.yahoo.vespa.model.VespaModel;
-import com.yahoo.vespa.model.search.NamedSchema;
-import org.junit.After;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.xml.sax.SAXException;
 
 import java.io.File;
@@ -37,48 +36,43 @@ import java.util.Map;
 import java.util.Set;
 import java.util.jar.JarEntry;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class ApplicationDeployTest {
 
     private static final String TESTDIR = "src/test/cfg/application/";
     private static final String TEST_SCHEMAS_DIR = TESTDIR + "app1/schemas/";
 
-    @Rule
-    public TemporaryFolder tmpFolder = new TemporaryFolder();
+    @TempDir
+    public File tmpFolder;
 
     @Test
-    public void testVespaModel() throws SAXException, IOException {
+    void testVespaModel() throws SAXException, IOException {
         ApplicationPackageTester tester = ApplicationPackageTester.create(TESTDIR + "app1");
         new VespaModel(tester.app());
-        List<NamedSchema> schemas = tester.getSchemas();
+        List<Schema> schemas = tester.getSchemas();
         assertEquals(schemas.size(), 5);
-        for (NamedSchema searchDefinition : schemas) {
-            Search s = searchDefinition.getSearch();
-            switch (s.getName()) {
+        for (Schema schema : schemas) {
+            switch (schema.getName()) {
                 case "music":
                 case "laptop":
                 case "pc":
                 case "sock":
                     break;
                 case "product":
-                    assertTrue(s instanceof DocumentOnlySearch);
-                    assertEquals(DataType.STRING, s.getDocument().getField("title").getDataType());
+                    assertTrue(schema instanceof DocumentOnlySchema);
+                    assertEquals(DataType.STRING, schema.getDocument().getField("title").getDataType());
                     break;
                 default:
                     fail();
             }
         }
         assertEquals(Set.of(new File(TEST_SCHEMAS_DIR + "laptop.sd"),
-                            new File(TEST_SCHEMAS_DIR + "music.sd"),
-                            new File(TEST_SCHEMAS_DIR + "pc.sd"),
-                            new File(TEST_SCHEMAS_DIR + "product.sd"),
-                            new File(TEST_SCHEMAS_DIR + "sock.sd")),
-                     new HashSet<>(tester.app().getSearchDefinitionFiles()));
+                        new File(TEST_SCHEMAS_DIR + "music.sd"),
+                        new File(TEST_SCHEMAS_DIR + "pc.sd"),
+                        new File(TEST_SCHEMAS_DIR + "product.sd"),
+                        new File(TEST_SCHEMAS_DIR + "sock.sd")),
+                new HashSet<>(tester.app().getSearchDefinitionFiles()));
 
         List<FilesApplicationPackage.Component> components = tester.app().getComponents();
         assertEquals(1, components.size());
@@ -95,8 +89,8 @@ public class ApplicationDeployTest {
 
         // Check that getFilename works
         ArrayList<String> sdFileNames = new ArrayList<>();
-        for (NamedSchema sd : schemas)
-            sdFileNames.add(sd.getFilename());
+        for (Schema schema : schemas)
+            sdFileNames.add(schema.getName() + ApplicationPackage.SD_NAME_SUFFIX);
         Collections.sort(sdFileNames);
         assertEquals("laptop.sd", sdFileNames.get(0));
         assertEquals("music.sd", sdFileNames.get(1));
@@ -106,7 +100,7 @@ public class ApplicationDeployTest {
     }
 
     @Test
-    public void testGetFile() throws IOException {
+    void testGetFile() throws IOException {
         ApplicationPackageTester tester = ApplicationPackageTester.create(TESTDIR + "app1");
         try (Reader foo = tester.app().getFile(Path.fromString("files/foo.json")).createReader()) {
             assertEquals(IOUtils.readAll(foo), "foo : foo\n");
@@ -130,7 +124,7 @@ public class ApplicationDeployTest {
     }
 
     @Test
-    public void include_dirs_are_included() {
+    void include_dirs_are_included() {
         ApplicationPackageTester tester = ApplicationPackageTester.create(TESTDIR + "include_dirs");
 
         Set<String> includeDirs = new HashSet<>(tester.app().getUserIncludeDirs());
@@ -138,12 +132,12 @@ public class ApplicationDeployTest {
     }
 
     @Test
-    public void non_existent_include_dir_is_not_allowed() throws Exception {
-        File appDir = tmpFolder.newFolder("non-existent-include");
+    void non_existent_include_dir_is_not_allowed() throws Exception {
+        File appDir = newFolder(tmpFolder, "non-existent-include");
         String services =
                 "<services version='1.0'>" +
-                "    <include dir='non-existent' />" +
-                "</services>\n";
+                        "    <include dir='non-existent' />" +
+                        "</services>\n";
 
         IOUtils.writeFile(new File(appDir, "services.xml"), services, false);
         try {
@@ -151,13 +145,13 @@ public class ApplicationDeployTest {
             fail("Expected exception due to non-existent include dir");
         } catch (IllegalArgumentException e) {
             assertEquals("Cannot include directory 'non-existent', as it does not exist. Directory must reside in application package, and path must be given relative to application package.",
-                         e.getMessage());
+                    e.getMessage());
         }
     }
 
     @Test
-    public void testThatModelIsRebuiltWhenSearchDefinitionIsAdded() throws IOException {
-        File tmpDir = tmpFolder.getRoot();
+    void testThatModelIsRebuiltWhenSearchDefinitionIsAdded() throws IOException {
+        File tmpDir = tmpFolder;
         IOUtils.copyDirectory(new File(TESTDIR, "app1"), tmpDir);
         ApplicationPackageTester tester = ApplicationPackageTester.create(tmpDir.getAbsolutePath());
         assertEquals(5, tester.getSchemas().size());
@@ -168,55 +162,57 @@ public class ApplicationDeployTest {
     }
 
     @Test
-    public void testThatAppWithDeploymentXmlIsValid() throws IOException {
-        File tmpDir = tmpFolder.getRoot();
+    void testThatAppWithDeploymentXmlIsValid() throws IOException {
+        File tmpDir = tmpFolder;
         IOUtils.copyDirectory(new File(TESTDIR, "app1"), tmpDir);
         ApplicationPackageTester.create(tmpDir.getAbsolutePath());
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testThatAppWithIllegalDeploymentXmlIsNotValid() throws IOException {
-        File tmpDir = tmpFolder.getRoot();
-        IOUtils.copyDirectory(new File(TESTDIR, "app_invalid_deployment_xml"), tmpDir);
-        ApplicationPackageTester.create(tmpDir.getAbsolutePath());
+    @Test
+    void testThatAppWithIllegalDeploymentXmlIsNotValid() throws IOException {
+        assertThrows(IllegalArgumentException.class, () -> {
+            File tmpDir = tmpFolder;
+            IOUtils.copyDirectory(new File(TESTDIR, "app_invalid_deployment_xml"), tmpDir);
+            ApplicationPackageTester.create(tmpDir.getAbsolutePath());
+        });
     }
 
     @Test
-    public void testComplicatedDeploymentSpec() throws IOException {
-        File tmpDir = tmpFolder.getRoot();
+    void testComplicatedDeploymentSpec() throws IOException {
+        File tmpDir = tmpFolder;
         IOUtils.copyDirectory(new File(TESTDIR, "app_complicated_deployment_spec"), tmpDir);
         ApplicationPackageTester.create(tmpDir.getAbsolutePath());
     }
 
     @Test
-    public void testAppWithEmptyProdRegion() throws IOException {
-        File tmpDir = tmpFolder.getRoot();
+    void testAppWithEmptyProdRegion() throws IOException {
+        File tmpDir = tmpFolder;
         IOUtils.copyDirectory(new File(TESTDIR, "empty_prod_region_in_deployment_xml"), tmpDir);
         ApplicationPackageTester.create(tmpDir.getAbsolutePath());
     }
 
     @Test
-    public void testThatAppWithInvalidParallelDeploymentFails() throws IOException {
+    void testThatAppWithInvalidParallelDeploymentFails() throws IOException {
         String expectedMessage = "4:  <staging/>\n" +
-        "5:  <prod global-service-id=\"query\">\n" +
-        "6:    <parallel>\n" +
-        "7:      <instance id=\"hello\" />\n" +
-        "8:    </parallel>\n" +
-        "9:  </prod>\n" +
-        "10:</deployment>\n";
-        File tmpDir = tmpFolder.getRoot();
+                "5:  <prod global-service-id=\"query\">\n" +
+                "6:    <parallel>\n" +
+                "7:      <instance id=\"hello\" />\n" +
+                "8:    </parallel>\n" +
+                "9:  </prod>\n" +
+                "10:</deployment>\n";
+        File tmpDir = tmpFolder;
         IOUtils.copyDirectory(new File(TESTDIR, "invalid_parallel_deployment_xml"), tmpDir);
         try {
             ApplicationPackageTester.create(tmpDir.getAbsolutePath());
             fail("Expected exception");
         } catch (IllegalArgumentException e) {
             assertEquals("Invalid XML according to XML schema, error in deployment.xml: element \"instance\" not allowed here; expected the element end-tag or element \"delay\", \"region\", \"steps\" or \"test\" [7:30], input:\n" + expectedMessage,
-                         e.getMessage());
+                    e.getMessage());
         }
     }
 
     @Test
-    public void testConfigDefinitionsFromJars() {
+    void testConfigDefinitionsFromJars() {
         String appName = "src/test/cfg//application/app1";
         FilesApplicationPackage app = FilesApplicationPackage.fromFile(new File(appName), false);
         Map<ConfigDefinitionKey, UnparsedConfigDefinition> defs = app.getAllExistingConfigDefs();
@@ -224,14 +220,14 @@ public class ApplicationDeployTest {
     }
 
     @Test
-    public void testMetaData() throws IOException {
+    void testMetaData() throws IOException {
         File tmp = Files.createTempDir();
         String appPkg = TESTDIR + "app1";
         IOUtils.copyDirectory(new File(appPkg), tmp);
         ApplicationId applicationId = ApplicationId.from("tenant1", "application1", "instance1");
-        DeployData deployData = new DeployData("foo",
-                                               "bar",
+        DeployData deployData = new DeployData("bar",
                                                applicationId,
+                                               Tags.fromString("tag1 tag2"),
                                                13L,
                                                false,
                                                1337L,
@@ -240,11 +236,11 @@ public class ApplicationDeployTest {
         app.writeMetaData();
         FilesApplicationPackage newApp = FilesApplicationPackage.fromFileWithDeployData(tmp, deployData);
         ApplicationMetaData meta = newApp.getMetaData();
-        assertEquals("foo", meta.getDeployedByUser());
         assertEquals("bar", meta.getDeployPath());
         assertEquals(applicationId, meta.getApplicationId());
-        assertEquals(13L, (long)meta.getDeployTimestamp());
-        assertEquals(1337L, (long)meta.getGeneration());
+        assertEquals(Tags.fromString("tag1 tag2"), meta.getTags());
+        assertEquals(13L, (long) meta.getDeployTimestamp());
+        assertEquals(1337L, (long) meta.getGeneration());
         assertEquals(3L, meta.getPreviousActiveGeneration());
         String checksum = meta.getChecksum();
         assertNotNull(checksum);
@@ -261,7 +257,7 @@ public class ApplicationDeployTest {
     }
 
     @Test
-    public void testGetJarEntryName() {
+    void testGetJarEntryName() {
         JarEntry e = new JarEntry("/schemas/foo.sd");
         assertEquals(ApplicationPackage.getFileName(e), "foo.sd");
         e = new JarEntry("bar");
@@ -271,7 +267,7 @@ public class ApplicationDeployTest {
     }
 
     @Test
-    public void testGetJarEntryNameForLegacyPath() {
+    void testGetJarEntryNameForLegacyPath() {
         JarEntry e = new JarEntry("/searchdefinitions/foo.sd");
         assertEquals(ApplicationPackage.getFileName(e), "foo.sd");
         e = new JarEntry("bar");
@@ -280,7 +276,7 @@ public class ApplicationDeployTest {
         assertEquals(ApplicationPackage.getFileName(e), "");
     }
 
-    @After
+    @AfterEach
     public void cleanDirs() {
         IOUtils.recursiveDeleteDir(new File(TESTDIR + "app1/myDir"));
         IOUtils.recursiveDeleteDir(new File(TESTDIR + "app1/searchdefinitions/myDir2"));
@@ -288,7 +284,7 @@ public class ApplicationDeployTest {
     }
 
     @SuppressWarnings("ResultOfMethodCallIgnored")
-    @After
+    @AfterEach
     public void cleanFiles() {
         new File(new File(TESTDIR + "app1"),"foo.txt").delete();
         new File(new File(TESTDIR + "app1"),"searchdefinitions/bar.text").delete();
@@ -299,13 +295,13 @@ public class ApplicationDeployTest {
      * Tests that an invalid jar is identified as not being a jar file
      */
     @Test
-    public void testInvalidJar() {
+    void testInvalidJar() {
         try {
             FilesApplicationPackage.getComponents(new File("src/test/cfg/application/validation/invalidjar_app"));
             fail();
         } catch (IllegalArgumentException e) {
             assertEquals("Error opening jar file 'invalid.jar'. Please check that this is a valid jar file",
-                         e.getMessage());
+                    e.getMessage());
         }
     }
 
@@ -316,7 +312,7 @@ public class ApplicationDeployTest {
      * definition without version in file name
      */
     @Test
-    public void testConfigDefinitionsAndNamespaces() {
+    void testConfigDefinitionsAndNamespaces() {
         final File appDir = new File("src/test/cfg/application/configdeftest");
         FilesApplicationPackage app = FilesApplicationPackage.fromFile(appDir);
 
@@ -334,10 +330,21 @@ public class ApplicationDeployTest {
         assertEquals("bar", def.getName());
     }
 
-    @Test(expected=IllegalArgumentException.class)
-    public void testDifferentNameOfSdFileAndSearchName() {
-        ApplicationPackageTester tester = ApplicationPackageTester.create(TESTDIR + "sdfilenametest");
-        new DeployState.Builder().applicationPackage(tester.app()).build();
+    @Test
+    void testDifferentNameOfSdFileAndSearchName() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            ApplicationPackageTester tester = ApplicationPackageTester.create(TESTDIR + "sdfilenametest");
+            new DeployState.Builder().applicationPackage(tester.app()).build();
+        });
+    }
+
+    private static File newFolder(File root, String... subDirs) throws IOException {
+        String subFolder = String.join("/", subDirs);
+        File result = new File(root, subFolder);
+        if (!result.mkdirs()) {
+            throw new IOException("Couldn't create folders " + root);
+        }
+        return result;
     }
 
 }

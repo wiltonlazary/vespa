@@ -9,9 +9,9 @@
 #include "lid_hold_list.h"
 #include "raw_document_meta_data.h"
 #include <vespa/searchcore/proton/common/subdbtype.h>
-#include <vespa/searchlib/attribute/singlesmallnumericattribute.h>
 #include <vespa/searchlib/queryeval/blueprint.h>
 #include <vespa/searchlib/docstore/ibucketizer.h>
+#include <vespa/searchcommon/common/growstrategy.h>
 #include <vespa/vespalib/util/rcuvector.h>
 
 namespace proton::bucketdb {
@@ -43,13 +43,15 @@ public:
     typedef documentmetastore::IStore::GlobalId GlobalId;
     typedef documentmetastore::IStore::BucketId BucketId;
     typedef documentmetastore::IStore::Timestamp Timestamp;
+    using MetaDataView = vespalib::ConstArrayRef<RawDocumentMetaData>;
+    using UnboundMetaDataView = const RawDocumentMetaData *;
 
     // If using proton::DocumentMetaStore directly, the
     // DocumentMetaStoreAttribute functions here are used instead of
     // the ones with the same signature in proton::IDocumentMetaStore.
     using DocumentMetaStoreAttribute::commit;
     using DocumentMetaStoreAttribute::getCommittedDocIdLimit;
-    using DocumentMetaStoreAttribute::removeAllOldGenerations;
+    using DocumentMetaStoreAttribute::reclaim_unused_memory;
     using DocumentMetaStoreAttribute::getCurrentGeneration;
 
 private:
@@ -64,6 +66,7 @@ private:
     // using the metadata store.
     using TreeType =  vespalib::btree::BTree<documentmetastore::GidToLidMapKey, vespalib::btree::BTreeNoLeafData,
                                              vespalib::btree::NoAggregated, const KeyComp &>;
+    using LidAndRawDocumentMetaData = std::pair<uint32_t, RawDocumentMetaData>;
 
     MetaDataStore       _metaDataStore;
     TreeType            _gidToLidMap;
@@ -71,11 +74,12 @@ private:
     SerialNum           _gid_to_lid_map_write_itr_prepare_serial_num;
     documentmetastore::LidAllocator _lidAlloc;
     BucketDBOwnerSP     _bucketDB;
-    uint32_t            _shrinkLidSpaceBlockers;
+    std::atomic<uint32_t> _shrinkLidSpaceBlockers;
     const SubDbType     _subDbType;
     bool                _trackDocumentSizes;
+    size_t              _changesSinceCommit;
     OperationListenerSP _op_listener;
-    vespalib::MemoryUsage _cached_gid_to_lid_map_memory_usage;
+    bool                _should_compact_gid_to_lid_map;
 
     DocId getFreeLid();
     DocId peekFreeLid();
@@ -89,8 +93,8 @@ private:
     void onUpdateStat() override;
 
     // Implements AttributeVector
-    void onGenerationChange(generation_t generation) override;
-    void removeOldGenerations(generation_t firstUsed) override;
+    void before_inc_generation(generation_t current_gen) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
     std::unique_ptr<search::AttributeSaver> onInitSave(vespalib::stringref fileName) override;
     bool onLoad(vespalib::Executor *executor) override;
 
@@ -118,7 +122,7 @@ private:
         return getCommittedDocIdLimit();
     }
     void doRemoveAllOldGenerations() override {
-        removeAllOldGenerations();
+        reclaim_unused_memory();
     }
     uint64_t doGetCurrentGeneration() const override {
         return getCurrentGeneration();
@@ -126,7 +130,15 @@ private:
 
     VESPA_DLL_LOCAL DocId readNextDoc(documentmetastore::Reader & reader, TreeType::Builder & treeBuilder);
 
-    void remove(DocId lid, uint64_t cached_iterator_sequence_id, bucketdb::Guard &bucketGuard);
+    RawDocumentMetaData removeInternal(DocId lid, uint64_t cached_iterator_sequence_id);
+    void remove_batch_internal_btree(std::vector<LidAndRawDocumentMetaData>& removed);
+
+    MetaDataView make_meta_data_view() { return {&_metaDataStore[0], getCommittedDocIdLimit()}; }
+    UnboundMetaDataView acquire_unbound_meta_data_view() const noexcept { return &_metaDataStore.acquire_elem_ref(0); }
+    UnboundMetaDataView get_unbound_meta_data_view() const noexcept { return &_metaDataStore.get_elem_ref(0); } // Called from writer only
+
+    uint32_t get_shrink_lid_space_blockers() const noexcept { return _shrinkLidSpaceBlockers.load(std::memory_order_relaxed); }
+    void set_shrink_lid_space_blockers(uint32_t value) noexcept { _shrinkLidSpaceBlockers.store(value, std::memory_order_relaxed); }
 
 public:
     typedef TreeType::Iterator Iterator;
@@ -134,13 +146,15 @@ public:
     static constexpr size_t minHeaderLen = 0x1000;
     static constexpr size_t entrySize =
         sizeof(uint32_t) + GlobalId::LENGTH + sizeof(uint8_t) +
-        sizeof(Timestamp::Type);
+        sizeof(Timestamp);
 
+    explicit DocumentMetaStore(BucketDBOwnerSP bucketDB);
+    DocumentMetaStore(BucketDBOwnerSP bucketDB, const vespalib::string & name);
     DocumentMetaStore(BucketDBOwnerSP bucketDB,
-                      const vespalib::string & name=getFixedName(),
-                      const search::GrowStrategy & grow=search::GrowStrategy(),
+                      const vespalib::string & name,
+                      const search::GrowStrategy & grow,
                       SubDbType subDbType = SubDbType::READY);
-    ~DocumentMetaStore();
+    ~DocumentMetaStore() override;
 
     /**
      * Implements documentmetastore::IStore.
@@ -155,31 +169,28 @@ public:
      * map is then re-built the same way it was originally where add()
      * was used to create the <lid, gid> pairs.
      **/
-    Result put(const GlobalId &gid, const BucketId &bucketId,
-               const Timestamp &timestamp, uint32_t docSize, DocId lid, uint64_t prepare_serial_num) override;
-    bool updateMetaData(DocId lid, const BucketId &bucketId, const Timestamp &timestamp) override;
+    Result put(const GlobalId &gid, const BucketId &bucketId, Timestamp timestamp,
+               uint32_t docSize, DocId lid, uint64_t prepare_serial_num) override;
+    bool updateMetaData(DocId lid, const BucketId &bucketId, Timestamp timestamp) override;
     bool remove(DocId lid, uint64_t prepare_serial_num) override;
 
     BucketId getBucketOf(const vespalib::GenerationHandler::Guard & guard, uint32_t lid) const override;
     vespalib::GenerationHandler::Guard getGuard() const override;
 
     /**
-     * Put lid on a hold list, for later reuse.  Typically called
-     * after remove() has been called and related structures for
-     * document has been torn down (memory index, attribute vectors,
+     * Put lids on a hold list, for later reuse.  Typically called
+     * after remove() or removeBatch() has been called and related structures for
+     * documents have been torn down (memory index, attribute vectors,
      * document store).
      */
-    void removeComplete(DocId lid) override;
+    void removes_complete(const std::vector<DocId>& lids) override;
     void move(DocId fromLid, DocId toLid, uint64_t prepare_serial_num) override;
     bool validButMaybeUnusedLid(DocId lid) const { return _lidAlloc.validButMaybeUnusedLid(lid); }
     bool validLidFast(DocId lid) const { return _lidAlloc.validLid(lid); }
+    bool validLidFast(DocId lid, uint32_t limit) const { return _lidAlloc.validLid(lid, limit); }
     bool validLid(DocId lid) const override { return validLidFast(lid); }
-    void removeBatch(const std::vector<DocId> &lidsToRemove, const DocId docIdLimit) override;
-    /**
-     * Put lids on a hold list, for laster reuse.
-     */
-    void removeBatchComplete(const std::vector<DocId> &lidsToRemove) override;
-    const RawDocumentMetaData & getRawMetaData(DocId lid) const override { return _metaDataStore[lid]; }
+    void removeBatch(const std::vector<DocId> &lidsToRemove, DocId docIdLimit) override;
+    const RawDocumentMetaData & getRawMetaData(DocId lid) const override { return _metaDataStore.acquire_elem_ref(lid); }
 
     /**
      * Implements search::IDocumentMetaStore
@@ -197,7 +208,7 @@ public:
     /**
      * Implements search::AttributeVector
      */
-    SearchContext::UP
+    std::unique_ptr<search::attribute::SearchContext>
     getSearch(std::unique_ptr<search::QueryTermSimple> qTerm,
               const search::attribute::SearchContextParams &params) const override;
 
@@ -234,7 +245,7 @@ public:
     bucketdb::BucketDeltaPair handleSplit(const bucketdb::SplitBucketSession &session) override;
     bucketdb::BucketDeltaPair handleJoin(const bucketdb::JoinBucketsSession &session) override;
     void setBucketState(const BucketId &bucketId, bool active) override;
-    void populateActiveBuckets(const BucketId::List &buckets) override;
+    void populateActiveBuckets(BucketId::List buckets) override;
     ConstIterator beginFrozen() const;
 
     const vespalib::GenerationHandler & getGenerationHandler() const {
@@ -245,9 +256,9 @@ public:
         return AttributeVector::getGenerationHandler();
     }
 
-    const search::GrowableBitVector &getActiveLids() const { return _lidAlloc.getActiveLids(); }
+    const search::BitVector &getActiveLids() const { return _lidAlloc.getActiveLids(); }
 
-    void clearDocs(DocId lidLow, DocId lidLimit) override;
+    void clearDocs(DocId lidLow, DocId lidLimit, bool in_shrink_lid_space) override;
 
     /*
      * Called by document db executor to unblock shrinking of lid
@@ -261,6 +272,8 @@ public:
     uint32_t getVersion() const override;
     void setTrackDocumentSizes(bool trackDocumentSizes) { _trackDocumentSizes = trackDocumentSizes; }
     void foreach(const search::IGidToLidMapperVisitor &visitor) const override;
+    long onSerializeForAscendingSort(DocId, void *, long, const search::common::BlobConverter *) const override;
+    long onSerializeForDescendingSort(DocId, void *, long, const search::common::BlobConverter *) const override;
 };
 
 }

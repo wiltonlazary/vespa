@@ -1,5 +1,5 @@
 # Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-search complex {
+schema complex {
 
   document complex {
 
@@ -41,7 +41,6 @@ search complex {
     field prefixenabled type string {
       indexing: index | attribute
       index: prefix
-      attribute: huge
       normalizing: none
       stemming: shortest
     }
@@ -140,6 +139,7 @@ search complex {
  fieldset special {
    fields: special1, special2, special3
  }
+ raw-as-base64-in-summary : false
  fieldset all {
    fields: combineda, combinedb
  }

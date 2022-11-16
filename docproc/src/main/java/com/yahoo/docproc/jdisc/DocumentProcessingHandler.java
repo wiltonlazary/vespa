@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.docproc.jdisc;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.chain.Chain;
 import com.yahoo.component.chain.model.ChainsModel;
 import com.yahoo.component.provider.ComponentRegistry;
@@ -12,12 +12,11 @@ import com.yahoo.container.core.ChainsConfig;
 import com.yahoo.container.core.document.ContainerDocumentConfig;
 import com.yahoo.docproc.AbstractConcreteDocumentFactory;
 import com.yahoo.docproc.CallStack;
-import com.yahoo.docproc.DocprocService;
+import com.yahoo.docproc.impl.DocprocService;
 import com.yahoo.docproc.DocumentProcessor;
 import com.yahoo.docproc.jdisc.messagebus.MbusRequestContext;
 import com.yahoo.docproc.proxy.SchemaMap;
 import com.yahoo.document.DocumentTypeManager;
-import com.yahoo.document.config.DocumentmanagerConfig;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.Request;
 import com.yahoo.jdisc.handler.AbstractRequestHandler;
@@ -25,7 +24,6 @@ import com.yahoo.jdisc.handler.ContentChannel;
 import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.messagebus.jdisc.MbusRequest;
 import com.yahoo.processing.execution.chain.ChainRegistry;
-import com.yahoo.statistics.Statistics;
 
 import java.util.TimerTask;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -43,7 +41,7 @@ import static com.yahoo.component.chain.model.ChainsModelBuilder.buildFromConfig
  */
 public class DocumentProcessingHandler extends AbstractRequestHandler {
 
-    private static Logger log = Logger.getLogger(DocumentProcessingHandler.class.getName());
+    private static final Logger log = Logger.getLogger(DocumentProcessingHandler.class.getName());
     private final ComponentRegistry<DocprocService> docprocServiceRegistry;
     private final ComponentRegistry<AbstractConcreteDocumentFactory> docFactoryRegistry;
     private final ChainRegistry<DocumentProcessor> chainRegistry = new ChainRegistry<>();
@@ -57,7 +55,7 @@ public class DocumentProcessingHandler extends AbstractRequestHandler {
                                       ComponentRegistry<AbstractConcreteDocumentFactory> docFactoryRegistry,
                                       int numThreads,
                                       DocumentTypeManager documentTypeManager,
-                                      ChainsModel chainsModel, SchemaMap schemaMap, Statistics statistics,
+                                      ChainsModel chainsModel, SchemaMap schemaMap,
                                       Metric metric,
                                       ContainerDocumentConfig containerDocConfig) {
         this.docprocServiceRegistry = docprocServiceRegistry;
@@ -73,7 +71,7 @@ public class DocumentProcessingHandler extends AbstractRequestHandler {
 
             for (Chain<DocumentProcessor> chain : chainRegistry.allComponents()) {
                 log.config("Setting up call stack for chain " + chain.getId());
-                DocprocService service = new DocprocService(chain.getId(), convertToCallStack(chain, statistics, metric), documentTypeManager, computeNumThreads(numThreads));
+                DocprocService service = new DocprocService(chain.getId(), convertToCallStack(chain, metric), documentTypeManager, computeNumThreads(numThreads));
                 service.setInService(true);
                 docprocServiceRegistry.register(service.getId(), service);
             }
@@ -91,7 +89,6 @@ public class DocumentProcessingHandler extends AbstractRequestHandler {
         this(docprocServiceRegistry, documentProcessorComponentRegistry, docFactoryRegistry,
              params.getMaxNumThreads(),
              params.getDocumentTypeManager(), params.getChainsModel(), params.getSchemaMap(),
-             params.getStatisticsManager(),
              params.getMetric(),
              params.getContainerDocConfig());
     }
@@ -101,18 +98,16 @@ public class DocumentProcessingHandler extends AbstractRequestHandler {
                                      ComponentRegistry<AbstractConcreteDocumentFactory> docFactoryRegistry,
                                      ChainsConfig chainsConfig,
                                      SchemamappingConfig mappingConfig,
-                                     DocumentmanagerConfig docManConfig,
+                                     DocumentTypeManager documentTypeManager,
                                      DocprocConfig docprocConfig,
                                      ContainerDocumentConfig containerDocConfig,
-                                     Statistics manager,
                                      Metric metric) {
         this(new ComponentRegistry<>(),
              documentProcessorComponentRegistry, docFactoryRegistry,
                 new DocumentProcessingHandlerParameters()
                      .setMaxNumThreads(docprocConfig.numthreads())
-                     .setDocumentTypeManager(new DocumentTypeManager(docManConfig))
+                     .setDocumentTypeManager(documentTypeManager)
                      .setChainsModel(buildFromConfig(chainsConfig)).setSchemaMap(configureMapping(mappingConfig))
-                     .setStatisticsManager(manager)
                      .setMetric(metric)
                      .setContainerDocumentConfig(containerDocConfig));
         docprocServiceRegistry.freeze();
@@ -139,8 +134,8 @@ public class DocumentProcessingHandler extends AbstractRequestHandler {
     }
 
 
-    private static CallStack convertToCallStack(Chain<DocumentProcessor> chain, Statistics statistics, Metric metric) {
-        CallStack stack = new CallStack(chain.getId().stringValue(), statistics, metric);
+    private static CallStack convertToCallStack(Chain<DocumentProcessor> chain, Metric metric) {
+        CallStack stack = new CallStack(chain.getId().stringValue(), metric);
         for (DocumentProcessor processor : chain.components()) {
             processor.getFieldMap().putAll(DocprocService.schemaMap.chainMap(chain.getId().stringValue(), processor.getId().stringValue()));
             stack.addLast(processor);
@@ -165,7 +160,7 @@ public class DocumentProcessingHandler extends AbstractRequestHandler {
 
         String serviceName = requestContext.getServiceName();
         DocprocService service = docprocServiceRegistry.getComponent(serviceName);
-        //No need to enqueue a task if the docproc chain is empty, just forward requestContext
+        // No need to enqueue a task if the docproc chain is empty, just forward requestContext
         if (service == null) {
             log.log(Level.SEVERE, "DocprocService for session '" + serviceName +
                                     "' not found, returning request '" + requestContext + "'.");
@@ -188,9 +183,9 @@ public class DocumentProcessingHandler extends AbstractRequestHandler {
         laterExecutor.schedule(timerTask, delay, TimeUnit.MILLISECONDS);
     }
 
-    private class LaterTimerTask extends TimerTask {
-        private DocumentProcessingTask processingTask;
-        private long delay;
+    private static class LaterTimerTask extends TimerTask {
+        private final DocumentProcessingTask processingTask;
+        private final long delay;
 
         private LaterTimerTask(DocumentProcessingTask processingTask, long delay) {
             this.delay = delay;

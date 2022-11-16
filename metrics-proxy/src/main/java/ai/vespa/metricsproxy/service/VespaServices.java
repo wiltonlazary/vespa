@@ -1,11 +1,11 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.service;
 
 import ai.vespa.metricsproxy.core.MonitoringConfig;
 import ai.vespa.metricsproxy.metric.model.DimensionId;
 import ai.vespa.metricsproxy.service.VespaServicesConfig.Service;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 
 import java.util.ArrayList;
 import java.util.Collections;

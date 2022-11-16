@@ -3,7 +3,6 @@ vespa_define_module(
     DEPENDS
     fastos
     vespalib
-    staging_vespalib
 
     APPS
     src/fbench
@@ -17,5 +16,3 @@ vespa_define_module(
     src/test
     src/test/authority
 )
-
-vespa_install_script(util/resultfilter.pl vespa-fbench-result-filter.pl bin)

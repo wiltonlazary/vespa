@@ -1,10 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "file_settings.h"
 #include "file_with_header.h"
+#include "file_settings.h"
 #include "filesizecalculator.h"
 #include <vespa/fastos/file.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <cassert>
 
 namespace search {
 
@@ -30,7 +31,8 @@ FileWithHeader::FileWithHeader(std::unique_ptr<FastOS_FileInterface> file_in)
         _header_len = _header.readFile(*_file);
         _file->SetPosition(_header_len);
         if (!extract_file_size(_header, *_file, _file_size)) {
-            _file->Close();
+            bool close_ok = _file->Close();
+            assert(close_ok);
         }
     }
 }
@@ -52,7 +54,8 @@ FileWithHeader::rewind()
 void
 FileWithHeader::close()
 {
-    _file->Close();
+    bool close_ok = _file->Close();
+    assert(close_ok);
 }
 
 

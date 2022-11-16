@@ -1,12 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc.metric;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.container.di.componentgraph.Provider;
 import com.yahoo.container.jdisc.MetricConsumerFactory;
-import com.yahoo.container.jdisc.state.StateMonitor;
-import com.yahoo.metrics.MetricsPresentationConfig;
 
 /**
  * A dependency injection provider which provides the default metrics provider

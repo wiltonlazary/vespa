@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.ml;
 
+import ai.vespa.modelintegration.evaluator.OnnxEvaluator;
 import ai.vespa.models.evaluation.FunctionEvaluator;
 import ai.vespa.models.evaluation.Model;
 import ai.vespa.models.evaluation.ModelsEvaluator;
@@ -17,7 +18,7 @@ import com.yahoo.vespa.config.search.core.RankingConstantsConfig;
 import com.yahoo.vespa.config.search.core.RankingExpressionsConfig;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.container.ApplicationContainerCluster;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
@@ -26,9 +27,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Tests stateless model evaluation (turned on by the "model-evaluation" tag in "container")
@@ -39,7 +39,8 @@ import static org.junit.Assert.assertTrue;
 public class StatelessOnnxEvaluationTest {
 
     @Test
-    public void testStatelessOnnxModelNameCollision() throws IOException {
+    void testStatelessOnnxModelNameCollision() {
+        assumeTrue(OnnxEvaluator.isRuntimeAvailable());
         Path appDir = Path.fromString("src/test/cfg/application/onnx_name_collision");
         try {
             ImportedModelTester tester = new ImportedModelTester("onnx", appDir);
@@ -59,7 +60,8 @@ public class StatelessOnnxEvaluationTest {
     }
 
     @Test
-    public void testStatelessOnnxModelEvaluation() throws IOException {
+    void testStatelessOnnxModelEvaluation() throws IOException {
+        assumeTrue(OnnxEvaluator.isRuntimeAvailable());
         Path appDir = Path.fromString("src/test/cfg/application/onnx");
         Path storedAppDir = appDir.append("copy");
         try {

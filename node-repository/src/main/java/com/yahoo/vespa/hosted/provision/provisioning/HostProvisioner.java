@@ -1,9 +1,12 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterSpec;
+import com.yahoo.config.provision.HostEvent;
+import com.yahoo.config.provision.NodeAllocationException;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.vespa.hosted.provision.Node;
@@ -11,25 +14,26 @@ import com.yahoo.vespa.hosted.provision.Node;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
- * Service for provisioning physical docker tenant hosts inside the zone.
+ * A service which supports provisioning container hosts dynamically.
  *
  * @author freva
  */
 public interface HostProvisioner {
 
     enum HostSharing {
+
         /** The host must be provisioned exclusively for the applicationId */
         exclusive,
 
-        /** The host must be provisioned to be shared with other applications. \
-         */
+        /** The host must be provisioned to be shared with other applications. */
         shared,
 
-        /** The client has no requirements on whether the host must be provisio\
-         ned exclusively or shared. */
+        /** The client has no requirements on whether the host must be provisioned exclusively or shared. */
         any
+
     }
 
     /**
@@ -37,21 +41,29 @@ public interface HostProvisioner {
      *
      * @param provisionIndices list of unique provision indices which will be used to generate the node hostnames
      *                         on the form of <code>[prefix][index].[domain]</code>
-     * @param hostType The host type to provision
+     * @param hostType the host type to provision
      * @param resources the resources needed per node - the provisioned host may be significantly larger
      * @param applicationId id of the application that will own the provisioned host
      * @param osVersion the OS version to use. If this version does not exist, implementations may choose a suitable
      *                  fallback version.
      * @param sharing puts requirements on sharing or exclusivity of the host to be provisioned.
-     * @return list of {@link ProvisionedHost} describing the provisioned nodes
+     * @param clusterType provision host exclusively for this cluster type
+     * @param cloudAccount the cloud account to use
+     * @param provisionedHostConsumer consumer of {@link ProvisionedHost}s describing the provisioned nodes,
+     *                                the {@link Node} returned from {@link ProvisionedHost#generateHost()} must be
+     *                                written to ZK immediately in case the config server goes down while waiting
+     *                                for the provisioning to finish.
+     * @throws NodeAllocationException if the cloud provider cannot satisfy the request
      */
-    List<ProvisionedHost> provisionHosts(List<Integer> provisionIndices,
-                                         NodeType hostType,
-                                         NodeResources resources,
-                                         ApplicationId applicationId,
-                                         Version osVersion,
-                                         HostSharing sharing,
-                                         Optional<ClusterSpec.Type> clusterType);
+    void provisionHosts(List<Integer> provisionIndices,
+                        NodeType hostType,
+                        NodeResources resources,
+                        ApplicationId applicationId,
+                        Version osVersion,
+                        HostSharing sharing,
+                        Optional<ClusterSpec.Type> clusterType,
+                        CloudAccount cloudAccount,
+                        Consumer<List<ProvisionedHost>> provisionedHostConsumer) throws NodeAllocationException;
 
     /**
      * Continue provisioning of given list of Nodes.
@@ -75,5 +87,17 @@ public interface HostProvisioner {
      * @param host host to deprovision.
      */
     void deprovision(Node host);
+
+    /** Replace the root (OS) disk of host. Implementations of this are expected to be idempotent.
+     *
+     * @return the updated node object
+     */
+    Node replaceRootDisk(Node host);
+
+    /**
+     * Returns the maintenance events scheduled for hosts in this zone, in given cloud accounts. Host events in the
+     * zone's default cloud account are always included.
+     */
+    List<HostEvent> hostEventsIn(List<CloudAccount> cloudAccounts);
 
 }

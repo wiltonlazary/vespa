@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/persistence/spi/persistenceprovider.h>
 #include <gtest/gtest.h>
 
@@ -19,8 +20,6 @@ class TestDocMan;
 
 }
 
-namespace document::internal { class InternalDocumenttypesType; }
-
 namespace storage::spi {
 
 class ConformanceTest : public ::testing::Test {
@@ -29,7 +28,6 @@ public:
     using PersistenceProviderUP = std::unique_ptr<PersistenceProvider>;
     struct PersistenceFactory {
         typedef std::unique_ptr<PersistenceFactory> UP;
-        using DocumenttypesConfig = const document::internal::InternalDocumenttypesType;
 
         virtual ~PersistenceFactory() = default;
         virtual PersistenceProviderUP getPersistenceImplementation(
@@ -69,7 +67,6 @@ protected:
 
     void populateBucket(const Bucket& b,
                         PersistenceProvider& spi,
-                        Context& context,
                         uint32_t from,
                         uint32_t to,
                         document::TestDocMan& testDocMan);
@@ -150,6 +147,10 @@ protected:
             const Bucket& source,
             const Bucket& target,
             document::TestDocMan& testDocMan);
+
+    void test_iterate_empty_or_missing_bucket(bool bucket_exists);
+
+    void test_empty_bucket_info(bool bucket_exists, bool active);
 
     ConformanceTest();
     ConformanceTest(const std::string &docType);

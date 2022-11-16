@@ -2,8 +2,8 @@
 
 #pragma once
 
+#include "enum_store_compaction_spec.h"
 #include "enum_store_dictionary.h"
-#include "enum_store_loaders.h"
 #include "enumcomparator.h"
 #include "i_enum_store.h"
 #include "loadedenumvalue.h"
@@ -55,10 +55,7 @@ private:
     bool                   _is_folded;
     ComparatorType         _comparator;
     ComparatorType         _foldedComparator;
-    vespalib::MemoryUsage  _cached_values_memory_usage;
-    vespalib::AddressSpace _cached_values_address_space_usage;
-    vespalib::MemoryUsage  _cached_dictionary_btree_usage;
-    vespalib::MemoryUsage  _cached_dictionary_hash_usage;
+    enumstore::EnumStoreCompactionSpec _compaction_spec;
 
     EnumStoreT(const EnumStoreT & rhs) = delete;
     EnumStoreT & operator=(const EnumStoreT & rhs) = delete;
@@ -79,6 +76,7 @@ private:
     std::unique_ptr<EntryComparator> allocate_optionally_folded_comparator(bool folded) const;
     ComparatorType make_optionally_folded_comparator(bool folded) const;
 public:
+    EnumStoreT(bool has_postings, const search::DictionaryConfig& dict_cfg, std::shared_ptr<vespalib::alloc::MemoryAllocator> memory_allocator);
     EnumStoreT(bool has_postings, const search::DictionaryConfig & dict_cfg);
     ~EnumStoreT() override;
 
@@ -96,10 +94,10 @@ public:
     vespalib::MemoryUsage get_values_memory_usage() const override { return _store.get_allocator().get_data_store().getMemoryUsage(); }
     vespalib::MemoryUsage get_dictionary_memory_usage() const override { return _dict->get_memory_usage(); }
 
-    vespalib::AddressSpace get_address_space_usage() const;
+    vespalib::AddressSpace get_values_address_space_usage() const override;
 
-    void transfer_hold_lists(generation_t generation);
-    void trim_hold_lists(generation_t first_used);
+    void assign_generation(generation_t current_gen);
+    void reclaim_memory(generation_t first_used);
 
     ssize_t load_unique_values(const void* src, size_t available, IndexVector& idx) override;
 
@@ -120,7 +118,7 @@ public:
         AllocatorType& _allocator;
         vespalib::datastore::IUniqueStoreDictionary& _dict;
         std::vector<EntryRef, vespalib::allocator_large<EntryRef>> _refs;
-        std::vector<uint32_t, vespalib::allocator_large<uint32_t>> _payloads;
+        std::vector<EntryRef, vespalib::allocator_large<EntryRef>> _payloads;
 
     public:
         NonEnumeratedLoader(AllocatorType& allocator, vespalib::datastore::IUniqueStoreDictionary& dict)
@@ -199,9 +197,9 @@ public:
     bool find_index(EntryType value, Index& idx) const;
     void free_unused_values() override;
     void free_unused_values(IndexList to_remove);
-    vespalib::MemoryUsage update_stat() override;
+    vespalib::MemoryUsage update_stat(const CompactionStrategy& compaction_strategy) override;
     std::unique_ptr<EnumIndexRemapper> consider_compact_values(const CompactionStrategy& compaction_strategy) override;
-    std::unique_ptr<EnumIndexRemapper> compact_worst_values(bool compact_memory, bool compact_address_space) override;
+    std::unique_ptr<EnumIndexRemapper> compact_worst_values(CompactionSpec compaction_spec, const CompactionStrategy& compaction_strategy) override;
     bool consider_compact_dictionary(const CompactionStrategy& compaction_strategy) override;
     uint64_t get_compaction_count() const override {
         return _store.get_data_store().get_compaction_count();

@@ -3,6 +3,7 @@ package com.yahoo.vespa.hosted.controller.maintenance;
 
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.vespa.hosted.controller.Application;
 import com.yahoo.vespa.hosted.controller.Controller;
@@ -20,7 +21,6 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -57,6 +57,7 @@ public class DeploymentIssueReporter extends ControllerMaintainer {
     private List<Application> applications() {
         return ApplicationList.from(controller().applications().readable())
                               .withProjectId()
+                              .matching(appliaction -> appliaction.deploymentSpec().steps().stream().anyMatch(step -> step.concerns(Environment.prod)))
                               .asList();
     }
 
@@ -67,6 +68,7 @@ public class DeploymentIssueReporter extends ControllerMaintainer {
      */
     private double maintainDeploymentIssues(List<Application> applications) {
         List<TenantAndApplicationId> failingApplications = controller().jobController().deploymentStatuses(ApplicationList.from(applications))
+                                                                       .matching(status -> ! status.jobSteps().isEmpty())
                                                                        .failingApplicationChangeSince(controller().clock().instant().minus(maxFailureAge))
                                                                        .mapToList(status -> status.application().id());
 

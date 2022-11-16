@@ -1,6 +1,5 @@
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.applications;
-
-import com.yahoo.vespa.hosted.provision.autoscale.Autoscaler;
 
 import java.util.Objects;
 
@@ -47,9 +46,8 @@ public class AutoscalingStatus {
     @Override
     public boolean equals(Object o) {
         if (o == this) return true;
-        if ( ! ( o instanceof AutoscalingStatus)) return false;
+        if ( ! ( o instanceof AutoscalingStatus other)) return false;
 
-        AutoscalingStatus other = (AutoscalingStatus)o;
         if ( other.status != this.status ) return false;
         if ( ! other.description.equals(this.description) ) return false;
         return true;

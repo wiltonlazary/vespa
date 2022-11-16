@@ -118,7 +118,7 @@ public:
     search::SerialNum         _currentSerial;
     uint32_t                  _pendingDone;
     uint32_t                  _taskDone;
-    std::mutex                _lock;
+    mutable std::mutex        _lock;
     vespalib::CountDownLatch  _done;
     FlushDoneHistory          _flushDoneHistory;
 
@@ -146,7 +146,7 @@ public:
     std::vector<IFlushTarget::SP>
     getFlushTargets() override {
         {
-            std::lock_guard<std::mutex> guard(_lock);
+            std::lock_guard guard(_lock);
             _pendingDone += _taskDone;
             _taskDone = 0;
         }
@@ -160,7 +160,7 @@ public:
 
     // Called once by flush engine thread for each task done
     void taskDone() {
-        std::lock_guard<std::mutex> guard(_lock);
+        std::lock_guard guard(_lock);
         ++_taskDone;
     }
 
@@ -168,7 +168,7 @@ public:
     // added to flush engine and when one or more flush tasks related
     // to flush handler have completed.
     void flushDone(search::SerialNum oldestSerial) override {
-        std::lock_guard<std::mutex> guard(_lock);
+        std::lock_guard guard(_lock);
         LOG(info, "SimpleHandler(%s)::flushDone(%" PRIu64 ")", getName().c_str(), oldestSerial);
         _oldestSerial = std::max(_oldestSerial, oldestSerial);
         _flushDoneHistory.push_back(oldestSerial);
@@ -179,8 +179,13 @@ public:
     }
 
     FlushDoneHistory getFlushDoneHistory() {
-        std::lock_guard<std::mutex> guard(_lock);
+        std::lock_guard guard(_lock);
         return _flushDoneHistory;
+    }
+
+    [[nodiscard]] search::SerialNum oldest_serial() const noexcept {
+        std::lock_guard guard(_lock);
+        return _oldestSerial;
     }
 };
 
@@ -191,7 +196,7 @@ void WrappedFlushTask::run()
 }
 
 class SimpleTask : public searchcorespi::FlushTask {
-    search::SerialNum &_flushedSerial;
+    std::atomic<search::SerialNum> &_flushedSerial;
     search::SerialNum &_currentSerial;
 public:
     vespalib::Gate &_start;
@@ -202,7 +207,7 @@ public:
     SimpleTask(vespalib::Gate &start,
                vespalib::Gate &done,
                vespalib::Gate *proceed,
-               search::SerialNum &flushedSerial,
+               std::atomic<search::SerialNum> &flushedSerial,
                search::SerialNum &currentSerial)
         : _flushedSerial(flushedSerial), _currentSerial(currentSerial),
           _start(start), _done(done), _proceed(proceed)
@@ -213,7 +218,7 @@ public:
         if (_proceed != nullptr) {
             _proceed->await();
         }
-        _flushedSerial = _currentSerial;
+        _flushedSerial.store(_currentSerial, std::memory_order_relaxed);
         _done.countDown();
     }
 
@@ -222,7 +227,7 @@ public:
 
 class SimpleTarget : public test::DummyFlushTarget {
 public:
-    search::SerialNum _flushedSerial;
+    std::atomic<search::SerialNum> _flushedSerial;
     search::SerialNum _currentSerial;
     vespalib::Gate    _proceed;
     vespalib::Gate    _initDone;
@@ -249,7 +254,7 @@ protected:
 public:
     using SP = std::shared_ptr<SimpleTarget>;
 
-    SimpleTarget(Task::UP task, const std::string &name) :
+    SimpleTarget(Task::UP task, const std::string &name) noexcept :
         test::DummyFlushTarget(name),
         _flushedSerial(0),
         _currentSerial(0),
@@ -271,8 +276,8 @@ public:
     Time getLastFlushTime() const override { return vespalib::system_clock::now(); }
 
     SerialNum getFlushedSerialNum() const override {
-        LOG(info, "SimpleTarget(%s)::getFlushedSerialNum() = %" PRIu64, getName().c_str(), _flushedSerial);
-        return _flushedSerial;
+        LOG(info, "SimpleTarget(%s)::getFlushedSerialNum() = %" PRIu64, getName().c_str(), _flushedSerial.load(std::memory_order_relaxed));
+        return _flushedSerial.load(std::memory_order_relaxed);
     }
 
     Task::UP initFlush(SerialNum currentSerial, std::shared_ptr<search::IFlushToken>) override {
@@ -440,11 +445,11 @@ struct Fixture
         using namespace std::chrono_literals;
         for (int pass = 0; pass < 600; ++pass) {
             std::this_thread::sleep_for(100ms);
-            if (handler._oldestSerial == expOldestSerial) {
+            if (handler.oldest_serial() == expOldestSerial) {
                 break;
             }
         }
-        EXPECT_EQUAL(expOldestSerial, handler._oldestSerial);
+        EXPECT_EQUAL(expOldestSerial, handler.oldest_serial());
     }
 };
 

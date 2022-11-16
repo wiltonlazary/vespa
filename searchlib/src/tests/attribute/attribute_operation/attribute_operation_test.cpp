@@ -4,6 +4,7 @@
 #include <vespa/searchlib/attribute/attributefactory.h>
 #include <vespa/searchlib/attribute/attribute.h>
 #include <vespa/searchlib/common/bitvector.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/testkit/testapp.h>
 
 #include <vespa/log/log.h>
@@ -47,15 +48,18 @@ TEST("test illegal operations on float attribute") {
 AttributeVector::SP
 createAttribute(BasicType basicType, const vespalib::string &fieldName, bool fastSearch = false, bool immutable = false)
 {
+    constexpr size_t NUM_DOCS = 20;
     Config cfg(basicType, CollectionType::SINGLE);
     cfg.setMutable(!immutable)
        .setFastSearch(fastSearch);
     auto av = search::AttributeFactory::createAttribute(fieldName, cfg);
-    while (20 >= av->getNumDocs()) {
+    while (NUM_DOCS >= av->getNumDocs()) {
         AttributeVector::DocId checkDocId(0u);
         ASSERT_TRUE(av->addDoc(checkDocId));
+        ASSERT_EQUAL(immutable, av->isUndefined(checkDocId));
     }
     av->commit();
+    ASSERT_EQUAL(immutable, av->isUndefined(NUM_DOCS/2));
     return av;
 }
 

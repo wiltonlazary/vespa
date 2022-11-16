@@ -1,10 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.application.container;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.component.ComponentSpecification;
-import com.yahoo.docproc.DocprocExecutor;
-import com.yahoo.docproc.DocprocService;
+import com.yahoo.docproc.impl.DocprocExecutor;
+import com.yahoo.docproc.impl.DocprocService;
 import com.yahoo.docproc.DocumentProcessor;
 import com.yahoo.docproc.jdisc.DocumentProcessingHandler;
 import com.yahoo.document.DocumentType;
@@ -61,7 +61,6 @@ public final class DocumentProcessing {
      */
     public DocumentProcessor.Progress process(ComponentSpecification chain, com.yahoo.docproc.Processing processing) {
         DocprocExecutor executor = getExecutor(chain);
-        processing.setDocprocServiceRegistry(handler.getDocprocServiceRegistry());
         return executor.processUntilDone(processing);
     }
 
@@ -80,7 +79,6 @@ public final class DocumentProcessing {
      */
     public DocumentProcessor.Progress processOnce(ComponentSpecification chain, com.yahoo.docproc.Processing processing) {
         DocprocExecutor executor = getExecutor(chain);
-        processing.setDocprocServiceRegistry(handler.getDocprocServiceRegistry());
         return executor.process(processing);
     }
 

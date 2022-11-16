@@ -20,15 +20,14 @@ public:
     typedef std::set<vespalib::string> AttributeSet;
 
 private:
-    AttributeSet          _acceptedAttributes;
-    IAttributeManager::SP _mgr;
+    AttributeSet                           _acceptedAttributes;
+    IAttributeManager::SP                  _mgr;
     std::vector<search::AttributeVector *> _acceptedWritableAttributes;
 
     bool acceptAttribute(const vespalib::string &name) const;
 
 public:
-    FilterAttributeManager(const AttributeSet &acceptedAttributes,
-                           IAttributeManager::SP mgr);
+    FilterAttributeManager(const AttributeSet &acceptedAttributes, IAttributeManager::SP mgr);
     ~FilterAttributeManager() override;
 
     // Implements search::IAttributeManager
@@ -39,7 +38,7 @@ public:
     std::unique_ptr<search::attribute::AttributeReadGuard> getAttributeReadGuard(const vespalib::string &name, bool stableEnumGuard) const override;
 
     // Implements proton::IAttributeManager
-    IAttributeManager::SP create(const AttributeCollectionSpec &) const override;
+    IAttributeManager::SP create(AttributeCollectionSpec &&) const override;
     std::vector<searchcorespi::IFlushTarget::SP> getFlushTargets() const override;
     search::SerialNum getOldestFlushedSerialNumber() const override;
     search::SerialNum getNewestFlushedSerialNumber() const override;
@@ -47,11 +46,12 @@ public:
     void pruneRemovedFields(search::SerialNum serialNum) override;
     const IAttributeFactory::SP &getFactory() const override;
     vespalib::ISequencedTaskExecutor & getAttributeFieldWriter() const override;
-    vespalib::ThreadExecutor& get_shared_executor() const override;
+    vespalib::Executor& get_shared_executor() const override { return _mgr->get_shared_executor(); }
 
     search::AttributeVector * getWritableAttribute(const vespalib::string &name) const override;
     const std::vector<search::AttributeVector *> & getWritableAttributes() const override;
     void asyncForEachAttribute(std::shared_ptr<IConstAttributeFunctor> func) const override;
+    void asyncForEachAttribute(std::shared_ptr<IAttributeFunctor> func, OnDone onDone) const override;
     ExclusiveAttributeReadAccessor::UP getExclusiveReadAccessor(const vespalib::string &name) const override;
     void setImportedAttributes(std::unique_ptr<ImportedAttributesRepo> attributes) override;
     const ImportedAttributesRepo *getImportedAttributes() const override;

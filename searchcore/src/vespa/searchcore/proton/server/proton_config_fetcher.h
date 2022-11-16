@@ -2,20 +2,22 @@
 
 #pragma once
 
+#include "bootstrapconfigmanager.h"
+#include "i_document_db_config_owner.h"
 #include <vespa/fastos/thread.h>
 #include <vespa/searchcore/proton/common/doctypename.h>
-#include <vespa/vespalib/stllike/string.h>
-#include <vespa/config/config.h>
-#include "bootstrapconfigmanager.h"
-#include "documentdbconfigmanager.h"
-#include "i_document_db_config_owner.h"
-#include <chrono>
+#include <vespa/config/retriever/configretriever.h>
+#include <vespa/config/subscription/configuri.h>
+#include <deque>
+
+class FNET_Transport;
 
 namespace document { class DocumentTypeRepo; }
 
 namespace proton {
 
 class BootstrapConfig;
+class DocumentDBConfigManager;
 class IProtonConfigurer;
 
 /**
@@ -27,7 +29,7 @@ class ProtonConfigFetcher : public FastOS_Runnable
 public:
     using BootstrapConfigSP = std::shared_ptr<BootstrapConfig>;
 
-    ProtonConfigFetcher(const config::ConfigUri & configUri, IProtonConfigurer &owner, std::chrono::milliseconds subscribeTimeout);
+    ProtonConfigFetcher(FNET_Transport & transport, const config::ConfigUri & configUri, IProtonConfigurer &owner, vespalib::duration subscribeTimeout);
     ~ProtonConfigFetcher() override;
     /**
      * Get the current config generation.
@@ -37,7 +39,7 @@ public:
     /**
      * Start config fetcher, callbacks may come from now on.
      */
-    void start();
+    void start(FastOS_ThreadPool & threadPool);
 
     /**
      * Shutdown config fetcher, ensuring that no more callbacks arrive
@@ -47,21 +49,22 @@ public:
     void Run(FastOS_ThreadInterface * thread, void *arg) override;
 
 private:
-    typedef std::map<DocTypeName, DocumentDBConfigManager::SP> DBManagerMap;
-    using Clock = std::chrono::steady_clock;
-    using TimePoint = std::chrono::time_point<Clock>;
-    using OldDocumentTypeRepo = std::pair<TimePoint, std::shared_ptr<const document::DocumentTypeRepo>>;
-
-    BootstrapConfigManager  _bootstrapConfigManager;
-    config::ConfigRetriever _retriever;
-    IProtonConfigurer     & _owner;
-
-    mutable std::mutex _mutex; // Protects maps
+    typedef std::map<DocTypeName, std::shared_ptr<DocumentDBConfigManager>> DBManagerMap;
+    using OldDocumentTypeRepo = std::pair<vespalib::steady_time, std::shared_ptr<const document::DocumentTypeRepo>>;
     using lock_guard = std::lock_guard<std::mutex>;
-    DBManagerMap _dbManagerMap;
 
-    FastOS_ThreadPool _threadPool;
-    std::deque<OldDocumentTypeRepo> _oldDocumentTypeRepos;
+
+    FNET_Transport          & _transport;
+    BootstrapConfigManager    _bootstrapConfigManager;
+    config::ConfigRetriever   _retriever;
+    IProtonConfigurer       & _owner;
+
+    mutable std::mutex        _mutex; // Protects maps
+    std::condition_variable   _cond;
+    DBManagerMap              _dbManagerMap;
+    bool                      _running;
+
+    std::deque<OldDocumentTypeRepo>                   _oldDocumentTypeRepos;
     std::shared_ptr<const document::DocumentTypeRepo> _currentDocumentTypeRepo;
 
     void fetchConfigs();

@@ -5,7 +5,7 @@ package com.yahoo.log.event;
  *
  * @author Bjorn Borud
  */
-public class Unknown extends Event {
+class Unknown extends Event {
     public Unknown() {
     }
 

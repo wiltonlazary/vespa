@@ -5,16 +5,15 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>zookeeper-command-line-client</artifactId>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <dependencies>
     <dependency>
       <groupId>org.apache.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
-      <version>${zookeeper.client.version}</version>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -37,6 +36,28 @@
        <groupId>org.slf4j</groupId>
        <artifactId>slf4j-api</artifactId>
        <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <!-- Bind to slf4j's SimpleLogger -->
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+    <dependency>
+      <!-- slf4j's replacement for log4j. See http://www.slf4j.org/legacy.html#log4j-over-slf4j -->
+      <groupId>org.slf4j</groupId>
+      <artifactId>log4j-over-slf4j</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.xerial.snappy</groupId>
+      <artifactId>snappy-java</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <!-- Needed by zookeeper, which only has an optional dependency. -->
+      <groupId>com.github.spotbugs</groupId>
+      <artifactId>spotbugs-annotations</artifactId>
     </dependency>
   </dependencies>
   <build>

@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <artifactId>parent</artifactId>
     <packaging>pom</packaging>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <name>parent</name>
     <description>Parent artifact for all Vespa maven projects.</description>
     <url>https://github.com/vespa-engine</url>
@@ -12,7 +12,7 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>container-dependency-versions</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../container-dependency-versions/pom.xml</relativePath>
     </parent>
 
@@ -75,11 +75,7 @@
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>${maven-compiler-plugin.version}</version>
                     <configuration>
-                        <jdkToolchain>
-                            <version>11</version>
-                        </jdkToolchain>
-                        <source>11</source>
-                        <target>11</target>
+                        <release>17</release>
                         <showWarnings>true</showWarnings>
                         <optimize>true</optimize>
                         <showDeprecation>false</showDeprecation>
@@ -88,8 +84,6 @@
                             <arg>-Xlint:-serial</arg>
                             <arg>-Xlint:-try</arg>
                             <arg>-Xlint:-processing</arg>
-                            <arg>-Xlint:-varargs</arg>
-                        <arg>-Xlint:-options</arg>
                             <arg>-Werror</arg>
                         </compilerArgs>
                     </configuration>
@@ -98,14 +92,6 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-dependency-plugin</artifactId>
                     <version>${maven-dependency-plugin.version}</version>
-                    <dependencies>
-                      <!-- TODO: remove when upgrading to 3.1.2 -->
-                      <dependency>
-                        <groupId>org.apache.maven.shared</groupId>
-                        <artifactId>maven-dependency-analyzer</artifactId>
-                        <version>1.11.1</version>
-                      </dependency>
-                    </dependencies>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -119,6 +105,11 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-enforcer-plugin</artifactId>
                     <version>${maven-enforcer-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${maven-failsafe-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -175,6 +166,30 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-shade-plugin</artifactId>
                     <version>${maven-shade-plugin.version}</version>
+                    <configuration>
+                        <filters>
+                            <filter>
+                                <!-- Filter out files that are known to cause issues and warnings. -->
+                                <!-- WARNING: Adding a custom filter in a module's pom will disable this filter! -->
+                                <artifact>*:*</artifact>
+                                <excludes>
+                                    <!-- Silence warning about "breaking its strong encapsulation"  -->
+                                    <exclude>module-info.class</exclude>
+                                    <!-- Multi-release jars -->
+                                    <exclude>META-INF/versions/*/module-info.class</exclude>
+                                    <!-- License and notices files -->
+                                    <exclude>META-INF/LICENSE*</exclude>
+                                    <exclude>META-INF/NOTICE*</exclude>
+                                    <!-- E.g. bundle manifests -->
+                                    <exclude>META-INF/MANIFEST.MF</exclude>
+                                    <!-- Signature files, from e.g. bouncycastle -->
+                                    <exclude>META-INF/*.SF</exclude>
+                                    <exclude>META-INF/*.DSA</exclude>
+                                    <exclude>META-INF/*.RSA</exclude>
+                                </excludes>
+                            </filter>
+                        </filters>
+                    </configuration>
                  </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -260,6 +275,7 @@
                                 <goal>run</goal>
                             </goals>
                             <configuration>
+                                <protocVersion>${protobuf.version}</protocVersion>
                                 <addSources>main</addSources>
                                 <outputDirectory>${project.build.directory}/generated-sources/protobuf</outputDirectory>
                                 <inputDirectories>
@@ -285,6 +301,27 @@
                             </goals>
                         </execution>
                     </executions>
+                </plugin>
+                <plugin>
+                    <!--
+                    Configure rewrite-maven-plugin to facilitate Junit4 to Junit5 conversion.
+                    Run "mvn rewrite:run" to perform automated rewrite to Junit5.
+                    -->
+                    <groupId>org.openrewrite.maven</groupId>
+                    <artifactId>rewrite-maven-plugin</artifactId>
+                    <version>4.27.0</version>
+                    <configuration>
+                        <activeRecipes>
+                            <recipe>org.openrewrite.java.testing.junit5.JUnit5BestPractices</recipe>
+                        </activeRecipes>
+                    </configuration>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.openrewrite.recipe</groupId>
+                            <artifactId>rewrite-testing-frameworks</artifactId>
+                            <version>1.24.0</version>
+                        </dependency>
+                    </dependencies>
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -352,13 +389,6 @@
                         <artifactId>maven-javadoc-plugin</artifactId>
                         <executions>
                             <execution>
-                                <id>generate-javadoc</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>javadoc-no-fork</goal>
-                                </goals>
-                            </execution>
-                            <execution>
                                 <id>attach-javadocs</id>
                                 <goals>
                                     <goal>jar</goal>
@@ -370,7 +400,7 @@
                             <failOnError>${javadoc.failOnError}</failOnError>
                             <quiet>true</quiet>
                             <show>protected</show>
-                            <header>&lt;a href="https://docs.vespa.ai"&gt;&lt;img src="https://docs.vespa.ai/img/vespa-logo.png" width="100" height="28" style="padding-top:7px"/&gt;&lt;/a&gt;</header>
+                            <header>&lt;a href="https://docs.vespa.ai"&gt;&lt;img src="https://docs.vespa.ai/assets/logos/vespa-logo-full-white.svg" width="100" height="28" style="padding-top:7px"/&gt;&lt;/a&gt;</header>
                         </configuration>
                     </plugin>
                 </plugins>
@@ -412,25 +442,25 @@
             </build>
         </profile>
     </profiles>
+
     <dependencyManagement>
         <dependencies>
-
             <!-- Please keep this list lexically sorted by groupId, then artifactId.-->
 
             <dependency>
                 <groupId>com.amazonaws</groupId>
                 <artifactId>aws-java-sdk-core</artifactId>
-                <version>${aws.sdk.version}</version>
+                <version>${aws-sdk.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.amazonaws</groupId>
                 <artifactId>aws-java-sdk-ssm</artifactId>
-                <version>${aws.sdk.version}</version>
+                <version>${aws-sdk.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.amazonaws</groupId>
                 <artifactId>aws-java-sdk-sts</artifactId>
-                <version>${aws.sdk.version}</version>
+                <version>${aws-sdk.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.auth0</groupId>
@@ -438,19 +468,24 @@
                 <version>3.10.0</version>
             </dependency>
             <dependency>
-                <groupId>com.fasterxml.jackson.jaxrs</groupId>
-                <artifactId>jackson-jaxrs-xml-provider</artifactId>
-                <version>${jackson2.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.fasterxml.jackson.dataformat</groupId>
-                <artifactId>jackson-dataformat-xml</artifactId>
-                <version>${jackson2.version}</version>
-            </dependency>
-            <dependency>
                 <groupId>com.github.cverges.expect4j</groupId>
                 <artifactId>expect4j</artifactId>
                 <version>1.6</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.zookeeper</groupId>
+                <artifactId>zookeeper</artifactId>
+                <version>${zookeeper.client.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-log4j12</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>log4j</groupId>
+                        <artifactId>log4j</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <dependency>
                 <!-- Needed by zookeeper, which has an optional dependency.
@@ -462,8 +497,40 @@
             </dependency>
             <dependency>
                 <groupId>com.github.tomakehurst</groupId>
-                <artifactId>wiremock-standalone</artifactId>
-                <version>2.6.0</version>
+                <artifactId>wiremock-jre8-standalone</artifactId>
+                <version>${wiremock.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.code.findbugs</groupId>
+                <artifactId>jsr305</artifactId>
+                <version>${findbugs.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <!-- Annotations with retention Runtime. Remove exclusion and provide from jdisc_core if needed. -->
+                        <groupId>com.google.code.findbugs</groupId>
+                        <artifactId>jsr305</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <!-- Empty artifact for gradle projects, see the artifact's pom.xml -->
+                        <groupId>com.google.guava</groupId>
+                        <artifactId>listenablefuture</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <!-- Annotations with retention Runtime. Remove exclusion if needed. -->
+                        <groupId>org.checkerframework</groupId>
+                        <artifactId>checker-qual</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <!-- Annotation with retention class only -->
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>animal-sniffer-annotations</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <dependency>
                 <groupId>com.google.guava</groupId>
@@ -484,7 +551,7 @@
             <dependency>
                 <groupId>com.ibm.icu</groupId>
                 <artifactId>icu4j</artifactId>
-                <version>57.1</version>
+                <version>70.1</version>
             </dependency>
             <dependency>
                 <groupId>com.infradna.tool</groupId>
@@ -497,14 +564,26 @@
                 <version>${onnxruntime.version}</version>
             </dependency>
             <dependency>
-                <groupId>com.optimaize.languagedetector</groupId>
-                <artifactId>language-detector</artifactId>
-                <version>0.6</version>
+                <groupId>com.yahoo.athenz</groupId>
+                <artifactId>athenz-cert-refresher</artifactId>
+                <version>${athenz.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.bouncycastle</groupId>
+                        <artifactId>bcpkix-jdk15on</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <dependency>
                 <groupId>com.yahoo.athenz</groupId>
                 <artifactId>athenz-zms-java-client</artifactId>
                 <version>${athenz.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.bouncycastle</groupId>
+                        <artifactId>bcpkix-jdk15on</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <dependency>
                 <groupId>com.yahoo.athenz</groupId>
@@ -515,6 +594,17 @@
                 <groupId>com.yahoo.athenz</groupId>
                 <artifactId>athenz-zts-java-client</artifactId>
                 <version>${athenz.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.bouncycastle</groupId>
+                        <artifactId>bcpkix-jdk15on</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>${commons-io.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.jsonwebtoken</groupId>
@@ -533,6 +623,11 @@
             </dependency>
             <dependency>
                 <groupId>org.apache.commons</groupId>
+                <artifactId>commons-text</artifactId>
+                <version>${commons-text.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
                 <artifactId>commons-math3</artifactId>
                 <version>${commons.math3.version}</version>
             </dependency>
@@ -540,6 +635,11 @@
                 <groupId>commons-cli</groupId>
                 <artifactId>commons-cli</artifactId>
                 <version>1.4</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-codec</groupId>
+                <artifactId>commons-codec</artifactId>
+                <version>${commons-codec.version}</version>
             </dependency>
             <dependency>
                 <groupId>commons-net</groupId>
@@ -553,8 +653,28 @@
             </dependency>
             <dependency>
                 <groupId>io.airlift</groupId>
+                <artifactId>aircompressor</artifactId>
+                <version>${aircompressor.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.airlift</groupId>
                 <artifactId>airline</artifactId>
-                <version>0.7</version>
+                <version>${airline.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-handler</artifactId>
+                <version>${netty.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-transport-native-epoll</artifactId>
+                <version>${netty.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-tcnative</artifactId>
+                <version>${netty-tcnative.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.prometheus</groupId>
@@ -569,7 +689,7 @@
             <dependency>
                 <groupId>junit</groupId>
                 <artifactId>junit</artifactId>
-                <version>4.12</version>
+                <version>4.13.2</version>
             </dependency>
             <dependency>
                 <groupId>net.java.dev.jna</groupId>
@@ -627,6 +747,22 @@
                 <version>1.8</version>
             </dependency>
             <dependency>
+                <groupId>org.apache.felix</groupId>
+                <artifactId>org.apache.felix.framework</artifactId>
+                <version>${felix.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>animal-sniffer-annotations</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.felix</groupId>
+                <artifactId>org.apache.felix.log</artifactId>
+                <version>${felix.log.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
                 <artifactId>httpcore</artifactId>
                 <version>${apache.httpcore.version}</version>
@@ -637,29 +773,39 @@
                 <version>${apache.httpclient5.version}</version>
             </dependency>
             <dependency>
+                <groupId>org.apache.httpcomponents.core5</groupId>
+                <artifactId>httpcore5</artifactId>
+                <version>${apache.httpclient5.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
                 <artifactId>httpmime</artifactId>
                 <version>${apache.httpclient.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.maven</groupId>
+                <artifactId>maven-archiver</artifactId>
+                <version>${maven-archiver.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.maven</groupId>
                 <artifactId>maven-artifact</artifactId>
-                <version>3.5.0</version>
+                <version>${maven-core.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.maven</groupId>
                 <artifactId>maven-core</artifactId>
-                <version>3.5.0</version>
+                <version>${maven-core.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.maven</groupId>
                 <artifactId>maven-model</artifactId>
-                <version>3.5.0</version>
+                <version>${maven-core.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.maven</groupId>
                 <artifactId>maven-plugin-api</artifactId>
-                <version>${maven-plugin-tools.version}</version>
+                <version>${maven-plugin-api.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.maven</groupId>
@@ -695,12 +841,12 @@
             <dependency>
                 <groupId>org.apache.opennlp</groupId>
                 <artifactId>opennlp-tools</artifactId>
-                <version>1.8.4</version>
+                <version>1.9.3</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.velocity</groupId>
-                <artifactId>velocity</artifactId>
-                <version>1.7</version>
+                <artifactId>velocity-engine-core</artifactId>
+                <version>2.3</version>
             </dependency>
             <dependency>
                 <groupId>org.assertj</groupId>
@@ -708,9 +854,19 @@
                 <version>3.11.1</version>
             </dependency>
             <dependency>
-                <groupId>org.codehaus.jettison</groupId>
-                <artifactId>jettison</artifactId>
-                <version>1.3.1</version>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcpkix-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcutil-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.cthul</groupId>
@@ -721,12 +877,12 @@
             <dependency>
                 <groupId>org.eclipse.collections</groupId>
                 <artifactId>eclipse-collections</artifactId>
-                <version>9.2.0</version>
+                <version>${eclipse-collections.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.eclipse.collections</groupId>
                 <artifactId>eclipse-collections-api</artifactId>
-                <version>9.2.0</version>
+                <version>${eclipse-collections.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.eclipse.jetty.alpn</groupId>
@@ -745,7 +901,17 @@
             </dependency>
             <dependency>
                 <groupId>org.eclipse.jetty</groupId>
+                <artifactId>jetty-client</artifactId>
+                <version>${jetty.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.eclipse.jetty</groupId>
                 <artifactId>jetty-continuation</artifactId>
+                <version>${jetty.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.eclipse.jetty</groupId>
+                <artifactId>jetty-http</artifactId>
                 <version>${jetty.version}</version>
             </dependency>
             <dependency>
@@ -766,6 +932,11 @@
             <dependency>
                 <groupId>org.eclipse.jetty</groupId>
                 <artifactId>jetty-jmx</artifactId>
+                <version>${jetty.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.eclipse.jetty</groupId>
+                <artifactId>jetty-util</artifactId>
                 <version>${jetty.version}</version>
             </dependency>
             <dependency>
@@ -794,11 +965,16 @@
             <dependency>
                 <groupId>org.hdrhistogram</groupId>
                 <artifactId>HdrHistogram</artifactId>
-                <version>2.1.8</version>
+                <version>${hdrhistogram.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-api</artifactId>
                 <version>${junit.version}</version>
             </dependency>
             <dependency>
@@ -812,10 +988,29 @@
                 <version>${junit.version}</version>
             </dependency>
             <dependency>
+                <groupId>org.jvnet.mimepull</groupId>
+                <artifactId>mimepull</artifactId>
+                <version>1.9.6</version>
+            </dependency>
+            <dependency>
+                <groupId>org.lz4</groupId>
+                <artifactId>lz4-java</artifactId>
+                <version>${org.lz4.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.mockito</groupId>
                 <artifactId>mockito-core</artifactId>
-                <version>3.1.0</version>
+                <version>${mockito.version}</version>
                 <scope>test</scope> <!-- TODO: remove scope from parent pom -->
+            </dependency>
+            <dependency>
+                <!-- Facilitates automated Junit4 to Junit5 conversion.
+                     See pluginManagement of rewrite-maven-plugin for more details -->
+                <groupId>org.openrewrite.recipe</groupId>
+                <artifactId>rewrite-recipe-bom</artifactId>
+                <version>1.5.0</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
             <dependency>
                 <groupId>org.ow2.asm</groupId>
@@ -823,9 +1018,39 @@
                 <version>${asm.version}</version>
             </dependency>
             <dependency>
+                <groupId>org.ow2.asm</groupId>
+                <artifactId>asm-analysis</artifactId>
+                <version>${asm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.ow2.asm</groupId>
+                <artifactId>asm-commons</artifactId>
+                <version>${asm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.ow2.asm</groupId>
+                <artifactId>asm-tree</artifactId>
+                <version>${asm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.ow2.asm</groupId>
+                <artifactId>asm-util</artifactId>
+                <version>${asm.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.twdata.maven</groupId>
                 <artifactId>mojo-executor</artifactId>
                 <version>2.3.0</version>
+            </dependency>
+            <dependency>
+                <groupId>org.xerial.snappy</groupId>
+                <artifactId>snappy-java</artifactId>
+                <version>1.1.7</version>
+            </dependency>
+            <dependency>
+                <groupId>io.dropwizard.metrics</groupId>
+                <artifactId>metrics-core</artifactId>
+                <version>3.2.5</version>
             </dependency>
             <dependency>
                 <groupId>uk.co.datumedge</groupId>
@@ -836,63 +1061,88 @@
             <dependency>
                 <groupId>xerces</groupId>
                 <artifactId>xercesImpl</artifactId>
-                <version>2.12.0</version>
+                <version>2.12.2</version>
             </dependency>
-            <dependency>
-                <groupId>io.airlift</groupId>
-                <artifactId>aircompressor</artifactId>
-                <version>0.17</version>
+            <dependency> <!-- TODO: Remove on Vespa 9 -->
+                <groupId>org.json</groupId>
+                <artifactId>json</artifactId>
+                <version>${org.json.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
 
     <properties>
+        <aircompressor.version>0.21</aircompressor.version>
+        <airline.version>0.9</airline.version>
         <antlr.version>3.5.2</antlr.version>
-        <antlr4.version>4.5</antlr4.version>
-        <apache.httpclient.version>4.5.12</apache.httpclient.version>
+        <antlr4.version>4.9.3</antlr4.version>
+        <apache.httpclient.version>4.5.13</apache.httpclient.version>
         <apache.httpcore.version>4.4.13</apache.httpcore.version>
-        <apache.httpclient5.version>5.1</apache.httpclient5.version>
-        <asm.version>9.1</asm.version>
+        <apache.httpclient5.version>5.1.3</apache.httpclient5.version> <!-- WARNING: sync cloud-tenant-base-dependencies-enforcer/pom.xml -->
+        <asm.version>9.3</asm.version>
+
         <!-- Athenz dependencies. Make sure these dependencies match those in Vespa's internal repositories -->
-        <athenz.version>1.10.14</athenz.version>
-        <jjwt.version>0.11.2</jjwt.version>
-        <aws.sdk.version>1.11.974</aws.sdk.version>
+        <athenz.version>1.10.54</athenz.version> <!-- WARNING: sync cloud-tenant-base-dependencies-enforcer/pom.xml -->
+        <aws-sdk.version>1.12.331</aws-sdk.version>
+        <!-- Athenz END -->
+
         <!-- WARNING: If you change curator version, you also need to update
                  zkfacade/src/main/java/org/apache/curator/**/package-info.java
              using something like
                  find zkfacade/src/main/java/org/apache/curator -name package-info.java | \
                      xargs perl -pi -e 's/major = [0-9]+, minor = [0-9]+, micro = [0-9]+/major = 5, minor = 3, micro = 0/g'
         -->
-        <curator.version>5.2.0</curator.version>
-        <jna.version>4.5.2</jna.version>
-        <commons.codec.version>1.15</commons.codec.version>
+        <bouncycastle.version>1.72</bouncycastle.version>
+        <curator.version>5.3.0</curator.version>
+        <commons-codec.version>1.15</commons-codec.version>
+        <commons-io.version>2.11.0</commons-io.version>
+        <commons-text.version>1.10.0</commons-text.version>
         <commons.math3.version>3.6.1</commons.math3.version>
-        <junit.version>5.7.0</junit.version>
-        <maven-assembly-plugin.version>3.1.1</maven-assembly-plugin.version>
-        <!-- TODO: in order to upgrade above 4.1.0, we probably need to convert fat-model-deps to a jar artifact. -->
-        <maven-bundle-plugin.version>4.1.0</maven-bundle-plugin.version>
-        <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
-        <maven-dependency-plugin.version>3.1.1</maven-dependency-plugin.version>
-        <maven-deploy-plugin.version>2.8.1</maven-deploy-plugin.version>
-        <maven-enforcer-plugin.version>3.0.0-M2</maven-enforcer-plugin.version>
-        <maven-install-plugin.version>2.5.2</maven-install-plugin.version>
-        <maven-jar-plugin.version>3.0.2</maven-jar-plugin.version>
-        <maven-javadoc-plugin.version>3.0.1</maven-javadoc-plugin.version>
-        <maven-plugin-tools.version>3.6.0</maven-plugin-tools.version>
-        <maven-resources-plugin.version>2.7</maven-resources-plugin.version>
-        <maven-shade-plugin.version>3.2.4</maven-shade-plugin.version>
-        <maven-site-plugin.version>3.3</maven-site-plugin.version>
-        <maven-source-plugin.version>3.0.1</maven-source-plugin.version>
+        <eclipse-collections.version>11.0.0</eclipse-collections.version>
+        <felix.version>7.0.1</felix.version>
+        <felix.log.version>1.0.1</felix.log.version>
+        <findbugs.version>3.0.2</findbugs.version> <!-- Should be kept in sync with guava -->
+        <hdrhistogram.version>2.1.12</hdrhistogram.version>
+        <jetty.version>9.4.49.v20220914</jetty.version>
+        <jetty-alpn.version>1.1.3.v20160715</jetty-alpn.version>
+        <jjwt.version>0.11.2</jjwt.version>
+        <jna.version>5.11.0</jna.version>
+        <junit.version>5.8.1</junit.version>
+        <maven-archiver.version>3.5.2</maven-archiver.version>
+        <maven-assembly-plugin.version>3.3.0</maven-assembly-plugin.version>
+        <maven-bundle-plugin.version>5.1.2</maven-bundle-plugin.version>
+        <maven-compiler-plugin.version>3.10.1</maven-compiler-plugin.version>
+        <maven-core.version>3.8.6</maven-core.version>
+        <maven-dependency-plugin.version>3.3.0</maven-dependency-plugin.version> <!-- NOTE: When upgrading, also update explicit versions in tenant base poms! -->
+        <maven-deploy-plugin.version>2.8.2</maven-deploy-plugin.version>
+        <maven-enforcer-plugin.version>3.0.0</maven-enforcer-plugin.version>
+        <maven-failsafe-plugin.version>3.0.0-M6</maven-failsafe-plugin.version>
+        <maven-install-plugin.version>3.0.0-M1</maven-install-plugin.version>
+        <maven-jar-plugin.version>3.2.0</maven-jar-plugin.version>
+        <maven-javadoc-plugin.version>3.3.1</maven-javadoc-plugin.version>
+        <maven-plugin-api.version>3.8.5</maven-plugin-api.version>
+        <maven-plugin-tools.version>3.6.4</maven-plugin-tools.version>
+        <maven-resources-plugin.version>3.2.0</maven-resources-plugin.version>
+        <maven-shade-plugin.version>3.4.1</maven-shade-plugin.version>
+        <maven-site-plugin.version>3.9.1</maven-site-plugin.version>
+        <maven-source-plugin.version>3.2.1</maven-source-plugin.version>
+        <mockito.version>4.0.0</mockito.version>
+        <netty.version>4.1.85.Final</netty.version>
+        <netty-tcnative.version>2.0.54.Final</netty-tcnative.version>
+        <onnxruntime.version>1.12.1</onnxruntime.version> <!-- WARNING: sync cloud-tenant-base-dependencies-enforcer/pom.xml -->
+        <org.json.version>20220320</org.json.version>
+        <org.lz4.version>1.8.0</org.lz4.version>
         <prometheus.client.version>0.6.0</prometheus.client.version>
-        <onnxruntime.version>1.8.0</onnxruntime.version>
-        <protobuf.version>3.11.4</protobuf.version>
-        <spifly.version>1.3.3</spifly.version>
-        <surefire.version>2.22.0</surefire.version>
-        <zookeeper.client.version>3.6.3</zookeeper.client.version>
+        <protobuf.version>3.21.7</protobuf.version>
+        <spifly.version>1.3.5</spifly.version>
+        <surefire.version>2.22.2</surefire.version>
+        <wiremock.version>2.35.0</wiremock.version>
+        <zookeeper.client.version>3.8.0</zookeeper.client.version>
 
         <doclint>all</doclint>
         <test.hide>true</test.hide>
 
+        <vespaClients.jdk.releaseVersion>8</vespaClients.jdk.releaseVersion>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     </properties>

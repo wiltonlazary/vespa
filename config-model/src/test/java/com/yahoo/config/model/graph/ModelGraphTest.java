@@ -3,14 +3,11 @@ package com.yahoo.config.model.graph;
 
 import com.yahoo.config.model.ConfigModelContext;
 import com.yahoo.config.model.test.MockRoot;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author Ulf Lilleengen
@@ -24,16 +21,16 @@ public class ModelGraphTest {
         for (ModelNode<?> node : sortedEntries) {
             sb.append(node.builder.getModelClass().getSimpleName());
         }
-        assertThat(sb.toString(), is(expectedOrdering));
+        assertEquals(expectedOrdering, sb.toString());
     }
 
     @Test
-    public void require_that_dependencies_are_correctly_set() {
+    void require_that_dependencies_are_correctly_set() {
         ModelGraphBuilder builder = new ModelGraphBuilder();
         builder.addBuilder(new GraphMock.BC()).addBuilder(new GraphMock.BB()).addBuilder(new GraphMock.BA());
         ModelGraph graph = builder.build();
         List<ModelNode> nodes = graph.getNodes();
-        assertThat(graph.getNodes().size(), is(3));
+        assertEquals(3, graph.getNodes().size());
         assertTrue(nodes.get(0).hasDependencies());
         assertTrue(nodes.get(1).hasDependencies());
         assertFalse(nodes.get(2).hasDependencies());
@@ -43,22 +40,24 @@ public class ModelGraphTest {
     }
 
     @Test
-    public void require_that_dependencies_are_correctly_sorted() {
+    void require_that_dependencies_are_correctly_sorted() {
         ModelGraph graph = new ModelGraphBuilder().addBuilder(new GraphMock.BC()).addBuilder(new GraphMock.BB()).addBuilder(new GraphMock.BA()).build();
         assertOrdering(graph, "ABC");
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void require_that_cycles_are_detected() {
-        ModelGraph graph = new ModelGraphBuilder().addBuilder(new GraphMock.BD()).addBuilder(new GraphMock.BE()).build();
-        assertThat(graph.getNodes().size(), is(2));
-        assertTrue(graph.getNodes().get(0).dependsOn(graph.getNodes().get(1)));
-        assertTrue(graph.getNodes().get(1).dependsOn(graph.getNodes().get(0)));
-        graph.topologicalSort();
+    @Test
+    void require_that_cycles_are_detected() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            ModelGraph graph = new ModelGraphBuilder().addBuilder(new GraphMock.BD()).addBuilder(new GraphMock.BE()).build();
+            assertEquals(2, graph.getNodes().size());
+            assertTrue(graph.getNodes().get(0).dependsOn(graph.getNodes().get(1)));
+            assertTrue(graph.getNodes().get(1).dependsOn(graph.getNodes().get(0)));
+            graph.topologicalSort();
+        });
     }
 
     @Test
-    public void require_that_instance_can_be_created() {
+    void require_that_instance_can_be_created() {
         ModelGraph graph = new ModelGraphBuilder().addBuilder(new GraphMock.BC()).addBuilder(new GraphMock.BB()).addBuilder(new GraphMock.BA()).build();
         List<ModelNode> nodes = graph.topologicalSort();
         MockRoot root = new MockRoot();
@@ -70,46 +69,45 @@ public class ModelGraphTest {
         assertNotNull(b);
         assertNotNull(b2);
         assertNotNull(c);
-        assertThat(a.getId(), is("first"));
-        assertThat(b.getId(), is("second"));
-        assertThat(b2.getId(), is("second2"));
-        assertThat(c.getId(), is("third"));
-        assertThat(b.a, is(a));
+        assertEquals("first", a.getId());
+        assertEquals("second", b.getId());
+        assertEquals("second2", b2.getId());
+        assertEquals("third", c.getId());
+        assertEquals(a, b.a);
         assertNotNull(c.b);
-        assertThat(c.b.size(), is(2));
+        assertEquals(2, c.b.size());
         assertTrue(c.b.contains(b));
         assertTrue(c.b.contains(b2));
     }
 
-    @Rule
-    public ExpectedException expectedEx = ExpectedException.none();
-
     @Test
-    public void require_that_context_must_be_first_ctor_param() {
-        expectedEx.expect(IllegalArgumentException.class);
-        expectedEx.expectMessage("Constructor for " + GraphMock.Bad.class.getName() + " must have as its first argument a " + ConfigModelContext.class.getName());
-        ModelNode node = new ModelNode(new GraphMock.Bad.Builder());
-        MockRoot root = new MockRoot();
-        node.createModel(ConfigModelContext.create(root.getDeployState(), null, null, root, "foo"));
+    void require_that_context_must_be_first_ctor_param() {
+        Throwable exception = assertThrows(IllegalArgumentException.class, () -> {
+            ModelNode node = new ModelNode(new GraphMock.Bad.Builder());
+            MockRoot root = new MockRoot();
+            node.createModel(ConfigModelContext.create(root.getDeployState(), null, null, root, "foo"));
+        });
+        assertTrue(exception.getMessage().contains("Constructor for " + GraphMock.Bad.class.getName() + " must have as its first argument a " + ConfigModelContext.class.getName()));
     }
 
     @Test
-    public void require_that_ctor_arguments_must_be_models_or_collections_of_models() {
-        expectedEx.expect(IllegalArgumentException.class);
-        expectedEx.expectMessage("Unable to find constructor argument class java.lang.String for com.yahoo.config.model.graph.GraphMock$Bad2");
-        ModelNode node = new ModelNode(new GraphMock.Bad2.Builder());
-        MockRoot root = new MockRoot();
-        node.createModel(ConfigModelContext.create(root.getDeployState(), null, null, root, "foo"));
+    void require_that_ctor_arguments_must_be_models_or_collections_of_models() {
+        Throwable exception = assertThrows(IllegalArgumentException.class, () -> {
+            ModelNode node = new ModelNode(new GraphMock.Bad2.Builder());
+            MockRoot root = new MockRoot();
+            node.createModel(ConfigModelContext.create(root.getDeployState(), null, null, root, "foo"));
+        });
+        assertTrue(exception.getMessage().contains("Unable to find constructor argument class java.lang.String for com.yahoo.config.model.graph.GraphMock$Bad2"));
     }
 
     @Test
-    public void require_that_collections_can_be_empty() {
+    void require_that_collections_can_be_empty() {
         ModelGraph graph = new ModelGraphBuilder().addBuilder(new GraphMock.BC()).addBuilder(new GraphMock.BA()).build();
         List<ModelNode> nodes = graph.topologicalSort();
         MockRoot root = new MockRoot();
         GraphMock.A a = (GraphMock.A) nodes.get(0).createModel(ConfigModelContext.create(root.getDeployState(), null, null, root, "first"));
         GraphMock.C c = (GraphMock.C) nodes.get(1).createModel(ConfigModelContext.create(root.getDeployState(), null, null, root, "second"));
-        assertThat(c.a, is(a));
+        assertEquals(a, c.a);
         assertTrue(c.b.isEmpty());
     }
 

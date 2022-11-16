@@ -114,12 +114,12 @@ public:
      *
      * @return executor stats
      **/
-    vespalib::ThreadStackExecutor::Stats getExecutorStats() { return _executor.getStats(); }
+    vespalib::ExecutorStats getExecutorStats() { return _executor.getStats(); }
 
     /**
      * Returns the underlying executor. Only used for state explorers.
      */
-    const vespalib::SyncableThreadExecutor& get_executor() const { return _executor; }
+    const vespalib::ThreadExecutor& get_executor() const { return _executor; }
 
     /**
      * Starts the scheduling thread of this manager.

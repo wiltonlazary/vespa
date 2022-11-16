@@ -21,16 +21,15 @@ import com.yahoo.processing.rendering.Renderer;
 import com.yahoo.processing.request.ErrorMessage;
 import com.yahoo.processing.response.Data;
 import com.yahoo.processing.test.ProcessorLibrary;
-import org.junit.After;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
 import java.util.HashMap;
@@ -40,14 +39,7 @@ import java.util.concurrent.ExecutionException;
 
 import static com.yahoo.jdisc.http.server.jetty.AccessLoggingRequestHandler.CONTEXT_KEY_ACCESS_LOG_ENTRY;
 import static com.yahoo.processing.test.ProcessorLibrary.MapData;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.hamcrest.CoreMatchers.sameInstance;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests processing handler scenarios end to end.
@@ -64,26 +56,26 @@ public class ProcessingHandlerTestCase {
     private ProcessingTestDriver driver;
 
     private final Chain<Processor> defaultChain =
-            new Chain<Processor>("default",
+            new Chain<>("default",
                     new ProcessorLibrary.StringDataListAdder("Item1", "Item2"),
                     new ProcessorLibrary.Trace("TraceMessage", 1),
                     new ProcessorLibrary.StringDataAdder("StringData.toString()"));
 
     private final Chain<Processor> simpleChain =
-            new Chain<Processor>("simple",
+            new Chain<>("simple",
                     new ProcessorLibrary.StringDataAdder("StringData.toString()"));
 
     private final Chain<Processor> logValueChain =
-            new Chain<Processor>("log-value",
+            new Chain<>("log-value",
                     new ProcessorLibrary.LogValueAdder(LOG_KEY, LOG_VALUE));
 
-    @After
+    @AfterEach
     public void shutDown() {
         driver.close();
     }
 
     @Test
-    public void processing_handler_stores_trace_log_values_in_the_access_log_entry() {
+    void processing_handler_stores_trace_log_values_in_the_access_log_entry() {
         driver = new ProcessingTestDriver(logValueChain);
         Request request = HttpRequest.newServerRequest(driver.jDiscDriver(), URI.create("http://localhost/?chain=log-value"), HttpRequest.Method.GET);
         AccessLogEntry entry = new AccessLogEntry();
@@ -94,11 +86,11 @@ public class ProcessingHandlerTestCase {
         requestContent.close(null);
         request.release();
         responseHandler.readAll();
-        assertThat(entry.getKeyValues().get(LOG_KEY), is(List.of(LOG_VALUE)));
+        assertEquals(List.of(LOG_VALUE), entry.getKeyValues().get(LOG_KEY));
     }
 
     @Test
-    public void testProcessingHandlerResolvesChains() throws Exception {
+    void testProcessingHandlerResolvesChains() {
         List<Chain<Processor>> chains = new ArrayList<>();
         chains.add(defaultChain);
         chains.add(simpleChain);
@@ -109,16 +101,16 @@ public class ProcessingHandlerTestCase {
     }
 
     @Test
-    public void testProcessingHandlerPropagatesRequestParametersAndContext() throws InterruptedException {
+    void testProcessingHandlerPropagatesRequestParametersAndContext() {
         List<Chain<Processor>> chains = new ArrayList<>();
-        chains.add(new Chain<Processor>("default", new RequestPropertyTracer()));
+        chains.add(new Chain<>("default", new RequestPropertyTracer()));
         driver = new ProcessingTestDriver(chains);
-        assertTrue("JDisc request context is propagated to properties()",
-                driver.sendRequest("http://localhost/?chain=default&tracelevel=4").readAll().contains("context.contextVariable: '37'"));
+        assertTrue(driver.sendRequest("http://localhost/?chain=default&tracelevel=4").readAll().contains("context.contextVariable: '37'"),
+                "JDisc request context is propagated to properties()");
     }
 
     @Test
-    public void testProcessingHandlerOutputsTrace() throws Exception {
+    void testProcessingHandlerOutputsTrace() {
         List<Chain<Processor>> chains = new ArrayList<>();
         chains.add(defaultChain);
         driver = new ProcessingTestDriver(chains);
@@ -131,28 +123,28 @@ public class ProcessingHandlerTestCase {
     }
 
     @Test
-    public void testProcessingHandlerTransfersErrorsToHttpStatusCodesNoData() throws Exception {
+    void testProcessingHandlerTransfersErrorsToHttpStatusCodesNoData() {
         List<Chain<Processor>> chains = new ArrayList<>();
         chains.add(simpleChain);
-        chains.add(new Chain<Processor>("moved_permanently", new ProcessorLibrary.ErrorAdder(new ErrorMessage(301,"Message"))));
-        chains.add(new Chain<Processor>("unauthorized", new ProcessorLibrary.ErrorAdder(new ErrorMessage(401,"Message"))));
-        chains.add(new Chain<Processor>("unauthorized_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.UNAUTHORIZED.code,"Message"))));
-        chains.add(new Chain<Processor>("forbidden", new ProcessorLibrary.ErrorAdder(new ErrorMessage(403,"Message"))));
-        chains.add(new Chain<Processor>("forbidden_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.FORBIDDEN.code,"Message"))));
-        chains.add(new Chain<Processor>("not_found", new ProcessorLibrary.ErrorAdder(new ErrorMessage(404,"Message"))));
-        chains.add(new Chain<Processor>("not_found_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NOT_FOUND.code,"Message"))));
-        chains.add(new Chain<Processor>("too_many_requests", new ProcessorLibrary.ErrorAdder(new ErrorMessage(429,"Message"))));
-        chains.add(new Chain<Processor>("bad_request", new ProcessorLibrary.ErrorAdder(new ErrorMessage(400,"Message"))));
-        chains.add(new Chain<Processor>("bad_request_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BAD_REQUEST.code,"Message"))));
-        chains.add(new Chain<Processor>("internal_server_error", new ProcessorLibrary.ErrorAdder(new ErrorMessage(500,"Message"))));
-        chains.add(new Chain<Processor>("internal_server_error_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.INTERNAL_SERVER_ERROR.code,"Message"))));
-        chains.add(new Chain<Processor>("service_unavailable", new ProcessorLibrary.ErrorAdder(new ErrorMessage(503,"Message"))));
-        chains.add(new Chain<Processor>("service_unavailable_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NO_BACKENDS_IN_SERVICE.code,"Message"))));
-        chains.add(new Chain<Processor>("gateway_timeout", new ProcessorLibrary.ErrorAdder(new ErrorMessage(504,"Message"))));
-        chains.add(new Chain<Processor>("gateway_timeout_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.TIMEOUT.code,"Message"))));
-        chains.add(new Chain<Processor>("bad_gateway", new ProcessorLibrary.ErrorAdder(new ErrorMessage(502,"Message"))));
-        chains.add(new Chain<Processor>("bad_gateway_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BACKEND_COMMUNICATION_ERROR.code,"Message"))));
-        chains.add(new Chain<Processor>("unknown_code", new ProcessorLibrary.ErrorAdder(new ErrorMessage(1234567,"Message"))));
+        chains.add(new Chain<>("moved_permanently", new ProcessorLibrary.ErrorAdder(new ErrorMessage(301, "Message"))));
+        chains.add(new Chain<>("unauthorized", new ProcessorLibrary.ErrorAdder(new ErrorMessage(401, "Message"))));
+        chains.add(new Chain<>("unauthorized_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.UNAUTHORIZED.code, "Message"))));
+        chains.add(new Chain<>("forbidden", new ProcessorLibrary.ErrorAdder(new ErrorMessage(403, "Message"))));
+        chains.add(new Chain<>("forbidden_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.FORBIDDEN.code, "Message"))));
+        chains.add(new Chain<>("not_found", new ProcessorLibrary.ErrorAdder(new ErrorMessage(404, "Message"))));
+        chains.add(new Chain<>("not_found_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NOT_FOUND.code, "Message"))));
+        chains.add(new Chain<>("too_many_requests", new ProcessorLibrary.ErrorAdder(new ErrorMessage(429, "Message"))));
+        chains.add(new Chain<>("bad_request", new ProcessorLibrary.ErrorAdder(new ErrorMessage(400, "Message"))));
+        chains.add(new Chain<>("bad_request_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BAD_REQUEST.code, "Message"))));
+        chains.add(new Chain<>("internal_server_error", new ProcessorLibrary.ErrorAdder(new ErrorMessage(500, "Message"))));
+        chains.add(new Chain<>("internal_server_error_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.INTERNAL_SERVER_ERROR.code, "Message"))));
+        chains.add(new Chain<>("service_unavailable", new ProcessorLibrary.ErrorAdder(new ErrorMessage(503, "Message"))));
+        chains.add(new Chain<>("service_unavailable_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NO_BACKENDS_IN_SERVICE.code, "Message"))));
+        chains.add(new Chain<>("gateway_timeout", new ProcessorLibrary.ErrorAdder(new ErrorMessage(504, "Message"))));
+        chains.add(new Chain<>("gateway_timeout_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.TIMEOUT.code, "Message"))));
+        chains.add(new Chain<>("bad_gateway", new ProcessorLibrary.ErrorAdder(new ErrorMessage(502, "Message"))));
+        chains.add(new Chain<>("bad_gateway_mapped", new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BACKEND_COMMUNICATION_ERROR.code, "Message"))));
+        chains.add(new Chain<>("unknown_code", new ProcessorLibrary.ErrorAdder(new ErrorMessage(1234567, "Message"))));
         driver = new ProcessingTestDriver(chains);
         assertEqualStatus(200, "http://localhost/?chain=simple");
         assertEqualStatus(301, "http://localhost/?chain=moved_permanently");
@@ -177,28 +169,28 @@ public class ProcessingHandlerTestCase {
     }
 
     @Test
-    public void testProcessingHandlerTransfersErrorsToHttpStatusCodesWithData() throws Exception {
+    void testProcessingHandlerTransfersErrorsToHttpStatusCodesWithData() {
         List<Chain<Processor>> chains = new ArrayList<>();
         chains.add(simpleChain);
-        chains.add(new Chain<Processor>("moved_permanently", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(301,"Message"))));
-        chains.add(new Chain<Processor>("unauthorized", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(401,"Message"))));
-        chains.add(new Chain<Processor>("unauthorized_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.UNAUTHORIZED.code,"Message"))));
-        chains.add(new Chain<Processor>("forbidden", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(403,"Message"))));
-        chains.add(new Chain<Processor>("forbidden_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.FORBIDDEN.code,"Message"))));
-        chains.add(new Chain<Processor>("not_found", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(404,"Message"))));
-        chains.add(new Chain<Processor>("not_found_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NOT_FOUND.code,"Message"))));
-        chains.add(new Chain<Processor>("too_many_requests", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(429,"Message"))));
-        chains.add(new Chain<Processor>("bad_request", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(400,"Message"))));
-        chains.add(new Chain<Processor>("bad_request_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BAD_REQUEST.code,"Message"))));
-        chains.add(new Chain<Processor>("internal_server_error", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(500,"Message"))));
-        chains.add(new Chain<Processor>("internal_server_error_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.INTERNAL_SERVER_ERROR.code,"Message"))));
-        chains.add(new Chain<Processor>("service_unavailable", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(503,"Message"))));
-        chains.add(new Chain<Processor>("service_unavailable_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NO_BACKENDS_IN_SERVICE.code,"Message"))));
-        chains.add(new Chain<Processor>("gateway_timeout", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(504,"Message"))));
-        chains.add(new Chain<Processor>("gateway_timeout_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.TIMEOUT.code,"Message"))));
-        chains.add(new Chain<Processor>("bad_gateway", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(502,"Message"))));
-        chains.add(new Chain<Processor>("bad_gateway_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BACKEND_COMMUNICATION_ERROR.code,"Message"))));
-        chains.add(new Chain<Processor>("unknown_code", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(1234567,"Message"))));
+        chains.add(new Chain<>("moved_permanently", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(301, "Message"))));
+        chains.add(new Chain<>("unauthorized", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(401, "Message"))));
+        chains.add(new Chain<>("unauthorized_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.UNAUTHORIZED.code, "Message"))));
+        chains.add(new Chain<>("forbidden", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(403, "Message"))));
+        chains.add(new Chain<>("forbidden_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.FORBIDDEN.code, "Message"))));
+        chains.add(new Chain<>("not_found", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(404, "Message"))));
+        chains.add(new Chain<>("not_found_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NOT_FOUND.code, "Message"))));
+        chains.add(new Chain<>("too_many_requests", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(429, "Message"))));
+        chains.add(new Chain<>("bad_request", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(400, "Message"))));
+        chains.add(new Chain<>("bad_request_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BAD_REQUEST.code, "Message"))));
+        chains.add(new Chain<>("internal_server_error", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(500, "Message"))));
+        chains.add(new Chain<>("internal_server_error_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.INTERNAL_SERVER_ERROR.code, "Message"))));
+        chains.add(new Chain<>("service_unavailable", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(503, "Message"))));
+        chains.add(new Chain<>("service_unavailable_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.NO_BACKENDS_IN_SERVICE.code, "Message"))));
+        chains.add(new Chain<>("gateway_timeout", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(504, "Message"))));
+        chains.add(new Chain<>("gateway_timeout_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.TIMEOUT.code, "Message"))));
+        chains.add(new Chain<>("bad_gateway", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(502, "Message"))));
+        chains.add(new Chain<>("bad_gateway_mapped", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.BACKEND_COMMUNICATION_ERROR.code, "Message"))));
+        chains.add(new Chain<>("unknown_code", new ProcessorLibrary.StringDataAdder("Hello"), new ProcessorLibrary.ErrorAdder(new ErrorMessage(1234567, "Message"))));
         driver = new ProcessingTestDriver(chains);
         assertEqualStatus(200, "http://localhost/?chain=simple");
         assertEqualStatus(301, "http://localhost/?chain=moved_permanently");
@@ -223,27 +215,27 @@ public class ProcessingHandlerTestCase {
     }
 
     @Test
-    public void testProcessorSetsResponseHeaders() throws InterruptedException {
+    void testProcessorSetsResponseHeaders() throws InterruptedException {
         ProcessingTestDriver.MockResponseHandler responseHandler = null;
         try {
-            Map<String,List<String>> responseHeaders = new HashMap<>();
-            responseHeaders.put("foo", Collections.singletonList("fooValue"));
-            responseHeaders.put("bar", Arrays.asList(new String[] { "barValue", "bazValue"}));
+            Map<String, List<String>> responseHeaders = new HashMap<>();
+            responseHeaders.put("foo", List.of("fooValue"));
+            responseHeaders.put("bar", List.of("barValue", "bazValue"));
 
-            Map<String,List<String>> otherResponseHeaders = new HashMap<>();
-            otherResponseHeaders.put("foo", Collections.singletonList("fooValue2"));
-            otherResponseHeaders.put("bax", Collections.singletonList("baxValue"));
+            Map<String, List<String>> otherResponseHeaders = new HashMap<>();
+            otherResponseHeaders.put("foo", List.of("fooValue2"));
+            otherResponseHeaders.put("bax", List.of("baxValue"));
 
             List<Chain<Processor>> chains = new ArrayList<>();
-            chains.add(new Chain<Processor>("default",new ResponseHeaderSetter(responseHeaders),
-                                                      new ResponseHeaderSetter(otherResponseHeaders)));
+            chains.add(new Chain<>("default", new ResponseHeaderSetter(responseHeaders),
+                    new ResponseHeaderSetter(otherResponseHeaders)));
             driver = new ProcessingTestDriver(chains);
             responseHandler = driver.sendRequest("http://localhost/?chain=default").awaitResponse();
             Response response = responseHandler.getResponse();
-            assertEquals("[fooValue2, fooValue]",response.headers().get("foo").toString());
+            assertEquals("[fooValue2, fooValue]", response.headers().get("foo").toString());
             assertEquals("[barValue, bazValue]", response.headers().get("bar").toString());
             assertEquals("[baxValue]", response.headers().get("bax").toString());
-            assertEquals("ResponseHeaders are not rendered", "{\"datalist\":[]}", responseHandler.read());
+            assertEquals("{\"datalist\":[]}", responseHandler.read(), "ResponseHeaders are not rendered");
         }
         finally {
             if (responseHandler != null)
@@ -252,16 +244,16 @@ public class ProcessingHandlerTestCase {
     }
 
     @Test
-    public void testResponseDataStatus() throws InterruptedException {
+    void testResponseDataStatus() throws InterruptedException {
         ProcessingTestDriver.MockResponseHandler responseHandler = null;
         try {
             List<Chain<Processor>> chains = new ArrayList<>();
-            chains.add(new Chain<Processor>("default", new ResponseStatusSetter(429)));
+            chains.add(new Chain<>("default", new ResponseStatusSetter(429)));
             driver = new ProcessingTestDriver(chains);
             responseHandler = driver.sendRequest("http://localhost/?chain=default").awaitResponse();
             Response response = responseHandler.getResponse();
             assertEquals(429, response.getStatus());
-            assertEquals("ResponseHeaders are not rendered", "{\"datalist\":[]}", responseHandler.read());
+            assertEquals("{\"datalist\":[]}", responseHandler.read(), "ResponseHeaders are not rendered");
         }
         finally {
             if (responseHandler != null)
@@ -271,13 +263,13 @@ public class ProcessingHandlerTestCase {
 
     /** Tests that the ResponseStatus takes precedence over errors */
     @Test
-    public void testResponseDataStatusOverridesErrors() throws InterruptedException {
+    void testResponseDataStatusOverridesErrors() throws InterruptedException {
         ProcessingTestDriver.MockResponseHandler responseHandler = null;
         try {
             List<Chain<Processor>> chains = new ArrayList<>();
-            chains.add(new Chain<Processor>("default", new ResponseStatusSetter(200),
-                                                       new ProcessorLibrary.StringDataAdder("Hello"),
-                                                       new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.FORBIDDEN.code,"Message"))));
+            chains.add(new Chain<>("default", new ResponseStatusSetter(200),
+                    new ProcessorLibrary.StringDataAdder("Hello"),
+                    new ProcessorLibrary.ErrorAdder(new ErrorMessage(Error.FORBIDDEN.code, "Message"))));
             driver = new ProcessingTestDriver(chains);
             responseHandler = driver.sendRequest("http://localhost/?chain=default").awaitResponse();
             Response response = responseHandler.getResponse();
@@ -307,14 +299,14 @@ public class ProcessingHandlerTestCase {
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testProcessingHandlerSupportsAsyncRendering() throws Exception {
+    void testProcessingHandlerSupportsAsyncRendering() {
         // Set up
         ProcessorLibrary.FutureDataSource futureDataSource = new ProcessorLibrary.FutureDataSource();
-        Chain<Processor> asyncCompletionChain = new Chain<Processor>("asyncCompletion", new ProcessorLibrary.DataCounter("async"));
+        Chain<Processor> asyncCompletionChain = new Chain<>("asyncCompletion", new ProcessorLibrary.DataCounter("async"));
         Chain<Processor> chain =
-                new Chain<Processor>("federation", new ProcessorLibrary.DataCounter("sync"),
-                                                   new ProcessorLibrary.Federator(new Chain<Processor>(new ProcessorLibrary.DataSource()),
-                                                                                  new Chain<Processor>(new ProcessorLibrary.AsyncDataProcessingInitiator(asyncCompletionChain),futureDataSource)));
+                new Chain<>("federation", new ProcessorLibrary.DataCounter("sync"),
+                        new ProcessorLibrary.Federator(new Chain<Processor>(new ProcessorLibrary.DataSource()),
+                                new Chain<>(new ProcessorLibrary.AsyncDataProcessingInitiator(asyncCompletionChain), futureDataSource)));
         List<Chain<Processor>> chains = new ArrayList<>();
         chains.add(chain);
         driver = new ProcessingTestDriver(chains);
@@ -323,46 +315,46 @@ public class ProcessingHandlerTestCase {
         String synchronousResponse = responseHandler.read();
         assertEquals(
                 "{\"datalist\":[" +
-                  "{\"datalist\":[" +
-                    "{\"data\":\"first.null\"}," +
-                    "{\"data\":\"second.null\"}," +
-                    "{\"data\":\"third.null\"}" +
-                  "]}",
+                        "{\"datalist\":[" +
+                        "{\"data\":\"first.null\"}," +
+                        "{\"data\":\"second.null\"}," +
+                        "{\"data\":\"third.null\"}" +
+                        "]}",
                 synchronousResponse);
-        assertEquals("No more data is available at this point", 0, responseHandler.available());
+        assertEquals(0, responseHandler.available(), "No more data is available at this point");
 
         // Now, complete async data
         futureDataSource.incomingData.get(0).add(new ProcessorLibrary.StringData(null, "d1"));
         assertEquals(
-                            "," +
-                            "{\"datalist\":[" +
-                            "{\"data\":\"d1\"}",
-                            responseHandler.read());
+                "," +
+                        "{\"datalist\":[" +
+                        "{\"data\":\"d1\"}",
+                responseHandler.read());
         futureDataSource.incomingData.get(0).addLast(new ProcessorLibrary.StringData(null, "d2"));
 
         // ... which leads to the rest of the response becoming available
         assertEquals(
-                    "," +
-                    "{\"data\":\"d2\"}," +
-                    "{\"data\":\"[async] Data count: 2\"}" +
-                  "]}",
+                "," +
+                        "{\"data\":\"d2\"}," +
+                        "{\"data\":\"[async] Data count: 2\"}" +
+                        "]}",
                 responseHandler.read());
         assertEquals(",{\"data\":\"[sync] Data count: 3\"}" + // Async items not counted as they arrive after chain completion
-                     "]}",
-                     responseHandler.read());
-        assertTrue("Transmission completed", null == responseHandler.read());
+                "]}",
+                responseHandler.read());
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testProcessingHandlerSupportsAsyncUnorderedRendering() throws Exception {
+    void testProcessingHandlerSupportsAsyncUnorderedRendering() {
         // Set up
         ProcessorLibrary.FutureDataSource futureDataSource1 = new ProcessorLibrary.FutureDataSource();
         ProcessorLibrary.FutureDataSource futureDataSource2 = new ProcessorLibrary.FutureDataSource();
         Chain<Processor> chain =
-                new Chain<Processor>("federation",
-                                   new ProcessorLibrary.Federator(false,new Chain<Processor>(futureDataSource1),
-                                                                        new Chain<Processor>(futureDataSource2)));
+                new Chain<>("federation",
+                        new ProcessorLibrary.Federator(false, new Chain<Processor>(futureDataSource1),
+                                new Chain<Processor>(futureDataSource2)));
         List<Chain<Processor>> chains = new ArrayList<>();
         chains.add(chain);
         driver = new ProcessingTestDriver(chains);
@@ -371,69 +363,69 @@ public class ProcessingHandlerTestCase {
         assertEquals(
                 "{\"datalist\":[",
                 responseHandler.read());
-        assertEquals("No more data is available at this point", 0, responseHandler.available());
+        assertEquals(0, responseHandler.available(), "No more data is available at this point");
 
         // Complete second async data first
         futureDataSource2.incomingData.get(0).addLast(new ProcessorLibrary.StringData(null, "d2"));
         assertEquals(
-                                    "{\"datalist\":[" +
-                                    "{\"data\":\"d2\"}"+
-                                    "]}",
-                            responseHandler.read());
+                "{\"datalist\":[" +
+                        "{\"data\":\"d2\"}" +
+                        "]}",
+                responseHandler.read());
 
         // Now complete first async data (which is therefore rendered last)
         futureDataSource1.incomingData.get(0).addLast(new ProcessorLibrary.StringData(null, "d1"));
         assertEquals(
-                            "," +
-                                    "{\"datalist\":[" +
-                                    "{\"data\":\"d1\"}"+
-                                    "]}",
-                            responseHandler.read());
+                "," +
+                        "{\"datalist\":[" +
+                        "{\"data\":\"d1\"}" +
+                        "]}",
+                responseHandler.read());
         assertEquals(
-                            "]}",
-                            responseHandler.read());
+                "]}",
+                responseHandler.read());
 
-        assertTrue("Transmission completed", responseHandler.read()==null);
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testAsyncOnlyRendering() throws Exception {
+    void testAsyncOnlyRendering() throws Exception {
         // Set up
         ProcessorLibrary.ListenableFutureDataSource futureDataSource = new ProcessorLibrary.ListenableFutureDataSource();
-        Chain<Processor> chain = new Chain<>("main", Collections.<Processor>singletonList(futureDataSource));
+        Chain<Processor> chain = new Chain<>("main", List.of(futureDataSource));
         driver = new ProcessingTestDriver(chain);
 
         ProcessingTestDriver.MockResponseHandler responseHandler = driver.sendRequest("http://localhost/?chain=main");
-        assertEquals("No data is available at this point", 0, responseHandler.available());
+        assertEquals(0, responseHandler.available(), "No data is available at this point");
 
         futureDataSource.incomingData.get().add(new ProcessorLibrary.StringData(null, "d1"));
         assertEquals(
-                            "{\"datalist\":[" +
-                            "{\"data\":\"d1\"}",
-                            responseHandler.read());
+                "{\"datalist\":[" +
+                        "{\"data\":\"d1\"}",
+                responseHandler.read());
         futureDataSource.incomingData.get().addLast(new ProcessorLibrary.StringData(null, "d2"));
 
         assertEquals(
                 "," +
-                "{\"data\":\"d2\"}" +
-                "]}",
+                        "{\"data\":\"d2\"}" +
+                        "]}",
                 responseHandler.read());
 
         assertEquals(200, responseHandler.getStatus());
-        assertTrue("Transmission completed", null == responseHandler.read());
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testAsyncRenderingWithClientClose() throws Exception {
+    void testAsyncRenderingWithClientClose() throws Exception {
         // Set up
         ProcessorLibrary.ListenableFutureDataSource futureDataSource = new ProcessorLibrary.ListenableFutureDataSource();
-        Chain<Processor> chain = new Chain<>("main", Collections.<Processor>singletonList(futureDataSource));
+        Chain<Processor> chain = new Chain<>("main", List.of(futureDataSource));
         driver = new ProcessingTestDriver(chain);
 
         ProcessingTestDriver.MockResponseHandler responseHandler = driver.sendRequest("http://localhost/?chain=main");
-        assertEquals("No data is available at this point", 0, responseHandler.available());
+        assertEquals(0, responseHandler.available(), "No data is available at this point");
 
         futureDataSource.incomingData.get().add(new ProcessorLibrary.StringData(null, "d1"));
         assertEquals(
@@ -446,24 +438,24 @@ public class ProcessingHandlerTestCase {
         assertNull(responseHandler.read());
 
         assertEquals(200, responseHandler.getStatus());
-        assertTrue("Transmission completed", null == responseHandler.read());
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testAsyncOnlyRenderingWithAsyncPostData() throws Exception {
+    void testAsyncOnlyRenderingWithAsyncPostData() throws Exception {
         // Set up
         ProcessorLibrary.ListenableFutureDataSource futureDataSource = new ProcessorLibrary.ListenableFutureDataSource();
         PostReader postReader = new PostReader();
         Chain<Processor> chain = new Chain<>("main",
-                                             new ProcessorLibrary.AsyncDataProcessingInitiator(new Chain<>(postReader)),
-                                             futureDataSource);
+                new ProcessorLibrary.AsyncDataProcessingInitiator(new Chain<>(postReader)),
+                futureDataSource);
         driver = new ProcessingTestDriver(chain);
         RequestHandlerTestDriver.MockResponseHandler responseHandler =
                 driver.sendRequest("http://localhost/?chain=main", HttpRequest.Method.POST, "Hello, world!");
 
-        assertFalse("Post data is read later, on async completion", postReader.bodyDataFuture.isDone());
-        assertEquals("No data is available at this point", 0, responseHandler.available());
+        assertFalse(postReader.bodyDataFuture.isDone(), "Post data is read later, on async completion");
+        assertEquals(0, responseHandler.available(), "No data is available at this point");
 
         futureDataSource.incomingData.get().add(new ProcessorLibrary.StringData(null, "d1"));
         assertEquals(
@@ -479,10 +471,10 @@ public class ProcessingHandlerTestCase {
                         "]}",
                 responseHandler.read()
         );
-        assertEquals("Data is completed, so post data is read", "Hello, world!", postReader.bodyDataFuture.get().trim());
+        assertEquals("Hello, world!", postReader.bodyDataFuture.get().trim(), "Data is completed, so post data is read");
 
         assertEquals(200, responseHandler.getStatus());
-        assertTrue("Transmission completed", null == responseHandler.read());
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
     private static class PostReader extends Processor {
@@ -509,18 +501,18 @@ public class ProcessingHandlerTestCase {
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testStatusAndHeadersCanBeSetAsynchronously() throws Exception {
-        Map<String,List<String>> responseHeaders = new HashMap<>();
-        responseHeaders.put("foo", Collections.singletonList("fooValue"));
-        responseHeaders.put("bar", Arrays.asList(new String[] { "barValue", "bazValue"}));
+    void testStatusAndHeadersCanBeSetAsynchronously() throws Exception {
+        Map<String, List<String>> responseHeaders = new HashMap<>();
+        responseHeaders.put("foo", List.of("fooValue"));
+        responseHeaders.put("bar", List.of("barValue", "bazValue"));
 
         // Set up
         ProcessorLibrary.ListenableFutureDataSource futureDataSource = new ProcessorLibrary.ListenableFutureDataSource(true, false);
-        Chain<Processor> chain = new Chain<Processor>("main", new ProcessorLibrary.AsyncDataProcessingInitiator(new Chain<Processor>("async", new ProcessorLibrary.StatusSetter(500), new ResponseHeaderSetter(responseHeaders))), futureDataSource);
+        Chain<Processor> chain = new Chain<>("main", new ProcessorLibrary.AsyncDataProcessingInitiator(new Chain<>("async", new ProcessorLibrary.StatusSetter(500), new ResponseHeaderSetter(responseHeaders))), futureDataSource);
         driver = new ProcessingTestDriver(chain);
 
         ProcessingTestDriver.MockResponseHandler responseHandler = driver.sendRequest("http://localhost/?chain=main");
-        assertEquals("No data is available at this point", 0, responseHandler.available());
+        assertEquals(0, responseHandler.available(), "No data is available at this point");
 
         com.yahoo.processing.Request request = futureDataSource.incomingData.get().getOwner().request();
         futureDataSource.incomingData.get().addLast(new ProcessorLibrary.StringData(request, "d1"));
@@ -530,29 +522,29 @@ public class ProcessingHandlerTestCase {
         assertEquals(500, responseHandler.getStatus());
         assertEquals("[fooValue]", responseHandler.getResponse().headers().get("foo").toString());
         assertEquals("[barValue, bazValue]", responseHandler.getResponse().headers().get("bar").toString());
-        assertTrue("Transmission completed", null == responseHandler.read());
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testAsyncRenderingDoesNotHoldThreads() throws Exception {
+    void testAsyncRenderingDoesNotHoldThreads() {
         // Set up
         ProcessorLibrary.FutureDataSource futureDataSource = new ProcessorLibrary.FutureDataSource();
         // Add some sync data as well to cause rendering to start before async data is added.
         // This allows us to wait on return data rather than having to wait for the 100 requests
         // to be done, which is cumbersome.
-        Chain<Processor> chain = new Chain<Processor>("main", new ProcessorLibrary.Federator(new Chain<Processor>(new ProcessorLibrary.DataSource()), new Chain<Processor>(futureDataSource)));
+        Chain<Processor> chain = new Chain<>("main", new ProcessorLibrary.Federator(new Chain<Processor>(new ProcessorLibrary.DataSource()), new Chain<Processor>(futureDataSource)));
         driver = new ProcessingTestDriver(chain);
 
         int requestCount = 1000;
         ProcessingTestDriver.MockResponseHandler[] responseHandler = new ProcessingTestDriver.MockResponseHandler[requestCount];
         for (int i = 0; i < requestCount; i++) {
             responseHandler[i] = driver.sendRequest("http://localhost/?chain=main");
-            assertEquals("Sync data is available",
-                         "{\"datalist\":[{\"datalist\":[{\"data\":\"first.null\"},{\"data\":\"second.null\"},{\"data\":\"third.null\"}]}",
-                         responseHandler[i].read());
+            assertEquals("{\"datalist\":[{\"datalist\":[{\"data\":\"first.null\"},{\"data\":\"second.null\"},{\"data\":\"third.null\"}]}",
+                    responseHandler[i].read(),
+                    "Sync data is available");
         }
-        assertEquals("All requests was processed", requestCount, futureDataSource.incomingData.size());
+        assertEquals(requestCount, futureDataSource.incomingData.size(), "All requests was processed");
 
         // Complete all
         for (int i = 0; i < requestCount; i++) {
@@ -561,18 +553,18 @@ public class ProcessingHandlerTestCase {
             futureDataSource.incomingData.get(i).addLast(new ProcessorLibrary.StringData(null, "d2"));
             assertEquals(",{\"data\":\"d2\"}]}", responseHandler[i].read());
             assertEquals("]}", responseHandler[i].read());
-            assertTrue("Transmission completed", null == responseHandler[i].read());
+            assertNull(responseHandler[i].read(), "Transmission completed");
         }
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    public void testStreamedRendering() throws Exception {
+    void testStreamedRendering() throws Exception {
         // Set up
-        Chain<Processor> streamChain = new Chain<Processor>(new StreamProcessor());
+        Chain<Processor> streamChain = new Chain<>(new StreamProcessor());
 
         ProcessorLibrary.ListenableFutureDataSource futureDataSource = new ProcessorLibrary.ListenableFutureDataSource();
-        Chain<Processor> mainChain = new Chain<Processor>("main", new ProcessorLibrary.StreamProcessingInitiator(streamChain), futureDataSource);
+        Chain<Processor> mainChain = new Chain<>("main", new ProcessorLibrary.StreamProcessingInitiator(streamChain), futureDataSource);
         driver = new ProcessingTestDriver(mainChain);
 
         ProcessingTestDriver.MockResponseHandler responseHandler = driver.sendRequest("http://localhost/?chain=main");
@@ -596,33 +588,32 @@ public class ProcessingHandlerTestCase {
                 ",{\"data\":\"map data: {streamProcessed=true}\"}]}",
                 responseHandler.read());
 
-        assertTrue("Transmission completed", null == responseHandler.read());
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
-    @SuppressWarnings("unchecked")
     @Test
-    public void testEagerStreamedRenderingOnFreeze() throws Exception {
+    void testEagerStreamedRenderingOnFreeze() {
         FreezingDataSource source = new FreezingDataSource();
-        Chain<Processor> mainChain = new Chain<Processor>("main", source);
+        Chain<Processor> mainChain = new Chain<>("main", source);
         driver = new ProcessingTestDriver(mainChain);
         ProcessingTestDriver.MockResponseHandler responseHandler = driver.sendRequest("http://localhost/?chain=main");
-        assertEquals("No data is available at this point", 0, responseHandler.available());
+        assertEquals(0, responseHandler.available(), "No data is available at this point");
         source.freeze.set(true);
         assertEquals("{\"datalist\":[{\"data\":\"d1\"}", responseHandler.read());
         source.addLastData.set(true); // signal completion
         assertEquals(",{\"data\":\"d2\"}]}", responseHandler.read());
-        assertTrue("Transmission completed", null == responseHandler.read());
+        assertNull(responseHandler.read(), "Transmission completed");
     }
 
-    @SuppressWarnings("unchecked")
+    // TODO
     @Test
-    @Ignore // TODO
-    public void testNestedEagerStreamedRenderingOnFreeze() throws Exception {
+    @Disabled
+    void testNestedEagerStreamedRenderingOnFreeze() {
         try {
             FreezingDataSource source1 = new FreezingDataSource("s1");
             FreezingDataSource source2 = new FreezingDataSource("s2");
             FreezingDataSource source3 = new FreezingDataSource("s3");
-            Chain<Processor> mainChain = new Chain<Processor>("main",
+            Chain<Processor> mainChain = new Chain<>("main",
                     new ProcessorLibrary.StringDataAdder("main-data"),
                     new ProcessorLibrary.EagerReturnFederator(true,
                             new Chain<Processor>(source1),
@@ -630,16 +621,15 @@ public class ProcessingHandlerTestCase {
                             new Chain<Processor>(source3)));
             driver = new ProcessingTestDriver(mainChain);
             ProcessingTestDriver.MockResponseHandler responseHandler = driver.sendRequest("http://localhost/?chain=main");
-            assertEquals("No data is available at this point", 0, responseHandler.available());
+            assertEquals(0, responseHandler.available(), "No data is available at this point");
             source1.freeze.set(true);
-            assertEquals("Received because the parent list and source1 list is frozen",
-                    "{\"datalist\":[{\"datalist\":[{\"data\":\"s1d1\"}", responseHandler.read());
+            assertEquals("{\"datalist\":[{\"datalist\":[{\"data\":\"s1d1\"}", responseHandler.read(), "Received because the parent list and source1 list is frozen");
 
             source2.addLastData.set(true); // No effect as we are working on source1, which is not completed yet
             assertEquals("{\"datalist\":[{\"data\":\"s1d1\"}", responseHandler.read());
             source1.addLastData.set(true); // Make source 1 and 2 available
             assertEquals(",{\"data\":\"d2\"}]}", responseHandler.read());
-            assertTrue("Transmission completed", null == responseHandler.read());
+            assertNull(responseHandler.read(), "Transmission completed");
         }
         catch (Throwable t) {
             t.printStackTrace();
@@ -647,32 +637,34 @@ public class ProcessingHandlerTestCase {
         }
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testRetrievingNonExistingRendererThrows() throws Exception {
-        driver = new ProcessingTestDriver(Collections.<Chain<Processor>>emptyList());
-        driver.processingHandler().getRendererCopy(ComponentSpecification.fromString("non-existent"));
+    @Test
+    void testRetrievingNonExistingRendererThrows() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            driver = new ProcessingTestDriver(List.of());
+            driver.processingHandler().getRendererCopy(ComponentSpecification.fromString("non-existent"));
+        });
     }
 
     @Test
-    public void testDefaultRendererIsAddedToRegistryWhenNoneIsGivenByUser() throws Exception {
+    void testDefaultRendererIsAddedToRegistryWhenNoneIsGivenByUser() {
         String defaultId = AbstractProcessingHandler.DEFAULT_RENDERER_ID;
 
-        driver = new ProcessingTestDriver(Collections.<Chain<Processor>>emptyList());
+        driver = new ProcessingTestDriver(List.of());
         Renderer defaultRenderer = driver.processingHandler().getRenderers().getComponent(defaultId);
-        assertThat(defaultRenderer, notNullValue());
+        assertNotNull(defaultRenderer);
 
     }
 
     @Test
-    public void testUserSpecifiedDefaultRendererIsNotReplacedInRegistry() throws Exception {
+    void testUserSpecifiedDefaultRendererIsNotReplacedInRegistry() {
         String defaultId = AbstractProcessingHandler.DEFAULT_RENDERER_ID;
         Renderer myDefaultRenderer = new ProcessingRenderer();
         ComponentRegistry<Renderer> renderers = new ComponentRegistry<>();
         renderers.register(ComponentId.fromString(defaultId), myDefaultRenderer);
 
-        driver = new ProcessingTestDriver(Collections.<Chain<Processor>>emptyList(), renderers);
+        driver = new ProcessingTestDriver(List.of(), renderers);
         Renderer defaultRenderer = driver.processingHandler().getRenderers().getComponent(defaultId);
-        assertThat(defaultRenderer, sameInstance(myDefaultRenderer));
+        assertSame(defaultRenderer, myDefaultRenderer);
 
     }
 
@@ -691,6 +683,7 @@ public class ProcessingHandlerTestCase {
             this.stringDataPrefix = stringDataPrefix;
         }
 
+        @SuppressWarnings("unchecked")
         @Override
         public com.yahoo.processing.Response process(com.yahoo.processing.Request request, Execution execution) {
             try {
@@ -727,7 +720,7 @@ public class ProcessingHandlerTestCase {
 
     }
 
-    private String defaultChainResponse =
+    private final String defaultChainResponse =
         "{\"datalist\":[" +
           "{\"data\":\"StringData.toString()\"}," +
           "{\"datalist\":[" +
@@ -736,17 +729,17 @@ public class ProcessingHandlerTestCase {
           "}]" +
         "}";
 
-    private String simpleChainResponse =
+    private final String simpleChainResponse =
             "{\"datalist\":[" +
               "{\"data\":\"StringData.toString()\"}]" +
             "}";
 
-    private String trace1 =
+    private final String trace1 =
         "{\"trace\":[" +
           "\"TraceMessage\"" +
         "],";
 
-    private String trace1WithFullResult =
+    private final String trace1WithFullResult =
             "{\"trace\":[" +
               "\"TraceMessage\"" +
             "]," +
@@ -758,7 +751,7 @@ public class ProcessingHandlerTestCase {
               "]}" +
             "]}";
 
-    private String trace4 =
+    private final String trace4 =
         "{\"trace\":[" +
           "\"Invoke '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$StringDataListAdder'\"," +
           "\"Invoke '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$Trace'\"," +
@@ -769,7 +762,7 @@ public class ProcessingHandlerTestCase {
           "\"Return '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$StringDataListAdder'\"" +
         "],";
 
-    private String trace5 =
+    private final String trace5 =
             "{\"trace\":[" +
               "\"Invoke '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$StringDataListAdder'\"," +
               "\"Invoke '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$Trace'\"," +
@@ -780,7 +773,7 @@ public class ProcessingHandlerTestCase {
               "\"Return '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$StringDataListAdder'\"" +
             "],";
 
-    private String trace6 =
+    private final String trace6 =
             "{\"trace\":[" +
                "{\"timestamp\":ddddddddddddd,\"message\":\"Invoke '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$StringDataListAdder'\"}," +
                "{\"timestamp\":ddddddddddddd,\"message\":\"Invoke '(anonymous)' of class 'com.yahoo.processing.test.ProcessorLibrary$Trace'\"}," +

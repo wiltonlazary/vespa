@@ -7,41 +7,47 @@ import com.yahoo.text.AbstractUtf8Array;
 import com.yahoo.text.Utf8;
 import com.yahoo.text.Utf8String;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+
+import static ai.vespa.validation.Validation.requireInRange;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * Encodes json from a slime object.
  *
  * @author Ulf Lilleengen
  */
-public final class JsonFormat implements SlimeFormat
-{
+public final class JsonFormat implements SlimeFormat {
+
     private final static byte [] HEX = Utf8.toBytes("0123456789ABCDEF");
-    private final boolean compact;
+    private final int indent;
+
+    public JsonFormat(int indent) {
+        this.indent = requireInRange(indent, "JSON space indent count", 0, 8);
+    }
+
     public JsonFormat(boolean compact) {
-        this.compact = compact;
+        this(compact ? 0 : 2);
     }
 
     @Override
     public void encode(OutputStream os, Slime slime) throws IOException {
-        new Encoder(slime.get(), os, compact).encode();
+        new Encoder(slime.get(), os, indent).encode();
     }
 
     public void encode(OutputStream os, Inspector value) throws IOException {
-        new Encoder(value, os, compact).encode();
+        new Encoder(value, os, indent).encode();
     }
 
     public void encode(AbstractByteWriter os, Slime slime) throws IOException {
-        new Encoder(slime.get(), os, compact).encode();
+        new Encoder(slime.get(), os, indent).encode();
     }
 
     public void encode(AbstractByteWriter os, Inspector value) throws IOException {
-        new Encoder(value, os, compact).encode();
-    }
-
-    @Override
-    public void decode(InputStream is, Slime slime) {
-        throw new UnsupportedOperationException("Not implemented");
+        new Encoder(value, os, indent).encode();
     }
 
     /** Returns the given slime data as UTF-8-encoded JSON */
@@ -63,31 +69,29 @@ public final class JsonFormat implements SlimeFormat
         return slime;
     }
 
-    public static final class Encoder implements ArrayTraverser, ObjectTraverser {
+    static final class Encoder implements ArrayTraverser, ObjectTraverser {
         private final Inspector top;
         private final AbstractByteWriter out;
+        private final byte[] indent;
         private boolean head = true;
-        private boolean compact;
         private int level = 0;
         final static AbstractUtf8Array NULL=new Utf8String("null");
         final static AbstractUtf8Array FALSE=new Utf8String("false");
         final static AbstractUtf8Array TRUE=new Utf8String("true");
 
-        public Encoder(Inspector value, OutputStream out, boolean compact) {
-            this.top = value;
-            this.out = new ByteWriter(out);
-            this.compact = compact;
+        public Encoder(Inspector value, OutputStream out, int indent) {
+            this(value, new ByteWriter(out), indent);
         }
 
-        public Encoder(Inspector value, AbstractByteWriter out, boolean compact) {
+        public Encoder(Inspector value, AbstractByteWriter out, int indent) {
             this.top = value;
             this.out = out;
-            this.compact = compact;
+            this.indent = indent == 0 ? null : " ".repeat(indent).getBytes(UTF_8);
         }
 
         public void encode() throws IOException {
             encodeValue(top);
-            if (!compact) {
+            if (indent != null) {
                 out.append((byte) '\n');
             }
             out.flush();
@@ -198,14 +202,19 @@ public final class JsonFormat implements SlimeFormat
         }
 
         private void separate(boolean useComma) throws IOException {
-            if (!head && useComma) {
+            boolean newline = ! head || useComma;
+            if ( ! head && useComma) {
                 out.append((byte)',');
             } else {
                 head = false;
             }
-            if (!compact) {
-                out.append((byte)'\n');
-                for (int lvl = 0; lvl < level; lvl++) { out.append((byte)' '); }
+            if (indent != null) {
+                if (newline) {
+                    out.append((byte) '\n');
+                    for (int lvl = 0; lvl < level; lvl++) { out.append(indent); }
+                } else {
+                    out.append((byte) ' ');
+                }
             }
         }
 
@@ -224,8 +233,8 @@ public final class JsonFormat implements SlimeFormat
                 separate(true);
                 encodeSTRING(Utf8Codec.encode(name));
                 out.append((byte)':');
-                if (!compact)
-                    out.append((byte)' ');
+                if (indent != null)
+                    out.append((byte) ' ');
                 encodeValue(inspector);
             } catch (Exception e) {
                 // FIXME: Should we fix ArrayTraverser/ObjectTraverser API or do something more fancy here?

@@ -23,6 +23,7 @@ protected:
     ~TransportMerger() override;
     void mergeResult(ResultUP result, bool documentWasFound);
     virtual void completeIfDone() { } // Called with lock held if necessary on every merge
+    virtual ResultUP merge(ResultUP accum, ResultUP incoming, bool documentWasFound);
     ResultUP  _result;
 
 private:
@@ -47,14 +48,9 @@ public:
     void await() {
         _latch.await();
     }
-    const UpdateResult &getUpdateResult() const {
-        return dynamic_cast<const UpdateResult &>(*_result);
-    }
+
     const Result &getResult() const {
         return *_result;
-    }
-    const RemoveResult &getRemoveResult() const {
-        return dynamic_cast<const RemoveResult &>(*_result);
     }
 
 };
@@ -63,7 +59,7 @@ public:
  * Implementation of FeedToken::ITransport for async handling of the async reply for an operation.
  * Uses an internal count to keep track the number of the outstanding replies.
  */
-class AsyncTranportContext : public TransportMerger {
+class AsyncTransportContext : public TransportMerger {
 private:
     using Result = storage::spi::Result;
     using OperationComplete = storage::spi::OperationComplete;
@@ -72,10 +68,16 @@ private:
     OperationComplete::UP _onComplete;
     void completeIfDone() override;
 public:
-    AsyncTranportContext(uint32_t cnt, OperationComplete::UP);
-    ~AsyncTranportContext() override;
+    AsyncTransportContext(uint32_t cnt, OperationComplete::UP);
+    ~AsyncTransportContext() override;
     void send(ResultUP result, bool documentWasFound) override;
 };
 
-} // namespace proton
+class AsyncRemoveTransportContext : public AsyncTransportContext {
+public:
+    using AsyncTransportContext::AsyncTransportContext;
+protected:
+    ResultUP merge(ResultUP accum, ResultUP incoming, bool documentWasFound) override;
+};
 
+}

@@ -1,10 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.http.v2;
 
-import com.google.inject.Inject;
+import ai.vespa.http.DomainName;
+import ai.vespa.http.HttpURL;
+import ai.vespa.http.HttpURL.Query;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.Version;
 import com.yahoo.config.application.api.ApplicationFile;
 import com.yahoo.config.model.api.Model;
+import com.yahoo.config.model.api.ServiceInfo;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.HostFilter;
 import com.yahoo.config.provision.InstanceName;
@@ -16,13 +20,19 @@ import com.yahoo.jdisc.Response;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.MessageResponse;
 import com.yahoo.restapi.Path;
+import com.yahoo.slime.Cursor;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.text.StringUtilities;
 import com.yahoo.vespa.config.server.ApplicationRepository;
+import com.yahoo.vespa.config.server.application.ApplicationReindexing;
+import com.yahoo.vespa.config.server.application.ClusterReindexing;
+import com.yahoo.vespa.config.server.application.ConfigConvergenceChecker;
 import com.yahoo.vespa.config.server.http.ContentHandler;
 import com.yahoo.vespa.config.server.http.ContentRequest;
 import com.yahoo.vespa.config.server.http.HttpHandler;
+import com.yahoo.vespa.config.server.http.JSONResponse;
 import com.yahoo.vespa.config.server.http.NotFoundException;
+import com.yahoo.vespa.config.server.http.ReindexingStatusException;
 import com.yahoo.vespa.config.server.http.v2.request.ApplicationContentRequest;
 import com.yahoo.vespa.config.server.http.v2.response.ApplicationSuspendedResponse;
 import com.yahoo.vespa.config.server.http.v2.response.DeleteApplicationResponse;
@@ -32,16 +42,22 @@ import com.yahoo.vespa.config.server.http.v2.response.ReindexingResponse;
 import com.yahoo.vespa.config.server.tenant.Tenant;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
+import static com.yahoo.vespa.config.server.application.ConfigConvergenceChecker.ServiceListResponse;
+import static com.yahoo.vespa.config.server.application.ConfigConvergenceChecker.ServiceResponse;
 import static com.yahoo.yolean.Exceptions.uncheck;
+
 
 /**
  * Operations on applications (delete, wait for config convergence, restart, application content etc.)
@@ -74,7 +90,8 @@ public class ApplicationHandler extends HttpHandler {
         if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/metrics/deployment")) return deploymentMetrics(applicationId(path));
         if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/metrics/proton")) return protonMetrics(applicationId(path));
         if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/reindexing")) return getReindexingStatus(applicationId(path));
-        if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/service/{service}/{hostname}/status/{*}")) return serviceStatusPage(applicationId(path), path.get("service"), path.get("hostname"), path.getRest());
+        if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/service/{service}/{hostname}/status/{*}")) return serviceStatusPage(applicationId(path), path.get("service"), path.get("hostname"), path.getRest(), request);
+        if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/service/{service}/{hostname}/state/v1/{*}")) return serviceStateV1(applicationId(path), path.get("service"), path.get("hostname"), path.getRest(), request);
         if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/serviceconverge")) return listServiceConverge(applicationId(path), request);
         if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/serviceconverge/{hostAndPort}")) return checkServiceConverge(applicationId(path), path.get("hostAndPort"), request);
         if (path.matches("/application/v2/tenant/{tenant}/application/{application}/environment/{ignore}/region/{ignore}/instance/{instance}/suspended")) return isSuspended(applicationId(path));
@@ -106,41 +123,68 @@ public class ApplicationHandler extends HttpHandler {
     }
 
     private HttpResponse listServiceConverge(ApplicationId applicationId, HttpRequest request) {
-        return applicationRepository.servicesToCheckForConfigConvergence(applicationId, request.getUri(),
-                getTimeoutFromRequest(request), getVespaVersionFromRequest(request));
+        ServiceListResponse response =
+                applicationRepository.servicesToCheckForConfigConvergence(applicationId,
+                                                                          getTimeoutFromRequest(request),
+                                                                          getVespaVersionFromRequest(request));
+        return new HttpServiceListResponse(response, request.getUri());
     }
 
     private HttpResponse checkServiceConverge(ApplicationId applicationId, String hostAndPort, HttpRequest request) {
-        return applicationRepository.checkServiceForConfigConvergence(applicationId, hostAndPort, request.getUri(),
-                getTimeoutFromRequest(request), getVespaVersionFromRequest(request));
+        ServiceResponse response =
+                applicationRepository.checkServiceForConfigConvergence(applicationId,
+                                                                       hostAndPort,
+                                                                       getTimeoutFromRequest(request),
+                                                                       getVespaVersionFromRequest(request));
+        return HttpServiceResponse.createResponse(response, hostAndPort, request.getUri());
     }
 
-    private HttpResponse serviceStatusPage(ApplicationId applicationId, String service, String hostname, String pathSuffix) {
-        return applicationRepository.serviceStatusPage(applicationId, hostname, service, pathSuffix);
+    private HttpResponse serviceStatusPage(ApplicationId applicationId, String service, String hostname, HttpURL.Path pathSuffix, HttpRequest request) {
+        HttpURL.Path pathPrefix = HttpURL.Path.empty();
+        switch (service) {
+            case "container-clustercontroller":
+                pathPrefix = pathPrefix.append("clustercontroller-status").append("v1");
+                break;
+            case "distributor":
+            case "storagenode":
+                break;
+            default:
+                throw new com.yahoo.vespa.config.server.NotFoundException("No status page for service: " + service);
+        }
+        return applicationRepository.proxyServiceHostnameRequest(applicationId, hostname, service, pathPrefix.append(pathSuffix), Query.empty().add(request.getJDiscRequest().parameters()), null);
     }
 
-    private HttpResponse content(ApplicationId applicationId, String contentPath, HttpRequest request) {
+    private HttpResponse serviceStateV1(ApplicationId applicationId, String service, String hostname, HttpURL.Path rest, HttpRequest request) {
+        Query query = Query.empty().add(request.getJDiscRequest().parameters());
+        String forwardedUrl = query.lastEntries().get("forwarded-url");
+        return applicationRepository.proxyServiceHostnameRequest(applicationId, hostname, service,
+                                                                 HttpURL.Path.parse("/state/v1").append(rest),
+                                                                 query.remove("forwarded-url"),
+                                                                 forwardedUrl == null ? null : HttpURL.from(URI.create(forwardedUrl)));
+    }
+
+    private HttpResponse content(ApplicationId applicationId, HttpURL.Path contentPath, HttpRequest request) {
         long sessionId = applicationRepository.getSessionIdForApplication(applicationId);
         ApplicationFile applicationFile =
                 applicationRepository.getApplicationFileFromSession(applicationId.tenant(),
-                        sessionId,
-                        contentPath,
-                        ContentRequest.getApplicationFileMode(request.getMethod()));
+                                                                    sessionId,
+                                                                    contentPath,
+                                                                    ContentRequest.getApplicationFileMode(request.getMethod()));
         ApplicationContentRequest contentRequest = new ApplicationContentRequest(request,
-                sessionId,
-                applicationId,
-                zone,
-                contentPath,
-                applicationFile);
+                                                                                 sessionId,
+                                                                                 applicationId,
+                                                                                 zone,
+                                                                                 contentPath,
+                                                                                 applicationFile);
         return new ContentHandler().get(contentRequest);
     }
 
     private HttpResponse filedistributionStatus(ApplicationId applicationId, HttpRequest request) {
-        return applicationRepository.filedistributionStatus(applicationId, getTimeoutFromRequest(request));
+        return applicationRepository.fileDistributionStatus(applicationId, getTimeoutFromRequest(request));
     }
 
     private HttpResponse logs(ApplicationId applicationId, HttpRequest request) {
-        Optional<String> hostname = Optional.ofNullable(request.getProperty("hostname"));
+        Optional<DomainName> hostname = Optional.ofNullable(request.getProperty("hostname")).map(DomainName::of);
         String apiParams = Optional.ofNullable(request.getUri().getQuery()).map(q -> "?" + q).orElse("");
         return applicationRepository.getLogs(applicationId, hostname, apiParams);
     }
@@ -207,6 +251,7 @@ public class ApplicationHandler extends HttpHandler {
         boolean indexedOnly = request.getBooleanProperty("indexedOnly");
         Set<String> clusters = StringUtilities.split(request.getProperty("clusterId"));
         Set<String> types = StringUtilities.split(request.getProperty("documentType"));
+        double speed = Double.parseDouble(Objects.requireNonNullElse(request.getProperty("speed"), "1"));
 
         Map<String, Set<String>> reindexed = new TreeMap<>();
         Instant now = applicationRepository.clock().instant();
@@ -222,7 +267,7 @@ public class ApplicationHandler extends HttpHandler {
                                                            String.join(", ", documentTypes.get(cluster)));
 
                     if ( ! indexedOnly || indexedDocumentTypes.get(cluster).contains(type)) {
-                        reindexing = reindexing.withReady(cluster, type, now);
+                        reindexing = reindexing.withReady(cluster, type, now, speed);
                         reindexed.computeIfAbsent(cluster, __ -> new TreeSet<>()).add(type);
                     }
                 }
@@ -255,9 +300,15 @@ public class ApplicationHandler extends HttpHandler {
         if (tenant == null)
             throw new NotFoundException("Tenant '" + applicationId.tenant().value() + "' not found");
 
-        return new ReindexingResponse(getActiveModelOrThrow(applicationId).documentTypesByCluster(),
-                                      applicationRepository.getReindexing(applicationId),
-                                      applicationRepository.getClusterReindexingStatus(applicationId));
+        try {
+            Map<String, Set<String>> documentTypes = getActiveModelOrThrow(applicationId).documentTypesByCluster();
+            ApplicationReindexing reindexing = applicationRepository.getReindexing(applicationId);
+            Map<String, ClusterReindexing> clusters = applicationRepository.getClusterReindexingStatus(applicationId);
+            return new ReindexingResponse(documentTypes, reindexing, clusters);
+        } catch (UncheckedIOException e) {
+            throw new ReindexingStatusException("Reindexing status for '" + applicationId +
+                                                "' is currently unavailable");
+        }
     }
 
     private HttpResponse restart(ApplicationId applicationId, HttpRequest request) {
@@ -296,6 +347,81 @@ public class ApplicationHandler extends HttpHandler {
         return Optional.ofNullable(request.getProperty("vespaVersion"))
                 .filter(s -> !s.isEmpty())
                 .map(Version::fromString);
+    }
+
+    static class HttpServiceResponse extends JSONResponse {
+
+        public static HttpServiceResponse createResponse(ConfigConvergenceChecker.ServiceResponse serviceResponse, String hostAndPort, URI uri) {
+            switch (serviceResponse.status) {
+                case ok:
+                    return createOkResponse(uri, hostAndPort, serviceResponse.wantedGeneration, serviceResponse.currentGeneration, serviceResponse.converged);
+                case hostNotFound:
+                    return createHostNotFoundInAppResponse(uri, hostAndPort, serviceResponse.wantedGeneration);
+                case notFound:
+                    return createNotFoundResponse(uri, hostAndPort, serviceResponse.wantedGeneration, serviceResponse.errorMessage.orElse(""));
+                case error:
+                    return createErrorResponse(uri, hostAndPort, serviceResponse.wantedGeneration, serviceResponse.errorMessage.orElse(""));
+                default:
+                    throw new IllegalArgumentException("Unknown status " + serviceResponse.status);
+            }
+        }
+
+        private HttpServiceResponse(int status, URI uri, String hostname, Long wantedGeneration) {
+            super(status);
+            object.setString("url", uri.toString());
+            object.setString("host", hostname);
+            object.setLong("wantedGeneration", wantedGeneration);
+        }
+
+        private static HttpServiceResponse createOkResponse(URI uri, String hostname, Long wantedGeneration, Long currentGeneration, boolean converged) {
+            HttpServiceResponse serviceResponse = new HttpServiceResponse(200, uri, hostname, wantedGeneration);
+            serviceResponse.object.setBool("converged", converged);
+            serviceResponse.object.setLong("currentGeneration", currentGeneration);
+            return serviceResponse;
+        }
+
+        private static HttpServiceResponse createHostNotFoundInAppResponse(URI uri, String hostname, Long wantedGeneration) {
+            HttpServiceResponse serviceResponse = new HttpServiceResponse(410, uri, hostname, wantedGeneration);
+            serviceResponse.object.setString("problem", "Host:port (service) no longer part of application, refetch list of services.");
+            return serviceResponse;
+        }
+
+        private static HttpServiceResponse createErrorResponse(URI uri, String hostname, Long wantedGeneration, String error) {
+            HttpServiceResponse serviceResponse = new HttpServiceResponse(500, uri, hostname, wantedGeneration);
+            serviceResponse.object.setString("error", error);
+            return serviceResponse;
+        }
+
+        private static HttpServiceResponse createNotFoundResponse(URI uri, String hostname, Long wantedGeneration, String error) {
+            HttpServiceResponse serviceResponse = new HttpServiceResponse(404, uri, hostname, wantedGeneration);
+            serviceResponse.object.setString("error", error);
+            return serviceResponse;
+        }
+
+    }
+
+    static class HttpServiceListResponse extends JSONResponse {
+
+        // Pre-condition: servicesToCheck has a state port
+        public HttpServiceListResponse(ConfigConvergenceChecker.ServiceListResponse response, URI uri) {
+            super(200);
+            Cursor serviceArray = object.setArray("services");
+            response.services().forEach((service) -> {
+                ServiceInfo serviceInfo = service.serviceInfo;
+                Cursor serviceObject = serviceArray.addObject();
+                String hostName = serviceInfo.getHostName();
+                int statePort = ConfigConvergenceChecker.getStatePort(serviceInfo).get();
+                serviceObject.setString("host", hostName);
+                serviceObject.setLong("port", statePort);
+                serviceObject.setString("type", serviceInfo.getServiceType());
+                serviceObject.setString("url", uri.toString() + "/" + hostName + ":" + statePort);
+                serviceObject.setLong("currentGeneration", service.currentGeneration);
+            });
+            object.setString("url", uri.toString());
+            object.setLong("currentGeneration", response.currentGeneration);
+            object.setLong("wantedGeneration", response.wantedGeneration);
+            object.setBool("converged", response.converged);
+        }
     }
 
 }

@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <vespamalloc/malloc/malloc.h>
 #include <vespamalloc/util/callstack.h>
 
@@ -194,14 +195,14 @@ template <typename T, typename S>
 void MemoryWatcher<T, S>::activateOptions()
 {
     activateLogFile(_params[Params::logfile].value());
-    T::dumpFile(_logFile);
+    _G_logFile = _logFile;
     this->setupSegmentLog(_params[Params::bigsegment_loglevel].valueAsLong(),
                           _params[Params::bigsegment_limit].valueAsLong(),
                           _params[Params::bigsegment_increment].valueAsLong(),
                           _params[Params::allocs2show].valueAsLong());
     this->setupLog(_params[Params::pralloc_loglimit].valueAsLong());
     this->setParams(_params[Params::threadcachelimit].valueAsLong());
-    T::bigBlockLimit(_params[Params::bigblocklimit].valueAsLong());
+    _G_bigBlockLimit = _params[Params::bigblocklimit].valueAsLong();
     T::setFill(_params[Params::fillvalue].valueAsLong());
 
 }

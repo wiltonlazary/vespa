@@ -3,9 +3,14 @@
 #pragma once
 
 #include "documentdbconfig.h"
-#include <vespa/config/config.h>
 #include <mutex>
 
+class FNET_Transport;
+
+namespace config {
+    class ConfigRetriever;
+    class DirSpec;
+}
 namespace proton {
 
 class BootstrapConfig;
@@ -29,13 +34,12 @@ private:
 
     search::index::Schema::SP
     buildSchema(const DocumentDBConfig::AttributesConfig & newAttributesConfig,
-                const DocumentDBConfig::SummaryConfig & newSummaryConfig,
                 const DocumentDBConfig::IndexschemaConfig & newIndexschemaConfig);
 
 public:
     DocumentDBConfigManager(const vespalib::string &configId, const vespalib::string &docTypeName);
     ~DocumentDBConfigManager();
-    void update(const config::ConfigSnapshot & snapshot);
+    void update(FNET_Transport & transport, const config::ConfigSnapshot & snapshot);
 
     DocumentDBConfig::SP getConfig() const;
 
@@ -53,7 +57,7 @@ public:
     DocumentDBConfigHelper(const config::DirSpec &spec, const vespalib::string &docTypeName);
     ~DocumentDBConfigHelper();
 
-    bool nextGeneration(std::chrono::milliseconds timeoutInMillis);
+    bool nextGeneration(FNET_Transport & transport, vespalib::duration timeout);
     DocumentDBConfig::SP getConfig() const;
     void forwardConfig(const std::shared_ptr<BootstrapConfig> & config);
 private:

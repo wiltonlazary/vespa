@@ -3,7 +3,6 @@ package com.yahoo.document;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yahoo.compress.CompressionType;
 import com.yahoo.document.datatypes.Array;
 import com.yahoo.document.datatypes.BoolFieldValue;
 import com.yahoo.document.datatypes.ByteFieldValue;
@@ -29,8 +28,8 @@ import org.junit.Test;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
 
@@ -95,7 +94,8 @@ public class DocumentTestCase extends DocumentTestCaseBase {
 
     static DocumentTypeManager setUpDocType(String filename) {
         DocumentTypeManager dcMan = new DocumentTypeManager();
-        DocumentTypeManagerConfigurer.configure(dcMan, filename);
+        var sub = DocumentTypeManagerConfigurer.configure(dcMan, filename);
+        sub.close();
         return dcMan;
     }
 
@@ -103,19 +103,19 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         docMan = new DocumentTypeManager();
 
         DocumentType docInDocType = new DocumentType("docindoc");
-        docInDocType.addField(new Field("tull", 2, docMan.getDataType(2)));
+        docInDocType.addField(new Field("tull", 2, DataType.STRING));
 
         docMan.registerDocumentType(docInDocType);
 
         DocumentType sertestDocType = new DocumentType("sertest");
-        sertestDocType.addField(new Field("mailid", 2, docMan.getDataType(2)));
-        sertestDocType.addField(new Field("date", 3, docMan.getDataType(0)));
-        sertestDocType.addField(new Field("from", 4, docMan.getDataType(2)));
-        sertestDocType.addField(new Field("to", 6, docMan.getDataType(2)));
-        sertestDocType.addField(new Field("subject", 9, docMan.getDataType(2)));
-        sertestDocType.addField(new Field("body", 10, docMan.getDataType(2)));
-        sertestDocType.addField(new Field("attachmentcount", 11, docMan.getDataType(0)));
-        sertestDocType.addField(new Field("attachments", 1081629685, DataType.getArray(docMan.getDataType(2))));
+        sertestDocType.addField(new Field("mailid", 2, DataType.STRING));
+        sertestDocType.addField(new Field("date", 3, DataType.INT));
+        sertestDocType.addField(new Field("from", 4, DataType.STRING));
+        sertestDocType.addField(new Field("to", 6, DataType.STRING));
+        sertestDocType.addField(new Field("subject", 9, DataType.STRING));
+        sertestDocType.addField(new Field("body", 10, DataType.STRING));
+        sertestDocType.addField(new Field("attachmentcount", 11, DataType.INT));
+        sertestDocType.addField(new Field("attachments", 1081629685, DataType.getArray(DataType.STRING)));
         sertestDocType.addField(new Field("rawfield", 879, DataType.RAW));
         sertestDocType.addField(new Field("weightedfield", 880, DataType.getWeightedSet(DataType.STRING)));
         sertestDocType.addField(new Field("weightedfieldCreate", 881, DataType.getWeightedSet(DataType.STRING, true, false)));
@@ -216,7 +216,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         doc.setFieldValue("long", longVal);
     }
 
-    class VariableIteratorHandler extends FieldPathIteratorHandler {
+    static class VariableIteratorHandler extends FieldPathIteratorHandler {
 
         public String retVal = "";
 
@@ -428,7 +428,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         }
     }
 
-    class ModifyIteratorHandler extends FieldPathIteratorHandler {
+    static class ModifyIteratorHandler extends FieldPathIteratorHandler {
 
         public ModificationStatus doModify(FieldValue fv) {
             if (fv instanceof StringFieldValue) {
@@ -444,7 +444,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         }
     }
 
-    class AddIteratorHandler extends FieldPathIteratorHandler {
+    static class AddIteratorHandler extends FieldPathIteratorHandler {
 
         @SuppressWarnings("unchecked")
         public ModificationStatus doModify(FieldValue fv) {
@@ -461,7 +461,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         }
     }
 
-    class RemoveIteratorHandler extends FieldPathIteratorHandler {
+    static class RemoveIteratorHandler extends FieldPathIteratorHandler {
 
         public ModificationStatus doModify(FieldValue fv) {
             return ModificationStatus.REMOVED;
@@ -638,17 +638,6 @@ public class DocumentTestCase extends DocumentTestCaseBase {
     }
 
     @Test
-    public void testCppDocCompressed() throws IOException {
-        docMan = setUpCppDocType();
-        byte[] data = readFile("src/test/document/serializecpp-lz4-level9.dat");
-        ByteBuffer buf = ByteBuffer.wrap(data);
-
-        Document doc = docMan.createDocument(new GrowableByteBuffer(buf));
-
-        validateCppDoc(doc);
-    }
-
-    @Test
     public void testCppDoc() throws IOException {
         docMan = setUpCppDocType();
         byte[] data = readFile("src/test/document/serializecpp.dat");
@@ -658,7 +647,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         validateCppDoc(doc);
     }
 
-    public void validateCppDoc(Document doc) throws IOException {
+    public void validateCppDoc(Document doc) {
         validateCppDocNotMap(doc);
         MapFieldValue map = (MapFieldValue)doc.getFieldValue("mapfield");
         assertEquals(map.get(new StringFieldValue("foo1")), new StringFieldValue("bar1"));
@@ -666,7 +655,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
     }
 
     @SuppressWarnings("unchecked")
-    public void validateCppDocNotMap(Document doc) throws IOException {
+    public void validateCppDocNotMap(Document doc) {
         // in practice to validate v6 serialization
         assertEquals("id:ns:serializetest::http://test.doc.id/", doc.getId().toString());
         assertEquals(new IntegerFieldValue(5), doc.getFieldValue("intfield"));
@@ -694,7 +683,6 @@ public class DocumentTestCase extends DocumentTestCaseBase {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void testGenerateSerializedFile() throws IOException {
 
         docMan = setUpCppDocType();
@@ -744,22 +732,9 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         FileOutputStream fos = new FileOutputStream("src/tests/data/serializejava.dat");
         fos.write(buf.array(), 0, size);
         fos.close();
-
-        CompressionConfig noncomp = new CompressionConfig();
-        CompressionConfig lz4comp = new CompressionConfig(CompressionType.LZ4);
-
-        doc.getDataType().contentStruct().setCompressionConfig(lz4comp);
-        buf = new GrowableByteBuffer(size, 2.0f);
-
-        doc.serialize(buf);
-        doc.getDataType().contentStruct().setCompressionConfig(noncomp);
-        fos = new FileOutputStream("src/tests/data/serializejava-compressed.dat");
-        fos.write(buf.array(), 0, buf.position());
-        fos.close();
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void testSerializeDeserialize() {
         setUpSertestDocType();
         Document doc = getSertestDocument();
@@ -801,60 +776,13 @@ public class DocumentTestCase extends DocumentTestCaseBase {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
-    public void testSerializeDeserializeCompressed() {
-        setUpSertestDocType();
-        Document doc = getSertestDocument();
-
-        CompressionConfig noncomp = new CompressionConfig();
-        CompressionConfig lz4comp = new CompressionConfig(CompressionType.LZ4);
-
-        doc.getDataType().contentStruct().setCompressionConfig(lz4comp);
-
-        GrowableByteBuffer data = new GrowableByteBuffer();
-        doc.serialize(data);
-        int size = doc.getSerializedSize();
-        doc.getDataType().contentStruct().setCompressionConfig(noncomp);
-
-        assertEquals(size, data.position());
-
-        data.flip();
-
-        try {
-            FileOutputStream fos = new FileOutputStream("src/test/files/testser.dat");
-            fos.write(data.array(), 0, data.remaining());
-            fos.close();
-        } catch (Exception e) {
-        }
-
-        Document doc2 = docMan.createDocument(data);
-
-        assertEquals(doc.getFieldValue("mailid"), doc2.getFieldValue("mailid"));
-        assertEquals(doc.getFieldValue("date"), doc2.getFieldValue("date"));
-        assertEquals(doc.getFieldValue("from"), doc2.getFieldValue("from"));
-        assertEquals(doc.getFieldValue("to"), doc2.getFieldValue("to"));
-        assertEquals(doc.getFieldValue("subject"), doc2.getFieldValue("subject"));
-        assertEquals(doc.getFieldValue("body"), doc2.getFieldValue("body"));
-        assertEquals(doc.getFieldValue("attachmentcount"), doc2.getFieldValue("attachmentcount"));
-        assertEquals(doc.getFieldValue("attachments"), doc2.getFieldValue("attachments"));
-        byte[] docRawBytes = ((Raw)doc.getFieldValue("rawfield")).getByteBuffer().array();
-        byte[] doc2RawBytes = ((Raw)doc2.getFieldValue("rawfield")).getByteBuffer().array();
-        assertEquals(docRawBytes.length, doc2RawBytes.length);
-        for (int i = 0; i < docRawBytes.length; i++) {
-            assertEquals(docRawBytes[i], doc2RawBytes[i]);
-        }
-        assertEquals(doc.getFieldValue("weightedfield"), doc2.getFieldValue("weightedfield"));
-        assertEquals(doc.getFieldValue("mapfield"), doc2.getFieldValue("mapfield"));
-    }
-
-    @Test
     public void testDeserialize() {
         setUpSertestDocType();
 
         BufferSerializer buf = new BufferSerializer();
         try {
             new Document(DocumentDeserializerFactory.create6(docMan, buf.getBuf()));
-            assertTrue(false);
+            fail();
         } catch (Exception e) {
             assertTrue(true);
         }
@@ -862,7 +790,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         buf = BufferSerializer.wrap("Hello world".getBytes());
         try {
             new Document(DocumentDeserializerFactory.create6(docMan, buf.getBuf()));
-            assertTrue(false);
+            fail();
         } catch (Exception e) {
             assertTrue(true);
         }
@@ -934,39 +862,6 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         Document doc = new Document(docMan.getDocumentType("impl"), new DocumentId("id:ns:impl::fooooobardoc"));
         Array<StringFieldValue> testlist = new Array<>(doc.getField("something").getDataType());
         doc.setFieldValue("something", testlist);
-    }
-
-    @Test
-    public void testCompressionConfigured() {
-
-        int size_uncompressed;
-        {
-            DocumentTypeManager docMan = new DocumentTypeManager();
-            docMan.configure("file:src/tests/data/cppdocument.cfg");
-
-            Document doc = new Document(docMan.getDocumentType("serializetest"), new DocumentId("id:ns:serializetest::test"));
-
-            doc.setFieldValue("stringfield",
-                              "compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me ");
-
-            GrowableByteBuffer data = new GrowableByteBuffer();
-            doc.serialize(data);
-            size_uncompressed = data.position();
-        }
-
-        DocumentTypeManager docMan = new DocumentTypeManager();
-        docMan.configure("file:src/tests/data/compressed.cfg");
-
-        Document doc = new Document(docMan.getDocumentType("serializetest"), new DocumentId("id:ns:serializetest::test"));
-
-        doc.setFieldValue("stringfield",
-                          "compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me compress me ");
-
-        GrowableByteBuffer data = new GrowableByteBuffer();
-        doc.serialize(data);
-        int size_compressed = data.position();
-
-        assertTrue(size_compressed + " < " + size_uncompressed, size_compressed < size_uncompressed);
     }
 
     @Test
@@ -1076,7 +971,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
         setUpSertestDocType();
         Document doc = getSertestDocument();
         String json = doc.toJson();
-        Map<String, Object> parsed = new ObjectMapper().readValue(json, new TypeReference<Map<String, Object>>() {
+        Map<String, Object> parsed = new ObjectMapper().readValue(json, new TypeReference<>() {
         });
         assertEquals(parsed.get("id"), "id:ns:sertest::foobar");
         assertTrue(parsed.get("fields") instanceof Map);
@@ -1174,7 +1069,7 @@ public class DocumentTestCase extends DocumentTestCaseBase {
             docWithDinner.serialize(buf);
             buf.flip();
 
-            docTypeManasjer.clear();
+            docTypeManasjer.internalClear();
         }
 
         {
@@ -1311,11 +1206,11 @@ public class DocumentTestCase extends DocumentTestCaseBase {
     }
 
     @Test
-    public void testDocumentIdWithNonTextCharacterCanBeDeserialized() throws UnsupportedEncodingException {
+    public void testDocumentIdWithNonTextCharacterCanBeDeserialized() {
         DocumentIdFixture f = new DocumentIdFixture();
 
         // Document id = "id:a:b::0x7c"
-        String docId = new String(new byte[]{105, 100, 58, 97, 58, 98, 58, 58, 7, 99}, "UTF-8");
+        String docId = new String(new byte[]{105, 100, 58, 97, 58, 98, 58, 58, 7, 99}, StandardCharsets.UTF_8);
         f.serialize(docId);
 
         Document result = f.deserialize();

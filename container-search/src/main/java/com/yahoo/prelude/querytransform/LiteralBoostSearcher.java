@@ -44,7 +44,7 @@ public class LiteralBoostSearcher extends Searcher {
         if (newRankTerms.getItemCount() > 0)
             addTopLevelRankTerms(newRankTerms, query);
 
-        if (query.getTraceLevel() >= 2 && newRankTerms.getItemCount() > 0)
+        if (query.getTrace().getLevel() >= 2 && newRankTerms.getItemCount() > 0)
             query.trace("Added rank terms for possible literal field matches.", true, 2);
     }
 
@@ -71,8 +71,6 @@ public class LiteralBoostSearcher extends Searcher {
     }
 
     private void addLiterals(RankItem rankTerms, Item item, IndexFacts.Session indexFacts) {
-        if (item == null) return;
-
         if (item instanceof NotItem) {
             addLiterals(rankTerms, ((NotItem) item).getPositiveItem(), indexFacts);
         }

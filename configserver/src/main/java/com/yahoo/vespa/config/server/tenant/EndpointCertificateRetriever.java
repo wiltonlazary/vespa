@@ -11,19 +11,17 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.cert.X509Certificate;
 import java.util.Optional;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Used to retrieve actual endpoint certificate/key from secret store.
  *
  * @author andreer
  */
-public class EndpointCertificateRetriever {
+public record EndpointCertificateRetriever(SecretStore secretStore) {
 
-    private final SecretStore secretStore;
-
-    public EndpointCertificateRetriever(SecretStore secretStore) {
-        this.secretStore = secretStore;
-    }
+    private static final Logger log = Logger.getLogger(EndpointCertificateRetriever.class.getName());
 
     public Optional<EndpointCertificateSecrets> readEndpointCertificateSecrets(EndpointCertificateMetadata metadata) {
         return Optional.of(readFromSecretStore(metadata));
@@ -36,10 +34,11 @@ public class EndpointCertificateRetriever {
 
             verifyKeyMatchesCertificate(endpointCertificateMetadata, cert, key);
 
-            return new EndpointCertificateSecrets(cert, key);
+            return new EndpointCertificateSecrets(cert, key, endpointCertificateMetadata.version());
         } catch (RuntimeException e) {
+            log.log(Level.WARNING, "Exception thrown during certificate retrieval", e);
             // Assume not ready yet
-            return EndpointCertificateSecrets.MISSING;
+            return EndpointCertificateSecrets.missing(endpointCertificateMetadata.version());
         }
     }
 

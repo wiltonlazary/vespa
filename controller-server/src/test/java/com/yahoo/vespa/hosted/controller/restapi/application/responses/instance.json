@@ -3,23 +3,13 @@
   "application": "application1",
   "instance": "instance1",
   "deployments": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/",
-  "source": {
-    "gitRepository": "repository1",
-    "gitBranch": "master",
-    "gitCommit": "commit1"
-  },
   "sourceUrl": "repository1/tree/commit1",
   "commit": "commit1",
   "projectId": 123,
   "deploying": {
     "revision": {
-      "buildNumber": 1,
-      "hash": "1.0.1-commit1",
-      "source": {
-        "gitRepository": "repository1",
-        "gitBranch": "master",
-        "gitCommit": "commit1"
-      },
+      "build": 1,
+      "compileVersion": "6.1.0",
       "sourceUrl": "repository1/tree/commit1",
       "commit": "commit1"
     }
@@ -49,9 +39,6 @@
       ]
     }
   ],
-  "globalRotations": [
-    "https://instance1--application1--tenant1.global.vespa.oath.cloud:4443/"
-  ],
   "rotationId": "rotation-id-1",
   "instances": [
     {
@@ -70,7 +57,7 @@
           "rotationId": "rotation-id-1",
           "clusterId": "foo",
           "status": "UNKNOWN",
-          "lastUpdated": "(ignore)"
+          "lastUpdated": 0
         }
       ],
       "environment": "prod",
@@ -87,7 +74,7 @@
       "region": "us-west-1"
     }
   ],
-  "pemDeployKeys": [],
+  "pemDeployKeys": [ ],
   "metrics": {
     "queryServiceQuality": 0.5,
     "writeServiceQuality": 0.7

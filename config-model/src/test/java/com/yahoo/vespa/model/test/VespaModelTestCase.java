@@ -31,27 +31,21 @@ import com.yahoo.vespa.model.application.validation.Validation;
 import com.yahoo.vespa.model.test.utils.ApplicationPackageUtils;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithFilePkg;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithMockPkg;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.xml.sax.SAXException;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.logging.Level;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author gjoranv
@@ -85,7 +79,7 @@ public class VespaModelTestCase {
 
     // Verify that common config from plugins is delivered from the root node for any configId, using the Builder based API
     @Test
-    public void testCommonConfig() {
+    void testCommonConfig() {
         VespaModel model = getVespaModel(TESTDIR + "app_nohosts/");
         LogdConfig.Builder b = new LogdConfig.Builder();
         b = (LogdConfig.Builder) model.getConfig(b, "");
@@ -112,8 +106,8 @@ public class VespaModelTestCase {
     }
 
     @Test
-    public void testHostsConfig() {
-        VespaModel model = getVespaModel(TESTDIR + "app_qrserverandgw");
+    void testHostsConfig() {
+        VespaModel model = getVespaModel(TESTDIR + "app_nohosts");
         LogdConfig config = getLogdConfig(model, "");
         assertEquals(config.logserver().host(), HostName.getLocalhost());
         assertNotNull(config);
@@ -131,7 +125,7 @@ public class VespaModelTestCase {
     }
 
     @Test
-    public void testHostsOverrides() {
+    void testHostsOverrides() {
         VespaModel model = new VespaModelCreatorWithMockPkg(
                 simpleHosts,
                 "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" +
@@ -151,23 +145,25 @@ public class VespaModelTestCase {
         assertEquals(config.logserver().host(), "foo");
     }
 
-    @Ignore
-    @Test(expected = UnknownConfigIdException.class)
-    public void testIllegalConfigIdWithBuilders() {
-        VespaModel model = getVespaModel(TESTDIR + "app_nohosts/");
-        DocumentmanagerConfig.Builder db = new DocumentmanagerConfig.Builder();
-        model.getConfig(db, "bogus");
+    @Disabled
+    @Test
+    void testIllegalConfigIdWithBuilders() {
+        assertThrows(UnknownConfigIdException.class, () -> {
+            VespaModel model = getVespaModel(TESTDIR + "app_nohosts/");
+            DocumentmanagerConfig.Builder db = new DocumentmanagerConfig.Builder();
+            model.getConfig(db, "bogus");
+        });
     }
 
     @Test
-    public void testConfigLists() {
+    void testConfigLists() {
         VespaModel model = getVespaModel(TESTDIR + "app_nohosts/");
         assertTrue(model.allConfigsProduced().size() > 0);
         assertTrue(model.allConfigIds().size() > 0);
     }
 
     @Test
-    public void testCreateFromReaders() {
+    void testCreateFromReaders() {
         VespaModel model = new VespaModelCreatorWithMockPkg(
                 simpleHosts,
                 "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" +
@@ -200,20 +196,22 @@ public class VespaModelTestCase {
         assertEquals(mBus.routingtable().size(), 1);
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testHostsWithoutAliases() {
-        new TestDriver().buildModel(
-                "<services version='1.0'>" +
-                        "  <admin version='2.0'>" +
-                        "    <adminserver hostalias='node0' />" +
-                        "  </admin>" +
-                        "</services>",
-                "<hosts>" +
-                        "  <host name='localhost'>" +
-                        "     <alias>node0</alias>" +
-                        "  </host>" +
-                        "  <host name='foo.yahoo.com' />" +
-                        "</hosts>");
+    @Test
+    void testHostsWithoutAliases() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            new TestDriver().buildModel(
+                    "<services version='1.0'>" +
+                            "  <admin version='2.0'>" +
+                            "    <adminserver hostalias='node0' />" +
+                            "  </admin>" +
+                            "</services>",
+                    "<hosts>" +
+                            "  <host name='localhost'>" +
+                            "     <alias>node0</alias>" +
+                            "  </host>" +
+                            "  <host name='foo.yahoo.com' />" +
+                            "</hosts>");
+        });
     }
 
     static class MyLogger implements DeployLogger {
@@ -223,9 +221,9 @@ public class VespaModelTestCase {
             msgs.add(new Pair<>(level, message));
         }
     }
-    
+
     @Test
-    public void testDeployLogger() throws IOException, SAXException {
+    void testDeployLogger() throws IOException, SAXException {
         final String services = "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" +
                 "<services  version=\"1.0\">" +
                 "<config name=\"bar.unknsownfoo\">" +
@@ -245,12 +243,12 @@ public class VespaModelTestCase {
                 .build();
         DeployState deployState = builder.deployLogger(logger).applicationPackage(app).build();
         VespaModel model = new VespaModel(new NullConfigModelRegistry(), deployState);
-        Validation.validate(model, new ValidationParameters(ValidationParameters.IgnoreValidationErrors.TRUE), deployState);
+        new Validation().validate(model, new ValidationParameters(ValidationParameters.IgnoreValidationErrors.TRUE), deployState);
         assertFalse(logger.msgs.isEmpty());
     }
 
     @Test
-    public void testNoAdmin() {
+    void testNoAdmin() {
         VespaModel model = new VespaModelCreatorWithMockPkg(
                 simpleHosts,
                 "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" +
@@ -258,19 +256,19 @@ public class VespaModelTestCase {
                         "</services>")
                 .create();
         Admin admin = model.getAdmin();
-        assertThat(admin.getSlobroks().size(), is(1));
-        assertThat(admin.getConfigservers().size(), is(1));
+        assertEquals(1, admin.getSlobroks().size());
+        assertEquals(1, admin.getConfigservers().size());
         Set<HostInfo> hosts = model.getHosts();
-        assertThat(hosts.size(), is(1));
+        assertEquals(1, hosts.size());
         //logd, config proxy, sentinel, config server, slobrok, log server
         HostInfo host = hosts.iterator().next();
-        assertThat(host.getServices().size(), is(7));
+        assertEquals(7, host.getServices().size());
         new LogdConfig((LogdConfig.Builder) model.getConfig(new LogdConfig.Builder(), "admin/model"));
 
     }
 
     @Test
-    public void testNoMultitenantHostExported() throws IOException, SAXException {
+    void testNoMultitenantHostExported() throws IOException, SAXException {
         ApplicationPackage applicationPackage = new MockApplicationPackage.Builder()
                 .withServices("<services version='1.0'><admin version='3.0'><nodes count='1' /></admin></services>")
                 .build();
@@ -278,35 +276,35 @@ public class VespaModelTestCase {
                 .applicationPackage(applicationPackage)
                 .modelHostProvisioner(new InMemoryProvisioner(true, false, "host1.yahoo.com"))
                 .properties(new TestProperties()
-                        .setConfigServerSpecs(Arrays.asList(new TestProperties.Spec("cfghost", 1234, 1236)))
+                        .setConfigServerSpecs(List.of(new TestProperties.Spec("cfghost", 1234, 1236)))
                         .setMultitenant(true))
                 .build();
         VespaModel model = new VespaModel(new NullConfigModelRegistry(), deployState);
         AllocatedHosts info = model.allocatedHosts();
-        assertEquals("Admin version 3 is ignored, and there are no other hosts to borrow for admin services", 0, info.getHosts().size());
+        assertEquals(0, info.getHosts().size(), "Admin version 3 is ignored, and there are no other hosts to borrow for admin services");
     }
 
     @Test
-    public void testMinimalApp() throws IOException, SAXException {
+    void testMinimalApp() throws IOException, SAXException {
         VespaModel model = new VespaModel(new MockApplicationPackage.Builder()
-                                                  .withServices("<services version='1.0'><container version='1.0'><search /></container></services>")
-                                                  .build());
-        assertThat(model.hostSystem().getHosts().size(), is(1));
-        assertThat(model.getContainerClusters().size(), is(1));
+                .withServices("<services version='1.0'><container version='1.0'><search /></container></services>")
+                .build());
+        assertEquals(1, model.hostSystem().getHosts().size());
+        assertEquals(1, model.getContainerClusters().size());
     }
 
     @Test
-    public void testPermanentServices() throws IOException, SAXException {
+    void testPermanentServices() throws IOException, SAXException {
         ApplicationPackage app = MockApplicationPackage.createEmpty();
         DeployState.Builder builder = new DeployState.Builder().applicationPackage(app);
         VespaModel model = new VespaModel(new NullConfigModelRegistry(), builder.build());
-        assertThat(model.getContainerClusters().size(), is(0));
+        assertTrue(model.getContainerClusters().isEmpty());
         model = new VespaModel(new NullConfigModelRegistry(), builder.permanentApplicationPackage(Optional.of(FilesApplicationPackage.fromFile(new File(TESTDIR, "app_permanent")))).build());
-        assertThat(model.getContainerClusters().size(), is(1));
+        assertEquals(1, model.getContainerClusters().size());
     }
 
     @Test
-    public void testThatDeployLogContainsWarningWhenUsingSearchdefinitionsDir() throws IOException, SAXException {
+    void testThatDeployLogContainsWarningWhenUsingSearchdefinitionsDir() throws IOException, SAXException {
         ApplicationPackage app = FilesApplicationPackage.fromFile(
                 new File("src/test/cfg/application/deprecated_features_app/"));
         MyLogger logger = new MyLogger();
@@ -315,7 +313,7 @@ public class VespaModelTestCase {
                 .deployLogger(logger)
                 .build();
         VespaModel model = new VespaModel(new NullConfigModelRegistry(), deployState);
-        Validation.validate(model, new ValidationParameters(), deployState);
+        new Validation().validate(model, new ValidationParameters(), deployState);
         assertContainsWarning(logger.msgs, "Directory searchdefinitions/ should not be used for schemas, use schemas/ instead");
     }
 

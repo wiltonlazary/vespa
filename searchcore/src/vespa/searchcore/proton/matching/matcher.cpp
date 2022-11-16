@@ -1,13 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "matcher.h"
 #include "isearchcontext.h"
 #include "match_master.h"
 #include "match_context.h"
 #include "match_tools.h"
 #include "match_params.h"
-#include "matcher.h"
 #include "sessionmanager.h"
 #include <vespa/searchcore/grouping/groupingcontext.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchlib/engine/docsumrequest.h>
 #include <vespa/searchlib/engine/searchrequest.h>
 #include <vespa/searchlib/engine/searchreply.h>
@@ -32,10 +33,12 @@ using search::MatchingElements;
 using search::attribute::IAttributeContext;
 using search::fef::MatchDataLayout;
 using search::fef::MatchData;
+using search::fef::RankSetup;
 using search::fef::indexproperties::hitcollector::HeapSize;
 using search::queryeval::Blueprint;
 using search::queryeval::SearchIterator;
 using vespalib::Doom;
+using vespalib::make_string_short::fmt;
 
 namespace proton::matching {
 
@@ -48,14 +51,14 @@ struct StupidMetaStore : search::IDocumentMetaStore {
     bool getGid(DocId, GlobalId &) const override { return false; }
     bool getGidEvenIfMoved(DocId, GlobalId &) const override { return false; }
     bool getLid(const GlobalId &, DocId &) const override { return false; }
-    DocumentMetaData getMetaData(const GlobalId &) const override { return DocumentMetaData(); }
+    DocumentMetaData getMetaData(const GlobalId &) const override { return {}; }
     void getMetaData(const BucketId &, DocumentMetaData::Vector &) const override { }
     DocId getCommittedDocIdLimit() const override { return 1; }
     DocId getNumUsedLids() const override { return 0; }
     DocId getNumActiveLids() const override { return 0; }
     uint64_t getCurrentGeneration() const override { return 0; }
-    LidUsageStats getLidUsageStats() const override { return LidUsageStats(); }
-    Blueprint::UP createWhiteListBlueprint() const override { return Blueprint::UP(); }
+    LidUsageStats getLidUsageStats() const override { return {}; }
+    Blueprint::UP createWhiteListBlueprint() const override { return {}; }
     void foreach(const search::IGidToLidMapperVisitor &) const override { }
 };
 
@@ -72,8 +75,8 @@ public:
     { }
 private:
     size_t size() const override { return _maxThreads; }
-    void run(const std::vector<vespalib::Runnable*> &targets) override {
-        _threadBundle.run(targets);
+    void run(vespalib::Runnable* const* targets, size_t cnt) override {
+        _threadBundle.run(targets, cnt);
     }
     vespalib::ThreadBundle &_threadBundle;
     const uint32_t          _maxThreads;
@@ -98,10 +101,9 @@ handleGroupingSession(SessionManager &sessionMgr, GroupingContext & groupingCont
 
 }  // namespace proton::matching::<unnamed>
 
-Matcher::Matcher(const search::index::Schema &schema, const Properties &props, const vespalib::Clock &clock,
-                 QueryLimiter &queryLimiter, const IConstantValueRepo &constantValueRepo,
-                 RankingExpressions rankingExpressions, OnnxModels onnxModels, uint32_t distributionKey)
-  : _indexEnv(distributionKey, schema, props, constantValueRepo, std::move(rankingExpressions), std::move(onnxModels)),
+Matcher::Matcher(const search::index::Schema &schema, Properties props, const vespalib::Clock &clock,
+                 QueryLimiter &queryLimiter, const IRankingAssetsRepo &rankingAssetsRepo, uint32_t distributionKey)
+  : _indexEnv(distributionKey, schema, std::move(props), rankingAssetsRepo),
     _blueprintFactory(),
     _rankSetup(),
     _viewResolver(ViewResolver::createFromSchema(schema)),
@@ -117,17 +119,19 @@ Matcher::Matcher(const search::index::Schema &schema, const Properties &props, c
     _rankSetup = std::make_shared<search::fef::RankSetup>(_blueprintFactory, _indexEnv);
     _rankSetup->configure(); // reads config values from the property map
     if (!_rankSetup->compile()) {
-        throw vespalib::IllegalArgumentException("failed to compile rank setup", VESPA_STRLOC);
+        throw vespalib::IllegalArgumentException(fmt("failed to compile rank setup :\n%s",
+                                                     _rankSetup->getJoinedWarnings().c_str()), VESPA_STRLOC);
     }
 }
+
+Matcher::~Matcher() = default;
 
 MatchingStats
 Matcher::getStats()
 {
     std::lock_guard<std::mutex> guard(_statsLock);
     MatchingStats stats = std::move(_stats);
-    _stats = MatchingStats();
-    _stats.softDoomFactor(stats.softDoomFactor());
+    _stats = MatchingStats(stats.softDoomFactor());
     return stats;
 }
 
@@ -137,7 +141,8 @@ using search::fef::indexproperties::softtimeout::Factor;
 std::unique_ptr<MatchToolsFactory>
 Matcher::create_match_tools_factory(const search::engine::Request &request, ISearchContext &searchContext,
                                     IAttributeContext &attrContext, const search::IDocumentMetaStore &metaStore,
-                                    const Properties &feature_overrides, bool is_search) const
+                                    const Properties &feature_overrides, vespalib::ThreadBundle &thread_bundle,
+                                    bool is_search) const
 {
     const Properties & rankProperties = request.propertiesMap.rankProperties();
     bool softTimeoutEnabled = Enabled::lookup(rankProperties, _rankSetup->getSoftTimeoutEnabled());
@@ -148,7 +153,7 @@ Matcher::create_match_tools_factory(const search::engine::Request &request, ISea
                         : _stats.softDoomFactor())
                     : 0.95;
     vespalib::duration safeLeft = std::chrono::duration_cast<vespalib::duration>(request.getTimeLeft() * factor);
-    vespalib::steady_time safeDoom(_clock.getTimeNSAssumeRunning() + safeLeft);
+    vespalib::steady_time safeDoom(_clock.getTimeNS() + safeLeft);
     if (softTimeoutEnabled) {
         LOG(debug, "Soft-timeout computed factor=%1.3f, used factor=%1.3f, userSupplied=%d, softTimeout=%" PRId64,
                    _stats.softDoomFactor(), factor, hasFactorOverride, vespalib::count_ns(safeLeft));
@@ -157,7 +162,7 @@ Matcher::create_match_tools_factory(const search::engine::Request &request, ISea
     return std::make_unique<MatchToolsFactory>(_queryLimiter, doom, searchContext, attrContext,
                                                request.trace(), request.getStackRef(), request.location,
                                                _viewResolver, metaStore, _indexEnv, *_rankSetup,
-                                               rankProperties, feature_overrides, is_search);
+                                               rankProperties, feature_overrides, thread_bundle, is_search);
 }
 
 size_t
@@ -174,7 +179,7 @@ namespace {
     void traceQuery(uint32_t traceLevel, Trace & trace, const Query & query) {
         if (traceLevel <= trace.getLevel()) {
             if (query.peekRoot()) {
-                vespalib::slime::ObjectInserter inserter(trace.createCursor("blueprint"), "optimized");
+                vespalib::slime::ObjectInserter inserter(trace.createCursor("query_execution_plan"), "optimized");
                 query.peekRoot()->asSlime(inserter);
             }
         }
@@ -184,7 +189,8 @@ namespace {
 SearchReply::UP
 Matcher::match(const SearchRequest &request, vespalib::ThreadBundle &threadBundle,
                ISearchContext &searchContext, IAttributeContext &attrContext, SessionManager &sessionMgr,
-               const search::IDocumentMetaStore &metaStore, SearchSession::OwnershipBundle &&owned_objects)
+               const search::IDocumentMetaStore &metaStore, const bucketdb::BucketDBOwner & bucketdb,
+               SearchSession::OwnershipBundle &&owned_objects)
 {
     vespalib::Timer total_matching_time;
     MatchingStats my_stats;
@@ -195,8 +201,8 @@ Matcher::match(const SearchRequest &request, vespalib::ThreadBundle &threadBundl
     { // we want to measure full set-up and tear-down time as part of
       // collateral time
         GroupingContext groupingContext(_clock, request.getTimeOfDoom(),
-                                        &request.groupSpec[0], request.groupSpec.size());
-        SessionId sessionId(&request.sessionId[0], request.sessionId.size());
+                                        request.groupSpec.data(), request.groupSpec.size());
+        SessionId sessionId(request.sessionId.data(), request.sessionId.size());
         bool shouldCacheSearchSession = false;
         bool shouldCacheGroupingSession = false;
         if (!sessionId.empty()) {
@@ -216,8 +222,8 @@ Matcher::match(const SearchRequest &request, vespalib::ThreadBundle &threadBundl
             feature_overrides = owned_objects.feature_overrides.get();
         }
 
-        MatchToolsFactory::UP mtf = create_match_tools_factory(request, searchContext, attrContext,
-                metaStore, *feature_overrides, true);
+        MatchToolsFactory::UP mtf = create_match_tools_factory(request, searchContext, attrContext, metaStore,
+                                                               *feature_overrides, threadBundle, true);
         isDoomExplicit = mtf->getRequestContext().getDoom().isExplicitSoftDoom();
         traceQuery(6, request.trace(), mtf->query());
         if (!mtf->valid()) {
@@ -273,8 +279,7 @@ Matcher::match(const SearchRequest &request, vespalib::ThreadBundle &threadBundl
 
         SearchReply::Coverage & coverage = reply->coverage;
         coverage.setActive(numActiveLids);
-        //TODO this should be calculated with ClusterState calculator.
-        coverage.setSoonActive(numActiveLids);
+        coverage.setTargetActive(bucketdb.getNumActiveDocs());
         coverage.setCovered(covered);
         if (wasLimited) {
             coverage.degradeMatchPhase();
@@ -289,7 +294,6 @@ Matcher::match(const SearchRequest &request, vespalib::ThreadBundle &threadBundl
             request.ranking.c_str());
     }
     double querySetupTime = vespalib::to_s(total_matching_time.elapsed()) - my_stats.queryLatencyAvg();
-    my_stats.queryCollateralTime(querySetupTime); // TODO: Remove in Vespa 8
     my_stats.querySetupTime(querySetupTime);
     {
         vespalib::duration duration = request.getTimeUsed();
@@ -320,7 +324,7 @@ Matcher::match(const SearchRequest &request, vespalib::ThreadBundle &threadBundl
 
 FeatureSet::SP
 Matcher::getSummaryFeatures(const DocsumRequest & req, ISearchContext & searchCtx,
-                            IAttributeContext & attrCtx, SessionManager &sessionMgr)
+                            IAttributeContext & attrCtx, SessionManager &sessionMgr) const
 {
     auto docsum_matcher = create_docsum_matcher(req, searchCtx, attrCtx, sessionMgr);
     return docsum_matcher->get_summary_features();
@@ -328,7 +332,7 @@ Matcher::getSummaryFeatures(const DocsumRequest & req, ISearchContext & searchCt
 
 FeatureSet::SP
 Matcher::getRankFeatures(const DocsumRequest & req, ISearchContext & searchCtx,
-                         IAttributeContext & attrCtx, SessionManager &sessionMgr)
+                         IAttributeContext & attrCtx, SessionManager &sessionMgr) const
 {
     auto docsum_matcher = create_docsum_matcher(req, searchCtx, attrCtx, sessionMgr);
     return docsum_matcher->get_rank_features();
@@ -337,7 +341,7 @@ Matcher::getRankFeatures(const DocsumRequest & req, ISearchContext & searchCtx,
 MatchingElements::UP
 Matcher::get_matching_elements(const DocsumRequest &req, ISearchContext &search_ctx,
                                IAttributeContext &attr_ctx, SessionManager &session_manager,
-                               const MatchingElementsFields &fields)
+                               const MatchingElementsFields &fields) const
 {
     auto docsum_matcher = create_docsum_matcher(req, search_ctx, attr_ctx, session_manager);
     return docsum_matcher->get_matching_elements(fields);
@@ -345,7 +349,7 @@ Matcher::get_matching_elements(const DocsumRequest &req, ISearchContext &search_
 
 DocsumMatcher::UP
 Matcher::create_docsum_matcher(const DocsumRequest &req, ISearchContext &search_ctx,
-                               IAttributeContext &attr_ctx, SessionManager &session_manager)
+                               IAttributeContext &attr_ctx, SessionManager &session_manager) const
 {
     std::vector<uint32_t> docs;
     docs.reserve(req.hits.size());
@@ -355,7 +359,7 @@ Matcher::create_docsum_matcher(const DocsumRequest &req, ISearchContext &search_
         }
     }
     std::sort(docs.begin(), docs.end());
-    SessionId sessionId(&req.sessionId[0], req.sessionId.size());
+    SessionId sessionId(req.sessionId.data(), req.sessionId.size());
     bool expectedSessionCached(false);
     if (!sessionId.empty()) {
         const Properties &cache_props = req.propertiesMap.cacheProperties();
@@ -369,7 +373,8 @@ Matcher::create_docsum_matcher(const DocsumRequest &req, ISearchContext &search_
     }
     StupidMetaStore meta;
     MatchToolsFactory::UP mtf = create_match_tools_factory(req, search_ctx, attr_ctx, meta,
-            req.propertiesMap.featureOverrides(), false);
+                                                           req.propertiesMap.featureOverrides(),
+                                                           vespalib::ThreadBundle::trivial(), false);
     if (!mtf->valid()) {
         LOG(warning, "could not initialize docsum matching: %s",
             (expectedSessionCached) ? "session has expired" : "invalid query");
@@ -381,11 +386,6 @@ Matcher::create_docsum_matcher(const DocsumRequest &req, ISearchContext &search_
 bool
 Matcher::canProduceSummaryFeatures() const {
     return ! _rankSetup->getSummaryFeatures().empty();
-}
-
-double
-Matcher::get_termwise_limit() const {
-    return _rankSetup->get_termwise_limit();
 }
 
 }

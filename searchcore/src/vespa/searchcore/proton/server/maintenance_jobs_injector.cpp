@@ -1,15 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "maintenance_jobs_injector.h"
 #include "bucketmovejob.h"
 #include "heart_beat_job.h"
 #include "job_tracked_maintenance_job.h"
 #include "lid_space_compaction_job.h"
 #include "lid_space_compaction_handler.h"
-#include "maintenance_jobs_injector.h"
 #include "prune_session_cache_job.h"
 #include "pruneremoveddocumentsjob.h"
 #include "sample_attribute_usage_job.h"
-#include <vespa/searchcore/proton/attribute/attribute_config_inspector.h>
 
 using vespalib::system_clock;
 
@@ -18,7 +17,7 @@ namespace proton {
 namespace {
 
 IMaintenanceJob::UP
-trackJob(IJobTracker::SP tracker, std::shared_ptr<IMaintenanceJob> job)
+trackJob(std::shared_ptr<IJobTracker> tracker, std::shared_ptr<IMaintenanceJob> job)
 {
     return std::make_unique<JobTrackedMaintenanceJob>(std::move(tracker), std::move(job));
 }
@@ -29,7 +28,7 @@ injectLidSpaceCompactionJobs(MaintenanceController &controller,
                              storage::spi::BucketExecutor & bucketExecutor,
                              ILidSpaceCompactionHandler::Vector lscHandlers,
                              IOperationStorer &opStorer,
-                             IJobTracker::SP tracker,
+                             std::shared_ptr<IJobTracker> tracker,
                              IDiskMemUsageNotifier &diskMemUsageNotifier,
                              IClusterStateChangedNotifier &clusterStateChangedNotifier,
                              const std::shared_ptr<IBucketStateCalculator> &calc,
@@ -39,7 +38,7 @@ injectLidSpaceCompactionJobs(MaintenanceController &controller,
         auto job = lidspace::CompactionJob::create(config.getLidSpaceCompactionConfig(), controller.retainDB(),
                                                    std::move(lidHandler), opStorer, controller.masterThread(),
                                                    bucketExecutor, diskMemUsageNotifier,config.getBlockableJobConfig(),
-                                                   clusterStateChangedNotifier, (calc ? calc->nodeRetired() : false), bucketSpace);
+                                                   clusterStateChangedNotifier, calc && calc->nodeRetired(), bucketSpace);
         controller.registerJobInMasterThread(trackJob(tracker, std::move(job)));
     }
 }
@@ -55,11 +54,11 @@ injectBucketMoveJob(MaintenanceController &controller,
                     IBucketModifiedHandler &bucketModifiedHandler,
                     IClusterStateChangedNotifier &clusterStateChangedNotifier,
                     IBucketStateChangedNotifier &bucketStateChangedNotifier,
-                    const std::shared_ptr<IBucketStateCalculator> &calc,
+                    std::shared_ptr<IBucketStateCalculator> calc,
                     DocumentDBJobTrackers &jobTrackers,
                     IDiskMemUsageNotifier &diskMemUsageNotifier)
 {
-    auto bmj = BucketMoveJob::create(calc, controller.retainDB(), moveHandler, bucketModifiedHandler, controller.masterThread(),
+    auto bmj = BucketMoveJob::create(std::move(calc), controller.retainDB(), moveHandler, bucketModifiedHandler, controller.masterThread(),
                                      bucketExecutor, controller.getReadySubDB(), controller.getNotReadySubDB(),
                                      bucketCreateNotifier, clusterStateChangedNotifier, bucketStateChangedNotifier,
                                      diskMemUsageNotifier, config.getBlockableJobConfig(), docTypeName, bucketSpace);
@@ -87,12 +86,11 @@ MaintenanceJobsInjector::injectJobs(MaintenanceController &controller,
                                     DocumentDBJobTrackers &jobTrackers,
                                     IAttributeManagerSP readyAttributeManager,
                                     IAttributeManagerSP notReadyAttributeManager,
-                                    std::unique_ptr<const AttributeConfigInspector> attribute_config_inspector,
-                                    std::shared_ptr<TransientResourceUsageProvider> transient_usage_provider,
                                     AttributeUsageFilter &attributeUsageFilter)
 {
     controller.registerJobInMasterThread(std::make_unique<HeartBeatJob>(hbHandler, config.getHeartBeatConfig()));
-    controller.registerJobInDefaultPool(std::make_unique<PruneSessionCacheJob>(scPruner, config.getSessionCachePruneInterval()));
+    controller.registerJobInSharedExecutor(
+            std::make_unique<PruneSessionCacheJob>(scPruner, config.getSessionCachePruneInterval()));
 
     const auto & docTypeName = controller.getDocTypeName().getName();
     const MaintenanceDocumentSubDB &mRemSubDB(controller.getRemSubDB());
@@ -120,11 +118,10 @@ MaintenanceJobsInjector::injectJobs(MaintenanceController &controller,
                         calc, jobTrackers, diskMemUsageNotifier);
 
     controller.registerJobInMasterThread(
-            std::make_unique<SampleAttributeUsageJob>(readyAttributeManager, notReadyAttributeManager,
+            std::make_unique<SampleAttributeUsageJob>(std::move(readyAttributeManager),
+                                                      std::move(notReadyAttributeManager),
                                                       attributeUsageFilter, docTypeName,
-                                                      config.getAttributeUsageSampleInterval(),
-                                                      std::move(attribute_config_inspector),
-                                                      transient_usage_provider));
+                                                      config.getAttributeUsageSampleInterval()));
 }
 
 } // namespace proton

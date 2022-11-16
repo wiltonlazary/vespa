@@ -25,6 +25,7 @@ private:
     documentmetastore::IBucketHandler        *_ready;
     std::vector<IBucketStateChangedHandler *> _changedHandlers;
     bool                                      _nodeUp;
+    bool                                      _nodeMaintenance;
 
     void performSetCurrentState(document::BucketId bucketId,
                                 storage::spi::BucketInfo::ActiveState newState,
@@ -44,7 +45,7 @@ public:
      *
      * @param executor The executor in which to run all tasks.
      */
-    BucketHandler(vespalib::Executor &executor);
+    explicit BucketHandler(vespalib::Executor &executor);
     ~BucketHandler() override;
 
     void setReadyBucketHandler(documentmetastore::IBucketHandler &ready);
@@ -55,11 +56,11 @@ public:
     void handleListBuckets(IBucketIdListResultHandler &resultHandler);
     void handleSetCurrentState(const document::BucketId &bucketId,
                                storage::spi::BucketInfo::ActiveState newState,
-                               IGenericResultHandler &resultHandler);
+                               std::shared_ptr<IGenericResultHandler> resultHandler);
     void handleGetBucketInfo(const storage::spi::Bucket &bucket,
                              IBucketInfoResultHandler &resultHandler);
     void handleListActiveBuckets(IBucketIdListResultHandler &resultHandler);
-    void handlePopulateActiveBuckets(document::BucketId::List &buckets,
+    void handlePopulateActiveBuckets(document::BucketId::List buckets,
                                      IGenericResultHandler &resultHandler);
     bool hasBucket(const storage::spi::Bucket &bucket);
 

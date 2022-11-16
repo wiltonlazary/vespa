@@ -46,10 +46,10 @@ import java.util.List;
  * type - any name/value pair which existing in an updatable structure can be addressed by creating the Fields as
  * needed. For example:
  * <pre>
- * FieldUpdate field=FieldUpdate.createIncrement(new Field("myattribute",DataType.INT),130);
+ * FieldUpdate field = FieldUpdate.createIncrement(new Field("myattribute",DataType.INT),130);
  * </pre>
  *
- * @author <a href="mailto:einarmr@yahoo-inc.com">Einar M R Rosenvinge</a>
+ * @author Einar M R Rosenvinge
  * @see com.yahoo.document.update.ValueUpdate
  * @see com.yahoo.document.DocumentUpdate
  */
@@ -73,11 +73,6 @@ public class FieldUpdate {
     FieldUpdate(Field field, List<ValueUpdate> valueUpdates) {
         this(field);
         addValueUpdates(valueUpdates);
-    }
-
-    @Deprecated
-    public FieldUpdate(DocumentUpdateReader reader, DocumentType type, int serializationVersion) {
-        this(reader, type);
     }
 
     public FieldUpdate(DocumentUpdateReader reader, DocumentType type) {
@@ -140,7 +135,7 @@ public class FieldUpdate {
      * @throws IllegalArgumentException if the data type of the value update is not equal to the data type of this field
      */
     public FieldUpdate addValueUpdate(ValueUpdate valueUpdate) {
-        valueUpdate.checkCompatibility(field.getDataType());  //will throw exception
+        valueUpdate.checkCompatibility(field.getDataType()); // will throw exception
         valueUpdates.add(valueUpdate);
         return this;
     }
@@ -154,7 +149,7 @@ public class FieldUpdate {
      * @throws IllegalArgumentException if the data type of the value update is not equal to the data type of this field
      */
     public FieldUpdate addValueUpdate(int index, ValueUpdate valueUpdate) {
-        valueUpdate.checkCompatibility(field.getDataType());  //will throw exception
+        valueUpdate.checkCompatibility(field.getDataType()); // will throw exception
         valueUpdates.add(index, valueUpdate);
         return this;
     }

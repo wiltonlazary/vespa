@@ -32,16 +32,19 @@ import com.yahoo.messagebus.routing.RoutingNode;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 /**
@@ -50,6 +53,8 @@ import java.util.stream.Collectors;
  * @author havardpe
  */
 public class RPCNetwork implements Network, MethodHandler {
+
+    private static final Logger log = Logger.getLogger(RPCNetwork.class.getName());
 
     private final AtomicBoolean destroyed = new AtomicBoolean(false);
     private final Identity identity;
@@ -65,8 +70,8 @@ public class RPCNetwork implements Network, MethodHandler {
     private final LinkedHashMap<String, Route> lruRouteMap = new LinkedHashMap<>(10000, 0.5f, true);
     private final ExecutorService executor =
             new ThreadPoolExecutor(getNumThreads(), getNumThreads(), 0L, TimeUnit.SECONDS,
-                                   new SynchronousQueue<>(false),
-                                   ThreadFactoryFactory.getDaemonThreadFactory("mbus.net"), new ThreadPoolExecutor.CallerRunsPolicy());
+                                   new LinkedBlockingQueue<>(),
+                                   ThreadFactoryFactory.getDaemonThreadFactory("mbus.net"));
 
     private static int getNumThreads() {
         return Math.max(2, Runtime.getRuntime().availableProcessors()/2);
@@ -84,7 +89,7 @@ public class RPCNetwork implements Network, MethodHandler {
      * @param params        a complete set of parameters
      * @param slobrokConfig subscriber for slobroks config
      */
-    public RPCNetwork(RPCNetworkParams params, SlobrokConfigSubscriber slobrokConfig) {
+    private RPCNetwork(RPCNetworkParams params, SlobrokConfigSubscriber slobrokConfig) {
         this.slobroksConfig = slobrokConfig;
         identity = params.getIdentity();
         orb = new Supervisor(new Transport("mbus-rpc-" + identity.getServicePrefix(), params.getNumNetworkThreads(),
@@ -143,16 +148,27 @@ public class RPCNetwork implements Network, MethodHandler {
 
     @Override
     public boolean waitUntilReady(double seconds) {
-        for (int i = 0; i < seconds * 100; ++i) {
+        int millis = (int) seconds * 1000;
+        int i = 0;
+        do {
             if (mirror.ready()) {
+                if (i > 200) {
+                    log.log(Level.INFO, "network became ready (at "+i+" ms)");
+                }
                 return true;
             }
+            if ((i == 200) || ((i > 200) && ((i % 1000) == 0))) {
+                log.log(Level.INFO, "waiting for network to become ready ("+i+" of "+millis+" ms)");
+                mirror.dumpState();
+            }
             try {
+                // could maybe have some back-off here, fixed at 10ms for now
+                i += 10;
                 Thread.sleep(10);
             } catch (InterruptedException e) {
                 // empty
             }
-        }
+        } while (i < millis);
         return false;
     }
 
@@ -184,7 +200,6 @@ public class RPCNetwork implements Network, MethodHandler {
         }
         this.owner = owner;
 
-        sendAdapters.put(new Version(5), new RPCSendV1(this));
         sendAdapters.put(new Version(6,149), new RPCSendV2(this));
     }
 
@@ -226,7 +241,7 @@ public class RPCNetwork implements Network, MethodHandler {
     @Override
     public void send(Message msg, List<RoutingNode> recipients) {
         SendContext ctx = new SendContext(this, msg, recipients);
-        double timeout = ctx.msg.getTimeRemainingNow() / 1000.0;
+        Duration timeout = Duration.ofMillis(ctx.msg.getTimeRemainingNow());
         for (RoutingNode recipient : ctx.recipients) {
             RPCServiceAddress address = (RPCServiceAddress)recipient.getServiceAddress();
             address.getTarget().resolveVersion(timeout, ctx);

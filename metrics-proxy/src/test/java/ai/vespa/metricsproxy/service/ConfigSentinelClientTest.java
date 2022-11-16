@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.service;
 
 import org.junit.Test;
@@ -6,8 +6,9 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
 
 /**
  * @author Unknown
@@ -20,44 +21,44 @@ public class ConfigSentinelClientTest {
         List<VespaService> services = new ArrayList<>();
         VespaService docproc = new VespaService("docprocservice", "docproc/cluster.x.indexing/0");
         VespaService searchnode4 = new VespaService("searchnode4", "search/cluster.x/g0/c1/r1");
-        VespaService qrserver = new VespaService("qrserver", "container/qrserver.0");
+        VespaService container = new VespaService("container", "container/default.0");
 
         services.add(searchnode4);
-        services.add(qrserver);
+        services.add(container);
         services.add(docproc);
 
         try (MockConfigSentinelClient client = new MockConfigSentinelClient(configsentinel)) {
             client.updateServiceStatuses(services);
 
-            assertThat(qrserver.getPid(), is(6520));
-            assertThat(qrserver.getState(), is("RUNNING"));
-            assertThat(qrserver.isAlive(), is(true));
-            assertThat(searchnode4.getPid(), is(6534));
-            assertThat(searchnode4.getState(), is("RUNNING"));
-            assertThat(searchnode4.isAlive(), is(true));
+            assertEquals(6520, container.getPid());
+            assertEquals("RUNNING", container.getState());
+            assertTrue(container.isAlive());
+            assertEquals(6534, searchnode4.getPid());
+            assertEquals("RUNNING", searchnode4.getState());
+            assertTrue(searchnode4.isAlive());
 
-            assertThat(docproc.getPid(), is(-1));
-            assertThat(docproc.getState(), is("FINISHED"));
-            assertThat(docproc.isAlive(), is(false));
+            assertEquals(-1, docproc.getPid());
+            assertEquals("FINISHED", docproc.getState());
+            assertFalse(docproc.isAlive());
 
 
             configsentinel.reConfigure();
 
             client.ping(docproc);
-            assertThat(docproc.getPid(), is(100));
-            assertThat(docproc.getState(), is("RUNNING"));
-            assertThat(docproc.isAlive(), is(true));
+            assertEquals(100, docproc.getPid());
+            assertEquals("RUNNING", docproc.getState());
+            assertTrue(docproc.isAlive());
 
-            //qrserver has yet not been checked
-            assertThat(qrserver.isAlive(), is(true));
+            // container has yet not been checked
+            assertTrue(container.isAlive());
 
             client.updateServiceStatuses(services);
 
-            assertThat(docproc.getPid(), is(100));
-            assertThat(docproc.getState(), is("RUNNING"));
-            assertThat(docproc.isAlive(), is(true));
-            //qrserver is no longer running on this node - so should be false
-            assertThat(qrserver.isAlive(), is(false));
+            assertEquals(100, docproc.getPid());
+            assertEquals("RUNNING", docproc.getState());
+            assertTrue(docproc.isAlive());
+            // container is no longer running on this node - so should be false
+            assertFalse(container.isAlive());
         }
     }
 
@@ -79,8 +80,7 @@ public class ConfigSentinelClientTest {
 
         VespaService container = VespaService.create("container", "get/container.0", -1);
 
-        VespaService containerClusterController =
-                VespaService.create("container-clustercontroller", "get/container.0", -1);
+        VespaService containerClusterController = VespaService.create("container-clustercontroller", "get/container.0", -1);
 
         VespaService notPresent = VespaService.create("dummy","fake", -1);
 
@@ -90,13 +90,13 @@ public class ConfigSentinelClientTest {
 
         try (MockConfigSentinelClient client = new MockConfigSentinelClient(configsentinel)) {
             client.updateServiceStatuses(services);
-            assertThat(container.isAlive(),is(true));
-            assertThat(container.getPid(),is(14338));
-            assertThat(container.getState(),is("RUNNING"));
+            assertTrue(container.isAlive());
+            assertEquals(14338, container.getPid());
+            assertEquals("RUNNING", container.getState());
 
-            assertThat(containerClusterController.isAlive(),is(true));
-            assertThat(containerClusterController.getPid(),is(25020));
-            assertThat(containerClusterController.getState(),is("RUNNING"));
+            assertTrue(containerClusterController.isAlive());
+            assertEquals(25020, containerClusterController.getPid());
+            assertEquals("RUNNING", containerClusterController.getState());
         }
     }
 

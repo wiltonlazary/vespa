@@ -19,8 +19,8 @@ MyScanIterator::valid() const {
     return _validItr;
 }
 
-search::DocumentMetaData MyScanIterator::next(uint32_t compactLidLimit, bool retry) {
-    if (!retry && _itr != _lids.begin()) {
+search::DocumentMetaData MyScanIterator::next(uint32_t compactLidLimit) {
+    if (_itr != _lids.begin()) {
         ++_itr;
     }
     for (; _itr != _lids.end() && (*_itr) <= compactLidLimit; ++_itr) {}
@@ -106,7 +106,7 @@ MyHandler::createMoveOperation(const search::DocumentMetaData &document, uint32_
     assert(document.lid > moveToLid);
     _moveFromLid = document.lid;
     const auto & entry = _docs[document.lid];
-    auto op = std::make_unique<MoveOperation>(entry.first.bucketId, entry.first.timestamp, entry.second,
+    auto op = std::make_unique<MoveOperation>(entry.first.bucketId, storage::spi::Timestamp(entry.first.timestamp), entry.second,
                                               DbDocumentId(document.lid), 0);
     op->setTargetLid(moveToLid);
     return op;
@@ -127,7 +127,8 @@ MyHandler::handleCompactLidSpace(const CompactLidSpaceOperation &op, std::shared
 }
 
 MyHandler::MyHandler(bool storeMoveDoneContexts, bool bucketIdEqualLid)
-    : _stats(),
+    : _builder(),
+      _stats(),
       _moveFromLid(0),
       _moveToLid(0),
       _handleMoveCnt(0),
@@ -140,9 +141,8 @@ MyHandler::MyHandler(bool storeMoveDoneContexts, bool bucketIdEqualLid)
       _rm_listener(),
       _docs()
 {
-    DocBuilder builder = DocBuilder(Schema());
     for (uint32_t i(0); i < 10; i++) {
-        auto doc = builder.startDocument(fmt("%s%d", DOC_ID.c_str(), i)).endDocument();
+        auto doc = _builder.make_document(fmt("%s%d", DOC_ID.c_str(), i));
         _docs.emplace_back(DocumentMetaData(i, TIMESTAMP_1, createBucketId(i), doc->getId().getGlobalId()), std::move(doc));
     }
 }

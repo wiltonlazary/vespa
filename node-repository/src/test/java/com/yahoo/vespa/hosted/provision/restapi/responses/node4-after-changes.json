@@ -1,15 +1,14 @@
 {
   "url": "http://localhost:8080/nodes/v2/node/host4.yahoo.com",
-  "id": "host4.yahoo.com",
+  "id": "patched-id",
   "state": "active",
   "type": "tenant",
   "hostname": "host4.yahoo.com",
   "parentHostname": "parent.yahoo.com",
-  "openStackId": "patched-openstackid",
   "flavor": "d-2-8-100",
   "cpuCores": 2.0,
-  "resources":{"vcpu":2.0,"memoryGb":8.0,"diskGb":100.0,"bandwidthGbps":1.0,"diskSpeed":"fast","storageType":"remote"},
-  "realResources":{"vcpu":2.0,"memoryGb":8.0,"diskGb":100.0,"bandwidthGbps":1.0,"diskSpeed":"fast","storageType":"remote"},
+  "resources":{"vcpu":2.0,"memoryGb":8.0,"diskGb":100.0,"bandwidthGbps":1.0,"diskSpeed":"fast","storageType":"remote","architecture":"x86_64"},
+  "realResources":{"vcpu":2.0,"memoryGb":8.0,"diskGb":100.0,"bandwidthGbps":1.0,"diskSpeed":"fast","storageType":"remote","architecture":"x86_64"},
   "environment": "DOCKER_CONTAINER",
   "owner": {
     "tenant": "tenant3",
@@ -27,7 +26,7 @@
   "currentRestartGeneration": 1,
   "wantedDockerImage": "docker-registry.domain.tld:8080/dist/vespa:6.42.0",
   "wantedVespaVersion": "6.42.0",
-  "requestedResources": { "vcpu":1.0, "memoryGb":4.0, "diskGb":100.0, "bandwidthGbps":1.0, "diskSpeed":"fast", "storageType":"any" },
+  "requestedResources": { "vcpu":1.0, "memoryGb":4.0, "diskGb":100.0, "bandwidthGbps":1.0, "diskSpeed":"fast", "storageType":"any","architecture":"x86_64" },
   "orchestratorStatus": "ALLOWED_TO_BE_DOWN",
   "suspendedSinceMillis": 0,
   "rebootGeneration": 2,
@@ -39,6 +38,7 @@
   "preferToRetire": false,
   "wantToDeprovision": false,
   "wantToRebuild": false,
+  "down": false,
   "history": [
     {
       "event": "provisioned",
@@ -64,6 +64,58 @@
       "event": "wantToFail",
       "at": 123,
       "agent": "operator"
+    },
+    {
+      "event": "rebooted",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "resized",
+      "at": 123,
+      "agent": "operator"
+    },
+    {
+      "event": "wantToRetire",
+      "at": 123,
+      "agent": "operator"
+    }
+  ],
+  "log": [
+    {
+      "event": "deallocated",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "readied",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "reserved",
+      "at": 123,
+      "agent": "application"
+    },
+    {
+      "event": "reserved",
+      "at": 123,
+      "agent": "application"
+    },
+    {
+      "event": "activated",
+      "at": 123,
+      "agent": "application"
+    },
+    {
+      "event": "wantToFail",
+      "at": 123,
+      "agent": "operator"
+    },
+    {
+      "event": "rebooted",
+      "at": 123,
+      "agent": "system"
     },
     {
       "event": "rebooted",

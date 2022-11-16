@@ -1,24 +1,36 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/fastos/file.h>
-#include <vespa/searchcore/proton/index/indexmanager.h>
-#include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcorespi/index/fusionrunner.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
+#include <vespa/searchcore/proton/index/indexmanager.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/vespalib/util/isequencedtaskexecutor.h>
 #include <vespa/searchlib/common/flush_token.h>
 #include <vespa/searchlib/diskindex/diskindex.h>
 #include <vespa/searchlib/diskindex/indexbuilder.h>
 #include <vespa/searchlib/fef/matchdatalayout.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchlib/test/string_field_builder.h>
 #include <vespa/searchlib/memoryindex/memory_index.h>
 #include <vespa/searchlib/query/tree/simplequery.h>
 #include <vespa/searchlib/test/index/mock_field_length_inspector.h>
+#include <vespa/searchlib/queryeval/fake_requestcontext.h>
+#include <vespa/vespalib/util/gate.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/vespalib/testkit/testapp.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/fastos/file.h>
+#include <filesystem>
 #include <set>
 
 using document::Document;
 using document::FieldValue;
+using document::StringFieldValue;
 using proton::ExecutorThreadingService;
 using proton::index::IndexManager;
 using search::FixedSourceSelector;
@@ -32,10 +44,8 @@ using search::fef::MatchData;
 using search::fef::MatchDataLayout;
 using search::fef::TermFieldHandle;
 using search::fef::TermFieldMatchData;
-using search::index::DocBuilder;
 using search::index::DummyFileHeaderContext;
 using search::index::Schema;
-using search::index::schema::DataType;
 using search::index::test::MockFieldLengthInspector;
 using search::memoryindex::MemoryIndex;
 using search::query::SimpleStringTerm;
@@ -45,6 +55,9 @@ using search::queryeval::FieldSpec;
 using search::queryeval::FieldSpecList;
 using search::queryeval::ISourceSelector;
 using search::queryeval::SearchIterator;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
+using search::test::StringFieldBuilder;
 using searchcorespi::index::FusionRunner;
 using searchcorespi::index::FusionSpec;
 using std::set;
@@ -64,8 +77,7 @@ class Test : public vespalib::TestApp {
     FixedSourceSelector::UP _selector;
     FusionSpec _fusion_spec;
     DummyFileHeaderContext _fileHeaderContext;
-    vespalib::ThreadStackExecutor _sharedExecutor;
-    ExecutorThreadingService _threadingService;
+    TransportAndExecutorService _service;
     IndexManager::MaintainerOperations _ops;
 
     void setUp();
@@ -83,20 +95,20 @@ class Test : public vespalib::TestApp {
     void requireThatFusionCanBeStopped();
 
 public:
-    Test()
-        : _fusion_runner(),
-          _selector(),
-          _fusion_spec(),
-          _fileHeaderContext(),
-          _sharedExecutor(1, 0x10000),
-          _threadingService(_sharedExecutor),
-          _ops(_fileHeaderContext,
-               TuneFileIndexManager(), 0,
-               _threadingService)
-    {}
-    ~Test() {}
+    Test();
+    ~Test();
     int Main() override;
 };
+
+Test::Test()
+    : _fusion_runner(),
+      _selector(),
+      _fusion_spec(),
+      _fileHeaderContext(),
+      _service(1),
+      _ops(_fileHeaderContext,TuneFileIndexManager(), 0, _service.write())
+{ }
+Test::~Test() = default;
 
 int
 Test::Main()
@@ -122,15 +134,17 @@ const string field_name = "field_name";
 const string term = "foo";
 const uint32_t disk_id[] = { 1, 2, 21, 42 };
 
-Schema getSchema() {
-    Schema schema;
-    schema.addIndexField(
-            Schema::IndexField(field_name, DataType::STRING));
-    return schema;
+auto add_fields = [](auto& header) { header.addField(field_name, document::DataType::T_STRING); };
+
+Schema
+getSchema()
+{
+    DocBuilder db(add_fields);
+    return SchemaBuilder(db).add_all_indexes().build();
 }
 
 void Test::setUp() {
-    FastOS_FileInterface::EmptyAndRemoveDirectory(base_dir.c_str());
+    std::filesystem::remove_all(std::filesystem::path(base_dir));
     _fusion_runner.reset(new FusionRunner(base_dir, getSchema(),
                                  TuneFileAttributes(),
                                  _fileHeaderContext));
@@ -140,28 +154,30 @@ void Test::setUp() {
 }
 
 void Test::tearDown() {
-    FastOS_FileInterface::EmptyAndRemoveDirectory(base_dir.c_str());
+    std::filesystem::remove_all(std::filesystem::path(base_dir));
     _selector.reset(0);
 }
 
 Document::UP buildDocument(DocBuilder & doc_builder, int id, const string &word) {
     vespalib::asciistream ost;
     ost << "id:ns:searchdocument::" << id;
-    doc_builder.startDocument(ost.str());
-    doc_builder.startIndexField(field_name).addStr(word).endField();
-    return doc_builder.endDocument();
+    auto doc = doc_builder.make_document(ost.str());
+    doc->setValue(field_name, StringFieldBuilder(doc_builder).word(word).build());
+    return doc;
 }
 
 void addDocument(DocBuilder & doc_builder, MemoryIndex &index, ISourceSelector &selector,
                  uint8_t index_id, uint32_t docid, const string &word) {
     Document::UP doc = buildDocument(doc_builder, docid, word);
-    index.insertDocument(docid, *doc);
-    index.commit(std::shared_ptr<vespalib::IDestructorCallback>());
+    index.insertDocument(docid, *doc, {});
+    vespalib::Gate gate;
+    index.commit(std::make_shared<vespalib::GateCallback>(gate));
     selector.setSource(docid, index_id);
+    gate.await();
 }
 
 void Test::createIndex(const string &dir, uint32_t id, bool fusion) {
-    FastOS_FileInterface::MakeDirIfNotPresentOrExit(dir.c_str());
+    std::filesystem::create_directory(std::filesystem::path(dir));
     vespalib::asciistream ost;
     if (fusion) {
         ost << dir << "/index.fusion." << id;
@@ -173,16 +189,15 @@ void Test::createIndex(const string &dir, uint32_t id, bool fusion) {
     const string index_dir = ost.str();
     _selector->setDefaultSource(id - _selector->getBaseId());
 
-    Schema schema = getSchema();
-    DocBuilder doc_builder(schema);
+    DocBuilder doc_builder(add_fields);
+    auto schema = SchemaBuilder(doc_builder).add_all_indexes().build();
     MemoryIndex memory_index(schema, MockFieldLengthInspector(),
-                             _threadingService.indexFieldInverter(),
-                             _threadingService.indexFieldWriter());
+                             _service.write().indexFieldInverter(),
+                             _service.write().indexFieldWriter());
     addDocument(doc_builder, memory_index, *_selector, id, id + 0, term);
     addDocument(doc_builder, memory_index, *_selector, id, id + 1, "bar");
     addDocument(doc_builder, memory_index, *_selector, id, id + 2, "baz");
     addDocument(doc_builder, memory_index, *_selector, id, id + 3, "qux");
-    _threadingService.indexFieldWriter().sync();
 
     const uint32_t docIdLimit =
         std::min(memory_index.getDocIdLimit(), _selector->getDocIdLimit());

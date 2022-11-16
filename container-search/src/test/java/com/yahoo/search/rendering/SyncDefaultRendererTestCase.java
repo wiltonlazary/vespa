@@ -1,18 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.rendering;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.concurrent.ExecutionException;
-
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-
-import com.google.common.util.concurrent.ListenableFuture;
 import com.yahoo.component.chain.Chain;
 import com.yahoo.prelude.fastsearch.FastHit;
 import com.yahoo.search.Query;
@@ -26,6 +14,16 @@ import com.yahoo.search.statistics.ElapsedTimeTestCase.CreativeTimeSource;
 import com.yahoo.search.statistics.ElapsedTimeTestCase.UselessSearcher;
 import com.yahoo.search.statistics.TimeTracker;
 import com.yahoo.text.Utf8;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Check the legacy sync default renderer doesn't spontaneously combust.
@@ -36,29 +34,28 @@ public class SyncDefaultRendererTestCase {
 
     SyncDefaultRenderer d;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         d = new SyncDefaultRenderer();
         d.init();
     }
 
-    @After
+    @AfterEach
     public void tearDown() throws Exception {
     }
 
     @Test
-    public final void testGetEncoding() {
+    final void testGetEncoding() {
         assertEquals("utf-8", d.getEncoding());
     }
 
     @Test
-    public final void testGetMimeType() {
+    final void testGetMimeType() {
         assertEquals("text/xml", d.getMimeType());
     }
 
-    @SuppressWarnings("deprecation")
     @Test
-    public void testRenderWriterResult() throws InterruptedException, ExecutionException {
+    void testRenderWriterResult() throws InterruptedException, ExecutionException {
         Query q = new Query("/?query=a&tracelevel=5");
         q.getPresentation().setTiming(true);
         Result r = new Result(q);
@@ -68,7 +65,7 @@ public class SyncDefaultRendererTestCase {
                 new UselessSearcher("first"), new UselessSearcher("second"),
                 new UselessSearcher("third")));
         ElapsedTimeTestCase.doInjectTimeSource(t, new CreativeTimeSource(
-                new long[] { 1L, 2L, 3L, 4L, 5L, 6L, 7L }));
+                new long[]{1L, 2L, 3L, 4L, 5L, 6L, 7L}));
         t.sampleSearch(0, true);
         t.sampleSearch(1, true);
         t.sampleSearch(2, true);
@@ -92,7 +89,7 @@ public class SyncDefaultRendererTestCase {
         r.hits().add(gg);
         r.hits().addError(ErrorMessage.createInternalServerError("boom"));
         ByteArrayOutputStream bs = new ByteArrayOutputStream();
-        ListenableFuture<Boolean> f = d.render(bs, r, null, null);
+        CompletableFuture<Boolean> f = d.renderResponse(bs, r, null, null);
         assertTrue(f.get());
         String summary = Utf8.toString(bs.toByteArray());
         // TODO figure out a reasonably strict and reasonably flexible way to test

@@ -6,8 +6,8 @@
 #include "string_id.h"
 #include "spin_lock.h"
 #include <vespa/vespalib/stllike/string.h>
-#include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/stllike/identity.h>
+#include <vespa/vespalib/stllike/allocator.h>
 #include <vespa/vespalib/stllike/hashtable.hpp>
 #include <xxhash.h>
 #include <mutex>
@@ -42,13 +42,14 @@ public:
     };
 
 private:
-    static constexpr uint32_t PART_BITS = 6;
+    static constexpr uint32_t PART_BITS = 8;
     static constexpr uint32_t NUM_PARTS = 1 << PART_BITS;
     static constexpr uint32_t PART_MASK = NUM_PARTS - 1;
-    static constexpr uint32_t FAST_DIGITS = 5;
-    static constexpr uint32_t FAST_ID_MAX = 99999;
+    static constexpr uint32_t FAST_DIGITS = 7;
+    static constexpr uint32_t FAST_ID_MAX = 9999999;
     static constexpr uint32_t ID_BIAS = (FAST_ID_MAX + 2);
     static constexpr size_t PART_LIMIT = (std::numeric_limits<uint32_t>::max() - ID_BIAS) / NUM_PARTS;
+    static const bool should_reclaim;
 
     struct AltKey {
         vespalib::stringref str;
@@ -95,6 +96,7 @@ private:
                 return (--_ref_cnt == 0);
             }
         };
+        using EntryVector = std::vector<Entry, allocator_large<Entry>>;
         struct Key {
             uint32_t idx;
             uint32_t hash;
@@ -104,8 +106,8 @@ private:
             uint32_t operator()(const AltKey &key) const { return key.hash; }
         };
         struct Equal {
-            const std::vector<Entry> &entries;
-            Equal(const std::vector<Entry> &entries_in) : entries(entries_in) {}
+            const EntryVector &entries;
+            Equal(const EntryVector &entries_in) : entries(entries_in) {}
             Equal(const Equal &rhs) = default;
             bool operator()(const Key &a, const Key &b) const { return (a.idx == b.idx); }
             bool operator()(const Key &a, const AltKey &b) const { return ((a.hash == b.hash) && (entries[a.idx].str() == b.str)); }
@@ -113,10 +115,10 @@ private:
         using HashType = hashtable<Key,Key,Hash,Equal,Identity,hashtable_base::and_modulator>;
 
     private:
-        mutable SpinLock      _lock;
-        std::vector<Entry>    _entries;
-        uint32_t              _free;
-        HashType              _hash;
+        mutable SpinLock   _lock;
+        EntryVector        _entries;
+        uint32_t           _free;
+        HashType           _hash;
 
         void make_entries(size_t hint);
 
@@ -131,19 +133,22 @@ private:
 
     public:
         Partition()
-            : _lock(), _entries(), _free(Entry::npos), _hash(128, Hash(), Equal(_entries))
+            : _lock(), _entries(), _free(Entry::npos), _hash(32, Hash(), Equal(_entries))
         {
-            make_entries(64);
+            make_entries(16);
         }
         ~Partition();
         void find_leaked_entries(size_t my_idx) const;
         Stats stats() const;
 
         uint32_t resolve(const AltKey &alt_key) {
+            bool count_refs = should_reclaim;
             std::lock_guard guard(_lock);
             auto pos = _hash.find(alt_key);
             if (pos != _hash.end()) {
-                _entries[pos->idx].add_ref();
+                if (count_refs) {
+                    _entries[pos->idx].add_ref();
+                }
                 return pos->idx;
             } else {
                 uint32_t idx = make_entry(alt_key);
@@ -210,7 +215,12 @@ private:
     string_id resolve(vespalib::stringref str) {
         uint32_t direct_id = try_make_direct_id(str);
         if (direct_id >= ID_BIAS) {
+#pragma GCC diagnostic push
+#if !defined(__clang__) && defined(__GNUC__) && __GNUC__ == 12
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
             uint64_t full_hash = XXH3_64bits(str.data(), str.size());
+#pragma GCC diagnostic pop
             uint32_t part = full_hash & PART_MASK;
             uint32_t local_hash = full_hash >> PART_BITS;
             uint32_t local_idx = _partitions[part].resolve(AltKey{str, local_hash});
@@ -231,7 +241,7 @@ private:
     }
 
     string_id copy(string_id id) {
-        if (id._id >= ID_BIAS) {
+        if ((id._id >= ID_BIAS) && should_reclaim) {
             uint32_t part = (id._id - ID_BIAS) & PART_MASK;
             uint32_t local_idx = (id._id - ID_BIAS) >> PART_BITS;
             _partitions[part].copy(local_idx);
@@ -240,7 +250,7 @@ private:
     }
 
     void reclaim(string_id id) {
-        if (id._id >= ID_BIAS) {
+        if ((id._id >= ID_BIAS) && should_reclaim) {
             uint32_t part = (id._id - ID_BIAS) & PART_MASK;
             uint32_t local_idx = (id._id - ID_BIAS) >> PART_BITS;
             _partitions[part].reclaim(local_idx);
@@ -250,6 +260,7 @@ private:
     static SharedStringRepo _repo;
 
 public:
+    static bool will_reclaim() { return should_reclaim; }
     static Stats stats();
 
     // A single stand-alone string handle with ownership
@@ -257,6 +268,7 @@ public:
     private:
         string_id _id;
         Handle(string_id weak_id) : _id(_repo.copy(weak_id)) {}
+        static Handle handle_from_number_slow(int64_t value);
     public:
         Handle() noexcept : _id() {}
         Handle(vespalib::stringref str) : _id(_repo.resolve(str)) {}
@@ -284,6 +296,12 @@ public:
         uint32_t hash() const noexcept { return _id.hash(); }
         vespalib::string as_string() const { return _repo.as_string(_id); }
         static Handle handle_from_id(string_id weak_id) { return Handle(weak_id); }
+        static Handle handle_from_number(int64_t value) {
+            if ((value < 0) || (value > FAST_ID_MAX)) {
+                return handle_from_number_slow(value);
+            }
+            return Handle(string_id(value + 1));
+        }
         static vespalib::string string_from_id(string_id weak_id) { return _repo.as_string(weak_id); }
         ~Handle() { _repo.reclaim(_id); }
     };
@@ -291,7 +309,7 @@ public:
     // A collection of string handles with ownership
     class Handles {
     private:
-        std::vector<string_id> _handles;
+        StringIdVector _handles;
     public:
         Handles();
         Handles(Handles &&rhs);
@@ -309,8 +327,12 @@ public:
             string_id id = _repo.copy(handle);
             _handles.push_back(id);
         }
-        const std::vector<string_id> &view() const { return _handles; }
+        const StringIdVector &view() const { return _handles; }
     };
+
+    // Used by search::tensor::TensorBufferOperations
+    static string_id unsafe_copy(string_id id) { return _repo.copy(id); }
+    static void unsafe_reclaim(string_id id) { return _repo.reclaim(id); }
 };
 
 }

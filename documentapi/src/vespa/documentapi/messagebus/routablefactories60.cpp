@@ -6,6 +6,7 @@
 #include <vespa/document/bucket/fixed_bucket_spaces.h>
 #include <vespa/document/select/parser.h>
 #include <vespa/document/update/documentupdate.h>
+#include <vespa/document/fieldvalue/document.h>
 #include <vespa/documentapi/documentapi.h>
 #include <vespa/vespalib/objects/nbostream.h>
 
@@ -170,10 +171,9 @@ RoutableFactories60::CreateVisitorReplyFactory::doDecode(document::ByteBuffer &b
     vs.setBytesVisited(decodeLong(buf));
     vs.setDocumentsReturned(decodeLong(buf));
     vs.setBytesReturned(decodeLong(buf));
-    vs.setSecondPassDocumentsReturned(decodeLong(buf));
-    vs.setSecondPassBytesReturned(decodeLong(buf));
+    decodeLong(buf); // was SecondPassDocumentsReturned
+    decodeLong(buf); // was SecondPassBytesReturned
     reply->setVisitorStatistics(vs);
-
     return reply;
 }
 
@@ -187,8 +187,8 @@ RoutableFactories60::CreateVisitorReplyFactory::doEncode(const DocumentReply &ob
     buf.putLong(reply.getVisitorStatistics().getBytesVisited());
     buf.putLong(reply.getVisitorStatistics().getDocumentsReturned());
     buf.putLong(reply.getVisitorStatistics().getBytesReturned());
-    buf.putLong(reply.getVisitorStatistics().getSecondPassDocumentsReturned());
-    buf.putLong(reply.getVisitorStatistics().getSecondPassBytesReturned());
+    buf.putLong(0); // was SecondPassDocumentsReturned
+    buf.putLong(0); // was SecondPassBytesReturned
     return true;
 }
 

@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.maintenance;
 
 import com.fasterxml.jackson.annotation.JsonGetter;
@@ -31,6 +31,7 @@ import com.yahoo.vespa.hosted.provision.node.IP;
 import com.yahoo.vespa.hosted.provision.provisioning.EmptyProvisionServiceProvider;
 import com.yahoo.vespa.hosted.provision.provisioning.FlavorConfigBuilder;
 import com.yahoo.vespa.hosted.provision.testutils.MockNameResolver;
+import com.yahoo.vespa.hosted.provision.testutils.OrchestratorMock;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -73,8 +74,10 @@ public class CapacityCheckerTester {
                                             Optional.empty(),
                                             new InMemoryFlagSource(),
                                             new MemoryMetricsDb(clock),
+                                            new OrchestratorMock(),
                                             true,
-                                            0, 1000);
+                                            0,
+                                            1000);
     }
 
     private void updateCapacityChecker() {
@@ -206,7 +209,8 @@ public class CapacityCheckerTester {
 
     NodeResources containingNodeResources(List<NodeResources> resources, NodeResources excessCapacity) {
         NodeResources usedByChildren = resources.stream()
-                .reduce(new NodeResources(0, 0, 0, 0), NodeResources::add);
+                                                .map(NodeResources::justNumbers)
+                                                .reduce(new NodeResources(0, 0, 0, 0).justNumbers(), NodeResources::add);
         return usedByChildren.add(excessCapacity);
     }
 

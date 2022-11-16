@@ -1,8 +1,6 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 package com.yahoo.search.searchers;
-
-import com.google.common.annotations.Beta;
 
 import com.yahoo.prelude.query.Item;
 import com.yahoo.prelude.query.NearestNeighborItem;
@@ -38,7 +36,7 @@ public class ValidateNearestNeighborSearcher extends Searcher {
     public ValidateNearestNeighborSearcher(AttributesConfig attributesConfig) {
         for (AttributesConfig.Attribute a : attributesConfig.attribute()) {
             if (! validAttributes.containsKey(a.name())) {
-                validAttributes.put(a.name(), new ArrayList<TensorType>());
+                validAttributes.put(a.name(), new ArrayList<>());
             }
             if (a.datatype() == AttributesConfig.Attribute.Datatype.TENSOR) {
                 TensorType tt = TensorType.fromSpec(a.tensortype());
@@ -102,7 +100,7 @@ public class ValidateNearestNeighborSearcher extends Searcher {
             String queryFeatureName = "query(" + item.getQueryTensorName() + ")";
             Optional<Tensor> queryTensor = query.getRanking().getFeatures().getTensor(queryFeatureName);
             if (queryTensor.isEmpty())
-                return item + " requires a tensor rank feature " + queryFeatureName + " but this is not present";
+                return item + " requires a tensor rank feature named '" + queryFeatureName + "' but this is not present";
 
             if ( ! validAttributes.containsKey(item.getIndexName())) {
                 return item + " field is not an attribute";

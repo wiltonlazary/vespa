@@ -19,25 +19,25 @@ public:
     using SP = std::shared_ptr<DomainPart>;
     DomainPart(const DomainPart &) = delete;
     DomainPart& operator=(const DomainPart &) = delete;
-    DomainPart(const vespalib::string &name, const vespalib::string &baseDir, SerialNum s, Encoding defaultEncoding,
-               uint8_t compressionLevel, const common::FileHeaderContext &FileHeaderContext, bool allowTruncate);
+    DomainPart(const vespalib::string &name, const vespalib::string &baseDir, SerialNum s,
+               const common::FileHeaderContext &FileHeaderContext, bool allowTruncate);
 
     ~DomainPart();
 
     const vespalib::string &fileName() const { return _fileName; }
-    void commit(SerialNum firstSerial, const Packet &packet);
+    void commit(const SerializedChunk & serialized);
     bool erase(SerialNum to);
     bool visit(FastOS_FileInterface &file, SerialNumRange &r, Packet &packet);
     bool close();
     void sync();
-    SerialNumRange range() const { return _range; }
+    SerialNumRange range() const { return SerialNumRange(get_range_from(), get_range_to()); }
 
     SerialNum getSynced() const {
         std::lock_guard guard(_writeLock);
         return _syncedSerial; 
     }
     
-    size_t          size() const { return _sz; }
+    size_t          size() const noexcept { return _sz.load(std::memory_order_relaxed); }
     size_t      byteSize() const {
         return _byteSize.load(std::memory_order_acquire);
     }
@@ -49,8 +49,13 @@ private:
     static Packet readPacket(FastOS_FileInterface & file, SerialNumRange wanted, size_t targetSize, bool allowTruncate);
     static bool read(FastOS_FileInterface &file, IChunk::UP & chunk, Alloc &buf, bool allowTruncate);
 
-    void write(FastOS_FileInterface &file, const IChunk & entry);
+    void write(FastOS_FileInterface &file, SerialNumRange range, vespalib::ConstBufferRef buf);
     void writeHeader(const common::FileHeaderContext &fileHeaderContext);
+    void set_size(size_t sz) noexcept { _sz.store(sz, std::memory_order_relaxed); }
+    SerialNum get_range_from() const noexcept { return _range_from.load(std::memory_order_relaxed); }
+    SerialNum get_range_to() const noexcept { return _range_to.load(std::memory_order_relaxed); }
+    void set_range_from(SerialNum range_from) noexcept { _range_from.store(range_from, std::memory_order_relaxed); }
+    void set_range_to(SerialNum range_to) noexcept { _range_to.store(range_to, std::memory_order_relaxed); }
 
     class SkipInfo
     {
@@ -69,12 +74,11 @@ private:
         SerialNum _id;
         uint64_t  _pos;
     };
-    const Encoding        _encoding;
-    const uint8_t         _compressionLevel;
     std::mutex            _lock;
     std::mutex            _fileLock;
-    SerialNumRange        _range;
-    size_t                _sz;
+    std::atomic<SerialNum> _range_from;
+    std::atomic<SerialNum> _range_to;
+    std::atomic<size_t>   _sz;
     std::atomic<uint64_t> _byteSize;
     vespalib::string      _fileName;
     std::unique_ptr<FastOS_FileInterface> _transLog;

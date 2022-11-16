@@ -1,12 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "field_inverter.h"
 #include "url_field_inverter.h"
-#include <vespa/document/datatype/urldatatype.h>
+#include "field_inverter.h"
 #include <vespa/document/fieldvalue/arrayfieldvalue.h>
 #include <vespa/document/fieldvalue/stringfieldvalue.h>
 #include <vespa/document/fieldvalue/weightedsetfieldvalue.h>
-#include <vespa/searchlib/common/sort.h>
 #include <vespa/searchlib/util/url.h>
 #include <vespa/vespalib/text/lowercase.h>
 #include <vespa/vespalib/text/utf8.h>
@@ -22,7 +20,6 @@ namespace {
 
 static vespalib::string HOSTNAME_BEGIN("StArThOsT");
 static vespalib::string HOSTNAME_END("EnDhOsT");
-const vespalib::string SPANTREE_NAME("linguistics");
 
 static size_t
 lowercaseToken(vespalib::string &dest, const char *src, size_t srcSize)
@@ -53,7 +50,6 @@ using document::IntFieldValue;
 using document::SpanTree;
 using document::StringFieldValue;
 using document::StructFieldValue;
-using document::UrlDataType;
 using document::WeightedSetFieldValue;
 using search::index::Schema;
 using search::index::schema::CollectionType;
@@ -113,90 +109,13 @@ UrlFieldInverter::endElement()
 }
 
 void
-UrlFieldInverter::processUrlSubField(FieldInverter *inverter,
-                                     const StructFieldValue &field,
-                                     vespalib::stringref subField,
-                                     bool addAnchors)
-{
-    const FieldValue::UP sfv = field.getValue(subField);
-    if (!sfv) {
-        return;
-    }
-    if (!sfv->inherits(IDENTIFIABLE_CLASSID(StringFieldValue))) {
-        LOG(error,
-            "Illegal field type %s for URL subfield %s, expected string",
-            sfv->getDataType()->getName().c_str(),
-            vespalib::string(subField).data());
-        return;
-    }
-    const auto &value = static_cast<const StringFieldValue &>(*sfv);
-    if (addAnchors) {
-        inverter->addWord(HOSTNAME_BEGIN);
-    }
-    inverter->processAnnotations(value);
-    if (addAnchors) {
-        inverter->addWord(HOSTNAME_END);
-    }
-}
-
-void
-UrlFieldInverter::processAnnotatedUrlField(const StructFieldValue & field)
-{
-    processUrlSubField(_all, field, UrlDataType::FIELD_ALL, false);
-    processUrlSubField(_scheme, field, UrlDataType::FIELD_SCHEME, false);
-    processUrlSubField(_host, field, UrlDataType::FIELD_HOST, false);
-    processUrlSubField(_port, field, UrlDataType::FIELD_PORT, false);
-    processUrlSubField(_path, field, UrlDataType::FIELD_PATH, false);
-    processUrlSubField(_query, field, UrlDataType::FIELD_QUERY, false);
-    processUrlSubField(_fragment, field, UrlDataType::FIELD_FRAGMENT, false);
-    processUrlSubField(_hostname, field, UrlDataType::FIELD_HOST, true);
-}
-
-void
 UrlFieldInverter::processUrlField(const FieldValue &url_field)
 {
-    if (url_field.inherits(IDENTIFIABLE_CLASSID(StringFieldValue))) {
-        const vespalib::string &url_str =
-            static_cast<const StringFieldValue &>(url_field).getValue();
-        processUrlOldStyle(url_str);
-        return;
-    }
-    assert(url_field.getClass().id() == StructFieldValue::classId);
-    const auto &field = static_cast<const StructFieldValue &>(url_field);
-
-    const FieldValue::UP all_val = field.getValue("all");
-    if (all_val.get() == nullptr) {
-        if (_useAnnotations) {
-            // New style, use annotations
-            processAnnotatedUrlField(field);
-        }
-        return;
-    }
-
-    if (!all_val->inherits(IDENTIFIABLE_CLASSID(StringFieldValue))) {
-        LOG(error,
-            "Illegal field type %s for URL subfield all, expected string",
-            all_val->getDataType()->getName().c_str());
-        return;
-    }
-    const auto &all_sfv = static_cast<const StringFieldValue &>(*all_val);
-    if (_useAnnotations) {
-        StringFieldValue::SpanTrees trees = all_sfv.getSpanTrees();
-        const SpanTree *tree = StringFieldValue::findTree(trees, SPANTREE_NAME);
-        if (tree != nullptr) {
-            // New style, use annotations
-            processAnnotatedUrlField(field);
-            return;
-        }
-    }
-
-    if (_useAnnotations) {
-        return;
-    }
-
-    // Old style, tokenize in backend
-    const vespalib::string &s = all_sfv.getValue();
-    processUrlOldStyle(s);
+    assert(url_field.isA(FieldValue::Type::STRING));
+    const vespalib::string &url_str =
+        static_cast<const StringFieldValue &>(url_field).getValue();
+    processUrlOldStyle(url_str);
+    return;
 }
 
 void
@@ -275,7 +194,7 @@ UrlFieldInverter::processWeightedSetUrlField(const WeightedSetFieldValue &field)
     for (const auto & el : field) {
         const FieldValue &key = *el.first;
         const FieldValue &xweight = *el.second;
-        assert(xweight.getClass().id() == IntFieldValue::classId);
+        assert(xweight.isA(FieldValue::Type::INT));
         int32_t weight = xweight.getAsInt();
         startElement(weight);
         processUrlField(key);
@@ -288,9 +207,7 @@ namespace {
 bool
 isUriType(const DataType &type)
 {
-    return type == UrlDataType::getInstance()
-           || type == *DataType::STRING
-           || type == *DataType::URI;
+    return type == *DataType::STRING || type == *DataType::URI;
 }
 
 }
@@ -298,7 +215,6 @@ isUriType(const DataType &type)
 void
 UrlFieldInverter::invertUrlField(const FieldValue &val)
 {
-    const vespalib::Identifiable::RuntimeClass & cInfo(val.getClass());
     switch (_collectionType) {
     case CollectionType::SINGLE:
         if (isUriType(*val.getDataType())) {
@@ -306,33 +222,32 @@ UrlFieldInverter::invertUrlField(const FieldValue &val)
             processUrlField(val);
             endElement();
         } else {
-            throw std::runtime_error(make_string("Expected URI struct, got '%s'", val.getDataType()->getName().c_str()));
+            throw std::runtime_error(make_string("Expected URI field, got '%s'", val.getDataType()->getName().c_str()));
         }
         break;
-    case CollectionType::WEIGHTEDSET:
-        if (cInfo.id() == WeightedSetFieldValue::classId) {
-            const auto &wset = static_cast<const WeightedSetFieldValue &>(val);
-            if (isUriType(wset.getNestedType())) {
-                processWeightedSetUrlField(wset);
-            } else {
-                throw std::runtime_error(make_string("Expected wset of URI struct, got '%s'", wset.getNestedType().getName().c_str()));
-            }
+    case CollectionType::WEIGHTEDSET: {
+        assert(val.isA(FieldValue::Type::WSET));
+        const auto &wset = static_cast<const WeightedSetFieldValue &>(val);
+        if (isUriType(wset.getNestedType())) {
+            processWeightedSetUrlField(wset);
         } else {
-            throw std::runtime_error(make_string("Expected weighted set, got '%s'", cInfo.name()));
+            throw std::runtime_error(
+                    make_string("Expected wset of URI struct, got '%s'", wset.getNestedType().getName().c_str()));
         }
         break;
-    case CollectionType::ARRAY:
-        if (cInfo.id() == ArrayFieldValue::classId) {
-            const auto &arr = static_cast<const ArrayFieldValue&>(val);
-            if (isUriType(arr.getNestedType())) {
-                processArrayUrlField(arr);
-            } else {
-                throw std::runtime_error(make_string("Expected array of URI struct, got '%s' (%s)", arr.getNestedType().getName().c_str(), arr.getNestedType().toString(true).c_str()));
-            }
+    }
+    case CollectionType::ARRAY: {
+        assert(val.isA(FieldValue::Type::ARRAY));
+        const auto &arr = static_cast<const ArrayFieldValue &>(val);
+        if (isUriType(arr.getNestedType())) {
+            processArrayUrlField(arr);
         } else {
-            throw std::runtime_error(make_string("Expected Array, got '%s'", cInfo.name()));
+            throw std::runtime_error(
+                    make_string("Expected array of URI struct, got '%s' (%s)", arr.getNestedType().getName().c_str(),
+                                arr.getNestedType().toString(true).c_str()));
         }
         break;
+    }
     default:
         break;
     }
@@ -363,7 +278,33 @@ UrlFieldInverter::removeDocument(uint32_t docId)
     _hostname->removeDocument(docId);
 }
 
-UrlFieldInverter::UrlFieldInverter(index::Schema::CollectionType collectionType,
+void
+UrlFieldInverter::applyRemoves()
+{
+    _all->applyRemoves();
+    _scheme->applyRemoves();
+    _host->applyRemoves();
+    _port->applyRemoves();
+    _path->applyRemoves();
+    _query->applyRemoves();
+    _fragment->applyRemoves();
+    _hostname->applyRemoves();
+}
+
+void
+UrlFieldInverter::pushDocuments()
+{
+    _all->pushDocuments();
+    _scheme->pushDocuments();
+    _host->pushDocuments();
+    _port->pushDocuments();
+    _path->pushDocuments();
+    _query->pushDocuments();
+    _fragment->pushDocuments();
+    _hostname->pushDocuments();
+}
+
+UrlFieldInverter::UrlFieldInverter(index::schema::CollectionType collectionType,
                                    FieldInverter *all,
                                    FieldInverter *scheme,
                                    FieldInverter *host,
@@ -380,10 +321,8 @@ UrlFieldInverter::UrlFieldInverter(index::Schema::CollectionType collectionType,
       _query(query),
       _fragment(fragment),
       _hostname(hostname),
-      _useAnnotations(false),
       _collectionType(collectionType)
 {
 }
 
 }
-

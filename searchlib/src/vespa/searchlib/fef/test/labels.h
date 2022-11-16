@@ -1,5 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#pragma once
+
 #include <vespa/searchlib/fef/properties.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 
@@ -10,7 +12,8 @@ struct Labels {
     virtual ~Labels() {}
 };
 struct NoLabel : public Labels {
-    virtual void inject(Properties &) const override {}    
+    virtual void inject(Properties &) const override {}
+    ~NoLabel() override;
 };
 struct SingleLabel : public Labels {
     vespalib::string label;

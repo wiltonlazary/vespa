@@ -17,10 +17,10 @@ import com.yahoo.search.rendering.RendererRegistry;
 import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.yql.YqlParser;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * @author Magnar Nedland
@@ -28,25 +28,25 @@ import static org.junit.Assert.assertNull;
 public class ValidatePredicateSearcherTestCase {
 
     @Test
-    public void testValidQuery() {
+    void testValidQuery() {
         ValidatePredicateSearcher searcher = new ValidatePredicateSearcher();
-        String q = "select * from sources * where predicate(predicate_field,0,{\"age\":20L});";
+        String q = "select * from sources * where predicate(predicate_field,0,{\"age\":20L})";
         Result r = doSearch(searcher, q, "predicate-bounds [0..99]");
         assertNull(r.hits().getError());
     }
 
     @Test
-    public void testQueryOutOfBounds() {
+    void testQueryOutOfBounds() {
         ValidatePredicateSearcher searcher = new ValidatePredicateSearcher();
-        String q = "select * from sources * where predicate(predicate_field,0,{\"age\":200L});";
+        String q = "select * from sources * where predicate(predicate_field,0,{\"age\":200L})";
         Result r = doSearch(searcher, q, "predicate-bounds [0..99]");
         assertEquals(ErrorMessage.createIllegalQuery("age=200 outside configured predicate bounds."), r.hits().getError());
     }
 
     @Test
-    public void queryFailsWhenPredicateFieldIsUsedInTermSearch() {
+    void queryFailsWhenPredicateFieldIsUsedInTermSearch() {
         ValidatePredicateSearcher searcher = new ValidatePredicateSearcher();
-        String q = "select * from sources * where predicate_field CONTAINS \"true\";";
+        String q = "select * from sources * where predicate_field CONTAINS \"true\"";
         Result r = doSearch(searcher, q, "predicate-bounds [0..99]");
         assertEquals(ErrorMessage.createIllegalQuery("Index 'predicate_field' is predicate attribute and can only be used in conjunction with a predicate query operator."), r.hits().getError());
     }

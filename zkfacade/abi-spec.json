@@ -1,130 +1,76 @@
 {
-  "com.yahoo.vespa.curator.CompletionTimeoutException": {
-    "superClass": "java.lang.RuntimeException",
-    "interfaces": [],
-    "attributes": [
-      "public"
+  "com.yahoo.vespa.curator.api.VespaCurator$Data" : {
+    "superClass" : "java.lang.Record",
+    "interfaces" : [ ],
+    "attributes" : [
+      "public",
+      "final",
+      "record"
     ],
-    "methods": [
-      "public void <init>(java.lang.String)"
+    "methods" : [
+      "public void <init>(com.yahoo.vespa.curator.api.VespaCurator$Meta, byte[])",
+      "public final java.lang.String toString()",
+      "public final int hashCode()",
+      "public final boolean equals(java.lang.Object)",
+      "public com.yahoo.vespa.curator.api.VespaCurator$Meta meta()",
+      "public byte[] data()"
     ],
-    "fields": []
+    "fields" : [ ]
   },
-  "com.yahoo.vespa.curator.Curator$CompletionWaiter": {
-    "superClass": "java.lang.Object",
-    "interfaces": [],
-    "attributes": [
+  "com.yahoo.vespa.curator.api.VespaCurator$Meta" : {
+    "superClass" : "java.lang.Record",
+    "interfaces" : [ ],
+    "attributes" : [
+      "public",
+      "final",
+      "record"
+    ],
+    "methods" : [
+      "public void <init>(int)",
+      "public final java.lang.String toString()",
+      "public final int hashCode()",
+      "public final boolean equals(java.lang.Object)",
+      "public int version()"
+    ],
+    "fields" : [ ]
+  },
+  "com.yahoo.vespa.curator.api.VespaCurator$SingletonWorker" : {
+    "superClass" : "java.lang.Object",
+    "interfaces" : [ ],
+    "attributes" : [
       "public",
       "interface",
       "abstract"
     ],
-    "methods": [
-      "public abstract void awaitCompletion(java.time.Duration)",
-      "public abstract void notifyCompletion()"
+    "methods" : [
+      "public abstract void activate()",
+      "public abstract void deactivate()",
+      "public java.lang.String id()"
     ],
-    "fields": []
+    "fields" : [ ]
   },
-  "com.yahoo.vespa.curator.Curator$DirectoryCache": {
-    "superClass": "java.lang.Object",
-    "interfaces": [],
-    "attributes": [
+  "com.yahoo.vespa.curator.api.VespaCurator" : {
+    "superClass" : "java.lang.Object",
+    "interfaces" : [ ],
+    "attributes" : [
       "public",
       "interface",
       "abstract"
     ],
-    "methods": [
-      "public abstract void start()",
-      "public abstract void addListener(org.apache.curator.framework.recipes.cache.PathChildrenCacheListener)",
-      "public abstract java.util.List getCurrentData()",
-      "public abstract org.apache.curator.framework.recipes.cache.ChildData getCurrentData(com.yahoo.path.Path)",
-      "public abstract void close()"
+    "methods" : [
+      "public abstract java.util.Optional stat(com.yahoo.path.Path)",
+      "public abstract java.util.Optional read(com.yahoo.path.Path)",
+      "public abstract com.yahoo.vespa.curator.api.VespaCurator$Meta write(com.yahoo.path.Path, byte[])",
+      "public abstract java.util.Optional write(com.yahoo.path.Path, byte[], int)",
+      "public abstract void deleteAll(com.yahoo.path.Path)",
+      "public abstract void delete(com.yahoo.path.Path)",
+      "public abstract boolean delete(com.yahoo.path.Path, int)",
+      "public abstract java.util.List list(com.yahoo.path.Path)",
+      "public abstract java.lang.AutoCloseable lock(com.yahoo.path.Path, java.time.Duration)",
+      "public abstract void register(com.yahoo.vespa.curator.api.VespaCurator$SingletonWorker, java.time.Duration)",
+      "public abstract void unregister(com.yahoo.vespa.curator.api.VespaCurator$SingletonWorker, java.time.Duration)",
+      "public abstract boolean isActive(java.lang.String)"
     ],
-    "fields": []
-  },
-  "com.yahoo.vespa.curator.Curator$FileCache": {
-    "superClass": "java.lang.Object",
-    "interfaces": [],
-    "attributes": [
-      "public",
-      "interface",
-      "abstract"
-    ],
-    "methods": [
-      "public abstract void start()",
-      "public abstract void addListener(org.apache.curator.framework.recipes.cache.NodeCacheListener)",
-      "public abstract org.apache.curator.framework.recipes.cache.ChildData getCurrentData()",
-      "public abstract void close()"
-    ],
-    "fields": []
-  },
-  "com.yahoo.vespa.curator.Curator": {
-    "superClass": "java.lang.Object",
-    "interfaces": [
-      "com.yahoo.vespa.curator.api.VespaCurator",
-      "java.lang.AutoCloseable"
-    ],
-    "attributes": [
-      "public"
-    ],
-    "methods": [
-      "public static com.yahoo.vespa.curator.Curator create(java.lang.String)",
-      "public static com.yahoo.vespa.curator.Curator create(java.lang.String, java.util.Optional)",
-      "public void <init>(com.yahoo.cloud.config.CuratorConfig, com.yahoo.vespa.zookeeper.VespaZooKeeperServer)",
-      "public void <init>(com.yahoo.cloud.config.ConfigserverConfig, com.yahoo.vespa.zookeeper.VespaZooKeeperServer)",
-      "protected void <init>(java.lang.String, java.lang.String, java.util.function.Function)",
-      "public java.lang.String connectionSpec()",
-      "public org.apache.curator.framework.recipes.atomic.DistributedAtomicLong createAtomicCounter(java.lang.String)",
-      "public org.apache.curator.framework.recipes.locks.InterProcessLock createMutex(java.lang.String)",
-      "public com.yahoo.vespa.curator.Curator$CompletionWaiter getCompletionWaiter(com.yahoo.path.Path, int, java.lang.String)",
-      "public com.yahoo.vespa.curator.Curator$CompletionWaiter createCompletionWaiter(com.yahoo.path.Path, java.lang.String, int, java.lang.String)",
-      "public com.yahoo.vespa.curator.Curator$DirectoryCache createDirectoryCache(java.lang.String, boolean, boolean, java.util.concurrent.ExecutorService)",
-      "public com.yahoo.vespa.curator.Curator$FileCache createFileCache(java.lang.String, boolean)",
-      "public boolean exists(com.yahoo.path.Path)",
-      "public void set(com.yahoo.path.Path, byte[])",
-      "public boolean create(com.yahoo.path.Path)",
-      "public varargs void createAtomically(com.yahoo.path.Path[])",
-      "public void delete(com.yahoo.path.Path)",
-      "public java.util.List getChildren(com.yahoo.path.Path)",
-      "public java.util.Optional getData(com.yahoo.path.Path)",
-      "public java.util.Optional getStat(com.yahoo.path.Path)",
-      "public com.yahoo.vespa.curator.Lock lock(com.yahoo.path.Path, java.time.Duration)",
-      "public org.apache.curator.framework.CuratorFramework framework()",
-      "public void close()",
-      "public java.lang.String zooKeeperEnsembleConnectionSpec()",
-      "public int zooKeeperEnsembleCount()",
-      "public bridge synthetic java.lang.AutoCloseable lock(com.yahoo.path.Path, java.time.Duration)"
-    ],
-    "fields": [
-      "protected final org.apache.curator.RetryPolicy retryPolicy"
-    ]
-  },
-  "com.yahoo.vespa.curator.Lock": {
-    "superClass": "java.lang.Object",
-    "interfaces": [
-      "com.yahoo.transaction.Mutex"
-    ],
-    "attributes": [
-      "public"
-    ],
-    "methods": [
-      "public void <init>(java.lang.String, com.yahoo.vespa.curator.Curator)",
-      "public void <init>(java.lang.String, org.apache.curator.framework.recipes.locks.InterProcessLock)",
-      "public void acquire(java.time.Duration)",
-      "public void close()"
-    ],
-    "fields": []
-  },
-  "com.yahoo.vespa.curator.api.VespaCurator": {
-    "superClass": "java.lang.Object",
-    "interfaces": [],
-    "attributes": [
-      "public",
-      "interface",
-      "abstract"
-    ],
-    "methods": [
-      "public abstract java.lang.AutoCloseable lock(com.yahoo.path.Path, java.time.Duration)"
-    ],
-    "fields": []
+    "fields" : [ ]
   }
 }

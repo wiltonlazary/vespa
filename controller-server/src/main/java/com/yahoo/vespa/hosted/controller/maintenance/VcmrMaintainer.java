@@ -5,6 +5,7 @@ import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.zone.ZoneId;
+import com.yahoo.jdisc.Metric;
 import com.yahoo.text.Text;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Node;
@@ -31,6 +32,7 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  *
@@ -43,28 +45,30 @@ import java.util.stream.Collectors;
 public class VcmrMaintainer extends ControllerMaintainer {
 
     private static final Logger LOG = Logger.getLogger(VcmrMaintainer.class.getName());
-    private static final Duration ALLOWED_RETIREMENT_TIME = Duration.ofHours(60);
+    private static final int DAYS_TO_RETIRE = 2;
     private static final Duration ALLOWED_POSTPONEMENT_TIME = Duration.ofDays(7);
+    protected static final String TRACKED_CMRS_METRIC = "cmr.tracked";
 
     private final CuratorDb curator;
     private final NodeRepository nodeRepository;
     private final ChangeRequestClient changeRequestClient;
     private final SystemName system;
+    private final Metric metric;
 
-    public VcmrMaintainer(Controller controller, Duration interval) {
+    public VcmrMaintainer(Controller controller, Duration interval, Metric metric) {
         super(controller, interval, null, SystemName.allOf(Predicate.not(SystemName::isPublic)));
         this.curator = controller.curator();
         this.nodeRepository = controller.serviceRegistry().configServer().nodeRepository();
         this.changeRequestClient = controller.serviceRegistry().changeRequestClient();
         this.system = controller.system();
+        this.metric = metric;
     }
 
     @Override
     protected double maintain() {
         var changeRequests = curator.readChangeRequests()
                 .stream()
-                .filter(shouldUpdate())
-                .collect(Collectors.toList());
+                .filter(shouldUpdate()).toList();
 
         var nodesByZone = nodesByZone();
 
@@ -80,10 +84,12 @@ public class VcmrMaintainer extends ControllerMaintainer {
                             var updatedVcmr = vcmr.withActionPlan(nextActions)
                                     .withStatus(status);
                             curator.writeChangeRequest(updatedVcmr);
-                            approveChangeRequest(updatedVcmr);
+                            if (nodes.keySet().size() == 1)
+                                approveChangeRequest(updatedVcmr);
                         });
             }
         });
+        updateMetrics();
         return 1.0;
     }
 
@@ -104,6 +110,10 @@ public class VcmrMaintainer extends ControllerMaintainer {
             return Status.REQUIRES_OPERATOR_ACTION;
         }
 
+        if (byActionState.getOrDefault(State.OUT_OF_SYNC, 0L) > 0) {
+            return Status.OUT_OF_SYNC;
+        }
+
         if (byActionState.getOrDefault(State.RETIRING, 0L) > 0) {
             return Status.IN_PROGRESS;
         }
@@ -119,19 +129,30 @@ public class VcmrMaintainer extends ControllerMaintainer {
         return Status.NOOP;
     }
 
-    private List<HostAction> getNextActions(List<Node> nodes, VespaChangeRequest changeRequest) {
-        var spareCapacity = hasSpareCapacity(changeRequest.getZoneId(), nodes);
-        return nodes.stream()
-                .map(node -> nextAction(node, changeRequest, spareCapacity))
-                .collect(Collectors.toList());
+    private List<HostAction> getNextActions(Map<ZoneId, List<Node>> nodesByZone, VespaChangeRequest changeRequest) {
+        return nodesByZone.entrySet()
+                .stream()
+                .flatMap(entry -> {
+                    var zone = entry.getKey();
+                    var nodes = entry.getValue();
+                    if (nodes.isEmpty()) {
+                        return Stream.empty();
+                    }
+                    var spareCapacity = hasSpareCapacity(zone, nodes);
+                    return nodes.stream().map(node -> nextAction(zone, node, changeRequest, spareCapacity));
+                }).collect(Collectors.toList());
+
     }
 
     // Get the superset of impacted hosts by looking at impacted switches
-    private List<Node> impactedNodes(Map<ZoneId, List<Node>> nodesByZone, VespaChangeRequest changeRequest) {
-        return nodesByZone.get(changeRequest.getZoneId())
+    private Map<ZoneId, List<Node>> impactedNodes(Map<ZoneId, List<Node>> nodesByZone, VespaChangeRequest changeRequest) {
+        return nodesByZone.entrySet()
                 .stream()
-                .filter(isImpacted(changeRequest))
-                .collect(Collectors.toList());
+                .filter(entry -> entry.getValue().stream().anyMatch(isImpacted(changeRequest))) // Skip zones without impacted nodes
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        entry -> entry.getValue().stream().filter(isImpacted(changeRequest)).collect(Collectors.toList())
+                ));
     }
 
     private Optional<HostAction> getPreviousAction(Node node, VespaChangeRequest changeRequest) {
@@ -141,25 +162,28 @@ public class VcmrMaintainer extends ControllerMaintainer {
                 .findFirst();
     }
 
-    private HostAction nextAction(Node node, VespaChangeRequest changeRequest, boolean spareCapacity) {
+    private HostAction nextAction(ZoneId zoneId, Node node, VespaChangeRequest changeRequest, boolean spareCapacity) {
         var hostAction = getPreviousAction(node, changeRequest)
                 .orElse(new HostAction(node.hostname().value(), State.NONE, Instant.now()));
 
         if (changeRequest.getChangeRequestSource().isClosed()) {
             LOG.fine(() -> changeRequest.getChangeRequestSource().getId() + " is closed, recycling " + node.hostname());
-            recycleNode(changeRequest.getZoneId(), node, hostAction);
-            removeReport(changeRequest, node);
+            recycleNode(zoneId, node, hostAction);
+            removeReport(zoneId, changeRequest, node);
             return hostAction.withState(State.COMPLETE);
         }
 
         if (isLowImpact(changeRequest))
             return hostAction;
 
-        addReport(changeRequest, node);
+        addReport(zoneId, changeRequest, node);
+
+        if (isOutOfSync(node, hostAction))
+            return hostAction.withState(State.OUT_OF_SYNC);
 
         if (isPostponed(changeRequest, hostAction)) {
             LOG.fine(() -> changeRequest.getChangeRequestSource().getId() + " is postponed, recycling " + node.hostname());
-            recycleNode(changeRequest.getZoneId(), node, hostAction);
+            recycleNode(zoneId, node, hostAction);
             return hostAction.withState(State.PENDING_RETIREMENT);
         }
 
@@ -172,11 +196,11 @@ public class VcmrMaintainer extends ControllerMaintainer {
                 LOG.info(Text.format("Retiring %s due to %s", node.hostname().value(), changeRequest.getChangeRequestSource().getId()));
                 // TODO: Remove try/catch once retirement is stabilized
                 try {
-                    setWantToRetire(changeRequest.getZoneId(), node, true);
+                    setWantToRetire(zoneId, node, true);
                 } catch (Exception e) {
                     LOG.warning("Failed to retire host " + node.hostname() + ": " + Exceptions.toMessageString(e));
                     // Check if retirement actually failed
-                    if (!nodeRepository.getNode(changeRequest.getZoneId(), node.hostname().value()).wantToRetire()) {
+                    if (!nodeRepository.getNode(zoneId, node.hostname().value()).wantToRetire()) {
                         return hostAction;
                     }
                 }
@@ -192,6 +216,10 @@ public class VcmrMaintainer extends ControllerMaintainer {
         if (pendingRetirement(node, hostAction)) {
             LOG.fine(() -> node.hostname() + " is pending retirement");
             return hostAction.withState(State.PENDING_RETIREMENT);
+        }
+
+        if (isFailed(node)) {
+            return hostAction.withState(State.NONE);
         }
 
         return hostAction;
@@ -220,21 +248,29 @@ public class VcmrMaintainer extends ControllerMaintainer {
 
     private boolean shouldRetire(VespaChangeRequest changeRequest, HostAction action) {
         return action.getState() == State.PENDING_RETIREMENT &&
-                changeRequest.getChangeRequestSource().getPlannedStartTime()
-                        .minus(ALLOWED_RETIREMENT_TIME)
+                getRetirementStartTime(changeRequest.getChangeRequestSource().getPlannedStartTime())
                         .isBefore(ZonedDateTime.now());
     }
 
     private boolean hasRetired(Node node, HostAction hostAction) {
-        return hostAction.getState() == State.RETIRING &&
+        return List.of(State.RETIRING, State.REQUIRES_OPERATOR_ACTION).contains(hostAction.getState()) &&
                 node.state() == Node.State.parked;
     }
 
-    /**
-     * TODO: For now, we choose to retire any active host
-     */
     private boolean pendingRetirement(Node node, HostAction action) {
-        return action.getState() == State.NONE && node.state() == Node.State.active;
+        return List.of(State.NONE, State.REQUIRES_OPERATOR_ACTION).contains(action.getState())
+                && node.state() == Node.State.active;
+    }
+
+    // Determines if node state is unexpected based on previous action taken
+    private boolean isOutOfSync(Node node, HostAction action) {
+        return action.getState() == State.RETIRED && node.state() != Node.State.parked ||
+                action.getState() == State.RETIRING && !node.wantToRetire();
+    }
+
+    private boolean isFailed(Node node) {
+        return node.state() == Node.State.failed ||
+                node.state() == Node.State.breakfixed;
     }
 
     private Map<ZoneId, List<Node>> nodesByZone() {
@@ -291,26 +327,49 @@ public class VcmrMaintainer extends ControllerMaintainer {
         changeRequestClient.approveChangeRequest(changeRequest);
     }
 
-    private void removeReport(VespaChangeRequest changeRequest, Node node) {
+    private void removeReport(ZoneId zoneId, VespaChangeRequest changeRequest, Node node) {
         var report = VcmrReport.fromReports(node.reports());
 
         if (report.removeVcmr(changeRequest.getChangeRequestSource().getId())) {
-            updateReport(changeRequest.getZoneId(), node, report);
+            updateReport(zoneId, node, report);
         }
     }
 
-    private void addReport(VespaChangeRequest changeRequest, Node node) {
+    private void addReport(ZoneId zoneId, VespaChangeRequest changeRequest, Node node) {
         var report = VcmrReport.fromReports(node.reports());
 
         var source = changeRequest.getChangeRequestSource();
         if (report.addVcmr(source.getId(), source.getPlannedStartTime(), source.getPlannedEndTime())) {
-            updateReport(changeRequest.getZoneId(), node, report);
+            updateReport(zoneId, node, report);
         }
     }
 
     private void updateReport(ZoneId zoneId, Node node, VcmrReport report) {
-        LOG.info(Text.format("Updating report for %s: %s", node.hostname(), report));
+        LOG.fine(() -> Text.format("Updating report for %s: %s", node.hostname(), report));
         nodeRepository.updateReports(zoneId, node.hostname().value(), report.toNodeReports());
+    }
+
+    // Calculate wanted retirement start time, ignoring weekends
+    // protected for testing
+    protected ZonedDateTime getRetirementStartTime(ZonedDateTime plannedStartTime) {
+        var time = plannedStartTime;
+        var days = 0;
+        while (days < DAYS_TO_RETIRE) {
+            time = time.minusDays(1);
+            if (time.getDayOfWeek().getValue() < 6) days++;
+        }
+        return time;
+    }
+
+    private void updateMetrics() {
+        var cmrsByStatus = curator.readChangeRequests()
+                .stream()
+                .collect(Collectors.groupingBy(VespaChangeRequest::getStatus));
+
+        for (var status : Status.values()) {
+            var count = cmrsByStatus.getOrDefault(status, List.of()).size();
+            metric.set(TRACKED_CMRS_METRIC, count, metric.createContext(Map.of("status", status.name())));
+        }
     }
 
 }

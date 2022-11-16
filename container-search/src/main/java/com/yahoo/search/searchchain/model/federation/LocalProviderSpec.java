@@ -12,14 +12,11 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
-import net.jcip.annotations.Immutable;
-
 /**
  * Specifies how a local provider is to be set up.
  *
  * @author Tony Vaagenes
  */
-@Immutable
 public class LocalProviderSpec {
 
     public static final Collection<ChainedComponentModel> searcherModels =
@@ -44,6 +41,7 @@ public class LocalProviderSpec {
                             com.yahoo.prelude.searcher.ValidatePredicateSearcher.class,
                             com.yahoo.search.searchers.ValidateNearestNeighborSearcher.class,
                             com.yahoo.search.searchers.ValidateMatchPhaseSearcher.class,
+                            com.yahoo.search.searchers.ValidateFuzzySearcher.class,
                             com.yahoo.search.yql.FieldFiller.class,
                             com.yahoo.search.searchers.InputCheckingSearcher.class,
                             com.yahoo.search.searchers.ContainerLatencySearcher.class);
@@ -65,9 +63,7 @@ public class LocalProviderSpec {
         for (Class<? extends Searcher> c : searchers) {
             searcherModels.add(
                     new ChainedComponentModel(
-                            BundleInstantiationSpecification.getInternalSearcherSpecificationFromStrings(
-                                    c.getName(),
-                                    null),
+                            BundleInstantiationSpecification.fromSearchAndDocproc(c.getName()),
                             Dependencies.emptyDependencies()));
         }
 

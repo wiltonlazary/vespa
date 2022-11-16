@@ -1,8 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "writeablefilechunk.h"
 #include "data_store_file_chunk_stats.h"
 #include "summaryexceptions.h"
-#include "writeablefilechunk.h"
 #include <vespa/searchlib/common/fileheadercontext.h>
 #include <vespa/searchlib/util/file_settings.h>
 #include <vespa/vespalib/data/databuffer.h>
@@ -10,19 +10,21 @@
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
 #include <vespa/vespalib/util/array.hpp>
+#include <vespa/vespalib/util/cpu_usage.h>
 #include <vespa/vespalib/util/lambdatask.h>
 #include <vespa/vespalib/util/size_literals.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".search.writeablefilechunk");
 
-using vespalib::makeLambdaTask;
+using search::common::FileHeaderContext;
+using vespalib::CpuUsage;
 using vespalib::FileHeader;
+using vespalib::GenerationHandler;
+using vespalib::IllegalHeaderException;
+using vespalib::makeLambdaTask;
 using vespalib::make_string;
 using vespalib::nbostream;
-using vespalib::IllegalHeaderException;
-using vespalib::GenerationHandler;
-using search::common::FileHeaderContext;
 
 namespace search {
 
@@ -134,8 +136,10 @@ WriteableFileChunk(vespalib::Executor &executor,
         if (_idxHeaderLen == 0) {
             _idxHeaderLen = writeIdxHeader(fileHeaderContext, _docIdLimit, *idxFile);
         }
-        _idxFileSize = idxFile->GetSize();
-        idxFile->Sync();
+        _idxFileSize.store(idxFile->GetSize(), std::memory_order_relaxed);
+        if ( ! idxFile->Sync()) {
+            throw SummaryException("Failed syncing idx file", *idxFile, VESPA_STRLOC);
+        }
     } else {
         throw SummaryException("Failed opening data file", _dataFile, VESPA_STRLOC);
     }
@@ -159,9 +163,9 @@ WriteableFileChunk::~WriteableFileChunk()
 {
     if (!frozen()) {
         if (_active->size() || _active->count()) {
-            flush(true, _serialNum);
+            flush(true, _serialNum, CpuUsage::Category::WRITE);
         }
-        freeze();
+        freeze(CpuUsage::Category::WRITE);
     }
     // This is a wild stab at fixing bug 6348143.
     // If it works it indicates something bad with the filesystem.
@@ -186,9 +190,10 @@ WriteableFileChunk::updateLidMap(const unique_lock &guard, ISetLid &ds, uint64_t
 }
 
 void
-WriteableFileChunk::restart(uint32_t nextChunkId)
+WriteableFileChunk::restart(uint32_t nextChunkId, CpuUsage::Category cpu_category)
 {
-    _executor.execute(makeLambdaTask([this, nextChunkId] {fileWriter(nextChunkId);}));
+    auto task = makeLambdaTask([this, nextChunkId] {fileWriter(nextChunkId);});
+    _executor.execute(CpuUsage::wrap(std::move(task), cpu_category));
 }
 
 namespace {
@@ -214,6 +219,18 @@ struct LidAndBuffer {
 
 }
 
+const Chunk&
+WriteableFileChunk::get_chunk(uint32_t chunk) const
+{
+    auto found = _chunkMap.find(chunk);
+    if (found != _chunkMap.end()) {
+        return *found->second;
+    } else {
+        assert(chunk == _active->getId());
+        return *_active;
+    }
+}
+
 void
 WriteableFileChunk::read(LidInfoWithLidV::const_iterator begin, size_t count, IBufferVisitor & visitor) const
 {
@@ -227,17 +244,8 @@ WriteableFileChunk::read(LidInfoWithLidV::const_iterator begin, size_t count, IB
                 const LidInfoWithLid & li = *(begin + i);
                 uint32_t chunk = li.getChunkId();
                 if ((chunk >= _chunkInfo.size()) || !_chunkInfo[chunk].valid()) {
-                    auto found = _chunkMap.find(chunk);
-                    vespalib::ConstBufferRef buffer;
-                    if (found != _chunkMap.end()) {
-                        buffer = found->second->getLid(li.getLid());
-                    } else {
-                        assert(chunk == _active->getId());
-                        buffer = _active->getLid(li.getLid());
-                    }
-                    auto copy = vespalib::alloc::Alloc::alloc(buffer.size());
-                    memcpy(copy.get(), buffer.data(), buffer.size());
-                    buffers.emplace_back(li.getLid(), buffer.size(), std::move(copy));
+                    auto copy = get_chunk(chunk).read(li.getLid());
+                    buffers.emplace_back(li.getLid(), copy.first, std::move(copy.second));
                 } else {
                     chunksOnFile[chunk] = _chunkInfo[chunk];
                 }
@@ -280,7 +288,7 @@ WriteableFileChunk::read(uint32_t lid, SubChunkId chunkId, vespalib::DataBuffer 
 }
 
 void
-WriteableFileChunk::internalFlush(uint32_t chunkId, uint64_t serialNum)
+WriteableFileChunk::internalFlush(uint32_t chunkId, uint64_t serialNum, CpuUsage::Category cpu_category)
 {
     Chunk * active(nullptr);
     {
@@ -303,11 +311,11 @@ WriteableFileChunk::internalFlush(uint32_t chunkId, uint64_t serialNum)
         std::lock_guard innerGuard(_lock);
         setDiskFootprint(FileChunk::getDiskFootprint() + tmp->getBuf().getDataLen());
     }
-    enque(std::move(tmp));
+    enque(std::move(tmp), cpu_category);
 }
 
 void
-WriteableFileChunk::enque(ProcessedChunkUP tmp)
+WriteableFileChunk::enque(ProcessedChunkUP tmp, CpuUsage::Category cpu_category)
 {
     LOG(debug, "enqueing %p", tmp.get());
     std::unique_lock guard(_writeMonitor);
@@ -317,7 +325,7 @@ WriteableFileChunk::enque(ProcessedChunkUP tmp)
         uint32_t nextChunkId = _firstChunkIdToBeWritten;
         guard.unlock();
         _writeCond.notify_one();
-        restart(nextChunkId);
+        restart(nextChunkId, cpu_category);
     } else {
         _writeCond.notify_one();
     }
@@ -339,9 +347,14 @@ getAlignedStartPos(FastOS_File & file)
             ssize_t toWrite(Alignment - (startPos & (Alignment-1)));
             ssize_t written = align.Write2(&Padding[0], toWrite);
             if (written == toWrite) {
-                align.Sync();
-                file.SetPosition(align.GetSize());
-                startPos = file.GetPosition();
+                if ( align.Sync() ) {
+                    file.SetPosition(align.GetSize());
+                    startPos = file.GetPosition();
+                } else {
+                    throw SummaryException(
+                            make_string("Failed syncing dat file."),
+                            align, VESPA_STRLOC);
+                }
              } else {
                 throw SummaryException(
                     make_string("Failed writing %ld bytes to dat file. Only %ld written", toWrite, written),
@@ -433,7 +446,7 @@ WriteableFileChunk::computeChunkMeta(ProcessedChunkQ & chunks, size_t startPos, 
 {
     ChunkMetaV cmetaV;
     cmetaV.reserve(chunks.size());
-    uint64_t lastSerial(_lastPersistedSerialNum);
+    uint64_t lastSerial(_lastPersistedSerialNum.load(std::memory_order_relaxed));
     std::unique_lock guard(_lock);
 
     if (!_pendingChunks.empty()) {
@@ -483,12 +496,20 @@ WriteableFileChunk::writeData(const ProcessedChunkQ & chunks, size_t sz)
 void
 WriteableFileChunk::updateChunkInfo(const ProcessedChunkQ & chunks, const ChunkMetaV & cmetaV, size_t sz)
 {
+    uint32_t maxChunkId(0);
+    for (const auto & chunk : chunks) {
+        maxChunkId = std::max(chunk->getChunkId(), maxChunkId);
+    }
     std::lock_guard guard(_lock);
+    if (maxChunkId >= _chunkInfo.size()) {
+        _chunkInfo.reserve(vespalib::roundUp2inN(maxChunkId+1));
+    }
     size_t nettoSz(sz);
     for (size_t i(0); i < chunks.size(); i++) {
         const ProcessedChunk & chunk = *chunks[i];
         assert(_chunkMap.find(chunk.getChunkId()) == _chunkMap.begin());
         const Chunk & active = *_chunkMap.begin()->second;
+        assert(active.getId() == chunk.getChunkId());
         if (active.getId() >= _chunkInfo.size()) {
             _chunkInfo.resize(active.getId()+1);
         }
@@ -548,11 +569,11 @@ WriteableFileChunk::getModificationTime() const
 }
 
 void
-WriteableFileChunk::freeze()
+WriteableFileChunk::freeze(CpuUsage::Category cpu_category)
 {
     if (!frozen()) {
         waitForAllChunksFlushedToDisk();
-        enque(ProcessedChunkUP());
+        enque(ProcessedChunkUP(), cpu_category);
         {
             std::unique_lock guard(_writeMonitor);
             while (_writeTaskIsRunning) {
@@ -564,9 +585,10 @@ WriteableFileChunk::freeze()
         {
             std::unique_lock guard(_lock);
             setDiskFootprint(getDiskFootprint(guard));
-            _frozen = true;
+            _frozen.store(true, std::memory_order_release);
         }
-        _dataFile.Close();
+        bool sync_and_close_ok = _dataFile.Sync() && _dataFile.Close();
+        assert(sync_and_close_ok);
         _bucketMap = BucketDensityComputer(_bucketizer);
     }
 }
@@ -588,8 +610,8 @@ WriteableFileChunk::getDiskFootprint(const unique_lock & guard) const
 {
     assert(guard.mutex() == &_lock && guard.owns_lock());
     return frozen()
-           ? FileChunk::getDiskFootprint()
-           : _currentDiskFootprint + FileChunk::getDiskFootprint();
+        ? FileChunk::getDiskFootprint()
+        : _currentDiskFootprint.load(std::memory_order_relaxed) + FileChunk::getDiskFootprint();
 }
 
 size_t
@@ -607,6 +629,7 @@ WriteableFileChunk::getMemoryFootprint() const
 size_t
 WriteableFileChunk::getMemoryMetaFootprint() const
 {
+    std::lock_guard guard(_lock);
     constexpr size_t mySizeWithoutMyParent(sizeof(*this) - sizeof(FileChunk));
     return mySizeWithoutMyParent + FileChunk::getMemoryMetaFootprint();
 }
@@ -649,12 +672,15 @@ int32_t WriteableFileChunk::flushLastIfNonEmpty(bool force)
 }
 
 void
-WriteableFileChunk::flush(bool block, uint64_t syncToken)
+WriteableFileChunk::flush(bool block, uint64_t syncToken, CpuUsage::Category cpu_category)
 {
     int32_t chunkId = flushLastIfNonEmpty(syncToken > _serialNum);
     if (chunkId >= 0) {
         setSerialNum(syncToken);
-        _executor.execute(makeLambdaTask([this, chunkId, serialNum=_serialNum] { internalFlush(chunkId, serialNum); }));
+        auto task = makeLambdaTask([this, chunkId, serialNum=_serialNum, cpu_category] {
+            internalFlush(chunkId, serialNum, cpu_category);
+        });
+        _executor.execute(CpuUsage::wrap(std::move(task), cpu_category));
     } else {
         if (block) {
             std::lock_guard guard(_lock);
@@ -700,11 +726,12 @@ WriteableFileChunk::waitForAllChunksFlushedToDisk() const
 }
 
 LidInfo
-WriteableFileChunk::append(uint64_t serialNum, uint32_t lid, const void * buffer, size_t len)
+WriteableFileChunk::append(uint64_t serialNum, uint32_t lid, const void * buffer, size_t len,
+                           CpuUsage::Category cpu_category)
 {
     assert( !frozen() );
     if ( ! _active->hasRoom(len)) {
-        flush(false, _serialNum);
+        flush(false, _serialNum, cpu_category);
     }
     assert(serialNum >= _serialNum);
     _serialNum = serialNum;
@@ -836,7 +863,7 @@ WriteableFileChunk::needFlushPendingChunks(const unique_lock & guard, uint64_t s
 
 void
 WriteableFileChunk::updateCurrentDiskFootprint() {
-    _currentDiskFootprint = _idxFileSize + _dataFile.getSize();
+    _currentDiskFootprint.store(_idxFileSize.load(std::memory_order_relaxed) + _dataFile.getSize(), std::memory_order_relaxed);
 }
 
 /*
@@ -867,7 +894,7 @@ WriteableFileChunk::unconditionallyFlushPendingChunks(const unique_lock &flushGu
     uint64_t lastSerial = 0;
     {
         std::unique_lock guard(_lock);
-        lastSerial = _lastPersistedSerialNum;
+        lastSerial = _lastPersistedSerialNum.load(std::memory_order_relaxed);
         for (;;) {
             if (!needFlushPendingChunks(guard, serialNum, datFileLen))
                 break;
@@ -897,9 +924,9 @@ WriteableFileChunk::unconditionallyFlushPendingChunks(const unique_lock &flushGu
     if ( ! idxFile->Sync()) {
         throw SummaryException("Failed fsync of idx file", *idxFile, VESPA_STRLOC);
     }
-    _idxFileSize = idxFile->GetSize();
-    if (_lastPersistedSerialNum < lastSerial) {
-        _lastPersistedSerialNum = lastSerial;
+    _idxFileSize.store(idxFile->GetSize(), std::memory_order_relaxed);
+    if (_lastPersistedSerialNum.load(std::memory_order_relaxed) < lastSerial) {
+        _lastPersistedSerialNum.store(lastSerial, std::memory_order_relaxed);
     }
     return timeStamp;
 }

@@ -15,7 +15,7 @@ DistributorStripePool::DistributorStripePool(bool test_mode, PrivateCtorTag)
       _mutex(),
       _parker_cond(),
       _parked_threads(0),
-      _bootstrap_tick_wait_duration(1ms),
+      _bootstrap_tick_wait_duration(vespalib::adjustTimeoutByDetectedHz(1ms)),
       _bootstrap_ticks_before_wait(10),
       _single_threaded_test_mode(test_mode),
       _stopped(false)
@@ -117,6 +117,7 @@ void DistributorStripePool::start(const std::vector<TickableStripe*>& stripes) {
     if (_single_threaded_test_mode) {
         return; // We want all the control structures in place, but none of the actual OS threads.
     }
+    std::unique_lock lock(_mutex); // Ensure _threads is visible to all started threads
     for (auto& s : _stripes) {
         _threads.emplace_back(_thread_pool.NewThread(s.get()));
     }

@@ -2,11 +2,9 @@
 
 #include "flagattribute.h"
 #include "load_utils.hpp"
-#include "attributeiterators.h"
 #include "multinumericattribute.hpp"
-
-#include <vespa/searchlib/queryeval/emptysearch.h>
-#include <vespa/searchlib/common/bitvectoriterator.h>
+#include "multi_numeric_flag_search_context.h"
+#include <vespa/searchlib/common/bitvector.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.attribute.flag_attribute");
@@ -48,15 +46,15 @@ FlagAttributeT<B>::FlagAttributeT(const vespalib::string & baseFileName, const A
     _bitVectorHolder(),
     _bitVectorStore(256),
     _bitVectors(256),
-    _bitVectorSize(cfg.getGrowStrategy().getDocsInitialCapacity())
+    _bitVectorSize(cfg.getGrowStrategy().getInitialCapacity())
 {
 }
 
 template <typename B>
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 FlagAttributeT<B>::getSearch(QueryTermSimple::UP qTerm, const attribute::SearchContextParams &) const
 {
-    return std::make_unique<SearchContext>(std::move(qTerm), *this);
+    return std::make_unique<attribute::MultiNumericFlagSearchContext<typename B::BaseType, typename B::WType>>(std::move(qTerm), *this, this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()), _bitVectors);
 }
 
 template <typename B>
@@ -64,7 +62,7 @@ void FlagAttributeT<B>::clearOldValues(DocId doc)
 {
     const typename B::WType * values(nullptr);
     for (uint32_t i(0), m(this->get(doc, values)); i < m; i++) {
-        BitVector * bv = _bitVectors[getOffset(values[i].value())];
+        BitVector * bv = _bitVectors[getOffset(multivalue::get_value(values[i]))].load_relaxed();
         if (bv != nullptr) {
             bv->clearBitAndMaintainCount(doc);
         }
@@ -75,7 +73,7 @@ template <typename B>
 bool
 FlagAttributeT<B>::onLoadEnumerated(ReaderBase &attrReader)
 {
-    typedef typename B::WType::ValueType TT;
+    using TT = multivalue::ValueType_t<typename B::WType>;
 
     uint32_t numDocs = attrReader.getNumIdx() - 1;
     uint64_t numValues = attrReader.getNumValues();
@@ -105,7 +103,7 @@ bool FlagAttributeT<B>::onLoad(vespalib::Executor * executor)
 {
     for (size_t i(0), m(_bitVectors.size()); i < m; i++) {
         _bitVectorStore[i].reset();
-        _bitVectors[i] = nullptr;
+        _bitVectors[i].store_relaxed(nullptr);
     }
     _bitVectorSize = 0;
     return B::onLoad(executor);
@@ -121,12 +119,12 @@ void FlagAttributeT<B>::setNewValues(DocId doc, const std::vector<typename B::WT
     for (uint32_t i(0), m(values.size()); i < m; i++) {
         typename B::WType value = values[i];
         uint32_t offset = getOffset(value);
-        BitVector * bv = _bitVectors[offset];
+        BitVector * bv = _bitVectors[offset].load_relaxed();
         if (bv == nullptr) {
             assert(_bitVectorSize >= this->getNumDocs());
-            _bitVectorStore[offset] = BitVector::create(_bitVectorSize);
-            _bitVectors[offset] = _bitVectorStore[offset].get();
-            bv = _bitVectors[offset];
+            _bitVectorStore[offset] = std::make_shared<GrowableBitVector>(_bitVectorSize, _bitVectorSize, _bitVectorHolder);
+            _bitVectors[offset].store_release(&_bitVectorStore[offset]->writer());
+            bv = _bitVectors[offset].load_relaxed();
             ensureGuardBit(*bv);
         }
         bv->setBitAndMaintainCount(doc);
@@ -135,15 +133,15 @@ void FlagAttributeT<B>::setNewValues(DocId doc, const std::vector<typename B::WT
 
 template <typename B>
 void
-FlagAttributeT<B>::setNewBVValue(DocId doc, typename B::WType::ValueType value)
+FlagAttributeT<B>::setNewBVValue(DocId doc, multivalue::ValueType_t<typename B::WType> value)
 {
     uint32_t offset = getOffset(value);
-    BitVector * bv = _bitVectors[offset];
+    BitVector * bv = _bitVectors[offset].load_relaxed();
     if (bv == nullptr) {
         assert(_bitVectorSize >= this->getNumDocs());
-        _bitVectorStore[offset] = BitVector::create(_bitVectorSize);
-        _bitVectors[offset] = _bitVectorStore[offset].get();
-        bv = _bitVectors[offset];
+        _bitVectorStore[offset] = std::make_shared<GrowableBitVector>(_bitVectorSize, _bitVectorSize, _bitVectorHolder);
+        _bitVectors[offset].store_release(&_bitVectorStore[offset]->writer());
+        bv = _bitVectors[offset].load_relaxed();
         ensureGuardBit(*bv);
     }
     bv->setBitAndMaintainCount(doc);
@@ -188,7 +186,8 @@ template <typename B>
 void
 FlagAttributeT<B>::ensureGuardBit()
 {
-    for (BitVector * bv : _bitVectors) {
+    for (const auto &wrapper: _bitVectors) {
+        BitVector *bv = wrapper.load_relaxed();
         if (bv != nullptr) {
             ensureGuardBit(*bv);
         }
@@ -199,7 +198,8 @@ template <typename B>
 void
 FlagAttributeT<B>::clearGuardBit(DocId doc)
 {
-    for (BitVector * bv : _bitVectors) {
+    for (const auto &wrapper: _bitVectors) {
+        BitVector *bv = wrapper.load_relaxed();
         if (bv != nullptr) {
             bv->clearBit(doc); // clear guard bit and start using this doc id
         }
@@ -211,57 +211,28 @@ void
 FlagAttributeT<B>::resizeBitVectors(uint32_t neededSize)
 {
     const GrowStrategy & gs = this->getConfig().getGrowStrategy();
-    uint32_t newSize = neededSize + (neededSize * gs.getDocsGrowFactor()) + gs.getDocsGrowDelta();
-    for (BitVector * bv : _bitVectors) {
+    uint32_t newSize = neededSize + (neededSize * gs.getGrowFactor()) + gs.getGrowDelta();
+    for (size_t i(0), m(_bitVectors.size()); i < m; i++) {
+        BitVector *bv = _bitVectors[i].load_relaxed();
         if (bv != nullptr) {
-            vespalib::GenerationHeldBase::UP hold(bv->grow(newSize));
+            if (_bitVectorStore[i]->extend(newSize)) {
+                _bitVectors[i].store_release(&_bitVectorStore[i]->writer());
+                bv = _bitVectors[i].load_relaxed();
+            }
             ensureGuardBit(*bv);
-            _bitVectorHolder.hold(std::move(hold));
         }
     }
     _bitVectorSize = newSize;
-    _bitVectorHolder.transferHoldLists(this->getCurrentGeneration());
+    _bitVectorHolder.assign_generation(this->getCurrentGeneration());
 }
 
 
 template <typename B>
 void
-FlagAttributeT<B>::removeOldGenerations(vespalib::GenerationHandler::generation_t firstUsed)
+FlagAttributeT<B>::reclaim_memory(vespalib::GenerationHandler::generation_t oldest_used_gen)
 {
-    B::removeOldGenerations(firstUsed);
-    _bitVectorHolder.trimHoldLists(firstUsed);
-}
-
-template <typename B>
-FlagAttributeT<B>::SearchContext::SearchContext(QueryTermSimple::UP qTerm, const FlagAttributeT<B> & toBeSearched) :
-    BaseSC(std::move(qTerm), toBeSearched),
-    _zeroHits(false)
-{
-}
-
-template <typename B>
-SearchIterator::UP
-FlagAttributeT<B>::SearchContext::createIterator(fef::TermFieldMatchData * matchData, bool strict)
-{
-    if (valid()) {
-        if (_low == _high) {
-            const Attribute & attr(static_cast<const Attribute &>(attribute()));
-            const BitVector * bv(attr.getBitVector(_low));
-            if (bv != nullptr) {
-                return BitVectorIterator::create(bv, attr.getCommittedDocIdLimit(), *matchData, strict);
-            } else {
-                return std::make_unique<queryeval::EmptySearch>();
-            }
-        } else {
-            SearchIterator::UP flagIterator(
-              strict
-                 ? new FlagAttributeIteratorStrict<typename FlagAttributeT<B>::SearchContext>(*this, matchData)
-                 : new FlagAttributeIteratorT<typename FlagAttributeT<B>::SearchContext>(*this, matchData));
-            return flagIterator;
-        }
-    } else {
-        return std::make_unique<queryeval::EmptySearch>();
-    }
+    B::reclaim_memory(oldest_used_gen);
+    _bitVectorHolder.reclaim(oldest_used_gen);
 }
 
 template class FlagAttributeT<FlagBaseImpl>;

@@ -1,26 +1,27 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.versions;
 
 import com.yahoo.component.Version;
-import com.yahoo.component.Vtag;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.zone.ZoneApi;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
+import com.yahoo.vespa.hosted.controller.api.identifiers.ControllerVersion;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Node;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeFilter;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobId;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
-import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
+import com.yahoo.vespa.hosted.controller.application.Change;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
+import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.deployment.ApplicationPackageBuilder;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentTester;
 import com.yahoo.vespa.hosted.controller.deployment.Run;
 import com.yahoo.vespa.hosted.controller.persistence.CuratorDb;
 import com.yahoo.vespa.hosted.controller.persistence.MockCuratorDb;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -29,16 +30,16 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType.productionUsEast3;
-import static com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType.productionUsWest1;
-import static com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType.stagingTest;
-import static com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType.systemTest;
+import static com.yahoo.vespa.hosted.controller.deployment.DeploymentContext.productionUsEast3;
+import static com.yahoo.vespa.hosted.controller.deployment.DeploymentContext.productionUsWest1;
+import static com.yahoo.vespa.hosted.controller.deployment.DeploymentContext.stagingTest;
+import static com.yahoo.vespa.hosted.controller.deployment.DeploymentContext.systemTest;
 import static java.util.stream.Collectors.toSet;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test computing of version status
@@ -57,10 +58,11 @@ public class VersionStatusTest {
     @Test
     public void testSystemVersionIsControllerVersionIfConfigServersAreNewer() {
         ControllerTester tester = new ControllerTester();
-        Version largerThanCurrent = new Version(Vtag.currentVersion.getMajor() + 1);
+        Version controllerVersion = tester.controller().readVersionStatus().controllerVersion().get().versionNumber();
+        Version largerThanCurrent = new Version(controllerVersion.getMajor() + 1);
         tester.upgradeSystemApplications(largerThanCurrent);
         VersionStatus versionStatus = VersionStatus.compute(tester.controller());
-        assertEquals(Vtag.currentVersion, versionStatus.systemVersion().get().versionNumber());
+        assertEquals(controllerVersion, versionStatus.systemVersion().get().versionNumber());
     }
 
     @Test
@@ -81,22 +83,21 @@ public class VersionStatusTest {
     }
 
     @Test
-    public void testControllerVersionIsVersionOfOldestController() {
-        HostName controller1 = HostName.from("controller-1");
-        HostName controller2 = HostName.from("controller-2");
-        HostName controller3 = HostName.from("controller-3");
+    public void testControllerVersion() {
+        HostName controller1 = HostName.of("controller-1");
+        HostName controller2 = HostName.of("controller-2");
+        HostName controller3 = HostName.of("controller-3");
         MockCuratorDb db = new MockCuratorDb(Stream.of(controller1, controller2, controller3)
                                                    .map(hostName -> hostName.value() + ":2222")
                                                    .collect(Collectors.joining(",")));
         ControllerTester tester = new ControllerTester(db);
 
+        // Upgrade in progress
         writeControllerVersion(controller1, Version.fromString("6.2"), db);
         writeControllerVersion(controller2, Version.fromString("6.1"), db);
         writeControllerVersion(controller3, Version.fromString("6.2"), db);
-
         VersionStatus versionStatus = VersionStatus.compute(tester.controller());
-        assertEquals("Controller version is oldest version", Version.fromString("6.1"),
-                     versionStatus.controllerVersion().get().versionNumber());
+        assertTrue(versionStatus.controllerVersion().isEmpty(), "Controller version is unknown during upgrade");
 
         // Last controller upgrades
         writeControllerVersion(controller2, Version.fromString("6.2"), db);
@@ -130,6 +131,10 @@ public class VersionStatusTest {
         DeploymentTester tester = new DeploymentTester();
         ApplicationPackage applicationPackage = applicationPackage("default");
 
+        Version version0 = new Version("6.1");
+        tester.controllerTester().upgradeSystem(version0);
+        var context0 = tester.newDeploymentContext("tenant1", "app0", "default").runJob(JobType.dev("us-east-1"), applicationPackage);
+
         Version version1 = new Version("6.2");
         Version version2 = new Version("6.3");
         tester.controllerTester().upgradeSystem(version1);
@@ -156,8 +161,13 @@ public class VersionStatusTest {
 
         tester.triggerJobs();
         tester.controllerTester().computeVersionStatus();
+        VersionStatus status = tester.controller().readVersionStatus();
+        assertEquals(3, status.versions().size(), "The three versions above exist");
+
+        tester.controller().applications().deactivate(context0.instanceId(), JobType.dev("us-east-1").zone());
+        tester.controllerTester().computeVersionStatus();
         List<VespaVersion> versions = tester.controller().readVersionStatus().versions();
-        assertEquals("The two versions above exist", 2, versions.size());
+        assertEquals(2, versions.size(), "The two last versions above exist after dev deployment is gone");
 
         VespaVersion v1 = versions.get(0);
         assertEquals(version1, v1.versionNumber());
@@ -173,9 +183,9 @@ public class VersionStatusTest {
                             context2.instanceId(), List.of(productionUsEast3),
                             context3.instanceId(), List.of(productionUsWest1, productionUsEast3)),
                      statistics1.productionSuccesses());
-        assertEquals("No applications have active deployment jobs on version1.",
+        assertEquals(
                      List.of(),
-                     statistics1.runningUpgrade());
+                     statistics1.runningUpgrade(), "No applications have active deployment jobs on version1.");
 
         VespaVersion v2 = versions.get(1);
         assertEquals(version2, v2.versionNumber());
@@ -198,13 +208,13 @@ public class VersionStatusTest {
     }
 
     private static void assertJobsRun(String assertion, Map<ApplicationId, List<JobType>> jobs, List<Run> runs) {
-        assertEquals(assertion,
-                     jobs.entrySet().stream()
+        assertEquals(jobs.entrySet().stream()
                          .flatMap(entry -> entry.getValue().stream().map(type -> new JobId(entry.getKey(), type)))
                          .collect(toSet()),
                      runs.stream()
                          .map(run -> run.id().job())
-                         .collect(toSet()));
+                         .collect(toSet()),
+                assertion);
     }
 
     @Test
@@ -215,7 +225,7 @@ public class VersionStatusTest {
         tester.upgrader().maintain();
 
         // Setup applications - all running on version0
-        ApplicationPackage canaryPolicy = applicationPackage("canary");
+        ApplicationPackage canaryPolicy = applicationPackage("canary", 7);
         var canary0 = tester.newDeploymentContext("tenant1", "canary0", "default")
                             .submit(canaryPolicy)
                             .deploy();
@@ -228,7 +238,7 @@ public class VersionStatusTest {
 
         ApplicationPackage defaultPolicy = applicationPackage("default");
         var default0 = tester.newDeploymentContext("tenant1", "default0", "default")
-                             .submit(defaultPolicy)
+                             .submit(applicationPackage("default", 7))
                              .deploy();
         var default1 = tester.newDeploymentContext("tenant1", "default1", "default")
                              .submit(defaultPolicy)
@@ -263,13 +273,13 @@ public class VersionStatusTest {
                 .submit(conservativePolicy)
                 .deploy();
 
+        var devApp = tester.newDeploymentContext("dev", "app", "on-version-1");
         // Applications that do not affect confidence calculation:
 
         // Application without deployment
         var ignored0 = tester.newDeploymentContext("tenant1", "ignored0", "default");
 
-        assertEquals("All applications running on this version: High",
-                     Confidence.high, confidence(tester.controller(), version0));
+        assertEquals(Confidence.high, confidence(tester.controller(), version0), "All applications running on this version: High");
 
         // New version is released
         Version version1 = new Version("6.3");
@@ -277,31 +287,32 @@ public class VersionStatusTest {
         tester.upgrader().maintain();
         tester.triggerJobs();
 
-        // Canaries upgrade to new versions and fail
+        // Dev app deploys to the new versions, and canaries also upgrade, and fail.
+        devApp.runJob(JobType.dev("us-east-1"), canaryApplicationPackage);
+        tester.controllerTester().computeVersionStatus();
+        assertEquals(Confidence.low, confidence(tester.controller(), version1), "Just the dev app: Low");
+
         canary0.deployPlatform(version1);
         canary1.runJob(systemTest)
                .runJob(stagingTest)
                .failDeployment(productionUsWest1);
+
         tester.controllerTester().computeVersionStatus();
-        assertEquals("One canary failed: Broken",
-                     Confidence.broken, confidence(tester.controller(), version1));
+        assertEquals(Confidence.broken, confidence(tester.controller(), version1), "One canary failed: Broken");
 
         // New version is released
         Version version2 = new Version("6.4");
         tester.controllerTester().upgradeSystem(version2);
         tester.upgrader().maintain();
         tester.triggerJobs();
-        assertEquals("Confidence defaults to low for version with no applications",
-                     Confidence.low, confidence(tester.controller(), version2));
+        assertEquals(Confidence.low, confidence(tester.controller(), version2), "Confidence defaults to low for version with no applications");
 
         // All canaries upgrade successfully
         canary0.deployPlatform(version2);
         canary1.deployPlatform(version2);
 
-        assertEquals("Confidence for remains unchanged for version1: Broken",
-                     Confidence.broken, confidence(tester.controller(), version1));
-        assertEquals("Nothing has failed but not all canaries have upgraded: Low",
-                     Confidence.low, confidence(tester.controller(), version2));
+        assertEquals(Confidence.broken, confidence(tester.controller(), version1), "Confidence remains unchanged for version1: Broken");
+        assertEquals(Confidence.low, confidence(tester.controller(), version2), "Nothing has failed but not all canaries have upgraded: Low");
 
         // Remaining canary upgrades to version2 which raises confidence to normal and more apps upgrade
         canary2.triggerJobs().jobAborted(systemTest).jobAborted(stagingTest);
@@ -310,8 +321,7 @@ public class VersionStatusTest {
         tester.controllerTester().computeVersionStatus();
         tester.upgrader().maintain();
         tester.triggerJobs();
-        assertEquals("Canaries have upgraded: Normal",
-                     Confidence.normal, confidence(tester.controller(), version2));
+        assertEquals(Confidence.normal, confidence(tester.controller(), version2), "Canaries have upgraded: Normal");
         default0.deployPlatform(version2);
         default1.deployPlatform(version2);
         default2.deployPlatform(version2);
@@ -325,23 +335,19 @@ public class VersionStatusTest {
         // Remember confidence across restart
         tester.controllerTester().createNewController();
 
-        assertEquals("Confidence remains unchanged for version0: High",
-                     Confidence.high, confidence(tester.controller(), version0));
-        assertEquals("All canaries deployed + < 90% of defaults: Normal",
-                     Confidence.normal, confidence(tester.controller(), version2));
-        assertTrue("Status for version without applications is removed",
-                   tester.controller().readVersionStatus().versions().stream()
-                         .noneMatch(vespaVersion -> vespaVersion.versionNumber().equals(version1)));
+        assertEquals(Confidence.high, confidence(tester.controller(), version0), "Confidence remains unchanged for version0: High");
+        assertEquals(Confidence.normal, confidence(tester.controller(), version2), "All canaries deployed + < 90% of defaults: Normal");
+        assertTrue(tester.controller().readVersionStatus().versions().stream()
+                         .noneMatch(vespaVersion -> vespaVersion.versionNumber().equals(version1)),
+                "Status for version without applications is removed");
 
         // Another default application upgrades, raising confidence to high
         default8.deployPlatform(version2);
         default9.deployPlatform(version2);
         tester.controllerTester().computeVersionStatus();
 
-        assertEquals("Confidence remains unchanged for version0: High",
-                     Confidence.high, confidence(tester.controller(), version0));
-        assertEquals("90% of defaults deployed successfully: High",
-                     VespaVersion.Confidence.high, confidence(tester.controller(), version2));
+        assertEquals(Confidence.high, confidence(tester.controller(), version0), "Confidence remains unchanged for version0: High");
+        assertEquals(VespaVersion.Confidence.high, confidence(tester.controller(), version2), "90% of defaults deployed successfully: High");
 
         // A new version is released, all canaries upgrade successfully, but enough "default" apps fail to mark version
         // as broken
@@ -359,23 +365,43 @@ public class VersionStatusTest {
         default1.failDeployment(stagingTest);
         default2.failDeployment(stagingTest);
         default3.failDeployment(stagingTest);
+        default4.failDeployment(stagingTest);
+        default5.failDeployment(stagingTest);
         tester.controllerTester().computeVersionStatus();
 
-        assertEquals("Confidence remains unchanged for version0: High",
-                     Confidence.high, confidence(tester.controller(), version0));
-        assertEquals("Confidence remains unchanged for version2: High",
-                     Confidence.high, confidence(tester.controller(), version2));
-        assertEquals("40% of defaults failed: Broken",
-                     VespaVersion.Confidence.broken, confidence(tester.controller(), version3));
+        assertEquals(Confidence.high, confidence(tester.controller(), version0), "Confidence remains unchanged for version0: High");
+        assertEquals(Confidence.high, confidence(tester.controller(), version2), "Confidence remains unchanged for version2: High");
+        assertEquals(VespaVersion.Confidence.broken, confidence(tester.controller(), version3), "60% of defaults failed: Broken");
 
         // Test version order
         List<VespaVersion> versions = tester.controller().readVersionStatus().versions();
         assertEquals(List.of("6.2", "6.4", "6.5"), versions.stream().map(version -> version.versionNumber().toString()).collect(Collectors.toList()));
 
-        // Check release status is correct (static data in MockMavenRepository).
+        // Check release status is correct (static data in MockMavenRepository, and upgradeSystem "releases" a version).
         assertTrue(versions.get(0).isReleased());
-        assertFalse(versions.get(1).isReleased());
-        assertFalse(versions.get(2).isReleased());
+        assertFalse(versions.get(1).isReleased()); // tesst quirk: maven repo lost during controller recreation; useful to test status though
+        assertTrue(versions.get(2).isReleased());
+
+        // A new major version is released and all canaries upgrade
+        Version version4 = new Version("7.1");
+        tester.controllerTester().upgradeSystem(version4);
+        tester.upgrader().maintain();
+        tester.triggerJobs();
+        canary0.deployPlatform(version4);
+        canary1.deployPlatform(version4);
+        canary2.deployPlatform(version4);
+        tester.controllerTester().computeVersionStatus();
+        assertEquals(Confidence.normal, confidence(tester.controller(), version4));
+
+        // The single application allowing this major upgrades and confidence becomes 'high'
+        tester.upgrader().maintain();
+        tester.triggerJobs();
+        assertEquals(Change.of(version4), default0.instance().change());
+        default0.jobAborted(systemTest)
+                .jobAborted(stagingTest)
+                .deployPlatform(version4);
+        tester.controllerTester().computeVersionStatus();
+        assertEquals(Confidence.high, confidence(tester.controller(), version4));
     }
 
     @Test
@@ -390,8 +416,8 @@ public class VersionStatusTest {
                             .submit(appPackage)
                             .deploy();
 
-        assertEquals("All applications running on this version: High",
-                     Confidence.high, confidence(tester.controller(), version0));
+        assertEquals(
+                     Confidence.high, confidence(tester.controller(), version0), "All applications running on this version: High");
 
         // New version is released
         Version version1 = new Version("6.3");
@@ -403,59 +429,61 @@ public class VersionStatusTest {
         canary0.failDeployment(systemTest);
         canary0.abortJob(stagingTest);
         tester.controllerTester().computeVersionStatus();
-        assertEquals("One canary failed: Broken",
-                     Confidence.broken, confidence(tester.controller(), version1));
+        assertEquals(
+                     Confidence.broken, confidence(tester.controller(), version1), "One canary failed: Broken");
 
         // New version is released
         Version version2 = new Version("6.4");
         tester.controllerTester().upgradeSystem(version2);
         tester.upgrader().maintain();
-        assertEquals("Confidence remains unchanged for version1 until app overrides old tests: Broken",
-                     Confidence.broken, confidence(tester.controller(), version1));
-        assertEquals("Confidence defaults to low for version with no applications",
-                     Confidence.low, confidence(tester.controller(), version2));
+        assertEquals(
+                     Confidence.broken, confidence(tester.controller(), version1), "Confidence remains unchanged for version1 until app overrides old tests: Broken");
+        assertEquals(
+                     Confidence.low, confidence(tester.controller(), version2), "Confidence defaults to low for version with no applications");
         assertEquals(version2, canary0.instance().change().platform().orElseThrow());
 
         canary0.failDeployment(systemTest);
         canary0.abortJob(stagingTest);
         tester.controllerTester().computeVersionStatus();
-        assertFalse("Previous version should be forgotten, as canary only had test jobs run on it",
-                    tester.controller().readVersionStatus().versions().stream().anyMatch(version -> version.versionNumber().equals(version1)));
+        assertFalse(
+                    tester.controller().readVersionStatus().versions().stream().anyMatch(version -> version.versionNumber().equals(version1)),
+                "Previous version should be forgotten, as canary only had test jobs run on it");
 
         // App succeeds with tests, but fails production deployment
         canary0.runJob(systemTest)
                .runJob(stagingTest)
                .failDeployment(productionUsWest1);
 
-        assertEquals("One canary failed: Broken",
-                     Confidence.broken, confidence(tester.controller(), version2));
+        assertEquals(
+                     Confidence.broken, confidence(tester.controller(), version2), "One canary failed: Broken");
 
         // A new version is released, and the app again fails production deployment.
         Version version3 = new Version("6.5");
         tester.controllerTester().upgradeSystem(version3);
         tester.upgrader().maintain();
-        assertEquals("Confidence remains unchanged for version2: Broken",
-                     Confidence.broken, confidence(tester.controller(), version2));
-        assertEquals("Confidence defaults to low for version with no applications",
-                     Confidence.low, confidence(tester.controller(), version3));
+        assertEquals(
+                     Confidence.broken, confidence(tester.controller(), version2), "Confidence remains unchanged for version2: Broken");
+        assertEquals(
+                     Confidence.low, confidence(tester.controller(), version3), "Confidence defaults to low for version with no applications");
         assertEquals(version3, canary0.instance().change().platform().orElseThrow());
 
         canary0.runJob(systemTest)
                .runJob(stagingTest)
                .failDeployment(productionUsWest1);
         tester.controllerTester().computeVersionStatus();
-        assertEquals("Confidence remains unchanged for version2: Broken",
-                     Confidence.broken, confidence(tester.controller(), version2));
-        assertEquals("Canary broken, so confidence for version3: Broken",
-                     Confidence.broken, confidence(tester.controller(), version3));
+        assertEquals(
+                     Confidence.broken, confidence(tester.controller(), version2), "Confidence remains unchanged for version2: Broken");
+        assertEquals(
+                     Confidence.broken, confidence(tester.controller(), version3), "Canary broken, so confidence for version3: Broken");
 
         // App succeeds production deployment, clearing failure on version2
         canary0.runJob(productionUsWest1);
         tester.controllerTester().computeVersionStatus();
-        assertFalse("Previous version should be forgotten, as canary only had test jobs run on it",
-                    tester.controller().readVersionStatus().versions().stream().anyMatch(version -> version.versionNumber().equals(version2)));
-        assertEquals("Canary OK, but not done upgrading, so confidence for version3: Low",
-                     Confidence.low, confidence(tester.controller(), version3));
+        assertFalse(
+                    tester.controller().readVersionStatus().versions().stream().anyMatch(version -> version.versionNumber().equals(version2)),
+                "Previous version should be forgotten, as canary only had test jobs run on it");
+        assertEquals(
+                     Confidence.low, confidence(tester.controller(), version3), "Canary OK, but not done upgrading, so confidence for version3: Low");
     }
 
     @Test
@@ -485,15 +513,16 @@ public class VersionStatusTest {
         assertEquals(Confidence.high, confidence(tester.controller(), version1));
 
         // Stale override was removed
-        assertFalse("Stale override removed", tester.controller().curator().readConfidenceOverrides()
-                                                    .containsKey(version0));
+        assertFalse( tester.controller().curator().readConfidenceOverrides()
+                                                    .containsKey(version0),
+                "Stale override removed");
     }
 
     @Test
     public void testCommitDetailsPreservation() {
-        HostName controller1 = HostName.from("controller-1");
-        HostName controller2 = HostName.from("controller-2");
-        HostName controller3 = HostName.from("controller-3");
+        HostName controller1 = HostName.of("controller-1");
+        HostName controller2 = HostName.of("controller-2");
+        HostName controller3 = HostName.of("controller-3");
         MockCuratorDb db = new MockCuratorDb(Stream.of(controller1, controller2, controller3)
                                                    .map(hostName -> hostName.value() + ":2222")
                                                    .collect(Collectors.joining(",")));
@@ -664,11 +693,11 @@ public class VersionStatusTest {
 
     private void assertOnVersion(Version version, ApplicationId instance, DeploymentTester tester) {
         var vespaVersion = tester.controller().readVersionStatus().version(version);
-        assertNotNull("Statistics for version " + version + " exist", vespaVersion);
+        assertNotNull(vespaVersion, "Statistics for version " + version + " exist");
         var statistics = DeploymentStatistics.compute(List.of(version), tester.deploymentStatuses()).get(0);
-        assertTrue("Application is on version " + version,
+        assertTrue(
                    Stream.of(statistics.productionSuccesses(), statistics.failingUpgrades(), statistics.runningUpgrade())
-                         .anyMatch(runs -> runs.stream().anyMatch(run -> run.id().application().equals(instance))));
+                         .anyMatch(runs -> runs.stream().anyMatch(run -> run.id().application().equals(instance))), "Application is on version " + version);
     }
 
     private static void writeControllerVersion(HostName hostname, Version version, CuratorDb db) {
@@ -681,6 +710,14 @@ public class VersionStatusTest {
                          .findFirst()
                          .map(VespaVersion::confidence)
                          .orElseThrow(() -> new IllegalArgumentException("Expected to find version: " + version));
+    }
+
+    private static ApplicationPackage applicationPackage(String upgradePolicy, int majorVersion) {
+        return new ApplicationPackageBuilder().upgradePolicy(upgradePolicy)
+                                              .region("us-west-1")
+                                              .region("us-east-3")
+                                              .majorVersion(majorVersion)
+                                              .build();
     }
 
     private static final ApplicationPackage canaryApplicationPackage =
@@ -703,12 +740,12 @@ public class VersionStatusTest {
 
     /** Returns empty prebuilt applications for efficiency */
     private ApplicationPackage applicationPackage(String upgradePolicy) {
-        switch (upgradePolicy) {
-            case "canary" : return canaryApplicationPackage;
-            case "default" : return defaultApplicationPackage;
-            case "conservative" : return conservativeApplicationPackage;
-            default : throw new IllegalArgumentException("No upgrade policy '" + upgradePolicy + "'");
-        }
+        return switch (upgradePolicy) {
+            case "canary" -> canaryApplicationPackage;
+            case "default" -> defaultApplicationPackage;
+            case "conservative" -> conservativeApplicationPackage;
+            default -> throw new IllegalArgumentException("No upgrade policy '" + upgradePolicy + "'");
+        };
     }
 
 }

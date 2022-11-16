@@ -12,6 +12,7 @@ import java.util.Map;
  *
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
 class MappedLevelControllerRepo {
     private final Map<String, LevelController> levelControllerMap = new HashMap<>();

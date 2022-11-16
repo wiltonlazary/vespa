@@ -17,8 +17,9 @@ import static java.nio.charset.StandardCharsets.US_ASCII;
 /**
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
-public class VespaLevelControllerRepo implements LevelControllerRepo {
+class VespaLevelControllerRepo implements LevelControllerRepo {
 
     private RandomAccessFile ctlFile;
     private FileOutputStream ctlFileAppender;

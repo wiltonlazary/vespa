@@ -4,7 +4,6 @@
 #include "hit.h"
 #include "aggregationresult.h"
 #include <vespa/document/base/globalid.h>
-#include <vespa/searchlib/common/docstamp.h>
 
 namespace search::aggregation {
 
@@ -19,7 +18,7 @@ private:
 public:
     DECLARE_IDENTIFIABLE_NS2(search, aggregation, FS4Hit);
     DECLARE_NBO_SERIALIZE;
-    FS4Hit() : Hit(), _path(0), _docId(0), _globalId(), _distributionKey(-1) {}
+    FS4Hit() noexcept : Hit(), _path(0), _docId(0), _globalId(), _distributionKey(-1) {}
     FS4Hit(DocId docId, HitRank rank)
         : Hit(rank), _path(0), _docId(docId), _globalId(), _distributionKey(-1) {}
     FS4Hit *clone() const override { return new FS4Hit(*this); }

@@ -1,31 +1,33 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.documentmodel;
 
-import com.yahoo.document.DocumenttypesConfig;
+import com.yahoo.document.config.DocumenttypesConfig;
 import com.yahoo.document.config.DocumentmanagerConfig;
-import com.yahoo.searchdefinition.SearchBuilder;
-import com.yahoo.searchdefinition.SchemaTestCase;
-import com.yahoo.searchdefinition.parser.ParseException;
+import com.yahoo.schema.ApplicationBuilder;
+import com.yahoo.schema.AbstractSchemaTestCase;
+import com.yahoo.schema.parser.ParseException;
 import com.yahoo.vespa.configmodel.producers.DocumentManager;
 import com.yahoo.vespa.configmodel.producers.DocumentTypes;
-import org.junit.Test;
-import java.io.IOException;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import org.junit.jupiter.api.Test;
 
-public class DocumentModelBuilderTestCase extends SchemaTestCase {
+import java.io.IOException;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+public class DocumentModelBuilderTestCase extends AbstractSchemaTestCase {
 
     @Test
-    public void testDocumentManagerSimple()  throws IOException, ParseException {
+    void testDocumentManagerSimple()  throws IOException, ParseException {
         DocumentModel model = createAndTestModel("src/test/configmodel/types/types.sd");
 
         DocumentmanagerConfig.Builder documentmanagerCfg = new DocumentManager().produce(model, new DocumentmanagerConfig.Builder());
         assertConfigFile("src/test/configmodel/types/documentmanager.cfg",
                 new DocumentmanagerConfig(documentmanagerCfg).toString());
     }
-    @Test
+
     // This is ignored as enums in config are not testable in this way. See bug 4748050
-    public void testDocumentTypesSimple()  throws IOException, ParseException {
+    @Test
+    void testDocumentTypesSimple()  throws IOException, ParseException {
         DocumentModel model = createAndTestModel("src/test/configmodel/types/types.sd");
 
         DocumenttypesConfig.Builder documenttypesCfg = new DocumentTypes().produce(model, new DocumenttypesConfig.Builder());
@@ -34,11 +36,11 @@ public class DocumentModelBuilderTestCase extends SchemaTestCase {
     }
 
     @Test
-    public void testDocumentTypesWithDocumentField()  throws IOException, ParseException {
-        SearchBuilder search = new SearchBuilder();
-        search.importFile("src/test/configmodel/types/other_doc.sd");
-        search.importFile("src/test/configmodel/types/type_with_doc_field.sd");
-        search.build();
+    void testDocumentTypesWithDocumentField()  throws IOException, ParseException {
+        ApplicationBuilder search = new ApplicationBuilder();
+        search.addSchemaFile("src/test/configmodel/types/other_doc.sd");
+        search.addSchemaFile("src/test/configmodel/types/type_with_doc_field.sd");
+        search.build(true);
         DocumentModel model = search.getModel();
 
         DocumenttypesConfig.Builder documenttypesCfg = new DocumentTypes().produce(model, new DocumenttypesConfig.Builder());
@@ -47,16 +49,16 @@ public class DocumentModelBuilderTestCase extends SchemaTestCase {
     }
 
     @Test
-    public void testMultipleInheritanceArray() throws IOException, ParseException {
-        SearchBuilder search = new SearchBuilder();
-        search.importFile("src/test/cfg/search/data/travel/schemas/TTData.sd");
-        search.importFile("src/test/cfg/search/data/travel/schemas/TTEdge.sd");
-        search.importFile("src/test/cfg/search/data/travel/schemas/TTPOI.sd");
-        search.build();
+    void testMultipleInheritanceArray() throws IOException, ParseException {
+        ApplicationBuilder search = new ApplicationBuilder();
+        search.addSchemaFile("src/test/cfg/search/data/travel/schemas/TTData.sd");
+        search.addSchemaFile("src/test/cfg/search/data/travel/schemas/TTEdge.sd");
+        search.addSchemaFile("src/test/cfg/search/data/travel/schemas/TTPOI.sd");
+        search.build(true);
     }
 
     private DocumentModel createAndTestModel(String sd) throws IOException, ParseException {
-        SearchBuilder search = SearchBuilder.createFromFile(sd);
+        ApplicationBuilder search = ApplicationBuilder.createFromFile(sd);
         DocumentModel model = search.getModel();
 
         assertEquals(2, model.getDocumentManager().getTypes().size());

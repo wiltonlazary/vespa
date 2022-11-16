@@ -25,7 +25,6 @@ public class DocumentTypeManagerTestCase {
 
     // Verify that we can register and retrieve fields.
     @Test
-    @SuppressWarnings("deprecation")
     public void testRegisterAndGet() {
         DocumentTypeManager manager = new DocumentTypeManager();
 
@@ -46,16 +45,16 @@ public class DocumentTypeManagerTestCase {
     @Test
     public void testBasicTypes() {
         DocumentTypeManager dtm = new DocumentTypeManager();
-        DataType intType = dtm.getDataType("int");
+        DataType intType = dtm.getDataTypeInternal("int");
         assertSame(DataType.INT, intType);
 
-        DataType stringType = dtm.getDataType("string");
+        DataType stringType = dtm.getDataTypeInternal("string");
         assertSame(DataType.STRING, stringType);
 
-        DataType longType = dtm.getDataType("long");
+        DataType longType = dtm.getDataTypeInternal("long");
         assertSame(DataType.LONG, longType);
 
-        DataType doubleType = dtm.getDataType("double");
+        DataType doubleType = dtm.getDataTypeInternal("double");
         assertSame(DataType.DOUBLE, doubleType);
     }
 
@@ -76,13 +75,13 @@ public class DocumentTypeManagerTestCase {
         DocumentTypeManager manager = new DocumentTypeManager();
         manager.register(docType2);
 
-        assertEquals(struct, manager.getDataType(struct.getId()));
-        assertEquals(struct, manager.getDataType("mystruct"));
-        assertEquals(wset1, manager.getDataType(wset1.getId()));
-        assertEquals(wset2, manager.getDataType(wset2.getId()));
-        assertEquals(array, manager.getDataType(array.getId()));
-        assertEquals(docType, manager.getDataType("mydoc"));
-        assertEquals(docType2, manager.getDataType("myotherdoc"));
+        assertEquals(struct, manager.getDataTypeByCode(struct.getId()));
+        assertEquals(struct, manager.getDataTypeInternal("mystruct"));
+        assertEquals(wset1, manager.getDataTypeByCode(wset1.getId()));
+        assertEquals(wset2, manager.getDataTypeByCode(wset2.getId()));
+        assertEquals(array, manager.getDataTypeByCode(array.getId()));
+        assertEquals(docType, manager.getDataTypeInternal("mydoc"));
+        assertEquals(docType2, manager.getDataTypeInternal("myotherdoc"));
         assertEquals(docType, manager.getDocumentType(new DataTypeName("mydoc")));
         assertEquals(docType2, manager.getDocumentType(new DataTypeName("myotherdoc")));
     }
@@ -102,7 +101,7 @@ public class DocumentTypeManagerTestCase {
         docType4.addField("bar", DataType.RAW);
 
         DocumentTypeManager manager = new DocumentTypeManager();
-        manager.clear();
+        manager.internalClear();
         manager.register(docType1);
         manager.register(docType2);
         manager.register(docType3);
@@ -112,7 +111,7 @@ public class DocumentTypeManagerTestCase {
         assertSame(docType2, manager.getDocumentType(new DataTypeName("foo1")));
         assertSame(docType3, manager.getDocumentType(new DataTypeName("foo2")));
         assertSame(docType4, manager.getDocumentType(new DataTypeName("foo3")));
-        
+
         assertEquals(manager.getDocumentTypes().size(), 5);
         assertNotNull(manager.getDocumentTypes().get(new DataTypeName("document")));
         assertEquals(manager.getDocumentTypes().get(new DataTypeName("foo0")), docType1);
@@ -124,11 +123,10 @@ public class DocumentTypeManagerTestCase {
     public void testReverseMapOrder() {
         DocumentTypeManager manager = createConfiguredManager("file:src/test/document/documentmanager.map.cfg");
 
-        assertNotNull(manager.getDataType(1000));
-        assertNotNull(manager.getDataType(1001));
+        assertNotNull(manager.getDataTypeByCode(1000));
+        assertNotNull(manager.getDataTypeByCode(1001));
     }
 
-    @SuppressWarnings("deprecation")
     @Test
     public void testConfigure() {
         DocumentTypeManager manager = createConfiguredManager("file:src/test/document/documentmanager.cfg");
@@ -151,7 +149,6 @@ public class DocumentTypeManagerTestCase {
         assertTrue(foobarfield0.getDataType().getCode() == 2);
 
         Field foobarfield1 = type.getField("foobarfield1");
-        assertTrue(foobarfield1.isHeader());
         assertTrue(foobarfield1.getDataType().getCode() == 4);
 
 
@@ -166,7 +163,6 @@ public class DocumentTypeManagerTestCase {
         assertTrue(type.hasField("bananafield0"));
 
         Field bananafield0 = type.getField("bananafield0");
-        assertTrue(bananafield0.isHeader());
         assertTrue(bananafield0.getDataType().getCode() == 16);
 
         //inheritance:
@@ -190,7 +186,7 @@ public class DocumentTypeManagerTestCase {
 
         Field arrayfloat = type.getField("arrayfloat");
         ArrayDataType dataType = (ArrayDataType) arrayfloat.getDataType();
-        assertTrue(dataType.getCode() == 99);
+        // assertTrue(dataType.getCode() == 99);
         assertTrue(dataType.getValueClass().equals(Array.class));
         assertTrue(dataType.getNestedType().getCode() == 1);
         assertTrue(dataType.getNestedType().getValueClass().equals(FloatFieldValue.class));
@@ -198,9 +194,9 @@ public class DocumentTypeManagerTestCase {
 
         Field arrayarrayfloat = type.getField("arrayarrayfloat");
         ArrayDataType subType = (ArrayDataType) arrayarrayfloat.getDataType();
-        assertTrue(subType.getCode() == 4003);
+        // assertTrue(subType.getCode() == 4003);
         assertTrue(subType.getValueClass().equals(Array.class));
-        assertTrue(subType.getNestedType().getCode() == 99);
+        // assertTrue(subType.getNestedType().getCode() == 99);
         assertTrue(subType.getNestedType().getValueClass().equals(Array.class));
         ArrayDataType subSubType = (ArrayDataType) subType.getNestedType();
         assertTrue(subSubType.getNestedType().getCode() == 1);
@@ -215,10 +211,10 @@ public class DocumentTypeManagerTestCase {
         DocumentType customtypes = manager.getDocumentType(new DataTypeName("customtypes"));
 
         assertNull(banana.getField("newfield"));
-        assertEquals(new Field("arrayfloat", 9489, new ArrayDataType(DataType.FLOAT, 99)), customtypes.getField("arrayfloat"));
+        assertEquals(new Field("arrayfloat", 9489, new ArrayDataType(DataType.FLOAT)), customtypes.getField("arrayfloat"));
 
-        DocumentTypeManagerConfigurer.configure(manager, "file:src/test/document/documentmanager.updated.cfg");
-
+        var sub = DocumentTypeManagerConfigurer.configure(manager, "file:src/test/document/documentmanager.updated.cfg");
+        sub.close();
         banana = manager.getDocumentType(new DataTypeName("banana"));
         customtypes = manager.getDocumentType(new DataTypeName("customtypes"));
 
@@ -415,13 +411,13 @@ search annotationsimplicitstruct {
 
         DocumentTypeManager manager = createConfiguredManager("file:src/test/document/documentmanager.structsanyorder.cfg");
 
-        StructDataType foo = (StructDataType) manager.getDataType("foo");
+        StructDataType foo = (StructDataType) manager.getDataTypeInternal("foo");
         assertNotNull(foo);
         assertEquals(1, foo.getFields().size());
         Field foos1 = foo.getField("s1");
         assertSame(DataType.INT, foos1.getDataType());
 
-        StructDataType sct = (StructDataType) manager.getDataType("sct");
+        StructDataType sct = (StructDataType) manager.getDataTypeInternal("sct");
         assertNotNull(sct);
         assertEquals(4, sct.getFields().size());
         Field s1 = sct.getField("s1");
@@ -503,7 +499,7 @@ search annotationsimplicitstruct {
 
     private static void assertReferenceTypePresentInManager(DocumentTypeManager manager, int refTypeId,
                                                             String refTargetTypeName) {
-        DataType type = manager.getDataType(refTypeId);
+        DataType type = manager.getDataTypeByCode(refTypeId);
         assertTrue(type instanceof ReferenceDataType);
         ReferenceDataType refType = (ReferenceDataType) type;
 
@@ -513,7 +509,8 @@ search annotationsimplicitstruct {
 
     private static DocumentTypeManager createConfiguredManager(String configFilePath) {
         DocumentTypeManager manager = new DocumentTypeManager();
-        DocumentTypeManagerConfigurer.configure(manager, configFilePath);
+        var sub = DocumentTypeManagerConfigurer.configure(manager, configFilePath);
+        sub.close();
         return manager;
     }
 
@@ -531,7 +528,6 @@ search annotationsimplicitstruct {
         DocumentType docType = manager.getDocumentType("ad");
         Field f = docType.getField("campaign_ref");
         assertTrue(f.getDataType() instanceof ReferenceDataType);
-        assertFalse(((ReferenceDataType)f.getDataType()).getTargetType() instanceof TemporaryStructuredDataType);
         assertEquals("Reference<mystiqueCampaign>", f.getDataType().getName());
     }
 
@@ -581,10 +577,98 @@ search annotationsimplicitstruct {
         assertFalse(docType.hasImportedField("a_missing_imported_field"));
     }
 
+    @Test
+    public void position_type_is_recognized_as_v8() {
+        var manager = DocumentTypeManager.fromFile("src/test/document/documentmanager.testv8pos.cfg");
+        var docType = manager.getDocumentType("foobar");
+        var simplepos = docType.getField("simplepos").getDataType();
+        assertTrue(simplepos instanceof StructDataType);
+        var arraypos = docType.getField("arraypos").getDataType();
+        assertTrue(arraypos instanceof ArrayDataType);
+        var array = (ArrayDataType) arraypos;
+        assertTrue(array.getNestedType() instanceof StructDataType);
+    }
+
+    @Test
+    public void declared_struct_types_available() {
+        var manager = DocumentTypeManager.fromFile("src/test/document/documentmanager.declstruct.cfg");
+        var docType = manager.getDocumentType("foo");
+        var struct = docType.getDeclaredStructType("mystructinfoo");
+        assertNotNull(struct);
+        struct = docType.getStructType("mystructinfoo");
+        assertNotNull(struct.getField("f1"));
+        struct = docType.getDeclaredStructType("mystructinbar");
+        assertNull(struct);
+        struct = docType.getStructType("mystructinbar");
+        assertNull(struct);
+        struct = docType.getDeclaredStructType("mystructinfoobar");
+        assertNull(struct);
+        struct = docType.getStructType("mystructinfoobar");
+        assertNull(struct);
+        struct = docType.getDeclaredStructType("mystruct");
+        assertNull(struct);
+        struct = docType.getStructType("mystruct");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f0"));
+
+        docType = manager.getDocumentType("bar");
+        struct = docType.getDeclaredStructType("mystructinfoo");
+        assertNull(struct);
+        struct = docType.getStructType("mystructinfoo");
+        assertNull(struct);
+        struct = docType.getDeclaredStructType("mystructinbar");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f2"));
+        struct = docType.getStructType("mystructinbar");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f2"));
+        struct = docType.getDeclaredStructType("mystructinfoobar");
+        assertNull(struct);
+        struct = docType.getStructType("mystructinfoobar");
+        assertNull(struct);
+        struct = docType.getDeclaredStructType("mystruct");
+        assertNull(struct);
+        struct = docType.getStructType("mystruct");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f0"));
+
+        docType = manager.getDocumentType("foobar");
+        struct = docType.getDeclaredStructType("mystructinfoo");
+        assertNull(struct);
+        struct = docType.getStructType("mystructinfoo");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f1"));
+        struct = docType.getDeclaredStructType("mystructinbar");
+        assertNull(struct);
+        struct = docType.getStructType("mystructinbar");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f2"));
+        struct = docType.getDeclaredStructType("mystructinfoobar");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f3"));
+        struct = docType.getStructType("mystructinfoobar");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f3"));
+        struct = docType.getDeclaredStructType("mystruct");
+        assertNull(struct);
+        struct = docType.getStructType("mystruct");
+        assertNotNull(struct);
+        assertNotNull(struct.getField("f0"));
+
+        assertNull(manager.getDataTypeInternal("mystruct@common"));
+        assertNull(manager.getDataTypeInternal("mystructinfoo@foo"));
+        assertNull(manager.getDataTypeInternal("mystructinbar@bar"));
+        assertNull(manager.getDataTypeInternal("mystructinfoobar@foobar"));
+        assertNull(manager.getDataTypeInternal("mystruct"));
+        assertNull(manager.getDataTypeInternal("mystructinfoo"));
+        assertNull(manager.getDataTypeInternal("mystructinbar"));
+        assertNull(manager.getDataTypeInternal("mystructinfoobar"));
+        assertNull(manager.getDataTypeInternal("foo.header"));
+        assertNull(manager.getDataTypeInternal("position"));
+    }
+
     // TODO test clone(). Also fieldSets not part of clone()..!
 
     // TODO add imported field to equals()/hashCode() for DocumentType? fieldSets not part of this...
-
-    // TODO test reference to own doc type
 
 }

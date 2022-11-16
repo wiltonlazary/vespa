@@ -1,15 +1,18 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "feedconfigstore.h"
 #include "feedstates.h"
+#include "feedconfigstore.h"
 #include "ifeedview.h"
 #include "ireplayconfig.h"
 #include "replaypacketdispatcher.h"
+#include "replay_throttling_policy.h"
 #include <vespa/searchcore/proton/bucketdb/ibucketdbhandler.h>
 #include <vespa/searchcore/proton/feedoperation/operations.h>
 #include <vespa/searchcore/proton/common/eventlogger.h>
+#include <vespa/searchcore/proton/common/replay_feed_token_factory.h>
 #include <vespa/vespalib/util/idestructorcallback.h>
 #include <vespa/vespalib/util/lambdatask.h>
+#include <vespa/vespalib/util/shared_operation_throttler.h>
 #include <cassert>
 
 #include <vespa/log/log.h>
@@ -20,6 +23,8 @@ using search::transactionlog::client::RPC;
 using search::SerialNum;
 using vespalib::Executor;
 using vespalib::makeLambdaTask;
+using vespalib::IDestructorCallback;
+using vespalib::SharedOperationThrottler;
 using vespalib::make_string;
 using proton::bucketdb::IBucketDBHandler;
 
@@ -51,31 +56,49 @@ class TransactionLogReplayPacketHandler : public IReplayPacketHandler {
     FeedConfigStore &_config_store;
     IIncSerialNum   &_inc_serial_num;
     CommitTimeTracker _commitTimeTracker;
+    std::unique_ptr<SharedOperationThrottler> _throttler;
+    std::unique_ptr<feedtoken::ReplayFeedTokenFactory> _replay_feed_token_factory;
+
+    static std::unique_ptr<SharedOperationThrottler> make_throttler(const ReplayThrottlingPolicy& replay_throttling_policy) {
+        auto& params = replay_throttling_policy.get_params();
+        if (!params.has_value()) {
+            return SharedOperationThrottler::make_unlimited_throttler();
+        }
+        return SharedOperationThrottler::make_dynamic_throttler(params.value());
+    }
 
 public:
     TransactionLogReplayPacketHandler(IFeedView *& feed_view_ptr,
                                       IBucketDBHandler &bucketDBHandler,
                                       IReplayConfig &replay_config,
                                       FeedConfigStore &config_store,
+                                      const ReplayThrottlingPolicy& replay_throttling_policy,
                                       IIncSerialNum &inc_serial_num)
         : _feed_view_ptr(feed_view_ptr),
           _bucketDBHandler(bucketDBHandler),
           _replay_config(replay_config),
           _config_store(config_store),
           _inc_serial_num(inc_serial_num),
-          _commitTimeTracker(5ms)
+          _commitTimeTracker(5ms),
+        _throttler(make_throttler(replay_throttling_policy)),
+        _replay_feed_token_factory(std::make_unique<feedtoken::ReplayFeedTokenFactory>(true))
     { }
 
     ~TransactionLogReplayPacketHandler() override = default;
 
+    FeedToken make_replay_feed_token(const FeedOperation& op) {
+        SharedOperationThrottler::Token throttler_token = _throttler->blocking_acquire_one();
+        return _replay_feed_token_factory->make_replay_feed_token(std::move(throttler_token), op);
+    }
+
     void replay(const PutOperation &op) override {
-        _feed_view_ptr->handlePut(FeedToken(), op);
+        _feed_view_ptr->handlePut(make_replay_feed_token(op), op);
     }
     void replay(const RemoveOperation &op) override {
-        _feed_view_ptr->handleRemove(FeedToken(), op);
+        _feed_view_ptr->handleRemove(make_replay_feed_token(op), op);
     }
     void replay(const UpdateOperation &op) override {
-        _feed_view_ptr->handleUpdate(FeedToken(), op);
+        _feed_view_ptr->handleUpdate(make_replay_feed_token(op), op);
     }
     void replay(const NoopOperation &) override {} // ignored
     void replay(const NewConfigOperation &op) override {
@@ -83,7 +106,7 @@ public:
     }
 
     void replay(const DeleteBucketOperation &op) override {
-        _feed_view_ptr->handleDeleteBucket(op);
+        _feed_view_ptr->handleDeleteBucket(op, make_replay_feed_token(op));
     }
     void replay(const SplitBucketOperation &op) override {
         _bucketDBHandler.handleSplit(op.getSerialNum(), op.getSource(),
@@ -94,15 +117,15 @@ public:
                                     op.getSource2(), op.getTarget());
     }
     void replay(const PruneRemovedDocumentsOperation &op) override {
-        _feed_view_ptr->handlePruneRemovedDocuments(op);
+        _feed_view_ptr->handlePruneRemovedDocuments(op, make_replay_feed_token(op));
     }
     void replay(const MoveOperation &op) override {
-        _feed_view_ptr->handleMove(op, vespalib::IDestructorCallback::SP());
+        _feed_view_ptr->handleMove(op, make_replay_feed_token(op));
     }
     void replay(const CreateBucketOperation &) override {
     }
     void replay(const CompactLidSpaceOperation &op) override {
-        _feed_view_ptr->handleCompactLidSpace(op);
+        _feed_view_ptr->handleCompactLidSpace(op, make_replay_feed_token(op));
     }
     NewConfigOperation::IStreamHandler &getNewConfigStreamHandler() override {
         return _config_store;
@@ -172,10 +195,11 @@ ReplayTransactionLogState::ReplayTransactionLogState(
         IBucketDBHandler &bucketDBHandler,
         IReplayConfig &replay_config,
         FeedConfigStore &config_store,
+        const ReplayThrottlingPolicy &replay_throttling_policy,
         IIncSerialNum& inc_serial_num)
     : FeedState(REPLAY_TRANSACTION_LOG),
       _doc_type_name(name),
-      _packet_handler(std::make_unique<TransactionLogReplayPacketHandler>(feed_view_ptr, bucketDBHandler, replay_config, config_store, inc_serial_num))
+      _packet_handler(std::make_unique<TransactionLogReplayPacketHandler>(feed_view_ptr, bucketDBHandler, replay_config, config_store, replay_throttling_policy, inc_serial_num))
 { }
 
 ReplayTransactionLogState::~ReplayTransactionLogState() = default;

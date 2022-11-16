@@ -32,7 +32,6 @@ import java.util.Set;
 import java.util.function.DoubleBinaryOperator;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 import static com.yahoo.tensor.functions.ScalarFunctions.Hamming;
 
@@ -317,31 +316,65 @@ public interface Tensor {
     String toString();
 
     /**
+     * Returns this tensor on the
+     * <a href="https://docs.vespa.ai/en/reference/tensor.html#tensor-literal-form">tensor literal form</a>.
+     *
+     * @param withType whether to prefix the value by the type of this
+     * @param shortForms whether to use short forms where applicable, or always using the verbose form
+     */
+    String toString(boolean withType, boolean shortForms);
+
+    /** Returns an abbreviated string representation of this tensor suitable for human-readable messages */
+    default String toAbbreviatedString() {
+        return toAbbreviatedString(true, true);
+    }
+
+    /**
+     * Returns an abbreviated string representation of this tensor suitable for human-readable messages
+     *
+     * @param withType whether to prefix the value by the type of this
+     * @param shortForms whether to use short forms where applicable, or always using the verbose form
+     */
+    String toAbbreviatedString(boolean withType, boolean shortForms);
+
+    /**
      * Call this from toString in implementations to return this tensor on the
      * <a href="https://docs.vespa.ai/en/reference/tensor.html#tensor-literal-form">tensor literal form</a>.
      * (toString cannot be a default method because default methods cannot override super methods).
      *
      * @param tensor the tensor to return the standard string format of
+     * @param withType whether the type should be prepended to the content
+     * @param maxCells the max number of cells to output, after which just , "..." is output to represent the rest
+     *                 of the cells
      * @return the tensor on the standard string format
      */
-    static String toStandardString(Tensor tensor) {
-        return tensor.type() + ":" + contentToString(tensor);
+    static String toStandardString(Tensor tensor, boolean withType, boolean shortForms, long maxCells) {
+        return (withType ? tensor.type() + ":" : "") + valueToString(tensor, shortForms, maxCells);
     }
 
-    static String contentToString(Tensor tensor) {
+    static String valueToString(Tensor tensor, boolean shortForms, long maxCells) {
         var cellEntries = new ArrayList<>(tensor.cells().entrySet());
+        cellEntries.sort(Map.Entry.comparingByKey());
         if (tensor.type().dimensions().isEmpty()) {
             if (cellEntries.isEmpty()) return "{}";
             return "{" + cellEntries.get(0).getValue() +"}";
         }
-        return "{" + cellEntries.stream().sorted(Map.Entry.comparingByKey())
-                                         .map(cell -> cellToString(cell, tensor.type()))
-                                         .collect(Collectors.joining(",")) +
-               "}";
+        StringBuilder b = new StringBuilder("{");
+        int i = 0;
+        for (; i < cellEntries.size() && i < maxCells; i++) {
+            if (i > 0)
+                b.append(", ");
+            b.append(cellToString(cellEntries.get(i), tensor.type(), shortForms));
+        }
+        if (i == maxCells && i < tensor.size())
+            b.append(", ...");
+        b.append("}");
+        return b.toString();
     }
 
-    private static String cellToString(Map.Entry<TensorAddress, Double> cell, TensorType type) {
-        return (type.rank() > 1 ? cell.getKey().toString(type) : TensorAddress.labelToString(cell.getKey().label(0))) +
+    private static String cellToString(Map.Entry<TensorAddress, Double> cell, TensorType type, boolean shortForms) {
+        return (shortForms && type.rank() == 1 ? TensorAddress.labelToString(cell.getKey().label(0))
+                                               : cell.getKey().toString(type) ) +
                ":" +
                cell.getValue();
     }
@@ -354,6 +387,10 @@ public interface Tensor {
      */
     @Override
     boolean equals(Object o);
+
+    /** Returns a hash computed deterministically from the content of this tensor */
+    @Override
+    int hashCode();
 
     /**
      * Implement here to make this work across implementations.
@@ -516,7 +553,7 @@ public interface Tensor {
                 return IndexedTensor.Builder.of(type, dimensionSizes);
         }
 
-        /** Returns the type this is building */
+        /** Returns the type of the tensor this is building */
         TensorType type();
 
         /** Return a cell builder */
@@ -560,6 +597,9 @@ public interface Tensor {
                 addressBuilder.add(dimension, label);
                 return this;
             }
+
+            /** Returns the type of the tensor this cell is build for. */
+            public TensorType type() { return tensorBuilder.type(); }
 
             public CellBuilder label(String dimension, long label) {
                 return label(dimension, String.valueOf(label));

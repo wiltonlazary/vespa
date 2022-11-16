@@ -1,42 +1,35 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "literalfieldvalue.h"
 #include "literalfieldvalue.hpp"
 #include <vespa/document/util/stringutil.h>
 #include <vespa/vespalib/util/xmlstream.h>
-#include <sstream>
 
 using namespace vespalib::xml;
 
 namespace document {
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(LiteralFieldValueB, FieldValue);
-
-LiteralFieldValueB::LiteralFieldValueB() :
-    FieldValue(),
+LiteralFieldValueB::LiteralFieldValueB(Type type) :
+    FieldValue(type),
     _value(),
-    _backing(),
-    _altered(true)
+    _backing()
 {
     _value = _backing;
 }
 
-LiteralFieldValueB::~LiteralFieldValueB() { }
+LiteralFieldValueB::~LiteralFieldValueB() = default;
 
 LiteralFieldValueB::LiteralFieldValueB(const LiteralFieldValueB& other)
     : FieldValue(other),
       _value(),
-      _backing(other.getValueRef()),
-      _altered(other._altered)
+      _backing(other.getValueRef())
 {
     _value = _backing;
 }
 
-LiteralFieldValueB::LiteralFieldValueB(const string& value)
-    : FieldValue(),
+LiteralFieldValueB::LiteralFieldValueB(Type type, const stringref & value)
+    : FieldValue(type),
       _value(),
-      _backing(value),
-      _altered(true)
+      _backing(value)
 {
     _value = _backing;
 }
@@ -47,7 +40,6 @@ LiteralFieldValueB::operator=(const LiteralFieldValueB& other)
     FieldValue::operator=(other);
     _backing = other.getValueRef();
     _value = _backing;
-    _altered = other._altered;
     return *this;
 }
 
@@ -117,45 +109,7 @@ LiteralFieldValueB::syncBacking() const
     _value = _backing;
 }
 
-
-namespace {
-template <typename T>
-std::string valueToString(T value) {
-    std::ostringstream ost;
-    ost << value;
-    return ost.str();
-}
-}  // namespace
-
-FieldValue&
-LiteralFieldValueB::operator=(int32_t value)
-{
-    setValue(valueToString(value));
-    return *this;
-}
-
-FieldValue&
-LiteralFieldValueB::operator=(int64_t value)
-{
-    setValue(valueToString(value));
-    return *this;
-}
-
-FieldValue&
-LiteralFieldValueB::operator=(float value)
-{
-    setValue(valueToString(value));
-    return *this;
-}
-
-FieldValue&
-LiteralFieldValueB::operator=(double value)
-{
-    setValue(valueToString(value));
-    return *this;
-}
-
-template class LiteralFieldValue<RawFieldValue, DataType::T_RAW, false>;
-template class LiteralFieldValue<StringFieldValue, DataType::T_STRING, true>;
+template class LiteralFieldValue<RawFieldValue, DataType::T_RAW>;
+template class LiteralFieldValue<StringFieldValue, DataType::T_STRING>;
 
 }  // namespace document

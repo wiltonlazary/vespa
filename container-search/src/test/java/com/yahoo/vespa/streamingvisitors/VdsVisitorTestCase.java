@@ -1,10 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.streamingvisitors;
 
+import com.yahoo.document.fieldset.AllFields;
 import com.yahoo.document.select.parser.ParseException;
 import com.yahoo.documentapi.*;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadType;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
 import com.yahoo.documentapi.messagebus.protocol.DocumentSummaryMessage;
 import com.yahoo.documentapi.messagebus.protocol.QueryResultMessage;
@@ -20,24 +19,18 @@ import com.yahoo.text.Utf8String;
 import com.yahoo.vdslib.DocumentSummary;
 import com.yahoo.vdslib.SearchResult;
 import com.yahoo.vespa.objects.BufferSerializer;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author <a href="mailto:ulf@yahoo-inc.com">Ulf Carlin</a>
  */
 public class VdsVisitorTestCase {
-    private LoadTypeSet loadTypeSet = new LoadTypeSet();
-
-    public VdsVisitorTestCase() {
-        loadTypeSet.addLoadType(1, "low", DocumentProtocol.Priority.LOW_1);
-        loadTypeSet.addLoadType(2, "normal", DocumentProtocol.Priority.NORMAL_1);
-    }
 
     private SearchResult createSR(String docId, double rank) {
         BufferSerializer serializer = new BufferSerializer();
@@ -115,7 +108,6 @@ public class VdsVisitorTestCase {
         String selection = null;
         long from = 0;
         long to = 0;
-        String loadTypeName = null;
         DocumentProtocol.Priority priority = null;
         int maxBucketsPerVisitor = 0;
 
@@ -139,7 +131,6 @@ public class VdsVisitorTestCase {
             selection = null;
             from = 123;
             to = 456;
-            loadTypeName = "low";
             priority = DocumentProtocol.Priority.HIGH_2;
             maxBucketsPerVisitor = 2;
 
@@ -193,9 +184,6 @@ public class VdsVisitorTestCase {
         if (qa.to != 0) {
             queryString.append("&streaming.totimestamp=").append(qa.to);
         }
-        if (qa.loadTypeName != null) {
-            queryString.append("&streaming.loadtype=").append(qa.loadTypeName);
-        }
         if (qa.priority != null) {
             queryString.append("&streaming.priority=").append(qa.priority);
         }
@@ -227,29 +215,16 @@ public class VdsVisitorTestCase {
         }
         assertEquals(qa.from, params.getFromTimestamp());
         assertEquals(qa.to, params.getToTimestamp());
-        if (qa.loadTypeName != null && loadTypeSet.getNameMap().get(qa.loadTypeName) != null) {
-            LoadType expectedLoadType = loadTypeSet.getNameMap().get(qa.loadTypeName);
-            assertEquals(expectedLoadType, params.getLoadType());
-            if (qa.priority != null) {
-                assertEquals(qa.priority, params.getPriority());
-            } else {
-                assertEquals(expectedLoadType.getPriority(), params.getPriority());
-            }
+        if (qa.priority != null) {
+            assertEquals(qa.priority, params.getPriority());
         } else {
-            assertEquals(LoadType.DEFAULT, params.getLoadType());
-            if (qa.priority != null) {
-                assertEquals(qa.priority, params.getPriority());
-            } else {
-                assertEquals(DocumentProtocol.Priority.VERY_HIGH, params.getPriority());
-            }
+            assertEquals(DocumentProtocol.Priority.VERY_HIGH, params.getPriority());
         }
-        assertEquals(-1, params.getMaxFirstPassHits());
         if (qa.maxBucketsPerVisitor != 0) {
             assertEquals(qa.maxBucketsPerVisitor, params.getMaxBucketsPerVisitor());
         } else {
             assertEquals(VdsVisitor.MAX_BUCKETS_PER_VISITOR, params.getMaxBucketsPerVisitor());
         }
-        assertEquals(false, params.getDynamicallyIncreaseMaxBucketsPerVisitor());
 
         // Verify parameters based only on query
         assertEquals(qa.timeout*1000, params.getTimeoutMs(),0.0000001);
@@ -257,6 +232,7 @@ public class VdsVisitorTestCase {
         assertEquals("searchvisitor", params.getVisitorLibrary());
         assertEquals(Integer.MAX_VALUE, params.getMaxPending());
         assertEquals(qa.traceLevel, params.getTraceLevel());
+        assertEquals(AllFields.NAME, params.getFieldSet());
 
         // Verify library parameters
         //System.err.println("query="+new String(params.getLibraryParameters().get("query")));
@@ -304,13 +280,13 @@ public class VdsVisitorTestCase {
     }
 
     @Test
-    public void testGetQueryFlags() {
+    void testGetQueryFlags() {
         assertEquals(0x00028000, VdsVisitor.getQueryFlags(new Query("/?query=test")));
         assertEquals(0x00028080, VdsVisitor.getQueryFlags(new Query("/?query=test&hitcountestimate=true")));
         assertEquals(0x00068000, VdsVisitor.getQueryFlags(new Query("/?query=test&rankfeatures=true")));
         assertEquals(0x00068080, VdsVisitor.getQueryFlags(new Query("/?query=test&hitcountestimate=true&rankfeatures=true")));
 
-        Query query= new Query("/?query=test");
+        Query query = new Query("/?query=test");
         assertEquals(0x00028000, VdsVisitor.getQueryFlags(query));
         query.setNoCache(true);
         assertEquals(0x00038000, VdsVisitor.getQueryFlags(query));
@@ -319,10 +295,10 @@ public class VdsVisitorTestCase {
     }
 
     @Test
-    public void testBasics() throws Exception {
+    void testBasics() throws Exception {
         Route route = Route.parse("storageClusterRouteSpec");
         String searchCluster = "searchClusterConfigId";
-        MockVisitorSessionFactory factory = new MockVisitorSessionFactory(loadTypeSet);
+        MockVisitorSessionFactory factory = new MockVisitorSessionFactory();
 
         // Default values and no selection
         QueryArguments qa = new QueryArguments();
@@ -331,10 +307,6 @@ public class VdsVisitorTestCase {
         // Groupdoc
         qa.groupName = "group";
         qa.maxBucketsPerVisitor = 2; // non-default maxBucketsPerVisitor
-        qa.loadTypeName = "normal"; // non-default loadTypeName, default priority
-        verifyVisitorOk(factory, qa, route, searchCluster);
-
-        qa.loadTypeName = "unknown"; // unknown loadTypeName, default priority
         verifyVisitorOk(factory, qa, route, searchCluster);
 
         qa.priority = DocumentProtocol.Priority.NORMAL_2; // unknown loadTypeName, non-default priority
@@ -346,10 +318,10 @@ public class VdsVisitorTestCase {
     }
 
     @Test
-    public void testFailures() throws Exception {
+    void testFailures() throws Exception {
         Route route = Route.parse("storageClusterRouteSpec");
         String searchCluster = "searchClusterConfigId";
-        MockVisitorSessionFactory factory = new MockVisitorSessionFactory(loadTypeSet);
+        MockVisitorSessionFactory factory = new MockVisitorSessionFactory();
 
         // Default values and no selection
         QueryArguments qa = new QueryArguments();
@@ -374,11 +346,11 @@ public class VdsVisitorTestCase {
         VdsVisitor visitor = new VdsVisitor(buildQuery(qa), searchCluster, route, "mytype", factory, 0);
         try {
             visitor.doSearch();
-            assertTrue("Visitor did not fail", false);
+            assertTrue(false, "Visitor did not fail");
         } catch (TimeoutException te) {
-            assertTrue("Got TimeoutException unexpectedly", factory.timeoutQuery);
+            assertTrue(factory.timeoutQuery, "Got TimeoutException unexpectedly");
         } catch (IllegalArgumentException iae) {
-            assertTrue("Got IllegalArgumentException unexpectedly", factory.failQuery);
+            assertTrue(factory.failQuery, "Got IllegalArgumentException unexpectedly");
         }
     }
 
@@ -391,7 +363,7 @@ public class VdsVisitorTestCase {
         visitor.onMessage(createDSM("id:ns:type::2"), ackToken);
         try {
             visitor.onMessage(createM(), ackToken);
-            assertTrue("Unsupported message did not cause exception", false);
+            assertTrue(false, "Unsupported message did not cause exception");
         } catch (UnsupportedOperationException uoe) {
             assertTrue(uoe.getMessage().contains("VdsVisitor can only accept query result, search result, and documentsummary messages"));
         }
@@ -417,10 +389,10 @@ public class VdsVisitorTestCase {
                 assertEquals("id:ns:type::0", hit.getDocId());
                 assertEquals(0.3, hit.getRank(), 0.01);
             } else {
-                assertTrue("Got too many hits", false);
+                assertTrue(false, "Got too many hits");
             }
             DocumentSummary.Summary summary = visitor.getSummaryMap().get(hit.getDocId());
-            assertNotNull("Did not find summary for " + hit.getDocId(), summary);
+            assertNotNull(summary, "Did not find summary for " + hit.getDocId());
         }
     }
 
@@ -490,23 +462,15 @@ public class VdsVisitorTestCase {
 
     private static class MockVisitorSessionFactory implements VdsVisitor.VisitorSessionFactory {
         private VisitorParameters params;
-        private LoadTypeSet loadTypeSet;
         private boolean timeoutQuery = false;
         private boolean failQuery = false;
 
-        private MockVisitorSessionFactory(LoadTypeSet loadTypeSet) {
-            this.loadTypeSet = loadTypeSet;
-        }
+        private MockVisitorSessionFactory() {}
 
         @Override
         public VisitorSession createVisitorSession(VisitorParameters params) throws ParseException {
             this.params = params;
             return new MockVisitorSession(params, timeoutQuery, failQuery);
-        }
-
-        @Override
-        public LoadTypeSet getLoadTypeSet() {
-            return loadTypeSet;
         }
 
         public VisitorParameters getParams() {

@@ -6,23 +6,13 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>config-proxy</artifactId>
   <packaging>jar</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <dependencies>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.yahoo.vespa</groupId>
-      <artifactId>yolean</artifactId>
-      <version>${project.version}</version>
-    </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>config-lib</artifactId>
@@ -54,24 +44,29 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>org.hamcrest</groupId>
-      <artifactId>hamcrest-core</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>filedistribution</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
       <groupId>org.bouncycastle</groupId>
-      <artifactId>bcpkix-jdk15on</artifactId>
+      <artifactId>bcpkix-jdk18on</artifactId>
       <scope>compile</scope>
     </dependency>
     <dependency>
-       <groupId>org.slf4j</groupId>
-       <artifactId>slf4j-api</artifactId>
-       <scope>compile</scope>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -90,29 +85,13 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Xlint:all</arg>
-            <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
         <configuration>
           <finalName>${project.artifactId}-jar-with-dependencies</finalName>
-          <filters>
-            <filter>
-              <!-- Don't include signature files from bouncycastle in uber jar.  -->
-              <artifact>*:*</artifact>
-              <excludes>
-                <exclude>META-INF/*.SF</exclude>
-                <exclude>META-INF/*.DSA</exclude>
-                <exclude>META-INF/*.RSA</exclude>
-              </excludes>
-            </filter>
-          </filters>
+          <createDependencyReducedPom>false</createDependencyReducedPom>
         </configuration>
         <executions>
           <execution>

@@ -11,6 +11,10 @@
 #include <vespa/document/test/make_document_bucket.h>
 #include <vespa/document/update/assignvalueupdate.h>
 #include <vespa/document/update/documentupdate.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/datatype/documenttype.h>
 #include <vespa/fastos/file.h>
 #include <vespa/persistence/dummyimpl/dummypersistence.h>
 #include <vespa/persistence/spi/test.h>
@@ -96,8 +100,7 @@ struct FileStorTestBase : Test {
     void TearDown() override;
 
     void createBucket(document::BucketId bid) {
-        spi::Context context(spi::Priority(0), spi::Trace::TraceLevel(0));
-        _node->getPersistenceProvider().createBucket(makeSpiBucket(bid), context);
+        _node->getPersistenceProvider().createBucket(makeSpiBucket(bid));
 
         StorBucketDatabase::WrappedEntry entry(
                 _node->getStorageBucketDatabase().get(bid, "foo", StorBucketDatabase::CREATE_IF_NONEXISTING));
@@ -198,7 +201,7 @@ struct FileStorTestBase : Test {
                                  const Metric& metric);
 
     auto& thread_metrics_of(FileStorManager& manager) {
-        return manager.get_metrics().disk->threads[0];
+        return manager.get_metrics().threads[0];
     }
 };
 
@@ -247,7 +250,7 @@ struct TestFileStorComponents {
     explicit TestFileStorComponents(FileStorTestBase& test, bool use_small_config = false)
         : manager(nullptr)
     {
-        auto fsm = std::make_unique<FileStorManager>((use_small_config ? test.smallConfig : test.config)->getConfigId(),
+        auto fsm = std::make_unique<FileStorManager>(config::ConfigUri((use_small_config ? test.smallConfig : test.config)->getConfigId()),
                                                      test._node->getPersistenceProvider(),
                                                      test._node->getComponentRegister(), *test._node, test._node->get_host_info());
         manager = fsm.get();
@@ -284,22 +287,24 @@ struct FileStorHandlerComponents {
 FileStorHandlerComponents::~FileStorHandlerComponents() = default;
 
 struct PersistenceHandlerComponents : public FileStorHandlerComponents {
+    vespalib::ISequencedTaskExecutor& executor;
     ServiceLayerComponent component;
     BucketOwnershipNotifier bucketOwnershipNotifier;
     std::unique_ptr<PersistenceHandler> persistenceHandler;
 
     PersistenceHandlerComponents(FileStorTestBase& test)
         : FileStorHandlerComponents(test),
+          executor(test._node->executor()),
           component(test._node->getComponentRegister(), "test"),
           bucketOwnershipNotifier(component, messageSender),
           persistenceHandler()
     {
         vespa::config::content::StorFilestorConfig cfg;
         persistenceHandler =
-                std::make_unique<PersistenceHandler>(test._node->executor(), component, cfg,
+                std::make_unique<PersistenceHandler>(executor, component, cfg,
                                                      test._node->getPersistenceProvider(),
                                                      *filestorHandler, bucketOwnershipNotifier,
-                                                     *metrics.disk->threads[0]);
+                                                     *metrics.threads[0]);
     }
     ~PersistenceHandlerComponents();
     std::unique_ptr<DiskThread> make_disk_thread() {
@@ -307,7 +312,12 @@ struct PersistenceHandlerComponents : public FileStorHandlerComponents {
     }
 };
 
-PersistenceHandlerComponents::~PersistenceHandlerComponents() = default;
+PersistenceHandlerComponents::~PersistenceHandlerComponents()
+{
+    // Ensure any pending tasks have completed before destroying any resources they
+    // may implicitly depend on.
+    executor.sync_all();
+}
 
 }
 
@@ -516,11 +526,11 @@ TEST_F(FileStorManagerTest, handler_priority) {
         filestorHandler.schedule(cmd);
     }
 
-    ASSERT_EQ(15, filestorHandler.getNextMessage(stripeId).second->getPriority());
-    ASSERT_EQ(30, filestorHandler.getNextMessage(stripeId).second->getPriority());
-    ASSERT_EQ(45, filestorHandler.getNextMessage(stripeId).second->getPriority());
-    ASSERT_EQ(60, filestorHandler.getNextMessage(stripeId).second->getPriority());
-    ASSERT_EQ(75, filestorHandler.getNextMessage(stripeId).second->getPriority());
+    ASSERT_EQ(15, filestorHandler.getNextMessage(stripeId).msg->getPriority());
+    ASSERT_EQ(30, filestorHandler.getNextMessage(stripeId).msg->getPriority());
+    ASSERT_EQ(45, filestorHandler.getNextMessage(stripeId).msg->getPriority());
+    ASSERT_EQ(60, filestorHandler.getNextMessage(stripeId).msg->getPriority());
+    ASSERT_EQ(75, filestorHandler.getNextMessage(stripeId).msg->getPriority());
 }
 
 class MessagePusherThread : public document::Runnable {
@@ -570,7 +580,7 @@ public:
     void run() override {
         while (!_done) {
             FileStorHandler::LockedMessage msg = _handler.getNextMessage(_threadId);
-            if (msg.second.get()) {
+            if (msg.msg.get()) {
                 uint32_t originalConfig = _config.load();
                 _fetchedCount++;
                 std::this_thread::sleep_for(5ms);
@@ -641,15 +651,15 @@ TEST_F(FileStorManagerTest, handler_pause) {
         filestorHandler.schedule(cmd);
     }
 
-    ASSERT_EQ(15, filestorHandler.getNextMessage(stripeId).second->getPriority());
+    ASSERT_EQ(15, filestorHandler.getNextMessage(stripeId).msg->getPriority());
 
     {
         ResumeGuard guard = filestorHandler.pause();
         (void)guard;
-        ASSERT_EQ(filestorHandler.getNextMessage(stripeId).second.get(), nullptr);
+        ASSERT_EQ(filestorHandler.getNextMessage(stripeId).msg.get(), nullptr);
     }
 
-    ASSERT_EQ(30, filestorHandler.getNextMessage(stripeId).second->getPriority());
+    ASSERT_EQ(30, filestorHandler.getNextMessage(stripeId).msg->getPriority());
 }
 
 TEST_F(FileStorManagerTest, remap_split) {
@@ -729,8 +739,8 @@ TEST_F(FileStorManagerTest, handler_timeout) {
     std::this_thread::sleep_for(51ms);
     for (;;) {
         auto lock = filestorHandler.getNextMessage(stripeId);
-        if (lock.first.get()) {
-            ASSERT_EQ(200, lock.second->getPriority());
+        if (lock.lock.get()) {
+            ASSERT_EQ(200, lock.msg->getPriority());
             break;
         }
     }
@@ -749,11 +759,11 @@ TEST_F(FileStorManagerTest, priority) {
     BucketOwnershipNotifier bucketOwnershipNotifier(component, c.messageSender);
     vespa::config::content::StorFilestorConfig cfg;
     PersistenceHandler persistenceHandler(_node->executor(), component, cfg, _node->getPersistenceProvider(),
-                                          filestorHandler, bucketOwnershipNotifier, *metrics.disk->threads[0]);
+                                          filestorHandler, bucketOwnershipNotifier, *metrics.threads[0]);
     std::unique_ptr<DiskThread> thread(createThread(persistenceHandler, filestorHandler, component));
 
     PersistenceHandler persistenceHandler2(_node->executor(), component, cfg, _node->getPersistenceProvider(),
-                                           filestorHandler, bucketOwnershipNotifier, *metrics.disk->threads[1]);
+                                           filestorHandler, bucketOwnershipNotifier, *metrics.threads[1]);
     std::unique_ptr<DiskThread> thread2(createThread(persistenceHandler2, filestorHandler, component));
 
     // Creating documents to test with. Different gids, 2 locations.
@@ -772,10 +782,7 @@ TEST_F(FileStorManagerTest, priority) {
     // Create buckets in separate, initial pass to avoid races with puts
     for (uint32_t i=0; i<documents.size(); ++i) {
         document::BucketId bucket(16, factory.getBucketId(documents[i]->getId()).getRawId());
-
-        spi::Context context(spi::Priority(0), spi::Trace::TraceLevel(0));
-
-        _node->getPersistenceProvider().createBucket(makeSpiBucket(bucket), context);
+        _node->getPersistenceProvider().createBucket(makeSpiBucket(bucket));
     }
 
     // Populate bucket with the given data
@@ -806,11 +813,13 @@ TEST_F(FileStorManagerTest, priority) {
 
     // Verify that thread 1 gets documents over 50 pri
     EXPECT_EQ(documents.size(),
-              metrics.disk->threads[0]->operations.getValue()
-              + metrics.disk->threads[1]->operations.getValue());
+              metrics.threads[0]->operations.getValue()
+              + metrics.threads[1]->operations.getValue());
     // Closing file stor handler before threads are deleted, such that
     // file stor threads getNextMessage calls returns.
     filestorHandler.close();
+    // Sync any tasks that may be pending for the handlers on the stack.
+    _node->executor().sync_all();
 }
 
 TEST_F(FileStorManagerTest, split1) {
@@ -832,13 +841,12 @@ TEST_F(FileStorManagerTest, split1) {
         documents.push_back(doc);
     }
     document::BucketIdFactory factory;
-    spi::Context context(spi::Priority(0), spi::Trace::TraceLevel(0));
     {
         // Populate bucket with the given data
         for (uint32_t i=0; i<documents.size(); ++i) {
             document::BucketId bucket(16, factory.getBucketId(documents[i]->getId()).getRawId());
 
-            _node->getPersistenceProvider().createBucket(makeSpiBucket(bucket), context);
+            _node->getPersistenceProvider().createBucket(makeSpiBucket(bucket));
 
             auto cmd = std::make_shared<api::PutCommand>(makeDocumentBucket(bucket), documents[i], 100 + i);
             cmd->setAddress(_Storage3);
@@ -937,7 +945,6 @@ TEST_F(FileStorManagerTest, split_single_group) {
     auto& top = c.top;
 
     setClusterState("storage:2 distributor:1");
-    spi::Context context(spi::Priority(0), spi::Trace::TraceLevel(0));
     for (uint32_t j=0; j<1; ++j) {
         // Test this twice, once where all the data ends up in file with
         // splitbit set, and once where all the data ends up in file with
@@ -951,18 +958,16 @@ TEST_F(FileStorManagerTest, split_single_group) {
             std::string content("Here is some content for all documents");
             std::ostringstream uri;
 
-            uri << "id:footype:testdoctype1:n=" << (state ? 0x10001 : 0x0100001)
-                                   << ":mydoc-" << i;
+            uri << "id:footype:testdoctype1:n=" << (state ? 0x10001 : 0x0100001) << ":mydoc-" << i;
             documents.emplace_back(createDocument(content, uri.str()));
         }
         document::BucketIdFactory factory;
 
         // Populate bucket with the given data
         for (uint32_t i=0; i<documents.size(); ++i) {
-            document::BucketId bucket(16, factory.getBucketId(
-                                documents[i]->getId()).getRawId());
+            document::BucketId bucket(16, factory.getBucketId(documents[i]->getId()).getRawId());
 
-            _node->getPersistenceProvider().createBucket(makeSpiBucket(bucket), context);
+            _node->getPersistenceProvider().createBucket(makeSpiBucket(bucket));
 
             auto cmd = std::make_shared<api::PutCommand>(makeDocumentBucket(bucket), documents[i], 100 + i);
             cmd->setAddress(_Storage3);
@@ -1012,12 +1017,11 @@ FileStorTestBase::putDoc(DummyStorageLink& top,
                          const document::BucketId& target,
                          uint32_t docNum)
 {
-    spi::Context context(spi::Priority(0), spi::Trace::TraceLevel(0));
     document::BucketIdFactory factory;
     document::DocumentId docId(vespalib::make_string("id:ns:testdoctype1:n=%" PRIu64 ":%d", target.getId(), docNum));
     document::BucketId bucket(16, factory.getBucketId(docId).getRawId());
     //std::cerr << "doc bucket is " << bucket << " vs source " << source << "\n";
-    _node->getPersistenceProvider().createBucket(makeSpiBucket(target), context);
+    _node->getPersistenceProvider().createBucket(makeSpiBucket(target));
     Document::SP doc(new Document(*_testdoctype1, docId));
     auto cmd = std::make_shared<api::PutCommand>(makeDocumentBucket(target), doc, docNum+1);
     cmd->setAddress(_Storage3);
@@ -1962,6 +1966,7 @@ TEST_F(FileStorManagerTest, bucket_db_is_populated_from_provider_when_initialize
 
     getDummyPersistence().set_fake_bucket_set(buckets);
     c.manager->initialize_bucket_databases_from_provider();
+    c.manager->complete_internal_initialization();
 
     std::vector<std::pair<document::BucketId, api::BucketInfo>> from_db;
     auto populate_from_db = [&from_db](uint64_t key, auto& entry) {
@@ -2013,7 +2018,7 @@ expect_async_message(StorageMessage::Priority exp_pri,
 {
     EXPECT_TRUE(result.was_scheduled());
     ASSERT_TRUE(result.has_async_message());
-    EXPECT_EQ(exp_pri, result.async_message().second->getPriority());
+    EXPECT_EQ(exp_pri, result.async_message().msg->getPriority());
 }
 
 void
@@ -2045,8 +2050,8 @@ TEST_F(FileStorHandlerTest, async_message_with_lowest_pri_returned_on_schedule)
         auto result = handler->schedule_and_get_next_async_message(make_put_command(30));
         expect_async_message(20, result);
     }
-    EXPECT_EQ(30, get_next_message().second->getPriority());
-    EXPECT_EQ(40, get_next_message().second->getPriority());
+    EXPECT_EQ(30, get_next_message().msg->getPriority());
+    EXPECT_EQ(40, get_next_message().msg->getPriority());
 }
 
 TEST_F(FileStorHandlerTest, no_async_message_returned_if_lowest_pri_message_is_not_async)
@@ -2057,8 +2062,8 @@ TEST_F(FileStorHandlerTest, no_async_message_returned_if_lowest_pri_message_is_n
     auto result = handler->schedule_and_get_next_async_message(make_put_command(30));
     expect_empty_async_message(result);
 
-    EXPECT_EQ(20, get_next_message().second->getPriority());
-    EXPECT_EQ(30, get_next_message().second->getPriority());
+    EXPECT_EQ(20, get_next_message().msg->getPriority());
+    EXPECT_EQ(30, get_next_message().msg->getPriority());
 }
 
 TEST_F(FileStorHandlerTest, inhibited_operations_are_skipped)
@@ -2079,7 +2084,7 @@ TEST_F(FileStorHandlerTest, inhibited_operations_are_skipped)
             expect_async_message(40, result);
         }
     }
-    EXPECT_EQ(30, get_next_message().second->getPriority());
+    EXPECT_EQ(30, get_next_message().msg->getPriority());
 }
 
 } // storage

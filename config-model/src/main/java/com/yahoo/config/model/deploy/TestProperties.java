@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.model.deploy;
 
-import com.google.common.collect.ImmutableList;
 import com.yahoo.config.model.api.ConfigServerSpec;
 import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.EndpointCertificateSecrets;
@@ -10,9 +9,11 @@ import com.yahoo.config.model.api.Quota;
 import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.AthenzDomain;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.vespa.model.container.ApplicationContainerCluster;
 
 import java.net.URI;
 import java.security.cert.X509Certificate;
@@ -20,6 +21,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+
+import static com.yahoo.config.provision.NodeResources.Architecture;
 
 /**
  * A test-only Properties class
@@ -37,11 +40,10 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
     private Zone zone;
     private final Set<ContainerEndpoint> endpoints = Collections.emptySet();
     private boolean useDedicatedNodeForLogserver = false;
-    private boolean useThreePhaseUpdates = false;
     private double defaultTermwiseLimit = 1.0;
     private String jvmGCOptions = null;
-    private String sequencerType = "LATENCY";
-    private int feedTaskLimit = 1000;
+    private String queryDispatchPolicy = "adaptive";
+    private String sequencerType = "THROUGHPUT";
     private boolean firstTimeDeployment = false;
     private String responseSequencerType = "ADAPTIVE";
     private int responseNumThreads = 2;
@@ -50,25 +52,36 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
     private Quota quota = Quota.unlimited();
     private boolean useAsyncMessageHandlingOnSchedule = false;
     private double feedConcurrency = 0.5;
-    private boolean enableFeedBlockInDistributor = true;
+    private double feedNiceness = 0.0;
     private int maxActivationInhibitedOutOfSyncGroups = 0;
     private List<TenantSecretStore> tenantSecretStores = Collections.emptyList();
     private String jvmOmitStackTraceInFastThrowOption;
-    private int maxConcurrentMergesPerNode = 16;
-    private int maxMergeQueueSize = 1024;
-    private boolean ignoreMergeQueueLimit = false;
-    private int largeRankExpressionLimit = 8192;
     private boolean allowDisableMtls = true;
     private List<X509Certificate> operatorCertificates = Collections.emptyList();
-    private double resourceLimitDisk = 0.8;
+    private double resourceLimitDisk = 0.75;
     private double resourceLimitMemory = 0.8;
     private double minNodeRatioPerGroup = 0.0;
     private boolean containerDumpHeapOnShutdownTimeout = false;
     private double containerShutdownTimeout = 50.0;
-    private int distributorMergeBusyWait = 10;
-    private int docstoreCompressionLevel = 9;
-    private double diskBloatFactor = 0.2;
-    private boolean distributorEnhancedMaintenanceScheduling = false;
+    private int maxUnCommittedMemory = 123456;
+    private List<String> zoneDnsSuffixes = List.of();
+    private int maxCompactBuffers = 1;
+    private boolean useV8GeoPositions = true;
+    private List<String> environmentVariables = List.of();
+    private boolean loadCodeAsHugePages = false;
+    private boolean sharedStringRepoNoReclaim = false;
+    private boolean useTwoPhaseDocumentGc = false;
+    private int mbus_java_num_targets = 1;
+    private int mbus_java_events_before_wakeup = 1;
+    private int mbus_cpp_num_targets = 1;
+    private int mbus_cpp_events_before_wakeup = 1;
+    private int rpc_num_targets = 1;
+    private int rpc_events_before_wakeup = 1;
+    private int mbus_network_threads = 1;
+    private int heapSizePercentage = ApplicationContainerCluster.defaultHeapSizePercentageOfTotalNodeMemory;
+    private Architecture adminClusterNodeResourcesArchitecture = Architecture.getDefault();
+    private boolean useRestrictedDataPlaneBindings = false;
+    private Optional<CloudAccount> cloudAccount = Optional.empty();
 
     @Override public ModelContext.FeatureFlags featureFlags() { return this; }
     @Override public boolean multitenant() { return multitenant; }
@@ -82,50 +95,61 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
     @Override public Set<ContainerEndpoint> endpoints() { return endpoints; }
     @Override public String jvmGCOptions(Optional<ClusterSpec.Type> clusterType) { return jvmGCOptions; }
     @Override public String feedSequencerType() { return sequencerType; }
-    @Override public int feedTaskLimit() { return feedTaskLimit; }
     @Override public boolean isBootstrap() { return false; }
     @Override public boolean isFirstTimeDeployment() { return firstTimeDeployment; }
     @Override public boolean useDedicatedNodeForLogserver() { return useDedicatedNodeForLogserver; }
     @Override public Optional<EndpointCertificateSecrets> endpointCertificateSecrets() { return endpointCertificateSecrets; }
     @Override public double defaultTermwiseLimit() { return defaultTermwiseLimit; }
-    @Override public boolean useThreePhaseUpdates() { return useThreePhaseUpdates; }
     @Override public Optional<AthenzDomain> athenzDomain() { return Optional.ofNullable(athenzDomain); }
     @Override public String responseSequencerType() { return responseSequencerType; }
     @Override public int defaultNumResponseThreads() { return responseNumThreads; }
-    @Override public boolean skipCommunicationManagerThread() { return false; }
-    @Override public boolean skipMbusRequestThread() { return false; }
-    @Override public boolean skipMbusReplyThread() { return false; }
     @Override public Quota quota() { return quota; }
     @Override public boolean useAsyncMessageHandlingOnSchedule() { return useAsyncMessageHandlingOnSchedule; }
     @Override public double feedConcurrency() { return feedConcurrency; }
-    @Override public boolean enableFeedBlockInDistributor() { return enableFeedBlockInDistributor; }
+    @Override public double feedNiceness() { return feedNiceness; }
     @Override public int maxActivationInhibitedOutOfSyncGroups() { return maxActivationInhibitedOutOfSyncGroups; }
     @Override public List<TenantSecretStore> tenantSecretStores() { return tenantSecretStores; }
     @Override public String jvmOmitStackTraceInFastThrowOption(ClusterSpec.Type type) { return jvmOmitStackTraceInFastThrowOption; }
     @Override public boolean allowDisableMtls() { return allowDisableMtls; }
     @Override public List<X509Certificate> operatorCertificates() { return operatorCertificates; }
-    @Override public int largeRankExpressionLimit() { return largeRankExpressionLimit; }
-    @Override public int maxConcurrentMergesPerNode() { return maxConcurrentMergesPerNode; }
-    @Override public int maxMergeQueueSize() { return maxMergeQueueSize; }
-    @Override public boolean ignoreMergeQueueLimit() { return ignoreMergeQueueLimit; }
     @Override public double resourceLimitDisk() { return resourceLimitDisk; }
     @Override public double resourceLimitMemory() { return resourceLimitMemory; }
     @Override public double minNodeRatioPerGroup() { return minNodeRatioPerGroup; }
-    @Override public int metricsproxyNumThreads() { return 1; }
     @Override public double containerShutdownTimeout() { return containerShutdownTimeout; }
     @Override public boolean containerDumpHeapOnShutdownTimeout() { return containerDumpHeapOnShutdownTimeout; }
-    @Override public int distributorMergeBusyWait() { return distributorMergeBusyWait; }
-    @Override public double diskBloatFactor() { return diskBloatFactor; }
-    @Override public int docstoreCompressionLevel() { return docstoreCompressionLevel; }
-    @Override public boolean distributorEnhancedMaintenanceScheduling() { return distributorEnhancedMaintenanceScheduling; }
+    @Override public int maxUnCommittedMemory() { return maxUnCommittedMemory; }
+    @Override public List<String> zoneDnsSuffixes() { return zoneDnsSuffixes; }
+    @Override public int maxCompactBuffers() { return maxCompactBuffers; }
+    @Override public boolean useV8GeoPositions() { return useV8GeoPositions; }
+    @Override public List<String> environmentVariables() { return environmentVariables; }
+    @Override public Architecture adminClusterArchitecture() { return adminClusterNodeResourcesArchitecture; }
+    @Override public boolean sharedStringRepoNoReclaim() { return sharedStringRepoNoReclaim; }
+    @Override public boolean loadCodeAsHugePages() { return loadCodeAsHugePages; }
+    @Override public int mbusNetworkThreads() { return mbus_network_threads; }
+    @Override public int mbusJavaRpcNumTargets() { return mbus_java_num_targets; }
+    @Override public int mbusJavaEventsBeforeWakeup() { return mbus_java_events_before_wakeup; }
+    @Override public int mbusCppRpcNumTargets() { return mbus_cpp_num_targets; }
+    @Override public int mbusCppEventsBeforeWakeup() { return mbus_cpp_events_before_wakeup; }
+    @Override public int rpcNumTargets() { return rpc_num_targets; }
+    @Override public int heapSizePercentage() { return heapSizePercentage; }
+    @Override public int rpcEventsBeforeWakeup() { return rpc_events_before_wakeup; }
+    @Override public String queryDispatchPolicy() { return queryDispatchPolicy; }
+    @Override public boolean useTwoPhaseDocumentGc() { return useTwoPhaseDocumentGc; }
+    @Override public boolean useRestrictedDataPlaneBindings() { return useRestrictedDataPlaneBindings; }
+    @Override public Optional<CloudAccount> cloudAccount() { return cloudAccount; }
 
-    public TestProperties docstoreCompressionLevel(int docstoreCompressionLevel) {
-        this.docstoreCompressionLevel = docstoreCompressionLevel;
+    public TestProperties sharedStringRepoNoReclaim(boolean sharedStringRepoNoReclaim) {
+        this.sharedStringRepoNoReclaim = sharedStringRepoNoReclaim;
         return this;
     }
 
-    public TestProperties diskBloatFactor(double diskBloatFactor) {
-        this.diskBloatFactor = diskBloatFactor;
+    public TestProperties loadCodeAsHugePages(boolean loadCodeAsHugePages) {
+        this.loadCodeAsHugePages = loadCodeAsHugePages;
+        return this;
+    }
+
+    public TestProperties maxUnCommittedMemory(int maxUnCommittedMemory) {
+        this.maxUnCommittedMemory = maxUnCommittedMemory;
         return this;
     }
 
@@ -137,12 +161,19 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
         containerShutdownTimeout = value;
         return this;
     }
-    public TestProperties largeRankExpressionLimit(int value) {
-        largeRankExpressionLimit = value;
-        return this;
-    }
+
     public TestProperties setFeedConcurrency(double feedConcurrency) {
         this.feedConcurrency = feedConcurrency;
+        return this;
+    }
+
+    public TestProperties setFeedNiceness(double feedNiceness) {
+        this.feedNiceness = feedNiceness;
+        return this;
+    }
+
+    public TestProperties setHeapSizePercentage(int percentage) {
+        this.heapSizePercentage = percentage;
         return this;
     }
 
@@ -155,12 +186,12 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
         jvmGCOptions = gcOptions;
         return this;
     }
-    public TestProperties setFeedSequencerType(String type) {
-        sequencerType = type;
+    public TestProperties setQueryDispatchPolicy(String policy) {
+        queryDispatchPolicy = policy;
         return this;
     }
-    public TestProperties setFeedTaskLimit(int value) {
-        feedTaskLimit = value;
+    public TestProperties setFeedSequencerType(String type) {
+        sequencerType = type;
         return this;
     }
     public TestProperties setResponseSequencerType(String type) {
@@ -176,27 +207,8 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
         return this;
     }
 
-    public TestProperties setMaxConcurrentMergesPerNode(int maxConcurrentMergesPerNode) {
-        this.maxConcurrentMergesPerNode = maxConcurrentMergesPerNode;
-        return this;
-    }
-    public TestProperties setMaxMergeQueueSize(int maxMergeQueueSize) {
-        this.maxMergeQueueSize = maxMergeQueueSize;
-        return this;
-    }
-
-    public TestProperties setIgnoreMergeQueueLimit(boolean ignoreMergeQueueLimit) {
-        this.ignoreMergeQueueLimit = ignoreMergeQueueLimit;
-        return this;
-    }
-
     public TestProperties setDefaultTermwiseLimit(double limit) {
         defaultTermwiseLimit = limit;
-        return this;
-    }
-
-    public TestProperties setUseThreePhaseUpdates(boolean useThreePhaseUpdates) {
-        this.useThreePhaseUpdates = useThreePhaseUpdates;
         return this;
     }
 
@@ -216,7 +228,7 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
     }
 
     public TestProperties setConfigServerSpecs(List<Spec> configServerSpecs) {
-        this.configServerSpecs = ImmutableList.copyOf(configServerSpecs);
+        this.configServerSpecs = List.copyOf(configServerSpecs);
         return this;
     }
 
@@ -242,11 +254,6 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
 
     public TestProperties setQuota(Quota quota) {
         this.quota = quota;
-        return this;
-    }
-
-    public TestProperties enableFeedBlockInDistributor(boolean enabled) {
-        enableFeedBlockInDistributor = enabled;
         return this;
     }
 
@@ -290,13 +297,72 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
         return this;
     }
 
-    public TestProperties setDistributorMergeBusyWait(int value) {
-        distributorMergeBusyWait = value;
+    public TestProperties setZoneDnsSuffixes(List<String> zoneDnsSuffixes) {
+        this.zoneDnsSuffixes = List.copyOf(zoneDnsSuffixes);
         return this;
     }
 
-    public TestProperties distributorEnhancedMaintenanceScheduling(boolean enhancedScheduling) {
-        distributorEnhancedMaintenanceScheduling = enhancedScheduling;
+    public TestProperties maxCompactBuffers(int maxCompactBuffers) {
+        this.maxCompactBuffers = maxCompactBuffers;
+        return this;
+    }
+
+    public TestProperties setUseV8GeoPositions(boolean value) {
+        this.useV8GeoPositions = value;
+        return this;
+    }
+
+    public TestProperties setEnvironmentVariables(List<String> value) {
+        this.environmentVariables = value;
+        return this;
+    }
+
+    public TestProperties setMbusNetworkThreads(int value) {
+        this.mbus_network_threads = value;
+        return this;
+    }
+    public TestProperties setMbusJavaRpcNumTargets(int value) {
+        this.mbus_java_num_targets = value;
+        return this;
+    }
+    public TestProperties setMbusJavaEventsBeforeWakeup(int value) {
+        this.mbus_java_events_before_wakeup = value;
+        return this;
+    }
+    public TestProperties setMbusCppEventsBeforeWakeup(int value) {
+        this.mbus_cpp_events_before_wakeup = value;
+        return this;
+    }
+    public TestProperties setMbusCppRpcNumTargets(int value) {
+        this.mbus_cpp_num_targets = value;
+        return this;
+    }
+    public TestProperties setRpcNumTargets(int value) {
+        this.rpc_num_targets = value;
+        return this;
+    }
+    public TestProperties setRpcEventsBeforeWakeup(int value) {
+        this.rpc_events_before_wakeup = value;
+        return this;
+    }
+
+    public TestProperties setAdminClusterNodeResourcesArchitecture(Architecture architecture) {
+        this.adminClusterNodeResourcesArchitecture = architecture;
+        return this;
+    }
+
+    public TestProperties setUseTwoPhaseDocumentGc(boolean useTwoPhase) {
+        this.useTwoPhaseDocumentGc = useTwoPhase;
+        return this;
+    }
+
+    public TestProperties setUseRestrictedDataPlaneBindings(boolean useRestrictedDataPlaneBindings) {
+        this.useRestrictedDataPlaneBindings = useRestrictedDataPlaneBindings;
+        return this;
+    }
+
+    public TestProperties setCloudAccount(CloudAccount cloudAccount) {
+        this.cloudAccount = Optional.ofNullable(cloudAccount);
         return this;
     }
 
@@ -320,12 +386,11 @@ public class TestProperties implements ModelContext.Properties, ModelContext.Fea
 
         @Override
         public boolean equals(Object o) {
-            if (o instanceof ConfigServerSpec) {
-                ConfigServerSpec other = (ConfigServerSpec)o;
+            if (o instanceof ConfigServerSpec rhsSpec) {
 
-                return hostName.equals(other.getHostName()) &&
-                        configServerPort == other.getConfigServerPort() &&
-                        zooKeeperPort == other.getZooKeeperPort();
+                return hostName.equals(rhsSpec.getHostName()) &&
+                        configServerPort == rhsSpec.getConfigServerPort() &&
+                        zooKeeperPort == rhsSpec.getZooKeeperPort();
             } else {
                 return false;
             }

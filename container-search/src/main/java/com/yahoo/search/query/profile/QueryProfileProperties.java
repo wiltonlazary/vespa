@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.query.profile;
 
+import ai.vespa.cloud.ZoneInfo;
 import com.yahoo.collections.Pair;
 import com.yahoo.language.process.Embedder;
 import com.yahoo.processing.IllegalInputException;
@@ -14,6 +15,7 @@ import com.yahoo.search.query.profile.types.ConversionContext;
 import com.yahoo.search.query.profile.types.FieldDescription;
 import com.yahoo.search.query.profile.types.QueryProfileFieldType;
 import com.yahoo.search.query.profile.types.QueryProfileType;
+import com.yahoo.tensor.Tensor;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,8 +31,13 @@ import java.util.Map;
  */
 public class QueryProfileProperties extends Properties {
 
+    private static final String ENVIRONMENT = "environment";
+    private static final String REGION = "region";
+    private static final String INSTANCE = "instance";
     private final CompiledQueryProfile profile;
-    private final Embedder embedder;
+    private final Map<String, Embedder> embedders;
+    private final ZoneInfo zoneInfo;
+    private final Map<String, String> zoneContext;
 
     // Note: The priority order is: values has precedence over references
 
@@ -45,14 +52,31 @@ public class QueryProfileProperties extends Properties {
     private List<Pair<CompoundName, CompiledQueryProfile>> references = null;
 
     public QueryProfileProperties(CompiledQueryProfile profile) {
-        this(profile, Embedder.throwsOnUse);
+        this(profile, Embedder.throwsOnUse.asMap(), ZoneInfo.defaultInfo());
+    }
+
+    @Deprecated // TODO: Remove on Vespa 9
+    public QueryProfileProperties(CompiledQueryProfile profile, Embedder embedder) {
+        this(profile, Map.of(Embedder.defaultEmbedderId, embedder), ZoneInfo.defaultInfo());
     }
 
     /** Creates an instance from a profile, throws an exception if the given profile is null */
-    public QueryProfileProperties(CompiledQueryProfile profile, Embedder embedder) {
+    @Deprecated // TODO: Remove on Vespa 9
+    public QueryProfileProperties(CompiledQueryProfile profile, Map<String, Embedder> embedders) {
+        this(profile, embedders, ZoneInfo.defaultInfo());
+    }
+
+    /** Creates an instance from a profile, throws an exception if the given profile is null */
+    public QueryProfileProperties(CompiledQueryProfile profile, Map<String, Embedder> embedders, ZoneInfo zoneInfo) {
         Validator.ensureNotNull("The profile wrapped by this cannot be null", profile);
         this.profile = profile;
-        this.embedder = embedder;
+        this.embedders = embedders;
+        this.zoneInfo = zoneInfo;
+        this.zoneContext = Map.of(
+                ENVIRONMENT, zoneInfo.zone().environment().name(),
+                REGION, zoneInfo.zone().region(),
+                INSTANCE, zoneInfo.application().instance());
+
     }
 
     /** Returns the query profile backing this, or null if none */
@@ -62,6 +86,7 @@ public class QueryProfileProperties extends Properties {
     @Override
     public Object get(CompoundName name, Map<String, String> context,
                       com.yahoo.processing.request.Properties substitution) {
+        context = contextWithZoneInfo(context);
         name = unalias(name, context);
         if (values != null && values.containsKey(name))
             return values.get(name); // Returns this value, even if null
@@ -87,7 +112,17 @@ public class QueryProfileProperties extends Properties {
      */
     @Override
     public void set(CompoundName name, Object value, Map<String, String> context) {
-        // TODO: Refactor
+        context = contextWithZoneInfo(context);
+        setOrCheckSettable(name, value, context, true);
+    }
+
+    @Override
+    public void requireSettable(CompoundName name, Object value, Map<String, String> context) {
+        context = contextWithZoneInfo(context);
+        setOrCheckSettable(name, value, context, false);
+    }
+
+    private void setOrCheckSettable(CompoundName name, Object value, Map<String, String> context, boolean set) {
         try {
             name = unalias(name, context);
 
@@ -101,67 +136,89 @@ public class QueryProfileProperties extends Properties {
             if (runtimeReference != null &&  ! runtimeReference.getSecond().isOverridable(name.rest(runtimeReference.getFirst().size()), context))
                 return;
 
-            // Check types
-            if ( ! profile.getTypes().isEmpty()) {
-                QueryProfileType type;
-                QueryProfileType explicitTypeFromField = null;
-                for (int i = 0; i < name.size(); i++) {
-                    if (explicitTypeFromField != null)
-                        type = explicitTypeFromField;
-                    else
-                        type = profile.getType(name.first(i), context);
-                    if (type == null) continue;
+            if ( ! profile.getTypes().isEmpty())
+                value = convertByType(name, value, context);
 
-                    String localName = name.get(i);
-                    FieldDescription fieldDescription = type.getField(localName);
-                    if (fieldDescription == null && type.isStrict())
-                        throw new IllegalInputException("'" + localName + "' is not declared in " + type + ", and the type is strict");
-
-                    // TODO: In addition to strictness, check legality along the way
-
-                    if (fieldDescription != null) {
-                        if (i == name.size() - 1) { // at the end of the path, check the assignment type
-                            value = fieldDescription.getType().convertFrom(value, new ConversionContext(localName,
-                                                                                                        profile.getRegistry(),
-                                                                                                        embedder,
-                                                                                                        context));
-                            if (value == null)
-                                throw new IllegalInputException("'" + value + "' is not a " +
-                                                                fieldDescription.getType().toInstanceDescription());
-                        }
-                        else if (fieldDescription.getType() instanceof QueryProfileFieldType) {
-                            // If a type is specified, use that instead of the type implied by the name
-                            explicitTypeFromField = ((QueryProfileFieldType) fieldDescription.getType()).getQueryProfileType();
-                        }
-                    }
-
-                }
-            }
-
+            // TODO: On Vespa 9, only support this when the profile is typed and this field has a query profile type
             if (value instanceof String && value.toString().startsWith("ref:")) {
                 if (profile.getRegistry() == null)
                     throw new IllegalInputException("Runtime query profile references does not work when the " +
-                                                       "QueryProfileProperties are constructed without a registry");
+                                                    "QueryProfileProperties are constructed without a registry");
                 String queryProfileId = value.toString().substring(4);
-                value = profile.getRegistry().findQueryProfile(queryProfileId);
-                if (value == null)
-                    throw new IllegalInputException("Query profile '" + queryProfileId + "' is not found");
+                var referencedProfile = profile.getRegistry().findQueryProfile(queryProfileId);
+                if (referencedProfile != null)
+                    value = referencedProfile;
             }
 
-            if (value instanceof CompiledQueryProfile) { // this will be due to one of the two clauses above
-                if (references == null)
-                    references = new ArrayList<>();
-                references.add(0, new Pair<>(name, (CompiledQueryProfile)value)); // references set later has precedence - put first
-            }
-            else {
-                if (values == null)
-                    values = new HashMap<>();
-                values.put(name, value);
+            if (set) {
+                if (value instanceof CompiledQueryProfile) { // this will be due to one of the two clauses above
+                    if (references == null)
+                        references = new ArrayList<>();
+                    // references set later has precedence - put first
+                    references.add(0, new Pair<>(name, (CompiledQueryProfile) value));
+                } else {
+                    if (values == null)
+                        values = new HashMap<>();
+                    values.put(name, value);
+                }
             }
         }
         catch (IllegalArgumentException e) {
-            throw new IllegalInputException("Could not set '" + name + "' to '" + value + "'", e);
+            throw new IllegalInputException("Could not set '" + name + "' to '" + toShortString(value) + "'", e);
         }
+    }
+
+    private String toShortString(Object value) {
+        if (value == null) return "null";
+        if ( ! (value instanceof Tensor)) return value.toString();
+        return ((Tensor)value).toAbbreviatedString();
+    }
+
+    private Object convertByType(CompoundName name, Object value, Map<String, String> context) {
+        QueryProfileType type;
+        QueryProfileType explicitTypeFromField = null;
+        for (int i = 0; i < name.size(); i++) {
+            if (explicitTypeFromField != null)
+                type = explicitTypeFromField;
+            else
+                type = profile.getType(name.first(i), context);
+            if (type == null) continue;
+
+            String localName = name.get(i);
+            FieldDescription fieldDescription = type.getField(localName);
+            if (fieldDescription == null && type.isStrict())
+                throw new IllegalInputException("'" + localName + "' is not declared in " + type + ", and the type is strict");
+            // TODO: In addition to strictness, check legality along the way
+
+            if (fieldDescription != null) {
+                if (i == name.size() - 1) { // at the end of the path, check the assignment type
+                    var conversionContext = new ConversionContext(localName, profile.getRegistry(), embedders, context);
+                    var convertedValue = fieldDescription.getType().convertFrom(value, conversionContext);
+                    if (convertedValue == null
+                        && fieldDescription.getType() instanceof QueryProfileFieldType
+                        && ((QueryProfileFieldType) fieldDescription.getType()).getQueryProfileType() != null) {
+                        // Try the value of the query profile itself instead
+                        var queryProfileValueDescription = ((QueryProfileFieldType) fieldDescription.getType()).getQueryProfileType().getField("");
+                        if (queryProfileValueDescription != null) {
+                            convertedValue = queryProfileValueDescription.getType().convertFrom(value, conversionContext);
+                            if (convertedValue == null)
+                                throw new IllegalInputException("'" + value + "' is neither a " +
+                                                                fieldDescription.getType().toInstanceDescription() + " nor a " +
+                                                                queryProfileValueDescription.getType().toInstanceDescription());
+                        }
+                    } else if (convertedValue == null)
+                        throw new IllegalInputException("'" + value + "' is not a " +
+                                                        fieldDescription.getType().toInstanceDescription());
+
+                    value = convertedValue;
+                } else if (fieldDescription.getType() instanceof QueryProfileFieldType) {
+                    // If a type is specified, use that instead of the type implied by the name
+                    explicitTypeFromField = ((QueryProfileFieldType) fieldDescription.getType()).getQueryProfileType();
+                }
+            }
+
+        }
+        return value;
     }
 
     @Override
@@ -177,6 +234,8 @@ public class QueryProfileProperties extends Properties {
     @Override
     public Map<String, Object> listProperties(CompoundName path, Map<String, String> context,
                                               com.yahoo.processing.request.Properties substitution) {
+        context = contextWithZoneInfo(context);
+
         path = unalias(path, context);
         if (context == null) context = Collections.emptyMap();
 
@@ -224,7 +283,7 @@ public class QueryProfileProperties extends Properties {
         return properties;
     }
 
-    public boolean isComplete(StringBuilder firstMissingName, Map<String,String> context) {
+    public boolean isComplete(StringBuilder firstMissingName, Map<String, String> context) {
         // Are all types reachable from this complete?
         if ( ! reachableTypesAreComplete(CompoundName.empty, profile, firstMissingName, context))
             return false;
@@ -237,6 +296,13 @@ public class QueryProfileProperties extends Properties {
         }
 
         return true;
+    }
+
+    private Map<String, String> contextWithZoneInfo(Map<String, String> context) {
+        if (zoneInfo == ZoneInfo.defaultInfo()) return context;
+        if (context == null || context.isEmpty()) return zoneContext;
+        if (context == zoneContext) return context;
+        return new ChainedMap(context, zoneContext);
     }
 
     private boolean reachableTypesAreComplete(CompoundName prefix, CompiledQueryProfile profile, StringBuilder firstMissingName, Map<String,String> context) {
@@ -293,7 +359,7 @@ public class QueryProfileProperties extends Properties {
         if (profile.getTypes().isEmpty()) return name;
 
         CompoundName unaliasedName = name;
-        for (int i = 0; i<name.size(); i++) {
+        for (int i = 0; i < name.size(); i++) {
             QueryProfileType type = profile.getType(name.first(i), context);
             if (type == null) continue;
             if (type.aliases() == null) continue; // TODO: Make never null

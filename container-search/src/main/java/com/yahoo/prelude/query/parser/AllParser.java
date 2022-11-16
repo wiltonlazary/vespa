@@ -2,6 +2,7 @@
 package com.yahoo.prelude.query.parser;
 
 import com.yahoo.prelude.query.AndItem;
+import com.yahoo.prelude.query.CompositeItem;
 import com.yahoo.prelude.query.IntItem;
 import com.yahoo.prelude.query.Item;
 import com.yahoo.prelude.query.NotItem;
@@ -10,6 +11,7 @@ import com.yahoo.prelude.query.OrItem;
 import com.yahoo.prelude.query.PhraseItem;
 import com.yahoo.prelude.query.QueryCanonicalizer;
 import com.yahoo.prelude.query.RankItem;
+import com.yahoo.prelude.query.WeakAndItem;
 import com.yahoo.search.query.QueryTree;
 import com.yahoo.search.query.parser.ParserEnvironment;
 
@@ -19,15 +21,23 @@ import static com.yahoo.prelude.query.parser.Token.Kind.MINUS;
 import static com.yahoo.prelude.query.parser.Token.Kind.SPACE;
 
 /**
- * Parser for queries of type all.
+ * Parser for queries of type all and weakAnd.
  *
  * @author Steinar Knutsen
  * @author bratseth
  */
 public class AllParser extends SimpleParser {
 
-    public AllParser(ParserEnvironment environment) {
+    private final boolean weakAnd;
+
+    /**
+     * Creates an all/weakAnd parser
+     *
+     * @param weakAnd false to parse into AndItem (by default), true to parse to WeakAndItem
+     */
+    public AllParser(ParserEnvironment environment, boolean weakAnd) {
         super(environment);
+        this.weakAnd = weakAnd;
     }
 
     @Override
@@ -42,10 +52,9 @@ public class AllParser extends SimpleParser {
 
     protected Item parseItemsBody() {
         // Algorithm: Collect positive, negative, and and'ed items, then combine.
-        AndItem and = null;
+        CompositeItem and = null;
         NotItem not = null; // Store negatives here as we go
         Item current;
-
         // Find all items
         do {
             current = negativeItem();
@@ -56,7 +65,7 @@ public class AllParser extends SimpleParser {
 
             current = positiveItem();
             if (current == null)
-                current = indexableItem();
+                current = indexableItem().getFirst();
             if (current == null)
                 current = compositeItem();
 
@@ -88,11 +97,15 @@ public class AllParser extends SimpleParser {
         return root.getRoot() instanceof NullItem ? null : root.getRoot();
     }
 
-    protected AndItem addAnd(Item item, AndItem and) {
+    protected CompositeItem addAnd(Item item, CompositeItem and) {
         if (and == null)
-            and = new AndItem();
+            and = createAnd();
         and.addItem(item);
         return and;
+    }
+
+    private CompositeItem createAnd() {
+        return weakAnd ? new WeakAndItem() : new AndItem();
     }
 
     protected OrItem addOr(Item item, OrItem or) {
@@ -116,15 +129,16 @@ public class AllParser extends SimpleParser {
         try {
             if ( ! tokens.skip(MINUS)) return null;
             if (tokens.currentIsNoIgnore(SPACE)) return null;
-
-            item = indexableItem();
+            var itemAndExplicitIndex = indexableItem();
+            item = itemAndExplicitIndex.getFirst();
+            boolean explicitIndex = itemAndExplicitIndex.getSecond();
             if (item == null) {
                 item = compositeItem();
 
                 if (item != null) {
                     isComposited = true;
                     if (item instanceof OrItem) { // Turn into And
-                        AndItem and = new AndItem();
+                        CompositeItem and = createAnd();
 
                         for (Iterator<Item> i = ((OrItem) item).getItemIterator(); i.hasNext();) {
                             and.addItem(i.next());
@@ -142,11 +156,11 @@ public class AllParser extends SimpleParser {
             // but interpret -(N) as a negative item matching a positive number
             // but interpret --N as a negative item matching a negative number
             if (item instanceof IntItem &&
-                ((IntItem)item).getIndexName().isEmpty() &&
+                ! explicitIndex &&
                 ! isComposited &&
-                ! ((IntItem)item).getNumber().startsWith(("-")))
+                ! ((IntItem)item).getNumber().startsWith(("-"))) {
                 item = null;
-
+            }
             return item;
         } finally {
             if (item == null) {
@@ -191,8 +205,7 @@ public class AllParser extends SimpleParser {
                 rank.addItem(topLevelItem);
             }
             return rank;
-        } else if ((item instanceof RankItem) && (((RankItem)item).getItem(0) instanceof OrItem)) {
-            RankItem itemAsRank = (RankItem) item;
+        } else if ((item instanceof RankItem itemAsRank) && (((RankItem)item).getItem(0) instanceof OrItem)) {
             OrItem or = (OrItem) itemAsRank.getItem(0);
 
             ((RankItem) topLevelItem).addItem(0, or);

@@ -102,7 +102,7 @@ public abstract class NodeCandidate implements Nodelike, Comparable<NodeCandidat
     public abstract boolean isValid();
 
     /** Returns whether this can be replaced by any of the reserved candidates */
-    public boolean replacableBy(List<NodeCandidate> candidates) {
+    public boolean replaceableBy(List<NodeCandidate> candidates) {
         return candidates.stream()
                          .filter(candidate -> candidate.state() == Node.State.reserved)
                          .anyMatch(candidate -> {
@@ -138,6 +138,10 @@ public abstract class NodeCandidate implements Nodelike, Comparable<NodeCandidat
         // Choose reserved nodes from a previous allocation attempt (which exist in node repo)
         if (this.isInNodeRepoAndReserved() && ! other.isInNodeRepoAndReserved()) return -1;
         if (other.isInNodeRepoAndReserved() && ! this.isInNodeRepoAndReserved()) return 1;
+
+        // Choose nodes that are not preferred to retire
+        if (!this.preferToRetire() && other.preferToRetire()) return -1;
+        if (!other.preferToRetire() && this.preferToRetire()) return 1;
 
         // Choose inactive nodes
         if (this.state() == Node.State.inactive && other.state() != Node.State.inactive) return -1;
@@ -238,7 +242,6 @@ public abstract class NodeCandidate implements Nodelike, Comparable<NodeCandidat
 
     private double skewWith(NodeResources resources) {
         if (parent.isEmpty()) return 0;
-
         NodeResources free = freeParentCapacity.justNumbers().subtract(resources.justNumbers());
         return Node.skew(parent.get().flavor().resources(), free);
     }
@@ -425,8 +428,11 @@ public abstract class NodeCandidate implements Nodelike, Comparable<NodeCandidat
                                      allocation.get().hostname(),
                                      parentHostname().get(),
                                      resources.with(parent.get().resources().diskSpeed())
-                                                       .with(parent.get().resources().storageType()),
-                                     NodeType.tenant).build();
+                                              .with(parent.get().resources().storageType())
+                                              .with(parent.get().resources().architecture()),
+                                     NodeType.tenant)
+                            .cloudAccount(parent.get().cloudAccount())
+                            .build();
             return new ConcreteNodeCandidate(node, freeParentCapacity, parent, violatesSpares, exclusiveSwitch, isSurplus, isNew, isResizable);
 
         }

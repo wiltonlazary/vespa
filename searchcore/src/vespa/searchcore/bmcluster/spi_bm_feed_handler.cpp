@@ -39,7 +39,7 @@ class MyOperationComplete : public storage::spi::OperationComplete
 public:
     MyOperationComplete(PersistenceProvider* provider, std::atomic<uint32_t> &errors, const Bucket& bucket, PendingTracker& tracker);
     ~MyOperationComplete() override;
-    void onComplete(std::unique_ptr<storage::spi::Result> result) override;
+    void onComplete(std::unique_ptr<storage::spi::Result> result) noexcept override;
     void addResultHandler(const storage::spi::ResultHandler* resultHandler) override;
 };
 
@@ -58,7 +58,7 @@ MyOperationComplete::~MyOperationComplete()
 }
 
 void
-MyOperationComplete::onComplete(std::unique_ptr<storage::spi::Result> result)
+MyOperationComplete::onComplete(std::unique_ptr<storage::spi::Result> result) noexcept
 {
     if (result->hasError()) {
         ++_errors;
@@ -108,7 +108,7 @@ SpiBmFeedHandler::put(const document::Bucket& bucket, std::unique_ptr<Document> 
     auto provider = get_provider(bucket);
     if (provider) {
         Bucket spi_bucket(bucket);
-        provider->putAsync(spi_bucket, Timestamp(timestamp), std::move(document), context, std::make_unique<MyOperationComplete>(provider, _errors, spi_bucket, tracker));
+        provider->putAsync(spi_bucket, Timestamp(timestamp), std::move(document), std::make_unique<MyOperationComplete>(provider, _errors, spi_bucket, tracker));
     } else {
         ++_errors;
     }
@@ -121,7 +121,7 @@ SpiBmFeedHandler::update(const document::Bucket& bucket, std::unique_ptr<Documen
     auto provider = get_provider(bucket);
     if (provider) {
         Bucket spi_bucket(bucket);
-        provider->updateAsync(spi_bucket, Timestamp(timestamp), std::move(document_update), context, std::make_unique<MyOperationComplete>(provider, _errors, spi_bucket, tracker));
+        provider->updateAsync(spi_bucket, Timestamp(timestamp), std::move(document_update), std::make_unique<MyOperationComplete>(provider, _errors, spi_bucket, tracker));
     } else {
         ++_errors;
     }
@@ -134,7 +134,9 @@ SpiBmFeedHandler::remove(const document::Bucket& bucket, const DocumentId& docum
     auto provider = get_provider(bucket);
     if (provider) {
         Bucket spi_bucket(bucket);
-        provider->removeAsync(spi_bucket, Timestamp(timestamp), document_id, context, std::make_unique<MyOperationComplete>(provider, _errors, spi_bucket, tracker));
+        std::vector<storage::spi::IdAndTimestamp> ids;
+        ids.emplace_back(document_id, Timestamp(timestamp));
+        provider->removeAsync(spi_bucket, std::move(ids), std::make_unique<MyOperationComplete>(provider, _errors, spi_bucket, tracker));
     } else {
         ++_errors;
     }

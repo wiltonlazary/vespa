@@ -31,8 +31,8 @@ TopLevelDistributorTestUtil::~TopLevelDistributorTestUtil() = default;
 void
 TopLevelDistributorTestUtil::create_links()
 {
-    _node.reset(new TestDistributorApp(_config.getConfigId()));
-    _thread_pool = framework::TickingThreadPool::createDefault("distributor");
+    _node = std::make_unique<TestDistributorApp>(_config.getConfigId());
+    _thread_pool = framework::TickingThreadPool::createDefault("distributor", 100ms);
     _stripe_pool = DistributorStripePool::make_non_threaded_pool_for_testing();
     _distributor.reset(new TopLevelDistributor(
             _node->getComponentRegister(),
@@ -43,7 +43,7 @@ TopLevelDistributorTestUtil::create_links()
             _num_distributor_stripes,
             _host_info,
             &_message_sender));
-    _component.reset(new storage::DistributorComponent(_node->getComponentRegister(), "distrtestutil"));
+    _component = std::make_unique<storage::DistributorComponent>(_node->getComponentRegister(), "distrtestutil");
 };
 
 void
@@ -81,7 +81,7 @@ TopLevelDistributorTestUtil::setup_distributor(int redundancy,
     // triggerDistributionChange().
     // This isn't pretty, folks, but it avoids breaking the world for now,
     // as many tests have implicit assumptions about this being the behavior.
-    _distributor->propagateDefaultDistribution(distribution);
+    _distributor->propagate_default_distribution_thread_unsafe(distribution);
     // Explicitly init the stripe pool since onOpen isn't called during testing
     _distributor->start_stripe_pool();
     enable_distributor_cluster_state(state);
@@ -115,13 +115,13 @@ TopLevelDistributorTestUtil::handle_top_level_message(const std::shared_ptr<api:
 void
 TopLevelDistributorTestUtil::close()
 {
-    _component.reset(0);
-    if (_distributor.get()) {
+    _component.reset();
+    if (_distributor) {
         _stripe_pool->stop_and_join(); // Must be tagged as stopped prior to onClose
         _distributor->onClose();
     }
     _sender.clear();
-    _node.reset(0);
+    _node.reset();
     _config = getStandardConfig(false);
 }
 
@@ -446,7 +446,7 @@ TopLevelDistributorTestUtil::trigger_distribution_change(std::shared_ptr<lib::Di
 {
     _node->getComponentRegister().setDistribution(std::move(distr));
     _distributor->storageDistributionChanged();
-    _distributor->enableNextDistribution();
+    _distributor->enable_next_distribution_if_changed();
 }
 
 const lib::ClusterStateBundle&

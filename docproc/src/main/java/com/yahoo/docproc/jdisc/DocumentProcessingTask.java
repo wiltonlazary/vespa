@@ -4,10 +4,10 @@ package com.yahoo.docproc.jdisc;
 import com.yahoo.collections.Tuple2;
 import com.yahoo.docproc.Call;
 import com.yahoo.docproc.CallStack;
-import com.yahoo.docproc.DocprocExecutor;
-import com.yahoo.docproc.DocprocService;
+import com.yahoo.docproc.impl.DocprocExecutor;
+import com.yahoo.docproc.impl.DocprocService;
 import com.yahoo.docproc.DocumentProcessor;
-import com.yahoo.docproc.HandledProcessingException;
+import com.yahoo.docproc.impl.HandledProcessingException;
 import com.yahoo.docproc.Processing;
 import java.util.logging.Level;
 import com.yahoo.yolean.Exceptions;
@@ -19,7 +19,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -32,7 +31,7 @@ public class DocumentProcessingTask implements Runnable {
     private final List<Processing> processingsDone = new ArrayList<>();
 
     private final DocumentProcessingHandler docprocHandler;
-    private RequestContext requestContext;
+    private final RequestContext requestContext;
 
     private final DocprocService service;
     private final ThreadPoolExecutor executor;

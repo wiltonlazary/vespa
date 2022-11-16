@@ -2,10 +2,8 @@
 
 #include <vespa/searchcommon/common/undefinedvalues.h>
 #include <vespa/searchlib/attribute/attributevector.h>
-#include <vespa/searchlib/common/matching_elements.h>
 #include <vespa/searchlib/common/matching_elements_fields.h>
-#include <vespa/searchlib/util/slime_output_raw_buf_adapter.h>
-#include <vespa/searchsummary/docsummary/docsumfieldwriter.h>
+#include <vespa/searchsummary/docsummary/docsum_field_writer.h>
 #include <vespa/searchsummary/docsummary/docsumstate.h>
 #include <vespa/searchsummary/docsummary/docsum_field_writer_state.h>
 #include <vespa/searchsummary/docsummary/attribute_combiner_dfw.h>
@@ -24,7 +22,7 @@ using search::docsummary::AttributeCombinerDFW;
 using search::docsummary::GetDocsumsState;
 using search::docsummary::GetDocsumsStateCallback;
 using search::docsummary::IDocsumEnvironment;
-using search::docsummary::IDocsumFieldWriter;
+using search::docsummary::DocsumFieldWriter;
 using search::docsummary::test::MockAttributeManager;
 using search::docsummary::test::MockStateCallback;
 using search::docsummary::test::SlimeValue;
@@ -34,13 +32,13 @@ namespace {
 struct AttributeCombinerTest : public ::testing::Test
 {
     MockAttributeManager                attrs;
-    std::unique_ptr<IDocsumFieldWriter> writer;
+    std::unique_ptr<DocsumFieldWriter>  writer;
     MockStateCallback                   callback;
     GetDocsumsState                     state;
     std::shared_ptr<search::MatchingElementsFields> _matching_elems_fields;
 
     AttributeCombinerTest();
-    ~AttributeCombinerTest();
+    ~AttributeCombinerTest() override;
     void set_field(const vespalib::string &field_name, bool filter_elements);
     void assertWritten(const vespalib::string &exp, uint32_t docId);
 };
@@ -93,7 +91,7 @@ AttributeCombinerTest::assertWritten(const vespalib::string &exp_slime_as_json, 
 {
     vespalib::Slime act;
     vespalib::slime::SlimeInserter inserter(act);
-    writer->insertField(docId, nullptr, &state, search::docsummary::RES_JSONSTRING, inserter);
+    writer->insertField(docId, nullptr, state, inserter);
 
     SlimeValue exp(exp_slime_as_json);
     EXPECT_EQ(exp.slime, act);
@@ -133,7 +131,7 @@ TEST_F(AttributeCombinerTest, require_that_attribute_combiner_dfw_generates_corr
 {
     set_field("array", true);
     assertWritten("[ { name: 'n1.2', val: 11}]", 1);
-    assertWritten("[ ]", 2);
+    assertWritten("null", 2);
     assertWritten("[ { fval: 130.0, name: 'n3.1', val: 30} ]", 3);
     assertWritten("[ { fval: 141.0, name: 'n4.2', val:  41} ]", 4);
     assertWritten("null", 5);
@@ -143,7 +141,7 @@ TEST_F(AttributeCombinerTest, require_that_attribute_combiner_dfw_generates_corr
 {
     set_field("smap", true);
     assertWritten("[ { key: 'k1.2', value: { name: 'n1.2', val: 11} }]", 1);
-    assertWritten("[ ]", 2);
+    assertWritten("null", 2);
     assertWritten("[ { key: 'k3.1', value: { fval: 130.0, name: 'n3.1', val: 30} } ]", 3);
     assertWritten("[ { key: 'k4.2', value: { fval: 141.0, name: 'n4.2', val:  41} } ]", 4);
     assertWritten("null", 5);
@@ -153,7 +151,7 @@ TEST_F(AttributeCombinerTest, require_that_attribute_combiner_dfw_generates_corr
 {
     set_field("map", true);
     assertWritten("[ { key: 'k1.2', value: 'n1.2'}]", 1);
-    assertWritten("[ ]", 2);
+    assertWritten("null", 2);
     assertWritten("[ { key: 'k3.1', value: 'n3.1' } ]", 3);
     assertWritten("[ { key: 'k4.2', value: 'n4.2' } ]", 4);
     assertWritten("null", 5);

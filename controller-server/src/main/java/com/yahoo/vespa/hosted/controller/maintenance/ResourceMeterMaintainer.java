@@ -1,7 +1,8 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import com.yahoo.concurrent.UncheckedTimeoutException;
+import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.NodeResources;
@@ -9,13 +10,19 @@ import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.zone.ZoneApi;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.jdisc.Metric;
+import com.yahoo.vespa.hosted.controller.Application;
 import com.yahoo.vespa.hosted.controller.ApplicationController;
 import com.yahoo.vespa.hosted.controller.Controller;
+import com.yahoo.vespa.hosted.controller.Instance;
+import com.yahoo.vespa.hosted.controller.api.identifiers.ClusterId;
+import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
+import com.yahoo.vespa.hosted.controller.api.integration.configserver.Cluster;
+import com.yahoo.vespa.hosted.controller.api.integration.configserver.ConfigServerException;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Node;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeFilter;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeRepository;
-import com.yahoo.vespa.hosted.controller.api.integration.resource.MeteringClient;
 import com.yahoo.vespa.hosted.controller.api.integration.resource.ResourceAllocation;
+import com.yahoo.vespa.hosted.controller.api.integration.resource.ResourceDatabaseClient;
 import com.yahoo.vespa.hosted.controller.api.integration.resource.ResourceSnapshot;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
@@ -32,8 +39,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 import java.util.logging.Level;
+import java.util.stream.Collector;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Creates a {@link ResourceSnapshot} per application, which is then passed on to a MeteringClient
@@ -54,7 +64,7 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
 
     private final ApplicationController applications;
     private final NodeRepository nodeRepository;
-    private final MeteringClient meteringClient;
+    private final ResourceDatabaseClient resourceClient;
     private final CuratorDb curator;
     private final SystemName systemName;
     private final Metric metric;
@@ -68,11 +78,11 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
     public ResourceMeterMaintainer(Controller controller,
                                    Duration interval,
                                    Metric metric,
-                                   MeteringClient meteringClient) {
+                                   ResourceDatabaseClient resourceClient) {
         super(controller, interval);
         this.applications = controller.applications();
         this.nodeRepository = controller.serviceRegistry().configServer().nodeRepository();
-        this.meteringClient = meteringClient;
+        this.resourceClient = resourceClient;
         this.curator = controller.curator();
         this.systemName = controller.serviceRegistry().zoneRegistry().system();
         this.metric = metric;
@@ -91,6 +101,7 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
         }
 
         if (systemName.isPublic()) reportResourceSnapshots(resourceSnapshots);
+        if (systemName.isPublic()) reportAllScalingEvents();
         updateDeploymentCost(resourceSnapshots);
         return 1.0;
     }
@@ -109,8 +120,10 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
                     Map<ZoneId, Double> deploymentCosts = snapshotsByInstance.getOrDefault(instanceName, List.of()).stream()
                             .collect(Collectors.toUnmodifiableMap(
                                     ResourceSnapshot::getZoneId,
-                                    snapshot -> cost(snapshot.allocation(), systemName)));
+                                    snapshot -> cost(snapshot.allocation(), systemName),
+                                    Double::sum));
                     locked = locked.with(instanceName, i -> i.withDeploymentCosts(deploymentCosts));
+                    updateCostMetrics(tenantAndApplication.instance(instanceName), deploymentCosts);
                 }
                 applications.store(locked);
             });
@@ -120,18 +133,13 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
     }
 
     private void reportResourceSnapshots(Collection<ResourceSnapshot> resourceSnapshots) {
-        meteringClient.consume(resourceSnapshots);
+        resourceClient.writeResourceSnapshots(resourceSnapshots);
 
-        metric.set(METERING_LAST_REPORTED, clock.millis() / 1000, metric.createContext(Collections.emptyMap()));
-        // total metered resource usage, for alerting on drastic changes
-        metric.set(METERING_TOTAL_REPORTED,
-                   resourceSnapshots.stream()
-                           .mapToDouble(r -> r.getCpuCores() + r.getMemoryGb() + r.getDiskGb()).sum(),
-                   metric.createContext(Collections.emptyMap()));
+        updateMeteringMetrics(resourceSnapshots);
 
         try (var lock = curator.lockMeteringRefreshTime()) {
             if (needsRefresh(curator.readMeteringRefreshTime())) {
-                meteringClient.refresh();
+                resourceClient.refreshMaterializedView();
                 curator.writeMeteringRefreshTime(clock.millis());
             }
         } catch (TimeoutException ignored) {
@@ -148,19 +156,55 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
                 .collect(Collectors.toList());
     }
 
+    private Stream<Instance> mapApplicationToInstances(Application application) {
+        return application.instances().values().stream();
+    }
+
+    private Stream<DeploymentId> mapInstanceToDeployments(Instance instance) {
+        return instance.deployments().keySet().stream()
+                .filter(zoneId -> !zoneId.environment().isTest())
+                .map(zoneId -> new DeploymentId(instance.id(), zoneId));
+    }
+
+    private Stream<Map.Entry<ClusterId, List<Cluster.ScalingEvent>>> mapDeploymentToClusterScalingEvent(DeploymentId deploymentId) {
+        try {
+            return nodeRepository.getApplication(deploymentId.zoneId(), deploymentId.applicationId())
+                    .clusters().entrySet().stream()
+                    .map(cluster -> Map.entry(new ClusterId(deploymentId, cluster.getKey()), cluster.getValue().scalingEvents()));
+        } catch (ConfigServerException e) {
+            log.info("Could not retrieve scaling events for " + deploymentId + ": " + e.getMessage());
+            return Stream.empty();
+        }
+    }
+
+    private void reportAllScalingEvents() {
+        var clusters = controller().applications().asList().stream()
+                .flatMap(this::mapApplicationToInstances)
+                .flatMap(this::mapInstanceToDeployments)
+                .flatMap(this::mapDeploymentToClusterScalingEvent)
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
+
+        for (var cluster : clusters.entrySet()) {
+            resourceClient.writeScalingEvents(cluster.getKey(), cluster.getValue());
+        }
+    }
+
     private Collection<ResourceSnapshot> createResourceSnapshotsFromNodes(ZoneId zoneId, List<Node> nodes) {
         return nodes.stream()
                 .filter(this::unlessNodeOwnerIsSystemApplication)
                 .filter(this::isNodeStateMeterable)
                 .filter(this::isClusterTypeMeterable)
+                // Grouping by ApplicationId -> Architecture -> ResourceSnapshot
                 .collect(Collectors.groupingBy(node ->
-                                node.owner().get(),
-                                Collectors.collectingAndThen(Collectors.toList(),
-                                        nodeList -> ResourceSnapshot.from(
-                                                nodeList,
-                                                clock.instant(),
-                                                zoneId))
-                                )).values();
+                        node.owner().get(),
+                        groupSnapshotsByArchitecture(zoneId)))
+                .values()
+                .stream()
+                .flatMap(list -> list.values().stream())
+                .collect(Collectors.toList());
     }
 
     private boolean unlessNodeOwnerIsSystemApplication(Node node) {
@@ -185,7 +229,7 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
 
     public static double cost(ClusterResources clusterResources, SystemName systemName) {
         NodeResources nr = clusterResources.nodeResources();
-        return cost(new ResourceAllocation(nr.vcpu(), nr.memoryGb(), nr.diskGb()).multiply(clusterResources.nodes()), systemName);
+        return cost(new ResourceAllocation(nr.vcpu(), nr.memoryGb(), nr.diskGb(), nr.architecture()).multiply(clusterResources.nodes()), systemName);
     }
 
     private static double cost(ResourceAllocation allocation, SystemName systemName) {
@@ -193,5 +237,61 @@ public class ResourceMeterMaintainer extends ControllerMaintainer {
         double costDivisor = systemName.isPublic() ? 1.0 : 3.0;
         double cost = new NodeResources(allocation.getCpuCores(), allocation.getMemoryGb(), allocation.getDiskGb(), 0).cost();
         return Math.round(cost * 100.0 / costDivisor) / 100.0;
+    }
+
+    private void updateMeteringMetrics(Collection<ResourceSnapshot> resourceSnapshots) {
+        metric.set(METERING_LAST_REPORTED, clock.millis() / 1000, metric.createContext(Collections.emptyMap()));
+        // total metered resource usage, for alerting on drastic changes
+        metric.set(METERING_TOTAL_REPORTED,
+                resourceSnapshots.stream()
+                        .mapToDouble(r -> r.getCpuCores() + r.getMemoryGb() + r.getDiskGb()).sum(),
+                metric.createContext(Collections.emptyMap()));
+
+        resourceSnapshots.forEach(snapshot -> {
+            var context = getMetricContext(snapshot);
+            metric.set("metering.vcpu", snapshot.getCpuCores(), context);
+            metric.set("metering.memoryGB", snapshot.getMemoryGb(), context);
+            metric.set("metering.diskGB", snapshot.getDiskGb(), context);
+        });
+    }
+
+    private void updateCostMetrics(ApplicationId applicationId, Map<ZoneId, Double> deploymentCost) {
+        deploymentCost.forEach((zoneId, cost) -> {
+            var context = getMetricContext(applicationId, zoneId);
+            metric.set("metering.cost.hourly", cost, context);
+        });
+    }
+
+    private Metric.Context getMetricContext(ApplicationId applicationId, ZoneId zoneId) {
+        return metric.createContext(Map.of(
+                "tenant", applicationId.tenant().value(),
+                "applicationId", applicationId.toFullString(),
+                "zoneId", zoneId.value()
+        ));
+    }
+
+    private Metric.Context getMetricContext(ResourceSnapshot snapshot) {
+        return metric.createContext(Map.of(
+                "tenant", snapshot.getApplicationId().tenant().value(),
+                "applicationId", snapshot.getApplicationId().toFullString(),
+                "zoneId", snapshot.getZoneId().value(),
+                "architecture", snapshot.getArchitecture()
+        ));
+    }
+
+    private Collector<Node, ?, Map<NodeResources.Architecture, ResourceSnapshot>> groupSnapshotsByArchitecture(ZoneId zoneId) {
+        return Collectors.collectingAndThen(
+                Collectors.groupingBy(node -> node.resources().architecture()),
+                convertNodeListToResourceSnapshot(zoneId)
+        );
+    }
+
+    private Function<Map<NodeResources.Architecture, List<Node>>, Map<NodeResources.Architecture, ResourceSnapshot>> convertNodeListToResourceSnapshot(ZoneId zoneId) {
+        return nodeMap -> nodeMap.entrySet()
+                .stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        entry -> ResourceSnapshot.from(entry.getValue(), clock.instant(), zoneId))
+                );
     }
 }

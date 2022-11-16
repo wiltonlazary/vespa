@@ -1,11 +1,5 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/document/base/exceptions.h>
-#include <vespa/eval/eval/simple_value.h>
-#include <vespa/eval/eval/tensor_spec.h>
-#include <vespa/eval/eval/value.h>
-#include <vespa/eval/eval/test/value_compare.h>
-#include <vespa/fastos/file.h>
 #include <vespa/searchlib/attribute/attribute_read_guard.h>
 #include <vespa/searchlib/attribute/attributeguard.h>
 #include <vespa/searchlib/queryeval/nearest_neighbor_blueprint.h>
@@ -23,13 +17,20 @@
 #include <vespa/searchlib/tensor/tensor_attribute.h>
 #include <vespa/searchlib/test/directory_handler.h>
 #include <vespa/searchlib/util/fileutil.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/data/fileheader.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/test/insertion_operators.h>
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/vespalib/util/mmap_file_allocator_factory.h>
 #include <vespa/searchlib/util/bufferwriter.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
+#include <vespa/document/base/exceptions.h>
+#include <vespa/eval/eval/simple_value.h>
+#include <vespa/eval/eval/tensor_spec.h>
+#include <vespa/eval/eval/value.h>
+#include <vespa/eval/eval/test/value_compare.h>
+#include <vespa/fastos/file.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP("tensorattribute_test");
@@ -38,7 +39,6 @@ using document::WrongTensorTypeException;
 using search::AddressSpaceUsage;
 using search::AttributeGuard;
 using search::AttributeVector;
-using search::CompactionStrategy;
 using search::attribute::DistanceMetric;
 using search::attribute::HnswIndexParams;
 using search::queryeval::GlobalFilter;
@@ -46,21 +46,24 @@ using search::queryeval::NearestNeighborBlueprint;
 using search::tensor::DefaultNearestNeighborIndexFactory;
 using search::tensor::DenseTensorAttribute;
 using search::tensor::DirectTensorAttribute;
+using search::tensor::DistanceCalculator;
 using search::tensor::DocVectorAccess;
-using search::tensor::SerializedFastValueAttribute;
 using search::tensor::HnswIndex;
-using search::tensor::HnswNode;
+using search::tensor::HnswTestNode;
 using search::tensor::NearestNeighborIndex;
 using search::tensor::NearestNeighborIndexFactory;
 using search::tensor::NearestNeighborIndexLoader;
 using search::tensor::NearestNeighborIndexSaver;
 using search::tensor::PrepareResult;
+using search::tensor::SerializedFastValueAttribute;
 using search::tensor::TensorAttribute;
-using vespalib::eval::TensorSpec;
+using search::tensor::VectorBundle;
+using vespalib::datastore::CompactionStrategy;
 using vespalib::eval::CellType;
-using vespalib::eval::ValueType;
-using vespalib::eval::Value;
 using vespalib::eval::SimpleValue;
+using vespalib::eval::TensorSpec;
+using vespalib::eval::Value;
+using vespalib::eval::ValueType;
 
 using DoubleVector = std::vector<double>;
 using generation_t = vespalib::GenerationHandler::generation_t;
@@ -99,7 +102,7 @@ private:
 public:
     MockIndexLoader(int& index_value, FastOS_FileInterface& file)
         : _index_value(index_value),
-          _reader(file)
+          _reader(&file)
     {}
     bool load_next() override {
         _index_value = _reader.readHostOrder();
@@ -156,6 +159,12 @@ public:
     void expect_empty_add() const {
         EXPECT_TRUE(_adds.empty());
     }
+    void expect_empty_prepare_add() const {
+        EXPECT_TRUE(_prepare_adds.empty());
+    }
+    void expect_empty_complete_add() const {
+        EXPECT_TRUE(_complete_adds.empty());
+    }
     void expect_entry(uint32_t exp_docid, const DoubleVector& exp_vector, const EntryVector& entries) const {
         EXPECT_EQUAL(1u, entries.size());
         EXPECT_EQUAL(exp_docid, entries.back().first);
@@ -190,14 +199,15 @@ public:
     size_t memory_usage_cnt() const { return _memory_usage_cnt; }
 
     void add_document(uint32_t docid) override {
-        auto vector = _vectors.get_vector(docid).typify<double>();
+        auto vector = _vectors.get_vector(docid, 0).typify<double>();
         _adds.emplace_back(docid, DoubleVector(vector.begin(), vector.end()));
     }
     std::unique_ptr<PrepareResult> prepare_add_document(uint32_t docid,
-                                                        vespalib::eval::TypedCells vector,
+                                                        VectorBundle vectors,
                                                         vespalib::GenerationHandler::Guard guard) const override {
         (void) guard;
-        auto d_vector = vector.typify<double>();
+        assert(vectors.subspaces() == 1);
+        auto d_vector = vectors.cells(0).typify<double>();
         _prepare_adds.emplace_back(docid, DoubleVector(d_vector.begin(), d_vector.end()));
         return std::make_unique<MockPrepareResult>(docid);
     }
@@ -206,23 +216,24 @@ public:
         auto* mock_result = dynamic_cast<MockPrepareResult*>(prepare_result.get());
         assert(mock_result);
         EXPECT_EQUAL(docid, mock_result->docid);
-        auto vector = _vectors.get_vector(docid).typify<double>();
+        auto vector = _vectors.get_vector(docid, 0).typify<double>();
         _complete_adds.emplace_back(docid, DoubleVector(vector.begin(), vector.end()));
     }
     void remove_document(uint32_t docid) override {
-        auto vector = _vectors.get_vector(docid).typify<double>();
+        auto vector = _vectors.get_vector(docid, 0).typify<double>();
         _removes.emplace_back(docid, DoubleVector(vector.begin(), vector.end()));
     }
-    void transfer_hold_lists(generation_t current_gen) override {
+    void assign_generation(generation_t current_gen) override {
         _transfer_gen = current_gen;
     }
-    void trim_hold_lists(generation_t first_used_gen) override {
-        _trim_gen = first_used_gen;
+    void reclaim_memory(generation_t oldest_used_gen) override {
+        _trim_gen = oldest_used_gen;
     }
     bool consider_compact(const CompactionStrategy&) override {
         return false;
     }
-    vespalib::MemoryUsage update_stat() override {
+    vespalib::MemoryUsage update_stat(const CompactionStrategy&) override {
+        ++_memory_usage_cnt;
         return vespalib::MemoryUsage();
     }
     vespalib::MemoryUsage memory_usage() const override {
@@ -251,7 +262,7 @@ public:
         return std::vector<Neighbor>();
     }
     std::vector<Neighbor> find_top_k_with_filter(uint32_t k, vespalib::eval::TypedCells vector,
-                                                 const search::BitVector& filter, uint32_t explore_k,
+                                                 const GlobalFilter& filter, uint32_t explore_k,
                                                  double distance_threshold) const override
     {
         (void) k;
@@ -341,28 +352,11 @@ struct Fixture {
     vespalib::ThreadStackExecutor _executor;
     bool _denseTensors;
     FixtureTraits _traits;
+    vespalib::string _mmap_allocator_base_dir;
 
-    Fixture(const vespalib::string &typeSpec,
-            FixtureTraits traits = FixtureTraits())
-        : _dir_handler(test_dir),
-          _cfg(BasicType::TENSOR, CollectionType::SINGLE),
-          _name(attr_name),
-          _typeSpec(typeSpec),
-          _index_factory(),
-          _tensorAttr(),
-          _attr(),
-          _executor(1, 0x10000),
-          _denseTensors(false),
-          _traits(traits)
-    {
-        if (traits.enable_hnsw_index) {
-            _cfg.set_distance_metric(DistanceMetric::Euclidean);
-            _cfg.set_hnsw_index_params(HnswIndexParams(4, 20, DistanceMetric::Euclidean));
-        }
-        setup();
-    }
+    Fixture(const vespalib::string &typeSpec, FixtureTraits traits = FixtureTraits());
 
-    ~Fixture() {}
+    ~Fixture();
 
     void setup() {
         _cfg.setTensorType(ValueType::from_spec(_typeSpec));
@@ -536,8 +530,35 @@ struct Fixture {
     void testEmptyTensor();
     void testOnHoldAccounting();
     void test_populate_address_space_usage();
+    void test_mmap_file_allocator();
 };
 
+Fixture::Fixture(const vespalib::string &typeSpec, FixtureTraits traits)
+    : _dir_handler(test_dir),
+      _cfg(BasicType::TENSOR, CollectionType::SINGLE),
+      _name(attr_name),
+      _typeSpec(typeSpec),
+      _index_factory(),
+      _tensorAttr(),
+      _attr(),
+      _executor(1, 0x10000),
+      _denseTensors(false),
+      _traits(traits),
+      _mmap_allocator_base_dir("mmap-file-allocator-factory-dir")
+{
+    if (traits.enable_hnsw_index) {
+        _cfg.set_distance_metric(DistanceMetric::Euclidean);
+        _cfg.set_hnsw_index_params(HnswIndexParams(4, 20, DistanceMetric::Euclidean));
+    }
+    vespalib::alloc::MmapFileAllocatorFactory::instance().setup(_mmap_allocator_base_dir);
+    setup();
+}
+
+Fixture::~Fixture()
+{
+    vespalib::alloc::MmapFileAllocatorFactory::instance().setup("");
+    std::filesystem::remove_all(std::filesystem::path(_mmap_allocator_base_dir));
+}
 
 void
 Fixture::set_example_tensors()
@@ -559,7 +580,7 @@ Fixture::save_example_tensors_with_mock_index()
     set_example_tensors();
     mock_index().save_index_with_value(123);
     save();
-    EXPECT_TRUE(vespalib::fileExists(_name + ".nnidx"));
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(_name + ".nnidx")));
 }
 
 void
@@ -680,7 +701,6 @@ Fixture::get_file_header()
     vespalib::string file_name = attr_name + ".dat";
     EXPECT_TRUE(file.OpenReadOnly(file_name.c_str()));
     (void) header.readFile(file);
-    file.Close();
     return header;
 }
 
@@ -742,6 +762,23 @@ Fixture::test_populate_address_space_usage()
     }
 }
 
+void
+Fixture::test_mmap_file_allocator()
+{
+    std::filesystem::path allocator_dir(_mmap_allocator_base_dir + "/0.my_attr");
+    if (!_traits.use_mmap_file_allocator) {
+        EXPECT_FALSE(std::filesystem::is_directory(allocator_dir));
+    } else {
+        EXPECT_TRUE(std::filesystem::is_directory(allocator_dir));
+        int entry_cnt = 0;
+        for (auto& entry : std::filesystem::directory_iterator(allocator_dir)) {
+            EXPECT_LESS(0u, entry.file_size());
+            ++entry_cnt;
+        }
+        EXPECT_LESS(0, entry_cnt);
+    }
+}
+
 template <class MakeFixture>
 void testAll(MakeFixture &&f)
 {
@@ -753,11 +790,17 @@ void testAll(MakeFixture &&f)
     TEST_DO(f()->testEmptyTensor());
     TEST_DO(f()->testOnHoldAccounting());
     TEST_DO(f()->test_populate_address_space_usage());
+    TEST_DO(f()->test_mmap_file_allocator());
 }
 
 TEST("Test sparse tensors with generic tensor attribute")
 {
     testAll([]() { return std::make_shared<Fixture>(sparseSpec); });
+}
+
+TEST("Test sparse tensors with generic tensor attribute, paged")
+{
+    testAll([]() { return std::make_shared<Fixture>(sparseSpec, FixtureTraits().mmap_file_allocator()); });
 }
 
 TEST("Test sparse tensors with direct tensor attribute")
@@ -770,9 +813,19 @@ TEST("Test dense tensors with generic tensor attribute")
     testAll([]() { return std::make_shared<Fixture>(denseSpec); });
 }
 
+TEST("Test dense tensors with generic tensor attribute, paged")
+{
+    testAll([]() { return std::make_shared<Fixture>(denseSpec, FixtureTraits().mmap_file_allocator()); });
+}
+
 TEST("Test dense tensors with dense tensor attribute")
 {
     testAll([]() { return std::make_shared<Fixture>(denseSpec, FixtureTraits().dense()); });
+}
+
+TEST("Test dense tensors with dense tensor attribute, paged")
+{
+    testAll([]() { return std::make_shared<Fixture>(denseSpec, FixtureTraits().dense().mmap_file_allocator()); });
 }
 
 TEST_F("Hnsw index is NOT instantiated in dense tensor attribute by default",
@@ -799,7 +852,7 @@ TEST_F("Hnsw index is instantiated in dense tensor attribute when specified in c
 }
 
 void
-expect_level_0(uint32_t exp_docid, const HnswNode& node)
+expect_level_0(uint32_t exp_docid, const HnswTestNode& node)
 {
     ASSERT_GREATER_EQUAL(node.size(), 1u);
     ASSERT_EQUAL(1u, node.level(0).size());
@@ -816,7 +869,7 @@ TEST_F("Hnsw index is integrated in dense tensor attribute and can be saved and 
     expect_level_0(2, index_a.get_node(1));
     expect_level_0(1, index_a.get_node(2));
     f.save();
-    EXPECT_TRUE(vespalib::fileExists(attr_name + ".nnidx"));
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(attr_name + ".nnidx")));
 
     f.load();
     auto &index_b = f.hnsw_index();
@@ -877,6 +930,30 @@ TEST_F("nearest neighbor index can be updated in two phases", DenseTensorAttribu
         index.expect_remove(1, {3, 5});
         f.assertGetTensor(vec_b, 1);
         index.expect_complete_add(1, {7, 9});
+    }
+}
+
+TEST_F("nearest neighbor index is NOT updated when tensor value is unchanged", DenseTensorAttributeMockIndex)
+{
+    auto& index = f.mock_index();
+    {
+        auto vec_a = vec_2d(3, 5);
+        auto prepare_result = f.prepare_set_tensor(1, vec_a);
+        index.expect_prepare_add(1, {3, 5});
+        f.complete_set_tensor(1, vec_a, std::move(prepare_result));
+        f.assertGetTensor(vec_a, 1);
+        index.expect_complete_add(1, {3, 5});
+    }
+    index.clear();
+    {
+        // Replaces previous value with the same value
+        auto vec_b = vec_2d(3, 5);
+        auto prepare_result = f.prepare_set_tensor(1, vec_b);
+        EXPECT_TRUE(prepare_result.get() == nullptr);
+        index.expect_empty_prepare_add();
+        f.complete_set_tensor(1, vec_b, std::move(prepare_result));
+        f.assertGetTensor(vec_b, 1);
+        index.expect_empty_complete_add();
     }
 }
 
@@ -947,7 +1024,7 @@ TEST_F("onLoad() reconstructs nearest neighbor index if save file does not exist
 {
     f.set_example_tensors();
     f.save();
-    EXPECT_FALSE(vespalib::fileExists(attr_name + ".nnidx"));
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(attr_name + ".nnidx")));
 
     f.load(); // index is reconstructed by adding all loaded tensors
     auto& index = f.mock_index();
@@ -1013,8 +1090,13 @@ TEST_F("Nearest neighbor index type is added to attribute file header", DenseTen
 
 template <typename ParentT>
 class NearestNeighborBlueprintFixtureBase : public ParentT {
+private:
+    std::unique_ptr<Value> _query_tensor;
+
 public:
-    NearestNeighborBlueprintFixtureBase() {
+    NearestNeighborBlueprintFixtureBase()
+        : _query_tensor()
+    {
         this->set_tensor(1, vec_2d(1, 1));
         this->set_tensor(2, vec_2d(2, 2));
         this->set_tensor(3, vec_2d(3, 3));
@@ -1027,21 +1109,21 @@ public:
         this->set_tensor(10, vec_2d(0, 0));
     }
 
-    std::unique_ptr<Value> createDenseTensor(const TensorSpec &spec) {
-        return SimpleValue::from_spec(spec);
+    const Value& create_query_tensor(const TensorSpec& spec) {
+        _query_tensor = SimpleValue::from_spec(spec);
+        return *_query_tensor;
     }
 
-    std::unique_ptr<NearestNeighborBlueprint> make_blueprint(bool approximate = true, double brute_force_limit = 0.05) {
+    std::unique_ptr<NearestNeighborBlueprint> make_blueprint(bool approximate = true, double global_filter_lower_limit = 0.05) {
         search::queryeval::FieldSpec field("foo", 0, 0);
         auto bp = std::make_unique<NearestNeighborBlueprint>(
             field,
-            this->as_dense_tensor(),
-            createDenseTensor(vec_2d(17, 42)),
+            std::make_unique<DistanceCalculator>(this->as_dense_tensor(),
+                                                 create_query_tensor(vec_2d(17, 42))),
             3, approximate, 5,
             100100.25,
-            brute_force_limit);
+            global_filter_lower_limit, 1.0);
         EXPECT_EQUAL(11u, bp->getState().estimate().estHits);
-        EXPECT_EQUAL(approximate, bp->may_approximate());
         EXPECT_EQUAL(100100.25 * 100100.25, bp->get_distance_threshold());
         return bp;
     }
@@ -1052,34 +1134,46 @@ public:
     DenseTensorAttributeWithoutIndex() : Fixture(vec_2d_spec, FixtureTraits().dense()) {}
 };
 
+using NNBA = NearestNeighborBlueprint::Algorithm;
 using NearestNeighborBlueprintFixture = NearestNeighborBlueprintFixtureBase<DenseTensorAttributeMockIndex>;
 using NearestNeighborBlueprintWithoutIndexFixture = NearestNeighborBlueprintFixtureBase<DenseTensorAttributeWithoutIndex>;
 
-TEST_F("NN blueprint handles empty filter", NearestNeighborBlueprintFixture)
+TEST_F("NN blueprint can use brute force", NearestNeighborBlueprintFixture)
+{
+    auto bp = f.make_blueprint(false);
+    EXPECT_EQUAL(NNBA::EXACT, bp->get_algorithm());
+}
+
+TEST_F("NN blueprint handles empty filter (post-filtering)", NearestNeighborBlueprintFixture)
 {
     auto bp = f.make_blueprint();
     auto empty_filter = GlobalFilter::create();
-    bp->set_global_filter(*empty_filter);
-    EXPECT_EQUAL(3u, bp->getState().estimate().estHits);
-    EXPECT_TRUE(bp->may_approximate());
+    bp->set_global_filter(*empty_filter, 0.6);
+    // targetHits is adjusted based on the estimated hit ratio of the query.
+    EXPECT_EQUAL(3u, bp->get_target_hits());
+    EXPECT_EQUAL(5u, bp->get_adjusted_target_hits());
+    EXPECT_EQUAL(5u, bp->getState().estimate().estHits);
+    EXPECT_EQUAL(NNBA::INDEX_TOP_K, bp->get_algorithm());
 }
 
-TEST_F("NN blueprint handles strong filter", NearestNeighborBlueprintFixture)
+TEST_F("NN blueprint handles strong filter (pre-filtering)", NearestNeighborBlueprintFixture)
 {
     auto bp = f.make_blueprint();
-    auto filter = search::BitVector::create(11);
+    auto filter = search::BitVector::create(1,11);
     filter->setBit(3);
     filter->invalidateCachedCount();
     auto strong_filter = GlobalFilter::create(std::move(filter));
-    bp->set_global_filter(*strong_filter);
+    bp->set_global_filter(*strong_filter, 0.25);
+    EXPECT_EQUAL(3u, bp->get_target_hits());
+    EXPECT_EQUAL(3u, bp->get_adjusted_target_hits());
     EXPECT_EQUAL(1u, bp->getState().estimate().estHits);
-    EXPECT_TRUE(bp->may_approximate());
+    EXPECT_EQUAL(NNBA::INDEX_TOP_K_WITH_FILTER, bp->get_algorithm());
 }
 
-TEST_F("NN blueprint handles weak filter", NearestNeighborBlueprintFixture)
+TEST_F("NN blueprint handles weak filter (pre-filtering)", NearestNeighborBlueprintFixture)
 {
     auto bp = f.make_blueprint();
-    auto filter = search::BitVector::create(11);
+    auto filter = search::BitVector::create(1,11);
     filter->setBit(1);
     filter->setBit(3);
     filter->setBit(5);
@@ -1088,21 +1182,25 @@ TEST_F("NN blueprint handles weak filter", NearestNeighborBlueprintFixture)
     filter->setBit(11);
     filter->invalidateCachedCount();
     auto weak_filter = GlobalFilter::create(std::move(filter));
-    bp->set_global_filter(*weak_filter);
+    bp->set_global_filter(*weak_filter, 0.6);
+    EXPECT_EQUAL(3u, bp->get_target_hits());
+    EXPECT_EQUAL(3u, bp->get_adjusted_target_hits());
     EXPECT_EQUAL(3u, bp->getState().estimate().estHits);
-    EXPECT_TRUE(bp->may_approximate());
+    EXPECT_EQUAL(NNBA::INDEX_TOP_K_WITH_FILTER, bp->get_algorithm());
 }
 
-TEST_F("NN blueprint handles strong filter triggering brute force search", NearestNeighborBlueprintFixture)
+TEST_F("NN blueprint handles strong filter triggering exact search", NearestNeighborBlueprintFixture)
 {
     auto bp = f.make_blueprint(true, 0.2);
-    auto filter = search::BitVector::create(11);
+    auto filter = search::BitVector::create(1,11);
     filter->setBit(3);
     filter->invalidateCachedCount();
     auto strong_filter = GlobalFilter::create(std::move(filter));
-    bp->set_global_filter(*strong_filter);
+    bp->set_global_filter(*strong_filter, 0.6);
+    EXPECT_EQUAL(3u, bp->get_target_hits());
+    EXPECT_EQUAL(3u, bp->get_adjusted_target_hits());
     EXPECT_EQUAL(11u, bp->getState().estimate().estHits);
-    EXPECT_FALSE(bp->may_approximate());
+    EXPECT_EQUAL(NNBA::EXACT_FALLBACK, bp->get_algorithm());
 }
 
 TEST_F("NN blueprint wants global filter when having index", NearestNeighborBlueprintFixture)
@@ -1121,19 +1219,6 @@ TEST_F("NN blueprint do NOT want global filter when NOT having index (implicit b
 {
     auto bp = f.make_blueprint();
     EXPECT_FALSE(bp->getState().want_global_filter());
-}
-
-TEST("Dense tensor attribute with paged flag uses mmap file allocator")
-{
-    vespalib::string basedir("mmap-file-allocator-factory-dir");
-    vespalib::alloc::MmapFileAllocatorFactory::instance().setup(basedir);
-    {
-        Fixture f(vec_2d_spec, FixtureTraits().dense().mmap_file_allocator());
-        vespalib::string allocator_dir(basedir + "/0.my_attr");
-        EXPECT_TRUE(vespalib::isDirectory(allocator_dir));
-    }
-    vespalib::alloc::MmapFileAllocatorFactory::instance().setup("");
-    vespalib::rmdir(basedir, true);
 }
 
 TEST_MAIN() { TEST_RUN_ALL(); }

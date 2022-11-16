@@ -19,22 +19,6 @@ void assign(S &lhs, const S &rhs) {
     lhs = rhs;
 }
 
-TEST("require that ArrayDataType can be assigned to.") {
-    ArrayDataType type1(*DataType::STRING);
-    ArrayDataType type2(*DataType::INT);
-    assign(type1, type1);
-    EXPECT_EQUAL(*DataType::STRING, type1.getNestedType());
-    type1 = type2;
-    EXPECT_EQUAL(*DataType::INT, type1.getNestedType());
-}
-
-TEST("require that ArrayDataType can be cloned.") {
-    ArrayDataType type1(*DataType::STRING);
-    std::unique_ptr<ArrayDataType> type2(type1.clone());
-    ASSERT_TRUE(type2.get());
-    EXPECT_EQUAL(*DataType::STRING, type2->getNestedType());
-}
-
 TEST("require that assignment operator works for LongFieldValue") {
     LongFieldValue val;
     val = "1";
@@ -95,6 +79,15 @@ TEST_F("require that TensorDataType can check for assignable tensor type", Tenso
     EXPECT_FALSE(f.isAssignableType("tensor(x[3])"));
     EXPECT_FALSE(f.isAssignableType("tensor(y[2])"));
     EXPECT_FALSE(f.isAssignableType("tensor(x{})"));
+}
+
+TEST("TensorDataType implements equals() that takes underlying tensor type into consideration")
+{
+    auto a = TensorDataType::fromSpec("tensor<float>(x[4])");
+    auto b = TensorDataType::fromSpec("tensor<bfloat16>(x[4])");
+    EXPECT_EQUAL(*a, *a);
+    EXPECT_NOT_EQUAL(*a, *b);
+    EXPECT_NOT_EQUAL(*b, *a);
 }
 
 }  // namespace

@@ -5,8 +5,8 @@
 #include "posting_iterator.h"
 #include <vespa/searchlib/bitcompression/posocccompression.h>
 #include <vespa/searchlib/queryeval/booleanmatchiteratorwrapper.h>
-#include <vespa/searchlib/queryeval/searchiterator.h>
 #include <vespa/searchlib/queryeval/filter_wrapper.h>
+#include <vespa/searchlib/queryeval/searchiterator.h>
 #include <vespa/vespalib/btree/btree.hpp>
 #include <vespa/vespalib/btree/btreeiterator.hpp>
 #include <vespa/vespalib/btree/btreenode.hpp>
@@ -14,10 +14,9 @@
 #include <vespa/vespalib/btree/btreenodestore.hpp>
 #include <vespa/vespalib/btree/btreeroot.hpp>
 #include <vespa/vespalib/btree/btreestore.hpp>
-#include <vespa/vespalib/util/array.hpp>
 #include <vespa/vespalib/datastore/buffer_type.hpp>
-#include <vespa/vespalib/util/exceptions.h>
-#include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/vespalib/objects/visit.h>
+#include <vespa/vespalib/util/array.hpp>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.memoryindex.field_index");
@@ -62,22 +61,20 @@ FieldIndex<interleaved_features>::~FieldIndex()
     // XXX: Kludge
     for (DictionaryTree::Iterator it = _dict.begin();
          it.valid(); ++it) {
-        EntryRef pidx(it.getData());
+        EntryRef pidx(it.getData().load_relaxed());
         if (pidx.valid()) {
             _postingListStore.clear(pidx);
-            // Before updating ref
-            std::atomic_thread_fence(std::memory_order_release);
-            it.writeData(EntryRef().ref());
+            it.getWData().store_release(EntryRef());
         }
     }
     _postingListStore.clearBuilder();
     freeze();   // Flush all pending posting list tree freezes
-    transferHoldLists();
+    assign_generation();
     _dict.clear();  // Clear dictionary
     freeze();   // Flush pending freeze for dictionary tree.
-    transferHoldLists();
+    assign_generation();
     incGeneration();
-    trimHoldLists();
+    reclaim_memory();
 }
 
 template <bool interleaved_features>
@@ -86,7 +83,7 @@ FieldIndex<interleaved_features>::find(const vespalib::stringref word) const
 {
     DictionaryTree::Iterator itr = _dict.find(WordKey(EntryRef()), KeyComp(_wordStore, word));
     if (itr.valid()) {
-        return _postingListStore.begin(EntryRef(itr.getData()));
+        return _postingListStore.begin(itr.getData().load_relaxed());
     }
     return typename PostingList::Iterator();
 }
@@ -97,7 +94,7 @@ FieldIndex<interleaved_features>::findFrozen(const vespalib::stringref word) con
 {
     auto itr = _dict.getFrozenView().find(WordKey(EntryRef()), KeyComp(_wordStore, word));
     if (itr.valid()) {
-        return _postingListStore.beginFrozen(EntryRef(itr.getData()));
+        return _postingListStore.beginFrozen(itr.getData().load_acquire());
     }
     return typename PostingList::Iterator();
 }
@@ -106,13 +103,11 @@ template <bool interleaved_features>
 void
 FieldIndex<interleaved_features>::compactFeatures()
 {
-    std::vector<uint32_t> toHold;
-
-    toHold = _featureStore.startCompact();
+    auto compacting_buffers = _featureStore.start_compact();
     auto itr = _dict.begin();
     uint32_t packedIndex = _fieldId;
     for (; itr.valid(); ++itr) {
-        typename PostingListStore::RefType pidx(EntryRef(itr.getData()));
+        typename PostingListStore::RefType pidx(itr.getData().load_relaxed());
         if (!pidx.valid()) {
             continue;
         }
@@ -126,11 +121,7 @@ FieldIndex<interleaved_features>::compactFeatures()
                 // Filter on which buffers to move features from when
                 // performing incremental compaction.
 
-                EntryRef newFeatures = _featureStore.moveFeatures(packedIndex, posting_entry.get_features());
-
-                // Features must be written before reference is updated.
-                std::atomic_thread_fence(std::memory_order_release);
-
+                EntryRef newFeatures = _featureStore.moveFeatures(packedIndex, posting_entry.get_features_relaxed());
                 // Reference the moved data
                 posting_entry.update_features(newFeatures);
             }
@@ -143,20 +134,16 @@ FieldIndex<interleaved_features>::compactFeatures()
                 // Filter on which buffers to move features from when
                 // performing incremental compaction.
 
-                EntryRef newFeatures = _featureStore.moveFeatures(packedIndex, posting_entry.get_features());
-
-                // Features must be written before reference is updated.
-                std::atomic_thread_fence(std::memory_order_release);
-
+                EntryRef newFeatures = _featureStore.moveFeatures(packedIndex, posting_entry.get_features_relaxed());
                 // Reference the moved data
                 posting_entry.update_features(newFeatures);
             }
         }
     }
     using generation_t = GenerationHandler::generation_t;
-    _featureStore.finishCompact(toHold);
+    compacting_buffers->finish();
     generation_t generation = _generationHandler.getCurrentGeneration();
-    _featureStore.transferHoldLists(generation);
+    _featureStore.assign_generation(generation);
 }
 
 template <bool interleaved_features>
@@ -170,7 +157,7 @@ FieldIndex<interleaved_features>::dump(search::index::IndexBuilder & indexBuilde
     _featureStore.setupForField(_fieldId, decoder);
     for (auto itr = _dict.begin(); itr.valid(); ++itr) {
         const WordKey & wk = itr.getKey();
-        typename PostingListStore::RefType plist(EntryRef(itr.getData()));
+        typename PostingListStore::RefType plist(itr.getData().load_relaxed());
         word = _wordStore.getWord(wk._wordRef);
         if (!plist.valid()) {
             continue;
@@ -186,7 +173,7 @@ FieldIndex<interleaved_features>::dump(search::index::IndexBuilder & indexBuilde
                 const PostingListEntryType &entry(pitr.getData());
                 features.set_num_occs(entry.get_num_occs());
                 features.set_field_length(entry.get_field_length());
-                _featureStore.setupForReadFeatures(entry.get_features(), decoder);
+                _featureStore.setupForReadFeatures(entry.get_features_relaxed(), decoder);
                 decoder.readFeatures(features);
                 indexBuilder.add_document(features);
             }
@@ -199,7 +186,7 @@ FieldIndex<interleaved_features>::dump(search::index::IndexBuilder & indexBuilde
                 const PostingListEntryType &entry(kd->getData());
                 features.set_num_occs(entry.get_num_occs());
                 features.set_field_length(entry.get_field_length());
-                _featureStore.setupForReadFeatures(entry.get_features(), decoder);
+                _featureStore.setupForReadFeatures(entry.get_features_relaxed(), decoder);
                 decoder.readFeatures(features);
                 indexBuilder.add_document(features);
             }
@@ -225,10 +212,10 @@ template <bool interleaved_features>
 queryeval::SearchIterator::UP
 FieldIndex<interleaved_features>::make_search_iterator(const vespalib::string& term,
                                                        uint32_t field_id,
-                                                       const fef::TermFieldMatchDataArray& match_data) const
+                                                       fef::TermFieldMatchDataArray match_data) const
 {
     return search::memoryindex::make_search_iterator<interleaved_features>
-            (find(term), getFeatureStore(), field_id, match_data);
+            (find(term), getFeatureStore(), field_id, std::move(match_data));
 }
 
 namespace {
@@ -239,23 +226,28 @@ private:
     using FieldIndexType = FieldIndex<interleaved_features>;
     using PostingListIteratorType = typename FieldIndexType::PostingList::ConstIterator;
     GenerationHandler::Guard _guard;
+    const queryeval::FieldSpec _field;
     PostingListIteratorType _posting_itr;
     const FeatureStore& _feature_store;
     const uint32_t _field_id;
+    const vespalib::string _query_term;
     const bool _use_bit_vector;
 
 public:
     MemoryTermBlueprint(GenerationHandler::Guard&& guard,
                         PostingListIteratorType posting_itr,
                         const FeatureStore& feature_store,
-                        const FieldSpecBase& field,
+                        const queryeval::FieldSpec& field,
                         uint32_t field_id,
+                        const vespalib::string& query_term,
                         bool use_bit_vector)
         : SimpleLeafBlueprint(field),
           _guard(),
+          _field(field),
           _posting_itr(posting_itr),
           _feature_store(feature_store),
           _field_id(field_id),
+          _query_term(query_term),
           _use_bit_vector(use_bit_vector)
     {
         _guard = std::move(guard);
@@ -281,6 +273,12 @@ public:
         wrapper->wrap(make_search_iterator<interleaved_features>(_posting_itr, _feature_store, _field_id, tfmda));
         return wrapper;
     }
+
+    void visitMembers(vespalib::ObjectVisitor& visitor) const override {
+        SimpleLeafBlueprint::visitMembers(visitor);
+        visit(visitor, "field_name", _field.getName());
+        visit(visitor, "query_term", _query_term);
+    }
 };
 
 }
@@ -288,14 +286,14 @@ public:
 template <bool interleaved_features>
 std::unique_ptr<queryeval::SimpleLeafBlueprint>
 FieldIndex<interleaved_features>::make_term_blueprint(const vespalib::string& term,
-                                                      const queryeval::FieldSpecBase& field,
+                                                      const queryeval::FieldSpec& field,
                                                       uint32_t field_id)
 {
     auto guard = takeGenerationGuard();
     auto posting_itr = findFrozen(term);
     bool use_bit_vector = field.isFilter();
     return std::make_unique<MemoryTermBlueprint<interleaved_features>>
-            (std::move(guard), posting_itr, getFeatureStore(), field, field_id, use_bit_vector);
+            (std::move(guard), posting_itr, getFeatureStore(), field, field_id, term, use_bit_vector);
 }
 
 template class FieldIndex<false>;

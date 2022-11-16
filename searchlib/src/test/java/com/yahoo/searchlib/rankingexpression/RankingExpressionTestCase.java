@@ -2,8 +2,8 @@
 package com.yahoo.searchlib.rankingexpression;
 
 import com.yahoo.searchlib.rankingexpression.parser.ParseException;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticNode;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticOperator;
+import com.yahoo.searchlib.rankingexpression.rule.OperationNode;
+import com.yahoo.searchlib.rankingexpression.rule.Operator;
 import com.yahoo.searchlib.rankingexpression.rule.CompositeNode;
 import com.yahoo.searchlib.rankingexpression.rule.IfNode;
 import com.yahoo.searchlib.rankingexpression.rule.ExpressionNode;
@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,7 +66,7 @@ public class RankingExpressionTestCase {
     public void testProgrammaticBuilding() throws ParseException {
         ReferenceNode input = new ReferenceNode("input");
         ReferenceNode constant = new ReferenceNode("constant");
-        ArithmeticNode product = new ArithmeticNode(input, ArithmeticOperator.MULTIPLY, constant);
+        OperationNode product = new OperationNode(input, Operator.multiply, constant);
         Reduce<Reference> sum = new Reduce<>(new TensorFunctionNode.ExpressionTensorFunction(product), Reduce.Aggregator.sum);
         RankingExpression expression = new RankingExpression(new TensorFunctionNode(sum));
 
@@ -97,7 +98,7 @@ public class RankingExpressionTestCase {
 
         RankingExpression exp = new RankingExpression("foo");
         try {
-            exp.getRankProperties(new SerializationContext(functions));
+            exp.getRankProperties(new SerializationContext(functions, Optional.empty()));
         } catch (RuntimeException e) {
             assertEquals("Cycle in ranking expression function: [foo[]]", e.getMessage());
         }
@@ -111,7 +112,7 @@ public class RankingExpressionTestCase {
 
         RankingExpression exp = new RankingExpression("foo");
         try {
-            exp.getRankProperties(new SerializationContext(functions));
+            exp.getRankProperties(new SerializationContext(functions, Optional.empty()));
         } catch (RuntimeException e) {
             assertEquals("Cycle in ranking expression function: [foo[], bar[]]", e.getMessage());
         }
@@ -143,7 +144,7 @@ public class RankingExpressionTestCase {
          "1 * 1 + 2 * 1 * 2 + 2 * 2"), "baz(1, 2)", functions);
         assertSerialization(Arrays.asList(
          "rankingExpression(cox)",
-         "10 + 08 * 1977"), "cox", functions
+         "10 + 8 * 1977"), "cox", functions
         );
     }
     
@@ -391,14 +392,16 @@ public class RankingExpressionTestCase {
                                      List<ExpressionFunction> functions) {
         assertSerialization(expectedSerialization, expressionString, functions, false);
     }
-    private void assertSerialization(List<String> expectedSerialization, String expressionString, 
+
+    private void assertSerialization(List<String> expectedSerialization, String expressionString,
                                      List<ExpressionFunction> functions, boolean print) {
         try {
             if (print)
                 System.out.println("Parsing expression '" + expressionString + "':");
 
             RankingExpression expression = new RankingExpression(expressionString);
-            Map<String, String> rankProperties = expression.getRankProperties(new SerializationContext(functions));
+            Map<String, String> rankProperties = expression.getRankProperties(new SerializationContext(functions,
+                                                                                                       Optional.empty()));
             if (print) {
                 for (String key : rankProperties.keySet())
                     System.out.println(key + ": " + rankProperties.get(key));

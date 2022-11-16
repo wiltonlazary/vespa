@@ -1,7 +1,7 @@
 #!/bin/bash
-# Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+# Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #
-# Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+# Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 # BEGIN environment bootstrap section
 # Do not edit between here and END as this section should stay identical in all scripts
@@ -73,6 +73,9 @@ findhost () {
 
 findroot
 findhost
+
+ROOT=${VESPA_HOME%/}
+export ROOT
 
 # END environment bootstrap section
 

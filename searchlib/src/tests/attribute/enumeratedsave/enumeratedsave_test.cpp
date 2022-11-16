@@ -1,7 +1,5 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/document/fieldvalue/intfieldvalue.h>
-#include <vespa/document/fieldvalue/stringfieldvalue.h>
 #include <vespa/searchlib/attribute/attribute.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
 #include <vespa/searchlib/attribute/attributefilesavetarget.h>
@@ -17,13 +15,15 @@
 #include <vespa/searchlib/util/bufferwriter.h>
 #include <vespa/searchlib/util/file_settings.h>
 #include <vespa/searchlib/util/randomgenerator.h>
+#include <vespa/searchcommon/attribute/config.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
 #include <vespa/vespalib/data/databuffer.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/compress.h>
-#include <vespa/vespalib/util/size_literals.h>
-
+#include <vespa/vespalib/util/memory.h>
+#include <vespa/vespalib/stllike/asciistream.h>
 #include <limits>
-#include <iostream>
 #include <cmath>
 
 using search::AttributeFactory;
@@ -39,10 +39,11 @@ using search::StringAttribute;
 using search::attribute::BasicType;
 using search::attribute::CollectionType;
 using search::attribute::Config;
+using search::attribute::SearchContext;
 using search::attribute::SearchContextParams;
 using search::fef::TermFieldMatchData;
 
-typedef std::unique_ptr<AttributeVector::SearchContext> SearchContextPtr;
+using SearchContextPtr = std::unique_ptr<SearchContext>;
 typedef std::unique_ptr<search::queryeval::SearchIterator> SearchBasePtr;
 
 
@@ -184,8 +185,8 @@ MemAttr::bufEqual(const Buffer &lhs, const Buffer &rhs) const
         return true;
     if (!EXPECT_TRUE(lhs->getDataLen() == rhs->getDataLen()))
         return false;
-    if (!EXPECT_TRUE(memcmp(lhs->getData(), rhs->getData(),
-                            lhs->getDataLen()) == 0))
+    if (!EXPECT_TRUE(vespalib::memcmp_safe(lhs->getData(), rhs->getData(),
+                                           lhs->getDataLen()) == 0))
         return false;
     return true;
 }
@@ -480,7 +481,7 @@ EnumeratedSaveTest::getSearch(const V &vec, const T &term, bool prefix)
     buildTermQuery(query, vec.getName(), ss.str(), prefix);
 
     return (static_cast<const AttributeVector &>(vec)).
-        getSearch(vespalib::stringref(&query[0], query.size()),
+        getSearch(vespalib::stringref(query.data(), query.size()),
                   SearchContextParams());
 }
 

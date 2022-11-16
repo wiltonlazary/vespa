@@ -3,18 +3,18 @@
 #pragma once
 
 #include <vespa/document/base/globalid.h>
-#include <vespa/searchlib/attribute/attributevector.h>
-#include "documentmetastore.h"
+#include <vespa/searchlib/attribute/search_context.h>
 
+namespace proton { class DocumentMetaStore; }
 namespace proton::documentmetastore {
 
 /**
  * Search context used to search the document meta store for all valid documents.
  */
-class SearchContext : public search::AttributeVector::SearchContext
+class SearchContext : public search::attribute::SearchContext
 {
 private:
-    using DocId = search::AttributeVector::DocId;
+    using DocId = uint32_t;
 
     bool _isWord;
     document::GlobalId _gid;
@@ -23,7 +23,7 @@ private:
     int32_t onFind(DocId docId, int32_t elemId, int32_t &weight) const override;
     int32_t onFind(DocId docId, int32_t elemId) const override;
 
-    search::queryeval::SearchIterator::UP
+    std::unique_ptr<search::queryeval::SearchIterator>
     createIterator(search::fef::TermFieldMatchData *matchData, bool strict) override;
 
     const DocumentMetaStore &getStore() const;

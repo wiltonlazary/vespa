@@ -58,14 +58,15 @@ public class MessageBusDocumentAccess extends DocumentAccess {
         this.params = params;
         try {
             com.yahoo.messagebus.MessageBusParams mbusParams = new com.yahoo.messagebus.MessageBusParams(params.getMessageBusParams());
-            mbusParams.addProtocol(new DocumentProtocol(getDocumentTypeManager(), params.getProtocolConfigId(), params.getLoadTypes()));
+            mbusParams.addProtocol(new DocumentProtocol(getDocumentTypeManager(), params.getProtocolConfigId()));
             if (System.getProperty("vespa.local", "false").equals("true")) { // set by Application when running locally
                 LocalNetwork network = new LocalNetwork();
                 bus = new NetworkMessageBus(network, new MessageBus(network, mbusParams));
             }
             else {
-                if (params.getRPCNetworkParams().getSlobroksConfig() != null && mbusParams.getMessageBusConfig() != null)
+                if (mbusParams.getMessageBusConfig() != null) {
                     bus = new RPCMessageBus(mbusParams, params.getRPCNetworkParams());
+                }
                 else {
                     log.log(Level.FINE, () -> "Setting up self-subscription to config because explicit config was missing; try to avoid this in containers");
                     bus = new RPCMessageBus(mbusParams, params.getRPCNetworkParams(), params.getRoutingConfigId());

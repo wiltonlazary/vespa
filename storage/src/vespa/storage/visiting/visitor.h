@@ -18,7 +18,6 @@
 #include <vespa/storage/common/storagecomponent.h>
 #include <vespa/storage/common/visitorfactory.h>
 #include <vespa/documentapi/messagebus/messages/documentmessage.h>
-#include <vespa/persistence/spi/docentry.h>
 #include <vespa/persistence/spi/selection.h>
 #include <vespa/persistence/spi/read_consistency.h>
 #include <list>
@@ -38,6 +37,10 @@ namespace documentapi {
 }
 
 namespace storage {
+
+namespace spi {
+    class DocEntry;
+}
 
 namespace api {
     class ReturnCode;
@@ -67,7 +70,7 @@ public:
      */
     virtual void closed(api::VisitorId id) = 0;
 
-    virtual ~VisitorMessageHandler() {}
+    virtual ~VisitorMessageHandler() = default;
 };
 
 /**
@@ -86,24 +89,11 @@ public:
     class HitCounter {
     public:
         HitCounter();
-
         void addHit(const document::DocumentId& hit, uint32_t size);
-
-        void updateVisitorStatistics(vdslib::VisitorStatistics& statistics);
-
-        uint32_t getFirstPassHits() const { return _firstPassHits; }
-
-        uint64_t getFirstPassBytes() const { return _firstPassBytes; }
-
-        uint32_t getSecondPassHits() const { return _secondPassHits; }
-
-        uint64_t getSecondPassBytes() const { return _secondPassBytes; }
-
+        void updateVisitorStatistics(vdslib::VisitorStatistics& statistics) const;
     private:
-        uint32_t _firstPassHits;
-        uint64_t _firstPassBytes;
-        uint32_t _secondPassHits;
-        uint64_t _secondPassBytes;
+        uint32_t _doc_hits;
+        uint64_t _doc_bytes;
     };
 
     enum VisitorState
@@ -357,6 +347,7 @@ protected:
     // error code, false if the DocumentAPI message should be retried later.
     [[nodiscard]] virtual bool remap_docapi_message_error_code(api::ReturnCode& in_out_code);
 public:
+    using DocEntryList = std::vector<std::unique_ptr<spi::DocEntry>>;
     Visitor(StorageComponent& component);
     virtual ~Visitor();
 
@@ -398,7 +389,7 @@ public:
      * vector of documents arrive from the persistence layer.
      */
     virtual void handleDocuments(const document::BucketId&,
-                                 std::vector<spi::DocEntry::UP>& entries,
+                                 DocEntryList & entries,
                                  HitCounter& hitCounter) = 0;
 
     /**

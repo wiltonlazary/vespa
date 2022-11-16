@@ -28,6 +28,7 @@ import com.yahoo.vespa.hosted.provision.testutils.MockDuperModel;
 import com.yahoo.vespa.hosted.provision.testutils.MockNameResolver;
 import com.yahoo.vespa.orchestrator.OrchestrationException;
 import com.yahoo.vespa.orchestrator.Orchestrator;
+import com.yahoo.vespa.orchestrator.status.HostStatus;
 import com.yahoo.vespa.service.duper.ConfigServerApplication;
 import org.junit.Before;
 import org.junit.Test;
@@ -60,11 +61,11 @@ public class RetiredExpirerTest {
     private final NodeResources hostResources = new NodeResources(64, 128, 2000, 10);
     private final NodeResources nodeResources = new NodeResources(2, 8, 50, 1);
 
-    private final ProvisioningTester tester = new ProvisioningTester.Builder().build();
+    private final Orchestrator orchestrator = mock(Orchestrator.class);
+    private final ProvisioningTester tester = new ProvisioningTester.Builder().orchestrator(orchestrator).build();
     private final ManualClock clock = tester.clock();
     private final NodeRepository nodeRepository = tester.nodeRepository();
     private final NodeRepositoryProvisioner provisioner = tester.provisioner();
-    private final Orchestrator orchestrator = mock(Orchestrator.class);
 
     private static final Duration RETIRED_EXPIRATION = Duration.ofHours(12);
 
@@ -72,6 +73,7 @@ public class RetiredExpirerTest {
     public void setup() throws OrchestrationException {
         // By default, orchestrator should deny all request for suspension so we can test expiration
         doThrow(new RuntimeException()).when(orchestrator).acquirePermissionToRemove(any());
+        when(orchestrator.getNodeStatus(any())).thenReturn(HostStatus.NO_REMARKS);
     }
 
     @Test
@@ -110,7 +112,7 @@ public class RetiredExpirerTest {
     }
 
     @Test
-    public void ensure_early_inactivation() throws OrchestrationException {
+    public void retired_nodes_are_dellocated() throws OrchestrationException {
         tester.makeReadyNodes(7, nodeResources);
         tester.makeReadyHosts(4, hostResources);
 
@@ -146,27 +148,35 @@ public class RetiredExpirerTest {
         RetiredExpirer retiredExpirer = createRetiredExpirer(deployer);
         retiredExpirer.run();
         assertEquals(5, nodeRepository.nodes().list(Node.State.active).owner(applicationId).size());
-        assertEquals(2, nodeRepository.nodes().list(Node.State.inactive).owner(applicationId).size());
+        assertEquals(2, nodeRepository.nodes().list(Node.State.dirty).owner(applicationId).size());
         assertEquals(1, deployer.redeployments);
         verify(orchestrator, times(4)).acquirePermissionToRemove(any());
 
         // Running it again has no effect
         retiredExpirer.run();
         assertEquals(5, nodeRepository.nodes().list(Node.State.active).owner(applicationId).size());
-        assertEquals(2, nodeRepository.nodes().list(Node.State.inactive).owner(applicationId).size());
+        assertEquals(2, nodeRepository.nodes().list(Node.State.dirty).owner(applicationId).size());
         assertEquals(1, deployer.redeployments);
         verify(orchestrator, times(6)).acquirePermissionToRemove(any());
 
+        // Running it again deactivates nodes that have exceeded max retirement period
         clock.advance(RETIRED_EXPIRATION.plusMinutes(1));
         retiredExpirer.run();
         assertEquals(3, nodeRepository.nodes().list(Node.State.active).owner(applicationId).size());
-        assertEquals(4, nodeRepository.nodes().list(Node.State.inactive).owner(applicationId).size());
+        assertEquals(2, nodeRepository.nodes().list(Node.State.dirty).owner(applicationId).size());
+        assertEquals(2, nodeRepository.nodes().list(Node.State.inactive).owner(applicationId).size());
         assertEquals(2, deployer.redeployments);
         verify(orchestrator, times(6)).acquirePermissionToRemove(any());
 
-        // inactivated nodes are not retired
-        for (Node node : nodeRepository.nodes().list(Node.State.inactive).owner(applicationId))
+        // Removed nodes are not retired
+        for (Node node : nodeRepository.nodes().list(Node.State.inactive, Node.State.dirty).owner(applicationId)) {
+            if (node.state() == Node.State.inactive) {
+                assertFalse(node + " node is reusable", node.allocation().get().reusable());
+            } else {
+                assertTrue(node + " is reusable", node.allocation().get().reusable());
+            }
             assertFalse(node.allocation().get().membership().retired());
+        }
     }
 
     @Test
@@ -205,19 +215,19 @@ public class RetiredExpirerTest {
         assertTrue(activeConfigServerHostnames.contains(retiredNode.hostname()));
         activeConfigServerHostnames.remove(retiredNode.hostname());
         assertEquals(activeConfigServerHostnames, configServerHostnames(duperModel));
-        assertEquals(1, tester.nodeRepository().nodes().list(Node.State.inactive).nodeType(NodeType.config).size());
+        assertEquals(1, tester.nodeRepository().nodes().list(Node.State.parked).nodeType(NodeType.config).size());
         assertEquals(2, tester.nodeRepository().nodes().list(Node.State.active).nodeType(NodeType.config).size());
 
-        // no changes while 1 cfg is inactive
+        // no changes while 1 cfg is dirty
         retiredExpirer.run();
         assertEquals(activeConfigServerHostnames, configServerHostnames(duperModel));
-        assertEquals(1, tester.nodeRepository().nodes().list(Node.State.inactive).nodeType(NodeType.config).size());
+        NodeList parked = tester.nodeRepository().nodes().list(Node.State.parked).nodeType(NodeType.config);
+        assertEquals(1, parked.size());
         assertEquals(2, tester.nodeRepository().nodes().list(Node.State.active).nodeType(NodeType.config).size());
 
-        // The node will eventually expire from inactive, and be removed by DynamicProvisioningMaintainer
-        // (depending on its host), and these events should not affect the 2 active config servers.
-        nodeRepository.nodes().deallocate(retiredNode, Agent.InactiveExpirer, "expired");
-        retiredNode = tester.nodeRepository().nodes().list(Node.State.parked).nodeType(NodeType.config).asList().get(0);
+        // Node is removed by HostDeprovisioner (depending on its host), and these events should not affect
+        // the 2 active config servers.
+        retiredNode = parked.first().get();
         nodeRepository.nodes().removeRecursively(retiredNode, true);
         infraDeployer.activateAllSupportedInfraApplications(true);
         retiredExpirer.run();
@@ -226,7 +236,7 @@ public class RetiredExpirerTest {
         assertEquals(2, tester.nodeRepository().nodes().list(Node.State.active).nodeType(NodeType.config).size());
 
         // Provision and ready new config server
-        MockNameResolver nameResolver = (MockNameResolver)tester.nodeRepository().nameResolver();
+        MockNameResolver nameResolver = (MockNameResolver) tester.nodeRepository().nameResolver();
         String ipv4 = "127.0.1.4";
         nameResolver.addRecord(retiredNode.hostname(), ipv4);
         Node node = Node.create(retiredNode.hostname(), new IP.Config(Set.of(ipv4), Set.of()), retiredNode.hostname(),
@@ -234,7 +244,7 @@ public class RetiredExpirerTest {
         var nodes = List.of(node);
         nodes = nodeRepository.nodes().addNodes(nodes, Agent.system);
         nodes = nodeRepository.nodes().deallocate(nodes, Agent.system, getClass().getSimpleName());
-        nodeRepository.nodes().setReady(nodes, Agent.system, getClass().getSimpleName());
+        tester.move(Node.State.ready, nodes);
 
         // no changes while replacement config server is ready
         retiredExpirer.run();
@@ -269,7 +279,6 @@ public class RetiredExpirerTest {
 
     private RetiredExpirer createRetiredExpirer(Deployer deployer) {
         return new RetiredExpirer(nodeRepository,
-                                  orchestrator,
                                   deployer,
                                   new TestMetric(),
                                   Duration.ofDays(30), /* Maintenance interval, use large value so it never runs by itself */

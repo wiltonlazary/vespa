@@ -237,7 +237,9 @@ public final class LazyArrayContext extends Context implements ContextIndex {
                 FunctionReference reference = FunctionReference.fromSerial(node.toString()).get();
                 bindTargets.add(reference.serialForm());
 
-                ExpressionNode functionNode = functions.get(reference).getBody().getRoot();
+                ExpressionFunction function = functions.get(reference);
+                if (function == null) return; // Function not included in this model: Not all models are for standalone use
+                ExpressionNode functionNode = function.getBody().getRoot();
                 extractBindTargets(functionNode, functions, bindTargets, arguments, onnxModels, onnxModelsInUse);
             }
             else if (isOnnx(node)) {
@@ -258,7 +260,7 @@ public final class LazyArrayContext extends Context implements ContextIndex {
         }
 
         /**
-         * Extract the feature used to evaluate the onnx model. e.g. onnxModel(name) and add
+         * Extract the feature used to evaluate the onnx model. e.g. onnx(name) and add
          * that as a bind target and argument. During evaluation, this will be evaluated before
          * the rest of the expression and the result is added to the context. Also extract the
          * inputs to the model and add them as bind targets and arguments.
@@ -293,8 +295,8 @@ public final class LazyArrayContext extends Context implements ContextIndex {
                 ReferenceNode reference = (ReferenceNode) node;
                 if (reference.getArguments().size() > 0) {
                     if (reference.getArguments().expressions().get(0) instanceof ConstantNode) {
-                        ConstantNode constantNode = (ConstantNode) reference.getArguments().expressions().get(0);
-                        return Optional.of(stripQuotes(constantNode.sourceString()));
+                        ExpressionNode constantNode = reference.getArguments().expressions().get(0);
+                        return Optional.of(stripQuotes(constantNode.toString()));
                     }
                     if (reference.getArguments().expressions().get(0) instanceof ReferenceNode) {
                         ReferenceNode referenceNode = (ReferenceNode) reference.getArguments().expressions().get(0);

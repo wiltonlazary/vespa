@@ -27,29 +27,15 @@ template <typename RefT = EntryRefT<22> >
 class DataStoreT : public DataStoreBase
 {
 private:
+    void free_elem_internal(EntryRef ref, size_t numElems);
+
 public:
     typedef RefT RefType;
 
     DataStoreT(const DataStoreT &rhs) = delete;
     DataStoreT &operator=(const DataStoreT &rhs) = delete;
     DataStoreT();
-    ~DataStoreT();
-
-    /**
-     * Increase number of dead elements in buffer.
-     *
-     * @param ref       Reference to dead stored features
-     * @param dead      Number of newly dead elements
-     */
-    void incDead(EntryRef ref, size_t deadElems) {
-        RefType intRef(ref);
-        DataStoreBase::incDead(intRef.bufferId(), deadElems);
-    }
-
-    /**
-     * Free element(s).
-     */
-    void freeElem(EntryRef ref, size_t numElems);
+    ~DataStoreT() override;
 
     /**
      * Hold element(s).
@@ -59,14 +45,9 @@ public:
     }
     void holdElem(EntryRef ref, size_t numElems, size_t extraBytes);
 
-    /**
-     * Trim elem hold list, freeing elements that no longer needs to be held.
-     *
-     * @param usedGen       lowest generation that is still used.
-     */
-    void trimElemHoldList(generation_t usedGen) override;
+    void reclaim_entry_refs(generation_t oldest_used_gen) override;
 
-    void clearElemHoldList() override;
+    void reclaim_all_entry_refs() override;
 
     bool getCompacting(EntryRef ref) const {
         return getBufferState(RefType(ref).bufferId()).getCompacting();
@@ -95,8 +76,6 @@ class DataStore : public DataStoreT<RefT>
 protected:
     typedef DataStoreT<RefT> ParentType;
     using ParentType::ensureBufferCapacity;
-    using ParentType::_primary_buffer_ids;
-    using ParentType::_freeListLists;
     using ParentType::getEntry;
     using ParentType::dropBuffers;
     using ParentType::init_primary_buffers;
@@ -116,7 +95,10 @@ public:
     ~DataStore();
 
     EntryRef addEntry(const EntryType &e);
-    const EntryType &getEntry(EntryRef ref) const;
+
+    const EntryType &getEntry(EntryRef ref) const {
+        return *this->template getEntry<EntryType>(RefType(ref));
+    }
 };
 
 extern template class DataStoreT<EntryRefT<22> >;

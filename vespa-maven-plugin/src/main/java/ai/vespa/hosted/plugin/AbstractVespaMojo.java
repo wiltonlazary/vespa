@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.hosted.plugin;
 
 import ai.vespa.hosted.api.ControllerHttpClient;
@@ -42,6 +42,9 @@ public abstract class AbstractVespaMojo extends AbstractMojo {
 
     @Parameter(property = "instance")
     protected String instance;
+
+    @Parameter(property = "tags")
+    protected String tags;
 
     @Parameter(property = "apiKey")
     protected String apiKey;

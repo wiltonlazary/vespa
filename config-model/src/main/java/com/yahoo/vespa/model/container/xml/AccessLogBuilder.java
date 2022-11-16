@@ -7,14 +7,11 @@ import com.yahoo.vespa.model.builder.xml.dom.VespaDomBuilder;
 import com.yahoo.vespa.model.container.ContainerCluster;
 import com.yahoo.vespa.model.container.component.AccessLogComponent;
 import com.yahoo.vespa.model.container.component.AccessLogComponent.AccessLogType;
-import com.yahoo.vespa.model.container.component.AccessLogComponent.CompressionType;
 import org.w3c.dom.Element;
-
 import java.util.Optional;
 
 import static com.yahoo.collections.CollectionUtil.firstMatching;
 import static com.yahoo.config.model.builder.xml.XmlHelper.getOptionalAttribute;
-
 import static com.yahoo.config.model.builder.xml.XmlHelper.nullIfEmpty;
 
 /**
@@ -54,9 +51,10 @@ public class AccessLogBuilder {
 
         @Override
         protected AccessLogComponent doBuild(DeployState deployState, AbstractConfigProducer<?> ancestor, Element spec) {
+            String fallback = deployState.featureFlags().logFileCompressionAlgorithm("zstd");
             return new AccessLogComponent(
                     accessLogType,
-                    compressionType(spec, isHostedVespa),
+                    compressionType(spec, fallback),
                     fileNamePattern(spec),
                     rotationInterval(spec),
                     compressOnRotation(spec),
@@ -93,21 +91,10 @@ public class AccessLogBuilder {
             return nullIfEmpty(spec.getAttribute("fileNamePattern"));
         }
 
-        private static CompressionType compressionType(Element spec, boolean isHostedVespa) {
-            CompressionType fallback = isHostedVespa ? CompressionType.ZSTD : CompressionType.GZIP;
+        private static String compressionType(Element spec, String fallback) {
             return Optional.ofNullable(spec.getAttribute("compressionType"))
-                    .filter(value -> !value.isBlank())
-                    .map(value -> {
-                        switch (value) {
-                            case "gzip":
-                                return CompressionType.GZIP;
-                            case "zstd":
-                                return CompressionType.ZSTD;
-                            default:
-                                throw new IllegalArgumentException("Unknown compression type: " + value);
-                        }
-                    })
-                    .orElse(fallback);
+                .filter(value -> !value.isBlank())
+                .orElse(fallback);
         }
     }
 

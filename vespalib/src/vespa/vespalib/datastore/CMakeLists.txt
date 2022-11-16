@@ -3,14 +3,28 @@ vespa_add_library(vespalib_vespalib_datastore OBJECT
     SOURCES
     array_store.cpp
     array_store_config.cpp
+    atomic_entry_ref.cpp
+    buffer_free_list.cpp
+    buffer_stats.cpp
     buffer_type.cpp
     bufferstate.cpp
+    compact_buffer_candidates.cpp
+    compacting_buffers.cpp
+    compaction_context.cpp
+    compaction_strategy.cpp
+    compaction_strategy.cpp
     datastore.cpp
     datastorebase.cpp
+    entry_ref_filter.cpp
     entryref.cpp
     fixed_size_hash_map.cpp
+    free_list.cpp
+    large_array_buffer_type.cpp
+    memory_stats.cpp
     sharded_hash_map.cpp
+    small_array_buffer_type.cpp
     unique_store.cpp
+    unique_store_buffer_type.cpp
     unique_store_string_allocator.cpp
     DEPENDS
 )

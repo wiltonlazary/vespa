@@ -29,6 +29,8 @@ using search::AttributeVector;
 using search::IAttributeManager;
 using search::NotImplementedAttribute;
 using vespalib::ISequencedTaskExecutor;
+using vespalib::MonitoredRefCount;
+using vespalib::RetainGuard;
 using vespa::config::search::ImportedFieldsConfig;
 
 namespace proton {
@@ -143,8 +145,8 @@ DocumentDBReferenceResolver::createImportedAttributesRepo(const IAttributeManage
             ReferenceAttribute::SP refAttr = getReferenceAttribute(attr.referencefield, attrMgr);
             auto targetDocumentDB = getTargetDocumentDB(refAttr->getName());
             auto targetAttr = targetDocumentDB->getAttribute(attr.targetfield);
-            auto targetDocumentMetaStore = targetDocumentDB->getDocumentMetaStore();
             if (targetAttr) {
+                auto targetDocumentMetaStore = targetDocumentDB->getDocumentMetaStore();
                 auto importedAttr = ImportedAttributeVectorFactory::create(attr.name, refAttr, documentMetaStore, targetAttr, targetDocumentMetaStore, useSearchCache);
                 result->add(importedAttr->getName(), importedAttr);
             }

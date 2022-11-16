@@ -8,50 +8,18 @@ import java.util.Objects;
  *
  * @author mpolden
  */
-public class RegistryCredentials {
+public record RegistryCredentials(String username, String password) {
 
-    public static final RegistryCredentials none = new RegistryCredentials("", "", "");
+    public static final RegistryCredentials none = new RegistryCredentials("", "");
 
-    private final String username;
-    private final String password;
-    private final String registryAddress;
-
-    public RegistryCredentials(String username, String password, String registryAddress) {
-        this.username = Objects.requireNonNull(username);
-        this.password = Objects.requireNonNull(password);
-        this.registryAddress = Objects.requireNonNull(registryAddress);
-    }
-
-    public String username() {
-        return username;
-    }
-
-    public String password() {
-        return password;
-    }
-
-    public String registryAddress() {
-        return registryAddress;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        RegistryCredentials that = (RegistryCredentials) o;
-        return username.equals(that.username) &&
-               password.equals(that.password) &&
-               registryAddress.equals(that.registryAddress);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(username, password, registryAddress);
+    public RegistryCredentials {
+        Objects.requireNonNull(username);
+        Objects.requireNonNull(password);
     }
 
     @Override
     public String toString() {
-        return "registry credentials for " + registryAddress + " [username=" + username + ",password=" + password + "]";
+        return "registry credentials [username=" + username + ",password=<hidden>]";
     }
 
 }

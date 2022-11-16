@@ -1,7 +1,7 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.tensor.functions;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.tensor.PartialAddress;
 import com.yahoo.tensor.Tensor;
 import com.yahoo.tensor.TensorAddress;
@@ -121,14 +121,13 @@ public class Slice<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETY
 
     private TensorType resultType(TensorType argumentType) {
         List<String> peekDimensions;
-
-        // Special case where a single indexed or mapped dimension is sliced
         if (subspaceAddress.size() == 1 && subspaceAddress.get(0).dimension().isEmpty()) {
+            // Special case where a single indexed or mapped dimension is sliced
             if (subspaceAddress.get(0).index().isPresent()) {
                 peekDimensions = findDimensions(argumentType.dimensions(), TensorType.Dimension::isIndexed);
                 if (peekDimensions.size() > 1) {
                     throw new IllegalArgumentException(this + " slices a single indexed dimension, cannot be applied " +
-                            "to " + argumentType + ", which has multiple");
+                                                       "to " + argumentType + ", which has multiple");
                 }
             }
             else {
@@ -141,23 +140,34 @@ public class Slice<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETY
         else { // general slicing
             peekDimensions = subspaceAddress.stream().map(d -> d.dimension().get()).collect(Collectors.toList());
         }
-        return TypeResolver.peek(argumentType, peekDimensions);
+        try {
+            return TypeResolver.peek(argumentType, peekDimensions);
+        }
+        catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(this + " cannot slice type " + argumentType, e);
+        }
     }
 
     @Override
-    public String toString(ToStringContext context) {
+    public String toString(ToStringContext<NAMETYPE> context) {
         StringBuilder b = new StringBuilder(argument.toString(context));
-        if (subspaceAddress.size() == 1 && subspaceAddress.get(0).dimension().isEmpty()) {
+        if (context.typeContext().isEmpty()
+            && subspaceAddress.size() == 1 && subspaceAddress.get(0).dimension().isEmpty()) { // use short forms
             if (subspaceAddress.get(0).index().isPresent())
                 b.append("[").append(subspaceAddress.get(0).index().get().toString(context)).append("]");
             else
                 b.append("{").append(subspaceAddress.get(0).label().get()).append("}");
         }
-        else {
-            b.append("{").append(subspaceAddress.stream().map(i -> i.toString(context)).collect(Collectors.joining(", "))).append("}");
+        else { // general form
+            b.append("{").append(subspaceAddress.stream()
+                                                .map(i -> i.toString(context, this))
+                                                .collect(Collectors.joining(", "))).append("}");
         }
         return b.toString();
     }
+
+    @Override
+    public int hashCode() { return Objects.hash("slice", argument, subspaceAddress); }
 
     public static class DimensionValue<NAMETYPE extends Name>  {
 
@@ -221,18 +231,36 @@ public class Slice<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETY
 
         @Override
         public String toString() {
-            return toString(ToStringContext.empty());
+            return toString(null, null);
         }
 
-        public String toString(ToStringContext context) {
+        String toString(ToStringContext<NAMETYPE> context, Slice<NAMETYPE> owner) {
             StringBuilder b = new StringBuilder();
-            dimension.ifPresent(d -> b.append(d).append(":"));
-            if (label != null)
-                b.append(label);
-            else
-                b.append(index.toString(context));
+            Optional<String> dimensionName = dimension;
+            if (context != null && dimensionName.isEmpty()) { // This isn't just toString(): Output canonical form or fail
+                TensorType type = context.typeContext().isPresent() ? owner.argument.type(context.typeContext().get()) : null;
+                if (type == null || type.dimensions().size() != 1)
+                    throw new IllegalArgumentException("The tensor dimension name being sliced by " + owner +
+                                                       " cannot be uniquely resolved. Use the full form: " +
+                                                       "'slice{myDimensionName:" + valueToString(context) + "}'");
+                else
+                    dimensionName = Optional.of(type.dimensions().get(0).name());
+            }
+            dimensionName.ifPresent(d -> b.append(d).append(":"));
+            b.append(valueToString(context));
             return b.toString();
         }
+
+        private String valueToString(ToStringContext<NAMETYPE> context) {
+            if (label != null)
+                return label;
+            else
+                return index.toString(context);
+        }
+
+        @Override
+        public int hashCode() { return Objects.hash(dimension, label, index); }
+
 
     }
 
@@ -251,6 +279,9 @@ public class Slice<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETY
 
         @Override
         public String toString() { return String.valueOf(value); }
+
+        @Override
+        public int hashCode() { return Objects.hash("constantIntegerFunction", value); }
 
     }
 

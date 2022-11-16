@@ -1,8 +1,7 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.testutils;
 
-import com.google.inject.Inject;
-import com.yahoo.vespa.hosted.provision.NodeRepository;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.vespa.hosted.provision.lb.LoadBalancerService;
 import com.yahoo.vespa.hosted.provision.lb.LoadBalancerServiceMock;
 import com.yahoo.vespa.hosted.provision.provisioning.EmptyProvisionServiceProvider;
@@ -38,7 +37,7 @@ public class MockProvisionServiceProvider implements ProvisionServiceProvider {
     }
 
     @Override
-    public Optional<LoadBalancerService> getLoadBalancerService(NodeRepository nodeRepository) {
+    public Optional<LoadBalancerService> getLoadBalancerService() {
         return loadBalancerService;
     }
 

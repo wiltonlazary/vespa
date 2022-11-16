@@ -6,13 +6,16 @@ import com.yahoo.component.Version;
 import com.yahoo.concurrent.InThreadExecutorService;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.application.api.FileRegistry;
+import com.yahoo.config.model.api.ApplicationClusterEndpoint;
 import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.EndpointCertificateSecrets;
+import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.application.provider.BaseDeployLogger;
 import com.yahoo.config.model.application.provider.FilesApplicationPackage;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.CertificateNotReadyException;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
@@ -62,15 +65,14 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.logging.Level;
 
 import static com.yahoo.vespa.config.server.session.SessionPreparer.PrepareResult;
 import static com.yahoo.vespa.config.server.session.SessionZooKeeperClient.APPLICATION_PACKAGE_REFERENCE_PATH;
-import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -95,6 +97,7 @@ public class SessionPreparerTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
+    @SuppressWarnings("deprecation")
     @Rule
     public ExpectedException expectedException = ExpectedException.none();
 
@@ -214,7 +217,7 @@ public class SessionPreparerTest {
         PrepareParams params = new PrepareParams.Builder().applicationId(applicationId()).build();
         int sessionId = 1;
         prepare(testApp, params);
-        assertThat(createSessionZooKeeperClient(sessionId).readApplicationId().get(), is(applicationId()));
+        assertEquals(applicationId(), createSessionZooKeeperClient(sessionId).readApplicationId().get());
     }
 
     @Test
@@ -247,14 +250,18 @@ public class SessionPreparerTest {
                         "    \"names\": [\n" +
                         "      \"foo.app1.tenant1.global.vespa.example.com\",\n" +
                         "      \"rotation-042.vespa.global.routing\"\n" +
-                        "    ]\n" +
+                        "    ],\n" +
+                        "    \"scope\": \"global\", \n" +
+                        "    \"routingMethod\": \"shared\"\n" +
                         "  },\n" +
                         "  {\n" +
                         "    \"clusterId\": \"bar\",\n" +
                         "    \"names\": [\n" +
                         "      \"bar.app1.tenant1.global.vespa.example.com\",\n" +
                         "      \"rotation-043.vespa.global.routing\"\n" +
-                        "    ]\n" +
+                        "    ],\n" +
+                        "    \"scope\": \"global\",\n" +
+                        "    \"routingMethod\": \"sharedLayer4\"\n" +
                         "  }\n" +
                         "]";
         var applicationId = applicationId("test");
@@ -264,11 +271,17 @@ public class SessionPreparerTest {
         prepare(new File("src/test/resources/deploy/hosted-app"), params);
 
         var expected = List.of(new ContainerEndpoint("foo",
+                                                     ApplicationClusterEndpoint.Scope.global,
                                                      List.of("foo.app1.tenant1.global.vespa.example.com",
-                                                             "rotation-042.vespa.global.routing")),
+                                                             "rotation-042.vespa.global.routing"),
+                                                     OptionalInt.empty(),
+                                                     ApplicationClusterEndpoint.RoutingMethod.shared),
                                new ContainerEndpoint("bar",
+                                                     ApplicationClusterEndpoint.Scope.global,
                                                      List.of("bar.app1.tenant1.global.vespa.example.com",
-                                                             "rotation-043.vespa.global.routing")));
+                                                             "rotation-043.vespa.global.routing"),
+                                                     OptionalInt.empty(),
+                                                     ApplicationClusterEndpoint.RoutingMethod.sharedLayer4));
         assertEquals(expected, readContainerEndpoints(applicationId));
 
 
@@ -328,6 +341,25 @@ public class SessionPreparerTest {
         preparer = createPreparer(HostProvisionerProvider.withProvisioner(new MockProvisioner().transientFailureOnPrepare(), true));
         var params = new PrepareParams.Builder().applicationId(applicationId("test")).build();
         prepare(new File("src/test/resources/deploy/hosted-app"), params);
+    }
+
+    @Test
+    public void require_that_cloud_account_is_written() throws Exception {
+        TestModelFactory modelFactory = new TestModelFactory(version123);
+        preparer = createPreparer(new ModelFactoryRegistry(List.of(modelFactory)), HostProvisionerProvider.empty());
+        ApplicationId applicationId = applicationId("test");
+        CloudAccount expected = CloudAccount.from("012345678912");
+        PrepareParams params = new PrepareParams.Builder().applicationId(applicationId)
+                                                          .cloudAccount(expected)
+                                                          .build();
+        prepare(new File("src/test/resources/deploy/hosted-app"), params);
+
+        SessionZooKeeperClient zkClient = createSessionZooKeeperClient();
+        assertEquals(expected, zkClient.readCloudAccount().get());
+
+        ModelContext modelContext = modelFactory.getModelContext();
+        Optional<CloudAccount> accountFromModel = modelContext.properties().cloudAccount();
+        assertEquals(Optional.of(expected), accountFromModel);
     }
 
     private List<ContainerEndpoint> readContainerEndpoints(ApplicationId applicationId) {

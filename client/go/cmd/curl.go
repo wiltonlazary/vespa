@@ -2,70 +2,93 @@
 package cmd
 
 import (
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vespa-engine/vespa/client/go/curl"
+	"github.com/vespa-engine/vespa/client/go/vespa"
 )
 
-var curlDryRun bool
+func newCurlCmd(cli *CLI) *cobra.Command {
+	var (
+		dryRun      bool
+		curlService string
+	)
+	cmd := &cobra.Command{
+		Use:   "curl [curl-options] path",
+		Short: "Access Vespa directly using curl",
+		Long: `Access Vespa directly using curl.
 
-func init() {
-	rootCmd.AddCommand(curlCmd)
-	curlCmd.Flags().BoolVarP(&curlDryRun, "dry-run", "n", false, "Print the curl command that would be executed")
+Execute curl with the appropriate URL, certificate and private key for your application.
+
+For a more high-level interface to query and feeding, see the 'query' and 'document' commands.
+`,
+		Example: `$ vespa curl /ApplicationStatus
+$ vespa curl -- -X POST -H "Content-Type:application/json" --data-binary @src/test/resources/A-Head-Full-of-Dreams.json /document/v1/namespace/music/docid/1
+$ vespa curl -- -v --data-urlencode "yql=select * from music where album contains 'head';" /search/\?hits=5`,
+		DisableAutoGenTag: true,
+		SilenceUsage:      true,
+		Args:              cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := cli.target(targetOptions{})
+			if err != nil {
+				return err
+			}
+			service, err := target.Service(curlService, 0, 0, cli.config.cluster())
+			if err != nil {
+				return err
+			}
+			url := joinURL(service.BaseURL, args[len(args)-1])
+			rawArgs := args[:len(args)-1]
+			c, err := curl.RawArgs(url, rawArgs...)
+			if err != nil {
+				return err
+			}
+			switch curlService {
+			case vespa.DeployService:
+				if err := addAccessToken(c, target); err != nil {
+					return err
+				}
+			case vespa.DocumentService, vespa.QueryService:
+				c.PrivateKey = service.TLSOptions.PrivateKeyFile
+				c.Certificate = service.TLSOptions.CertificateFile
+			default:
+				return fmt.Errorf("service not found: %s", curlService)
+			}
+
+			if dryRun {
+				log.Print(c.String())
+			} else {
+				if err := c.Run(os.Stdout, os.Stderr); err != nil {
+					return fmt.Errorf("failed to execute curl: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "Print the curl command that would be executed")
+	cmd.Flags().StringVarP(&curlService, "service", "s", "query", "Which service to query. Must be \"deploy\", \"document\" or \"query\"")
+	return cmd
 }
 
-var curlCmd = &cobra.Command{
-	Use:   "curl [curl-options] path",
-	Short: "Query Vespa using curl",
-	Long: `Query Vespa using curl.
-
-Execute curl with the appropriate URL, certificate and private key for your application.`,
-	Example: `$ vespa curl /search/?yql=query
-$ vespa curl -- -v --data-urlencode "yql=select * from sources * where title contains 'foo';" /search/
-$ vespa curl -t local -- -v /search/?yql=query
-`,
-	DisableAutoGenTag: true,
-	Args:              cobra.MinimumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := LoadConfig()
-		if err != nil {
-			fatalErr(err, "Could not load config")
-			return
-		}
-		app := getApplication()
-		privateKeyFile, err := cfg.PrivateKeyPath(app)
-		if err != nil {
-			fatalErr(err)
-			return
-		}
-		certificateFile, err := cfg.CertificatePath(app)
-		if err != nil {
-			fatalErr(err)
-			return
-		}
-		service := getService("query", 0)
-		url := joinURL(service.BaseURL, args[len(args)-1])
-		rawArgs := args[:len(args)-1]
-		c, err := curl.RawArgs(url, rawArgs...)
-		if err != nil {
-			fatalErr(err)
-			return
-		}
-		c.PrivateKey = privateKeyFile
-		c.Certificate = certificateFile
-
-		if curlDryRun {
-			log.Print(c.String())
-		} else {
-			if err := c.Run(os.Stdout, os.Stderr); err != nil {
-				fatalErr(err, "Failed to run curl")
-				return
-			}
-		}
-	},
+func addAccessToken(cmd *curl.Command, target vespa.Target) error {
+	if target.Type() != vespa.TargetCloud {
+		return nil
+	}
+	req := http.Request{}
+	if err := target.SignRequest(&req, ""); err != nil {
+		return err
+	}
+	headerValue := req.Header.Get("Authorization")
+	if headerValue == "" {
+		return fmt.Errorf("no authorization header added when signing request")
+	}
+	cmd.Header("Authorization", headerValue)
+	return nil
 }
 
 func joinURL(baseURL, path string) string {

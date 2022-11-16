@@ -4,17 +4,13 @@ package com.yahoo.vespa.model.container.http;
 import com.yahoo.config.model.builder.xml.test.DomBuilderTest;
 import com.yahoo.container.core.http.HttpFilterConfig;
 import com.yahoo.vespa.model.container.http.xml.HttpBuilder;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.w3c.dom.Element;
 
 import static com.yahoo.collections.CollectionUtil.first;
 import static com.yahoo.vespa.model.container.http.FilterConfigProvider.configProviderId;
-import static org.hamcrest.Matchers.empty;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.nullValue;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author gjoranv
@@ -24,7 +20,7 @@ public class FilterConfigTest extends DomBuilderTest {
 
     private Http http;
 
-    @Before
+    @BeforeEach
     public void setupFilterChains() {
         http = new HttpBuilder().build(root.getDeployState(), root, servicesXml());
         root.freezeModelTopology();
@@ -56,49 +52,49 @@ public class FilterConfigTest extends DomBuilderTest {
     }
 
     @Test
-    public void filter_without_config_does_not_have_FilterConfigProvider() {
+    void filter_without_config_does_not_have_FilterConfigProvider() {
         Filter noConfigFilter = getOuterFilter("no-config");
 
-        assertThat(getProvider(noConfigFilter), nullValue());
+        assertNull(getProvider(noConfigFilter));
     }
 
     @Test
-    public void filterName_is_id_from_component_spec() {
+    void filterName_is_id_from_component_spec() {
         Filter emptyConfigFilter = getOuterFilter("empty-config");
         HttpFilterConfig config = getHttpFilterConfig(emptyConfigFilter);
 
-        assertThat(config.filterName(), is("empty-config"));
+        assertEquals("empty-config", config.filterName());
     }
 
     @Test
-    public void filterClass_is_class_from_component_spec() {
+    void filterClass_is_class_from_component_spec() {
         Filter emptyConfigFilter = getOuterFilter("empty-config");
         HttpFilterConfig config = getHttpFilterConfig(emptyConfigFilter);
 
-        assertThat(config.filterClass(), is("EmptyConfigFilter"));
+        assertEquals("EmptyConfigFilter", config.filterClass());
     }
 
     @Test
-    public void filter_with_empty_config_has_FilterConfigProvider_with_empty_map() {
+    void filter_with_empty_config_has_FilterConfigProvider_with_empty_map() {
         Filter emptyConfigFilter = getOuterFilter("empty-config");
         HttpFilterConfig config = getHttpFilterConfig(emptyConfigFilter);
 
-        assertThat(config.param(), is(empty()));
+        assertTrue(config.param().isEmpty());
     }
 
     @Test
-    public void config_params_are_set_correctly_in_FilterConfigProvider() {
+    void config_params_are_set_correctly_in_FilterConfigProvider() {
         Filter configWithParamsFilter = getOuterFilter("config-with-params");
         HttpFilterConfig config = getHttpFilterConfig(configWithParamsFilter);
 
-        assertThat(config.param(), hasSize(1));
-        assertThat(config.param(0).name(), is("key1"));
-        assertThat(config.param(0).value(), is("value1"));
+        assertEquals(1, config.param().size());
+        assertEquals("key1", config.param(0).name());
+        assertEquals("value1", config.param(0).value());
     }
 
     @Test
-    public void inner_filter_can_have_filter_config() {
-        Filter innerFilter = (Filter)
+    void inner_filter_can_have_filter_config() {
+        Filter innerFilter =
                 first(http.getFilterChains().allChains().getComponent("myChain").getInnerComponents());
 
         getHttpFilterConfig(innerFilter);

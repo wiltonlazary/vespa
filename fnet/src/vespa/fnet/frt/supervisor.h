@@ -10,7 +10,7 @@
 #include <vespa/fnet/connection.h>
 #include <vespa/fnet/simplepacketstreamer.h>
 
-class TransportConfig;
+namespace fnet { class TransportConfig; }
 class FNET_Transport;
 class FRT_Target;
 class FastOS_ThreadPool;
@@ -42,38 +42,13 @@ public:
         void RPC_GetMethodInfo(FRT_RPCRequest *req);
     };
 
-    class ConnHooks : public FNET_IConnectionCleanupHandler,
-                      public FNET_IPacketHandler
-    {
-    private:
-        FRT_Supervisor               &_parent;
-        std::unique_ptr<FRT_Method>   _sessionInitHook;
-        std::unique_ptr<FRT_Method>   _sessionDownHook;
-        std::unique_ptr<FRT_Method>   _sessionFiniHook;
-    public:
-        ConnHooks(const ConnHooks &) = delete;
-        ConnHooks &operator=(const ConnHooks &) = delete;
-        explicit ConnHooks(FRT_Supervisor &parent);
-        ~ConnHooks() override;
-
-        void SetSessionInitHook(FRT_METHOD_PT  method, FRT_Invokable *handler);
-        void SetSessionDownHook(FRT_METHOD_PT  method, FRT_Invokable *handler);
-        void SetSessionFiniHook(FRT_METHOD_PT  method, FRT_Invokable *handler);
-        void InvokeHook(FRT_Method *hook, FNET_Connection *conn);
-        bool InitAdminChannel(FNET_Channel *channel);
-        HP_RetCode HandlePacket(FNET_Packet *packet, FNET_Context context) override;
-        void Cleanup(FNET_Connection *conn) override;
-    };
-
 private:
     FNET_Transport               *_transport;
-    FRT_PacketFactory             _packetFactory;
-    FNET_SimplePacketStreamer     _packetStreamer;
     FNET_Connector               *_connector;
     FRT_ReflectionManager         _reflectionManager;
     RPCHooks                      _rpcHooks;
-    ConnHooks                     _connHooks;
-    std::unique_ptr<FRT_Method>   _methodMismatchHook;
+
+    static FNET_IPacketStreamer *get_packet_streamer();
 
 public:
     explicit FRT_Supervisor(FNET_Transport *transport);
@@ -92,13 +67,7 @@ public:
     FRT_Target *GetTarget(const char *spec);
     FRT_Target *Get2WayTarget(const char *spec, FNET_Context connContext = FNET_Context());
     FRT_Target *GetTarget(int port);
-    FRT_RPCRequest *AllocRPCRequest(FRT_RPCRequest *tradein = nullptr);
-
-    // special hooks (implemented as RPC methods)
-    void SetSessionInitHook(FRT_METHOD_PT  method, FRT_Invokable *handler);
-    void SetSessionDownHook(FRT_METHOD_PT  method, FRT_Invokable *handler);
-    void SetSessionFiniHook(FRT_METHOD_PT  method, FRT_Invokable *handler);
-    void SetMethodMismatchHook(FRT_METHOD_PT  method, FRT_Invokable *handler);
+    static FRT_RPCRequest *AllocRPCRequest(FRT_RPCRequest *tradein = nullptr);
 
     struct SchedulerPtr {
         FNET_Scheduler *ptr;
@@ -115,7 +84,6 @@ public:
 
 
     // FNET ServerAdapter Interface
-    bool InitAdminChannel(FNET_Channel *channel) override;
     bool InitChannel(FNET_Channel *channel, uint32_t pcode) override;
 
     // Packet Handling

@@ -32,7 +32,7 @@ ShardedHashMap::ShardedHashMap(std::unique_ptr<const EntryComparator> comp)
 
 ShardedHashMap::~ShardedHashMap()
 {
-    _gen_holder.clearHoldLists();
+    _gen_holder.reclaim_all();
     for (size_t i = 0; i < num_shards; ++i) {
         auto map = _maps[i].load(std::memory_order_relaxed);
         delete map;
@@ -58,7 +58,7 @@ ShardedHashMap::hold_shard(std::unique_ptr<const FixedSizeHashMap> map)
 {
     auto usage = map->get_memory_usage();
     auto hold = std::make_unique<ShardedHashMapShardHeld>(usage.allocatedBytes(), std::move(map));
-    _gen_holder.hold(std::move(hold));
+    _gen_holder.insert(std::move(hold));
 }
 
 ShardedHashMap::KvType&
@@ -88,7 +88,7 @@ ShardedHashMap::KvType*
 ShardedHashMap::find(const EntryComparator& comp, EntryRef key_ref)
 {
     ShardedHashComparator shardedComp(comp, key_ref, num_shards);
-    auto map = _maps[shardedComp.shard_idx()].load(std::memory_order_relaxed);
+    auto map = _maps[shardedComp.shard_idx()].load(std::memory_order_acquire);
     if (map == nullptr) {
         return nullptr;
     }
@@ -99,7 +99,7 @@ const ShardedHashMap::KvType*
 ShardedHashMap::find(const EntryComparator& comp, EntryRef key_ref) const
 {
     ShardedHashComparator shardedComp(comp, key_ref, num_shards);
-    auto map = _maps[shardedComp.shard_idx()].load(std::memory_order_relaxed);
+    auto map = _maps[shardedComp.shard_idx()].load(std::memory_order_acquire);
     if (map == nullptr) {
         return nullptr;
     }
@@ -107,27 +107,27 @@ ShardedHashMap::find(const EntryComparator& comp, EntryRef key_ref) const
 }
 
 void
-ShardedHashMap::transfer_hold_lists(generation_t generation)
+ShardedHashMap::assign_generation(generation_t current_gen)
 {
     for (size_t i = 0; i < num_shards; ++i) {
         auto map = _maps[i].load(std::memory_order_relaxed);
         if (map != nullptr) {
-            map->transfer_hold_lists(generation);
+            map->assign_generation(current_gen);
         }
     }
-    _gen_holder.transferHoldLists(generation);
+    _gen_holder.assign_generation(current_gen);
 }
 
 void
-ShardedHashMap::trim_hold_lists(generation_t first_used)
+ShardedHashMap::reclaim_memory(generation_t oldest_used_gen)
 {
     for (size_t i = 0; i < num_shards; ++i) {
         auto map = _maps[i].load(std::memory_order_relaxed);
         if (map != nullptr) {
-            map->trim_hold_lists(first_used);
+            map->reclaim_memory(oldest_used_gen);
         }
     }
-    _gen_holder.trimHoldLists(first_used);
+    _gen_holder.reclaim(oldest_used_gen);
 }
 
 size_t
@@ -135,7 +135,7 @@ ShardedHashMap::size() const noexcept
 {
     size_t result = 0;
     for (size_t i = 0; i < num_shards; ++i) {
-        auto map = _maps[i].load(std::memory_order_relaxed);
+        auto map = _maps[i].load(std::memory_order_acquire);
         if (map != nullptr) {
             result += map->size();
         }
@@ -148,12 +148,12 @@ ShardedHashMap::get_memory_usage() const
 {
     MemoryUsage memory_usage(sizeof(ShardedHashMap), sizeof(ShardedHashMap), 0, 0);
     for (size_t i = 0; i < num_shards; ++i) {
-        auto map = _maps[i].load(std::memory_order_relaxed);
+        auto map = _maps[i].load(std::memory_order_acquire);
         if (map != nullptr) {
             memory_usage.merge(map->get_memory_usage());
         }
     }
-    size_t gen_holder_held_bytes = _gen_holder.getHeldBytes();
+    size_t gen_holder_held_bytes = _gen_holder.get_held_bytes();
     memory_usage.incAllocatedBytes(gen_holder_held_bytes);
     memory_usage.incAllocatedBytesOnHold(gen_holder_held_bytes);
     return memory_usage;
@@ -163,7 +163,7 @@ void
 ShardedHashMap::foreach_key(std::function<void(EntryRef)> callback) const
 {
     for (size_t i = 0; i < num_shards; ++i) {
-        auto map = _maps[i].load(std::memory_order_relaxed);
+        auto map = _maps[i].load(std::memory_order_acquire);
         if (map != nullptr) {
             map->foreach_key(callback);
         }
@@ -171,12 +171,12 @@ ShardedHashMap::foreach_key(std::function<void(EntryRef)> callback) const
 }
 
 void
-ShardedHashMap::move_keys(std::function<EntryRef(EntryRef)> callback)
+ShardedHashMap::move_keys_on_compact(ICompactable& compactable, const EntryRefFilter& compacting_buffers)
 {
     for (size_t i = 0; i < num_shards; ++i) {
         auto map = _maps[i].load(std::memory_order_relaxed);
         if (map != nullptr) {
-            map->move_keys(callback);
+            map->move_keys_on_compact(compactable, compacting_buffers);
         }
     }
 }
@@ -195,9 +195,34 @@ ShardedHashMap::normalize_values(std::function<EntryRef(EntryRef)> normalize)
 }
 
 bool
+ShardedHashMap::normalize_values(std::function<void(std::vector<EntryRef>&)> normalize, const EntryRefFilter& filter)
+{
+    bool changed = false;
+    for (size_t i = 0; i < num_shards; ++i) {
+        auto map = _maps[i].load(std::memory_order_relaxed);
+        if (map != nullptr) {
+            changed |= map->normalize_values(normalize, filter);
+        }
+    }
+    return changed;
+}
+
+void
+ShardedHashMap::foreach_value(std::function<void(const std::vector<EntryRef>&)> callback, const EntryRefFilter& filter)
+{
+    for (size_t i = 0; i < num_shards; ++i) {
+        auto map = _maps[i].load(std::memory_order_acquire);
+        if (map != nullptr) {
+            map->foreach_value(callback, filter);
+        }
+    }
+}
+
+
+bool
 ShardedHashMap::has_held_buffers() const
 {
-    return _gen_holder.getHeldBytes() != 0;
+    return _gen_holder.get_held_bytes() != 0;
 }
 
 void

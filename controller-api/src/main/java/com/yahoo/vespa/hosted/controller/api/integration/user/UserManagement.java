@@ -1,10 +1,12 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.user;
 
+import com.yahoo.jdisc.http.filter.security.misc.User;
 import com.yahoo.vespa.hosted.controller.api.role.Role;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Management of {@link UserId}s as members of {@link Role}s.
@@ -39,4 +41,10 @@ public interface UserManagement {
 
     /** Returns all roles */
     List<Role> listRoles();
+
+    /** Find a user with all attributes */
+    Optional<User> findUser(String email);
+
+    /** Find all users from the database given query */
+    List<User> findUsers(String query);
 }

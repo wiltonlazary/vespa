@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util;
 
 import com.yahoo.vespa.hosted.node.admin.component.TaskContext;
@@ -62,7 +62,7 @@ public class DefaultEnvWriter {
             return false;
         } else {
             context.log(logger, "Updating " + defaultEnvFile.toString());
-            Path tempFile = Paths.get(defaultEnvFile.toString() + ".tmp");
+            Path tempFile = Paths.get(defaultEnvFile + ".tmp");
             uncheck(() -> Files.write(tempFile, newDefaultEnvLines));
             uncheck(() -> Files.move(tempFile, defaultEnvFile, ATOMIC_MOVE));
             return true;
@@ -104,17 +104,7 @@ public class DefaultEnvWriter {
         return newDefaultEnvLines;
     }
 
-    private static class Operation {
-        final String action;
-        final String name;
-        final String value;
-
-        Operation(String action, String name, String value) {
-            this.action = action;
-            this.name = name;
-            this.value = value;
-        }
-
+    private record Operation(String action, String name, String value) {
         String toLine() {
             if (action.equals("unset")) {
                 return "unset " + name;

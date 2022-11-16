@@ -8,6 +8,7 @@
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/searchlib/parsequery/parse.h>
+#include <vespa/searchlib/util/rawbuf.h>
 
 using vespalib::string;
 using std::vector;
@@ -37,11 +38,6 @@ class QueryNodeConverter : public QueryVisitor {
 
     void appendCompressedNumber(int64_t n) {
         _buf.appendCompressedNumber(n);
-    }
-
-    void appendInt(uint32_t i) {
-        _buf.preAlloc(sizeof(uint32_t));
-        _buf.PutToInet(i);
     }
 
     void appendLong(uint64_t l) {
@@ -242,6 +238,14 @@ class QueryNodeConverter : public QueryVisitor {
         createTerm(node, ParseItem::ITEM_GEO_LOCATION_TERM);
     }
 
+    void visit(TrueQueryNode &) override {
+        appendByte(ParseItem::ITEM_TRUE);
+    }
+
+    void visit(FalseQueryNode &) override {
+        appendByte(ParseItem::ITEM_FALSE);
+    }
+
     void visit(PrefixTerm &node) override {
         createTerm(node, ParseItem::ITEM_PREFIXTERM);
     }
@@ -268,6 +272,12 @@ class QueryNodeConverter : public QueryVisitor {
 
     void visit(RegExpTerm &node) override {
         createTerm(node, ParseItem::ITEM_REGEXP);
+    }
+
+    void visit(FuzzyTerm &node) override {
+        createTerm(node, ParseItem::ITEM_FUZZY);
+        appendCompressedPositiveNumber(node.getMaxEditDistance());
+        appendCompressedPositiveNumber(node.getPrefixLength());
     }
 
     void visit(NearestNeighborTerm &node) override {

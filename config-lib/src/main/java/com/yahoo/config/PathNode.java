@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config;
 
-import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -23,7 +22,7 @@ public class PathNode extends LeafNode<Path> {
 
     public PathNode(FileReference fileReference) {
         super(true);
-        this.value = new File(fileReference.value()).toPath();
+        this.value = Path.of(fileReference.value());
         this.fileReference = fileReference;
     }
 

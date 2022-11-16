@@ -8,10 +8,9 @@
 #include <vespa/searchlib/attribute/attributefilesavetarget.h>
 #include <vespa/searchlib/attribute/attributememorysavetarget.h>
 #include <vespa/searchlib/attribute/attributesaver.h>
-#include <vespa/searchlib/util/dirtraverse.h>
 #include <vespa/searchlib/common/serialnumfileheadercontext.h>
 #include <vespa/searchlib/util/filekit.h>
-#include <vespa/vespalib/io/fileutil.h>
+#include <filesystem>
 #include <fstream>
 
 #include <vespa/log/log.h>
@@ -56,8 +55,9 @@ Flusher(DocumentMetaStoreFlushTarget &dmsft,
       _syncToken(syncToken),
       _flushDir("")
 {
-    DocumentMetaStore &dms = *_dmsft._dms;
     // Called by document db executor
+    DocumentMetaStore &dms = *_dmsft._dms;
+    dms.commit(CommitParam(syncToken));
     _flushDir = writer.getSnapshotDir(syncToken);
     vespalib::string newBaseFileName(_flushDir + "/" + dms.getName());
     _saver = dms.initSave(newBaseFileName);
@@ -69,7 +69,7 @@ DocumentMetaStoreFlushTarget::Flusher::~Flusher() = default;
 bool
 DocumentMetaStoreFlushTarget::Flusher::saveDocumentMetaStore()
 {
-    vespalib::mkdir(_flushDir, false);
+    std::filesystem::create_directory(std::filesystem::path(_flushDir));
     SerialNumFileHeaderContext fileHeaderContext(_dmsft._fileHeaderContext, _syncToken);
     bool saveSuccess = false;
     if (_dmsft._hwInfo.disk().slow()) {
@@ -203,7 +203,7 @@ IFlushTarget::Task::UP
 DocumentMetaStoreFlushTarget::initFlush(SerialNum currentSerial, std::shared_ptr<search::IFlushToken>)
 {
     // Called by document db executor
-    _dms->removeAllOldGenerations();
+    _dms->reclaim_unused_memory();
     SerialNum syncToken = std::max(currentSerial, _dms->getStatus().getLastSyncToken());
     auto writer = _dmsDir->tryGetWriter();
     if (!writer) {
@@ -222,6 +222,7 @@ DocumentMetaStoreFlushTarget::initFlush(SerialNum currentSerial, std::shared_ptr
 uint64_t
 DocumentMetaStoreFlushTarget::getApproxBytesToWriteToDisk() const
 {
+    auto guard = _dms->getGuard();
     return _dms->getEstimatedSaveByteSize();
 }
 

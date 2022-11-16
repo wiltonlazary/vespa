@@ -6,6 +6,7 @@
 #include <vespa/searchlib/query/query_term_ucs4.h>
 #include <vespa/searchlib/queryeval/simpleresult.h>
 #include <vespa/searchlib/test/imported_attribute_fixture.h>
+#include <vespa/searchlib/test/mock_gid_to_lid_mapping.h>
 #include <vespa/vespalib/test/insertion_operators.h>
 #include <vespa/searchlib/queryeval/executeinfo.h>
 
@@ -21,6 +22,7 @@ struct Fixture : ImportedAttributeFixture {
     Fixture(bool useSearchCache = false, FastSearchConfig fastSearch = FastSearchConfig::Default)
         : ImportedAttributeFixture(useSearchCache, fastSearch)
     {}
+    ~Fixture() override;
 
     std::unique_ptr<ImportedSearchContext>
     create_context(std::unique_ptr<QueryTermSimple> term) {
@@ -50,6 +52,8 @@ struct Fixture : ImportedAttributeFixture {
     }
 };
 
+Fixture::~Fixture() = default;
+
 template <typename Iterator>
 bool is_hit_with_weight(Iterator& iter, TermFieldMatchData& match, DocId lid, int32_t weight) {
     if (!EXPECT_TRUE(iter.seek(lid))) {
@@ -72,11 +76,55 @@ bool is_strict_hit_with_weight(Iterator& iter, TermFieldMatchData& match,
             EXPECT_EQUAL(weight, match.getWeight()));
 }
 
-TEST_F("approximateHits() returns document count of reference attribute", Fixture) {
+TEST_F("approximateHits() returns document count of reference attribute when not using fast-search target attribute", Fixture) {
+    add_n_docs_with_undefined_values(*f.target_attr, 10);
     add_n_docs_with_undefined_values(*f.reference_attr, 101);
 
     auto ctx = f.create_context(word_term("foo"));
     EXPECT_EQUAL(101u, ctx->approximateHits());
+}
+
+TEST_F("approximateHits() estimates hits when using fast-search target attribute", Fixture(false, FastSearchConfig::ExplicitlyEnabled))
+{
+    constexpr uint32_t target_docs = 1000;
+    constexpr uint32_t docs = 10000;
+    constexpr uint32_t target_gids = 200;
+    f.target_attr->addReservedDoc();
+    add_n_docs_with_undefined_values(*f.target_attr, target_docs);
+    f.reference_attr->addReservedDoc();
+    add_n_docs_with_undefined_values(*f.reference_attr, docs);
+    auto target_attr = dynamic_cast<IntegerAttribute *>(f.target_attr.get());
+    // 2 documents with value 20, 110 documents with value 30.
+    for (uint32_t i = 1; i < 3; ++i) {
+        target_attr->update(i, 20);
+    }
+    for (uint32_t i = 10; i < 120; ++i) {
+        target_attr->update(i, 30);
+    }
+    f.target_attr->commit();
+    // Assign target gids
+    for (uint32_t i = 1; i <= target_gids; ++i) {
+        auto target_gid = dummy_gid(i);
+        f.mapper_factory->_map[target_gid] = i;
+        f.reference_attr->notifyReferencedPut(target_gid, i);
+    }
+    // Add 2 references to each target gid
+    for (uint32_t i = 1; i <= target_gids * 2; ++i) {
+        f.reference_attr->update(i, dummy_gid(((i - 1) % target_gids) + 1));
+    }
+    f.reference_attr->commit();
+    auto ctx = f.create_context(word_term("10"));
+    // Exact count: 0 target hits => 0
+    EXPECT_EQUAL(0u, ctx->approximateHits());
+    TermFieldMatchData match;
+    auto iter = f.create_iterator(*ctx, match, false);
+    EXPECT_TRUE(iter->matches_any() == Trinary::False);
+    ctx = f.create_context(word_term("20"));
+    // Exact count: 2 target hits, 2 docs / target doc => 2 * 2 = 4
+    EXPECT_EQUAL(4u, ctx->approximateHits());
+    ctx = f.create_context(word_term("30"));
+    // Approximation: 110 target hits => 110 * 10001 / 1001 = 1099
+    EXPECT_EQUAL(1099u, ctx->approximateHits());
 }
 
 TEST_F("attributeName() returns imported attribute name", Fixture) {
@@ -155,7 +203,10 @@ struct ArrayValueFixture : Fixture {
                  {DocId(4), dummy_gid(7), DocId(7), doc7_values},
                  {DocId(5), dummy_gid(8), DocId(8), doc8_values}});
     }
+    ~ArrayValueFixture() override;
 };
+
+ArrayValueFixture::~ArrayValueFixture() = default;
 
 TEST_F("Non-strict iterator handles unmapped LIDs", ArrayValueFixture) {
     auto ctx = f.create_context(word_term("1234"));
@@ -196,7 +247,10 @@ struct WsetValueFixture : Fixture {
                  {DocId(4), dummy_gid(4), DocId(4), doc4_values},
                  {DocId(6), dummy_gid(7), DocId(7), doc7_values}});
     }
+    ~WsetValueFixture() override;
 };
+
+WsetValueFixture::~WsetValueFixture() = default;
 
 TEST_F("Non-strict iterator unpacks target match data for weighted set hit", WsetValueFixture) {
     auto ctx = f.create_context(word_term("foo"));
@@ -243,7 +297,10 @@ struct SingleValueFixture : Fixture {
                  {DocId(5), dummy_gid(8), DocId(8), 5678},
                  {DocId(7), dummy_gid(9), DocId(9), 4321}});
     }
+    ~SingleValueFixture() override;
 };
+
+SingleValueFixture::~SingleValueFixture() = default;
 
 // Strict iteration implicitly tests unmapped LIDs by its nature, so we don't have a separate test for that.
 
@@ -390,7 +447,10 @@ struct SearchCacheFixture : Fixture {
                 FastSearchConfig::ExplicitlyEnabled,
                 FilterConfig::ExplicitlyEnabled);
     }
+    ~SearchCacheFixture() override;
 };
+
+SearchCacheFixture::~SearchCacheFixture() = default;
 
 BitVectorSearchCache::Entry::SP
 makeSearchCacheEntry(const std::vector<uint32_t> docIds, uint32_t docIdLimit)

@@ -2,11 +2,13 @@
 
 #include "bootstrapconfigmanager.h"
 #include "bootstrapconfig.h"
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/document_type_repo_factory.h>
 #include <vespa/searchcore/proton/common/hw_info_sampler.h>
 #include <vespa/config-bucketspaces.h>
 #include <vespa/searchlib/common/tunefileinfo.hpp>
-#include <vespa/vespalib/io/fileutil.h>
+#include <vespa/config/retriever/configsnapshot.hpp>
+#include <filesystem>
 #include <cassert>
 
 #include <vespa/log/log.h>
@@ -19,7 +21,6 @@ using search::TuneFileDocumentDB;
 using vespa::config::search::core::ProtonConfig;
 using cloud::config::filedistribution::FiledistributorrpcConfig;
 using vespa::config::content::core::BucketspacesConfig;
-using document::DocumenttypesConfig;
 using document::DocumentTypeRepoFactory;
 using BucketspacesConfigSP = std::shared_ptr<BucketspacesConfig>;
 
@@ -121,7 +122,7 @@ BootstrapConfigManager::update(const ConfigSnapshot & snapshot)
     const auto &hwCpuCfg = protonConfig.hwinfo.cpu;
     HwInfoSampler::Config samplerCfg(hwDiskCfg.size, hwDiskCfg.writespeed, hwDiskCfg.slowwritespeedlimit,
                                      hwDiskCfg.samplewritesize, hwDiskCfg.shared, hwMemoryCfg.size, hwCpuCfg.cores);
-    vespalib::mkdir(protonConfig.basedir, true);
+    std::filesystem::create_directories(std::filesystem::path(protonConfig.basedir));
     HwInfoSampler sampler(protonConfig.basedir, samplerCfg);
 
     auto newSnapshot(std::make_shared<BootstrapConfig>(snapshot.getGeneration(), newDocumenttypesConfig, newRepo,

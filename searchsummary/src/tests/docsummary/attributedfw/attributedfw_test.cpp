@@ -16,7 +16,7 @@ using search::attribute::BasicType;
 using search::attribute::CollectionType;
 using search::docsummary::AttributeDFWFactory;
 using search::docsummary::GetDocsumsState;
-using search::docsummary::IDocsumFieldWriter;
+using search::docsummary::DocsumFieldWriter;
 using search::docsummary::test::MockAttributeManager;
 using search::docsummary::test::MockStateCallback;
 using search::docsummary::test::SlimeValue;
@@ -26,7 +26,7 @@ using ElementVector = std::vector<uint32_t>;
 class AttributeDFWTest : public ::testing::Test {
 protected:
     MockAttributeManager _attrs;
-    std::unique_ptr<IDocsumFieldWriter> _writer;
+    std::unique_ptr<DocsumFieldWriter> _writer;
     MockStateCallback _callback;
     GetDocsumsState _state;
     std::shared_ptr<search::MatchingElementsFields> _matching_elems_fields;
@@ -59,6 +59,8 @@ public:
         }
         _writer = AttributeDFWFactory::create(_attrs.mgr(), field_name, filter_elements, _matching_elems_fields);
         _writer->setIndex(0);
+        EXPECT_TRUE(_writer->setFieldWriterStateIndex(0));
+        _state._fieldWriterStates.resize(1);
         _field_name = field_name;
         _state._attributes.resize(1);
         _state._attributes[0] = _state._attrCtx->getAttribute(field_name);
@@ -67,7 +69,7 @@ public:
     void expect_field(const vespalib::string& exp_slime_as_json, uint32_t docid) {
         vespalib::Slime act;
         vespalib::slime::SlimeInserter inserter(act);
-        _writer->insertField(docid, nullptr, &_state, search::docsummary::RES_JSONSTRING, inserter);
+        _writer->insertField(docid, nullptr, _state, inserter);
 
         SlimeValue exp(exp_slime_as_json);
         EXPECT_EQ(exp.slime, act);
@@ -77,6 +79,7 @@ public:
         _callback.clear();
         _callback.add_matching_elements(docid, _field_name, matching_elems);
         _state._matching_elements = std::unique_ptr<MatchingElements>();
+        _state._fieldWriterStates[0] = nullptr; // Force new state to pick up changed matching elements
         expect_field(exp_slime_as_json, docid);
     }
 };
@@ -132,19 +135,19 @@ TEST_F(AttributeDFWTest, matched_elements_fields_is_populated)
 TEST_F(AttributeDFWTest, filteres_matched_elements_in_array_attribute)
 {
     setup("array_str", true);
-    expect_filtered({}, "[]");
+    expect_filtered({}, "null");
     expect_filtered({0}, "[ 'a' ]");
     expect_filtered({1, 2}, "[ 'b', 'c' ]");
-    expect_filtered({3}, "[]");
+    expect_filtered({3}, "null");
 }
 
 TEST_F(AttributeDFWTest, filteres_matched_elements_in_wset_attribute)
 {
     setup("wset_str", true);
-    expect_filtered({}, "[]");
+    expect_filtered({}, "null");
     expect_filtered({0}, "[ {'item':'a', 'weight':1} ]");
     expect_filtered({1, 2}, "[ {'item':'b', 'weight':1}, {'item':'c', 'weight':1} ]");
-    expect_filtered({3}, "[]");
+    expect_filtered({3}, "null");
 }
 
 GTEST_MAIN_RUN_ALL_TESTS()

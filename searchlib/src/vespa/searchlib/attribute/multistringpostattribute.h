@@ -14,7 +14,7 @@ namespace search {
  * This class is used for both array and weighted set types.
  *
  * B: EnumAttribute<StringAttribute>
- * T: multivalue::Value<IEnumStore::Index> (array) or
+ * T: IEnumStore::Index (array) or
  *    multivalue::WeightedValue<IEnumStore::Index> (weighted set)
  */
 template <typename B, typename T>
@@ -38,6 +38,7 @@ private:
         void collect_folded(vespalib::datastore::EntryRef enum_idx, vespalib::datastore::EntryRef dictionary_snapshot, const std::function<void(vespalib::datastore::EntryRef)>& callback) const override;
         void create(vespalib::datastore::EntryRef idx, std::vector<DocumentWeightIterator> &dst) const override;
         DocumentWeightIterator create(vespalib::datastore::EntryRef idx) const override;
+        std::unique_ptr<queryeval::SearchIterator> make_bitvector_iterator(vespalib::datastore::EntryRef idx, uint32_t doc_id_limit, fef::TermFieldMatchData &match_data, bool strict) const override;
     };
     DocumentWeightAttributeAdapter _document_weight_attribute_adapter;
 
@@ -54,10 +55,6 @@ private:
     using PostingMap = typename PostingParent::PostingMap;
     using QueryTermSimpleUP = AttributeVector::QueryTermSimpleUP;
     using SelfType = MultiValueStringPostingAttributeT<B, T>;
-    using StringArrayImplSearchContext = typename MultiValueStringAttributeT<B, T>::StringArrayImplSearchContext;
-    using StringArrayPostingSearchContext = attribute::StringPostingSearchContext<StringArrayImplSearchContext, SelfType, int32_t>;
-    using StringSetImplSearchContext = typename MultiValueStringAttributeT<B, T>::StringSetImplSearchContext;
-    using StringSetPostingSearchContext = attribute::StringPostingSearchContext<StringSetImplSearchContext, SelfType, int32_t>;
     using WeightedIndex = typename MultiValueStringAttributeT<B, T>::WeightedIndex;
     using generation_t = typename MultiValueStringAttributeT<B, T>::generation_t;
 
@@ -76,15 +73,14 @@ public:
     using Dictionary = EnumPostingTree;
     using PostingList = typename PostingParent::PostingList;
 
-    MultiValueStringPostingAttributeT(const vespalib::string & name, const AttributeVector::Config & c =
-                                      AttributeVector::Config(AttributeVector::BasicType::STRING,
-                                                              attribute::CollectionType::ARRAY));
+    MultiValueStringPostingAttributeT(const vespalib::string & name, const AttributeVector::Config & c);
+    MultiValueStringPostingAttributeT(const vespalib::string & name);
     ~MultiValueStringPostingAttributeT();
 
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
 
-    AttributeVector::SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams & params) const override;
 
     const IDocumentWeightAttribute *asDocumentWeightAttribute() const override;
@@ -106,8 +102,8 @@ public:
     }
 };
 
-using ArrayStringPostingAttribute = MultiValueStringPostingAttributeT<EnumAttribute<StringAttribute>, multivalue::Value<IEnumStore::Index> >;
-using WeightedSetStringPostingAttribute = MultiValueStringPostingAttributeT<EnumAttribute<StringAttribute>, multivalue::WeightedValue<IEnumStore::Index> >;
+using ArrayStringPostingAttribute = MultiValueStringPostingAttributeT<EnumAttribute<StringAttribute>, vespalib::datastore::AtomicEntryRef>;
+using WeightedSetStringPostingAttribute = MultiValueStringPostingAttributeT<EnumAttribute<StringAttribute>, multivalue::WeightedValue<vespalib::datastore::AtomicEntryRef> >;
 
 } // namespace search
 

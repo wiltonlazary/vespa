@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc;
 
-import com.google.inject.Key;
 import com.yahoo.container.logging.AccessLogEntry;
 import com.yahoo.jdisc.Container;
 import com.yahoo.jdisc.References;
@@ -22,6 +21,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 import static com.yahoo.jdisc.http.HttpRequest.Method;
@@ -55,7 +55,7 @@ public class HttpRequest {
         InputStream requestData = null;
         URI uri = null;
         CurrentContainer container = null;
-        private final String nag = " must be set before the attempted operation.";
+        private static final String nag = " must be set before the attempted operation.";
         SocketAddress remoteAddress;
 
         private void boom(Object ref, String what) {
@@ -411,11 +411,7 @@ public class HttpRequest {
         Map<String, String> mask;
         Map<String, String> view;
 
-        if (parameterMask != null) {
-            mask = parameterMask;
-        } else {
-            mask = Collections.emptyMap();
-        }
+        mask = Objects.requireNonNullElse(parameterMask, Collections.emptyMap());
         view = new HashMap<>(parameters.size() + mask.size());
         for (Map.Entry<String, List<String>> parameter : parameters.entrySet()) {
             if (existsAsOriginalParameter(parameter.getValue())) {
@@ -548,11 +544,6 @@ public class HttpRequest {
 
                 @Override
                 public RequestHandler resolveHandler(com.yahoo.jdisc.Request request) {
-                    return null;
-                }
-
-                @Override
-                public <T> T getInstance(Key<T> tKey) {
                     return null;
                 }
 

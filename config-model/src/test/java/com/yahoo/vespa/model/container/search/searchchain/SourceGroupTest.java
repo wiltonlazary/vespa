@@ -2,19 +2,16 @@
 package com.yahoo.vespa.model.container.search.searchchain;
 
 import com.yahoo.component.ComponentId;
-import com.yahoo.component.ComponentSpecification;
-import com.yahoo.component.chain.Phase;
 import com.yahoo.component.chain.model.ChainSpecification;
 import com.yahoo.config.model.test.MockRoot;
 import com.yahoo.search.searchchain.model.federation.FederationOptions;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
+import java.util.List;
+import java.util.Set;
 
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
-import static org.hamcrest.Matchers.containsString;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author Tony Vaagenes
@@ -23,14 +20,14 @@ public class SourceGroupTest {
     private MockRoot root;
     private SearchChains searchChains;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         root = new MockRoot();
         searchChains = new SearchChains(root, "searchchains");
     }
 
     @Test
-    public void report_error_when_no_leader() {
+    void report_error_when_no_leader() {
         try {
             Provider provider = createProvider("p1");
             Source source = createSource("s1", Source.GroupOption.participant);
@@ -41,7 +38,7 @@ public class SourceGroupTest {
 
             searchChains.validate();
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("Missing leader for the source s1."));
+            assertTrue(e.getMessage().contains("Missing leader for the source s1."));
             return;
         }
         fail("Expected exception");
@@ -54,8 +51,8 @@ public class SourceGroupTest {
     private ChainSpecification createSearchChainSpecification(String id) {
         return new ChainSpecification(ComponentId.fromString(id),
                 new ChainSpecification.Inheritance(null, null),
-                Collections.<Phase>emptyList(),
-                Collections.<ComponentSpecification>emptySet());
+                List.of(),
+                Set.of());
     }
 
     private Source createSource(String sourceId, Source.GroupOption groupOption) {
@@ -66,7 +63,7 @@ public class SourceGroupTest {
     }
 
     @Test
-    public void require_that_source_and_provider_id_is_not_allowed_to_be_equal() {
+    void require_that_source_and_provider_id_is_not_allowed_to_be_equal() {
         Provider provider = createProvider("sameId");
         Provider provider2 = createProvider("ignoredId");
 
@@ -82,8 +79,8 @@ public class SourceGroupTest {
             searchChains.validate();
             fail("Expected exception");
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("Same id used for a source"));
-            assertThat(e.getMessage(), containsString("'sameId'"));
+            assertEquals("Id 'sameId' is used both for a source and another search chain/provider",
+                    e.getMessage());
         }
     }
 }

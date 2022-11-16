@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.hosted.plugin;
 
 import ai.vespa.hosted.api.Deployment;
@@ -60,7 +60,7 @@ public class DeployMojo extends AbstractVespaDeploymentMojo {
             case success:                    return;
             case error:                      throw new MojoExecutionException("Unexpected error during deployment; see log for details");
             case aborted:                    throw new MojoFailureException("Deployment was aborted, probably by a newer deployment");
-            case outOfCapacity:              throw new MojoFailureException("No capacity left in zone; please contact the Vespa team");
+            case nodeAllocationFailure:      throw new MojoFailureException("Specified node capacity could not be fulfilled for your tenant; contact Vespa Cloud support");
             case deploymentFailed:           throw new MojoFailureException("Deployment failed; see log for details");
             case installationFailed:         throw new MojoFailureException("Installation failed; see Vespa log for details");
             case running:                    throw new MojoFailureException("Deployment not completed");

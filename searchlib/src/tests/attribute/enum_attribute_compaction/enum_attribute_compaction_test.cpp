@@ -1,11 +1,13 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/vespalib/gtest/gtest.h>
-#include <vespa/searchcommon/attribute/attributecontent.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
 #include <vespa/searchlib/attribute/integerbase.h>
 #include <vespa/searchlib/attribute/stringbase.h>
 #include <vespa/searchlib/test/weighted_type_test_utils.h>
+#include <vespa/searchcommon/attribute/attributecontent.h>
+#include <vespa/searchcommon/attribute/config.h>
+#include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/vespalib/gtest/gtest.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("enum_attribute_compaction_test");
@@ -175,7 +177,7 @@ void
 CompactionTest<VectorType>::test_enum_store_compaction()
 {
     constexpr uint32_t canary_stride = 256;
-    uint32_t dead_limit = search::CompactionStrategy::DEAD_BYTES_SLACK / 8;
+    uint32_t dead_limit = vespalib::datastore::CompactionStrategy::DEAD_BYTES_SLACK / 8;
     uint32_t doc_count = dead_limit * 3;
     if (_v->hasMultiValue() || std::is_same_v<VectorType,StringAttribute>) {
         doc_count /= 2;

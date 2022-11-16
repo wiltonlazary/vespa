@@ -6,6 +6,7 @@
 #include <vespa/vespalib/data/smart_buffer.h>
 #include <vespa/vespalib/data/slime/binary_format.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/cpu_usage.h>
 
 #include <vespa/log/log.h>
 
@@ -34,22 +35,28 @@ public:
 };
 
 VESPA_THREAD_STACK_TAG(match_engine_executor)
+VESPA_THREAD_STACK_TAG(match_engine_thread_bundle)
 
 } // namespace anon
 
 namespace proton {
 
 using namespace vespalib::slime;
+using vespalib::CpuUsage;
 
 MatchEngine::MatchEngine(size_t numThreads, size_t threadsPerSearch, uint32_t distributionKey, bool async)
     : _lock(),
       _distributionKey(distributionKey),
       _async(async),
       _closed(false),
+      _forward_issues(true),
       _handlers(),
-      _executor(std::max(size_t(1), numThreads / threadsPerSearch), 256_Ki, match_engine_executor),
-      _threadBundlePool(std::max(size_t(1), threadsPerSearch)),
-      _nodeUp(false)
+      _executor(std::max(size_t(1), numThreads / threadsPerSearch), 256_Ki,
+                CpuUsage::wrap(match_engine_executor, CpuUsage::Category::READ)),
+      _threadBundlePool(std::max(size_t(1), threadsPerSearch),
+                        CpuUsage::wrap(match_engine_thread_bundle, CpuUsage::Category::READ)),
+      _nodeUp(false),
+      _nodeMaintenance(false)
 {
 }
 
@@ -97,7 +104,8 @@ search::engine::SearchReply::UP
 MatchEngine::search(search::engine::SearchRequest::Source request,
                     search::engine::SearchClient &client)
 {
-    if (_closed || !_nodeUp) {
+    // We continue to allow searches if the node is in Maintenance mode
+    if (_closed || (!_nodeUp && !_nodeMaintenance.load(std::memory_order_relaxed))) {
         auto ret = std::make_unique<search::engine::SearchReply>();
         ret->setDistributionKey(_distributionKey);
 
@@ -107,7 +115,7 @@ MatchEngine::search(search::engine::SearchRequest::Source request,
     }
     if (_async) {
         _executor.execute(std::make_unique<SearchTask>(*this, std::move(request), client));
-        return search::engine::SearchReply::UP();
+        return {};
     }
     return performSearch(std::move(request));
 }
@@ -123,7 +131,8 @@ MatchEngine::performSearch(search::engine::SearchRequest::Source req)
     const search::engine::SearchRequest * searchRequest = req.get();
     if (searchRequest) {
         // 3 is the minimum level required for backend tracing.
-        searchRequest->setTraceLevel(search::fef::indexproperties::trace::Level::lookup(searchRequest->propertiesMap.modelOverrides(), searchRequest->getTraceLevel()), 3);
+        searchRequest->setTraceLevel(search::fef::indexproperties::trace::Level::lookup(searchRequest->propertiesMap.modelOverrides(),
+                                                                                        searchRequest->trace().getLevel()), 3);
         ISearchHandler::SP searchHandler;
         vespalib::SimpleThreadBundle::UP threadBundle = _threadBundlePool.obtain();
         { // try to find the match handler corresponding to the specified search doc type
@@ -144,12 +153,23 @@ MatchEngine::performSearch(search::engine::SearchRequest::Source req)
             }
         }
         _threadBundlePool.release(std::move(threadBundle));
+        if (searchRequest->expired()) {
+            vespalib::Issue::report("search request timed out; results may be incomplete");
+        }
     }
     ret->request = req.release();
-    ret->my_issues = std::move(my_issues);
+    if (_forward_issues) {
+        ret->my_issues = std::move(my_issues);
+    } else {
+        my_issues->for_each_message([](const auto &msg){
+            LOG(warning, "unhandled issue: %s", msg.c_str());
+        });
+    }
     ret->setDistributionKey(_distributionKey);
     if ((ret->request->trace().getLevel() > 0) && ret->request->trace().hasTrace()) {
         ret->request->trace().getRoot().setLong("distribution-key", _distributionKey);
+        DocTypeName doc_type(*ret->request);
+        ret->request->trace().getRoot().setString("document-type", doc_type.getName());
         ret->request->trace().done();
         search::fef::Properties & trace = ret->propertiesMap.lookupCreate("trace");
         vespalib::SmartBuffer output(4_Ki);
@@ -160,16 +180,24 @@ MatchEngine::performSearch(search::engine::SearchRequest::Source req)
 }
 
 bool MatchEngine::isOnline() const {
-    return _nodeUp;
+    return _nodeUp.load(std::memory_order_relaxed);
 }
 
 
 void
 MatchEngine::setNodeUp(bool nodeUp)
 {
-    _nodeUp = nodeUp;
+    _nodeUp.store(nodeUp, std::memory_order_relaxed);
 }
 
+void
+MatchEngine::setNodeMaintenance(bool nodeMaintenance)
+{
+    _nodeMaintenance.store(nodeMaintenance, std::memory_order_relaxed);
+    if (nodeMaintenance) {
+        _nodeUp.store(false, std::memory_order_relaxed);
+    }
+}
 
 StatusReport::UP
 MatchEngine::reportStatus() const

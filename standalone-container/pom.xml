@@ -6,11 +6,11 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>standalone-container</artifactId>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <packaging>container-plugin</packaging>
   <dependencies>
     <dependency>
@@ -72,6 +72,15 @@
       <version>${project.version}</version>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.felix</groupId>
+      <artifactId>org.apache.felix.framework</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.lz4</groupId>
+      <artifactId>lz4-java</artifactId>
+    </dependency>
   </dependencies>
 
   <build>
@@ -84,15 +93,26 @@
           <discApplicationClass>com.yahoo.container.standalone.StandaloneContainerApplication</discApplicationClass>
           <buildLegacyVespaPlatformBundle>true</buildLegacyVespaPlatformBundle>
           <discPreInstallBundle>
+            <!-- Standalone container has an embedded config model, so model related bundles cannot be retrieved via config -->
             configdefinitions-jar-with-dependencies.jar,
             config-provisioning-jar-with-dependencies.jar,
             config-bundle-jar-with-dependencies.jar,
             config-model-api-jar-with-dependencies.jar,
             config-model-jar-with-dependencies.jar,
+
             container-disc-jar-with-dependencies.jar,
+
+            <!-- START bundles that can be moved to config-model when all standalone containers are set up via the model -->
+            container-spifly.jar,  <!-- Aries SPIFly repackaged -->
+            javax.servlet-api-3.1.0.jar,  <!-- Needed by vespa-athenz. TODO Vespa 9: remove the need for servlet-api -->
+            <!-- END bundles that can be moved to config-model -->
+
+            <!-- START config-model dependencies -->
+            container-search-and-docproc-jar-with-dependencies.jar,
+            linguistics-components-jar-with-dependencies.jar,
             model-evaluation-jar-with-dependencies.jar,
             model-integration-jar-with-dependencies.jar,
-            vespajlib.jar
+            <!-- END config-model dependencies -->
           </discPreInstallBundle>
         </configuration>
       </plugin>

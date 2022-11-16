@@ -10,11 +10,11 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>container-test</artifactId>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <packaging>jar</packaging>
   <dependencies>
     <dependency>
@@ -23,10 +23,24 @@
       <version>${project.version}</version>
       <exclusions>
         <exclusion>
-          <groupId>org.apache.httpcomponents.client5</groupId>
-          <artifactId>httpclient5</artifactId>
+          <groupId>biz.aQute.bnd</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.yahoo.vespa</groupId>
+          <artifactId>vespajlib</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.bouncycastle</groupId>
+          <artifactId>*</artifactId>
         </exclusion>
       </exclusions>
+    </dependency>
+    <!-- Excluded above, and re-declared here, to work around a presumed Maven bug which otherwise puts this
+         in provided scope when container-test is declared before, and together with, the container artifact -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
     </dependency>
 
     <!-- All dependencies that should be visible in test classpath, but not compile classpath,
@@ -37,22 +51,6 @@
       <artifactId>icu4j</artifactId>
     </dependency>
     <dependency>
-      <groupId>com.fasterxml.jackson.dataformat</groupId>
-      <artifactId>jackson-dataformat-xml</artifactId>
-      <exclusions>
-        <exclusion>
-          <!-- Conflicts with javax.activation:javax.activation-api:1.2.0, which is "exported" via jdisc_core. -->
-          <groupId>jakarta.activation</groupId>
-          <artifactId>jakarta.activation-api</artifactId>
-        </exclusion>
-        <exclusion>
-          <!-- Conflicts with javax.xml.bind:jaxb-api:2.3, which is "exported" via jdisc_core.-->
-          <groupId>jakarta.xml.bind</groupId>
-          <artifactId>jakarta.xml.bind-api</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
       <groupId>io.airlift</groupId>
       <artifactId>airline</artifactId>
       <exclusions>
@@ -60,6 +58,11 @@
           <!-- We need the version used by guava -->
           <groupId>com.google.code.findbugs</groupId>
           <artifactId>annotations</artifactId>
+        </exclusion>
+        <exclusion>
+          <!-- We want the declaration from our parent, not the one in airlift -->
+          <groupId>com.google.guava</groupId>
+          <artifactId>guava</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
@@ -70,6 +73,10 @@
     <dependency>
       <groupId>org.antlr</groupId>
       <artifactId>antlr4-runtime</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>net.java.dev.jna</groupId>
+      <artifactId>jna</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
@@ -88,5 +95,59 @@
       <artifactId>aircompressor</artifactId>
       <scope>compile</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency> <!-- TODO: Remove on Vespa 9 -->
+      <!-- not used by Vespa, but was historically on test classpath -->
+      <groupId>org.json</groupId>
+      <artifactId>json</artifactId>
+    </dependency>
+    <dependency>
+      <!-- TODO: this, and probably others, could be removed from here if we make the fat jar the default artifact for jdisc_core -->
+      <groupId>org.lz4</groupId>
+      <artifactId>lz4-java</artifactId>
+    </dependency>
+
+    <!-- START JETTY embedded jars -->
+    <dependency>
+      <groupId>org.eclipse.jetty.alpn</groupId>
+      <artifactId>alpn-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty.http2</groupId>
+      <artifactId>http2-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-alpn-java-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-client</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-continuation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-jmx</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-servlet</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-servlets</artifactId>
+    </dependency>
+    <!-- END JETTY embedded jars -->
   </dependencies>
 </project>

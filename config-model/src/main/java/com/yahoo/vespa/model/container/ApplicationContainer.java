@@ -11,6 +11,10 @@ import com.yahoo.config.provision.NodeResources;
 import com.yahoo.search.config.QrStartConfig;
 import com.yahoo.vespa.model.container.component.SimpleComponent;
 
+import java.util.Optional;
+
+import static com.yahoo.vespa.defaults.Defaults.getDefaults;
+
 /**
  * A container that is typically used by container clusters set up from the user application.
  *
@@ -20,7 +24,7 @@ public final class ApplicationContainer extends Container implements
         QrStartConfig.Producer,
         ZookeeperServerConfig.Producer {
 
-    private static final String defaultHostedJVMArgs = "-XX:+UseOSErrorReporting -XX:+SuppressFatalErrorMessage";
+    private static final String defaultHostedJVMArgs = "-XX:+SuppressFatalErrorMessage";
 
     private final boolean isHostedVespa;
 
@@ -36,6 +40,8 @@ public final class ApplicationContainer extends Container implements
         addComponent(new SimpleComponent("com.yahoo.container.jdisc.messagebus.NetworkMultiplexerProvider"));
         addComponent(new SimpleComponent("com.yahoo.container.jdisc.messagebus.SessionCache"));
         addComponent(new SimpleComponent("com.yahoo.container.jdisc.SystemInfoProvider"));
+        addComponent(new SimpleComponent("com.yahoo.container.jdisc.ZoneInfoProvider"));
+        addComponent(new SimpleComponent("com.yahoo.container.jdisc.ClusterInfoProvider"));
     }
 
     @Override
@@ -50,23 +56,27 @@ public final class ApplicationContainer extends Container implements
 
     @Override
     protected ContainerServiceType myServiceType() {
-        if (parent instanceof ContainerCluster) {
-            ContainerCluster<?> cluster = (ContainerCluster<?>)parent;
-            // TODO: The 'qrserver' name is retained for legacy reasons (e.g. system tests and log parsing).
-            if (cluster.getSearch() != null && cluster.getDocproc() == null && cluster.getDocumentApi() == null) {
-                return ContainerServiceType.QRSERVER;
-            }
-        }
         return ContainerServiceType.CONTAINER;
     }
 
     /** Returns the jvm arguments this should start with */
     @Override
     public String getJvmOptions() {
+        StringBuilder b = new StringBuilder();
+        if (isHostedVespa) {
+            if (hasDocproc()) {
+                b.append(ApplicationContainer.defaultHostedJVMArgs).append(' ');
+            }
+            b.append("-Djdk.tls.server.enableStatusRequestExtension=true ")
+                    .append("-Djdk.tls.stapling.responseTimeout=2000 ")
+                    .append("-Djdk.tls.stapling.cacheSize=256 ")
+                    .append("-Djdk.tls.stapling.cacheLifetime=3600 ");
+        }
         String jvmArgs = super.getJvmOptions();
-        return isHostedVespa && hasDocproc()
-                ? ("".equals(jvmArgs) ? defaultHostedJVMArgs : defaultHostedJVMArgs + " " + jvmArgs)
-                : jvmArgs;
+        if (!jvmArgs.isBlank()) {
+             b.append(jvmArgs.trim());
+        }
+        return b.toString().trim();
     }
 
     private boolean hasDocproc() {
@@ -83,4 +93,11 @@ public final class ApplicationContainer extends Container implements
         return featureFlags.jvmOmitStackTraceInFastThrowOption(ClusterSpec.Type.container);
     }
 
+    @Override
+    public Optional<String> getPreShutdownCommand() {
+        int preshutdownTimeoutSeconds = 360;
+        int rpcTimeoutSeconds = preshutdownTimeoutSeconds + 10;
+        String rpcParams = "-t " + rpcTimeoutSeconds + " tcp/localhost:" + getRpcPort() + " prepareStop d:" + preshutdownTimeoutSeconds;
+        return Optional.of(getDefaults().underVespaHome("bin/vespa-rpc-invoke") + " " + rpcParams);
+    }
 }

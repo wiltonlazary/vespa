@@ -11,17 +11,17 @@ import com.yahoo.cloud.config.SlobroksConfig;
 import com.yahoo.cloud.config.ZookeepersConfig;
 import com.yahoo.cloud.config.log.LogdConfig;
 import com.yahoo.component.Version;
+import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.config.provision.ApplicationId;
-import com.yahoo.document.DocumenttypesConfig;
+import com.yahoo.document.config.DocumenttypesConfig;
 import com.yahoo.document.config.DocumentmanagerConfig;
 import com.yahoo.documentapi.messagebus.protocol.DocumentrouteselectorpolicyConfig;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocolPoliciesConfig;
 import com.yahoo.messagebus.MessagebusConfig;
 import com.yahoo.vespa.config.content.AllClustersBucketSpacesConfig;
 import com.yahoo.vespa.config.content.DistributionConfig;
-import com.yahoo.vespa.config.content.LoadTypeConfig;
 import com.yahoo.vespa.configmodel.producers.DocumentManager;
 import com.yahoo.vespa.configmodel.producers.DocumentTypes;
 import com.yahoo.vespa.documentmodel.DocumentModel;
@@ -32,7 +32,6 @@ import com.yahoo.vespa.model.PortsMeta;
 import com.yahoo.vespa.model.Service;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.admin.Admin;
-import com.yahoo.vespa.model.clients.Clients;
 import com.yahoo.vespa.model.content.cluster.ContentCluster;
 import com.yahoo.vespa.model.filedistribution.FileDistributionConfigProducer;
 import com.yahoo.vespa.model.routing.Routing;
@@ -74,6 +73,12 @@ public class ApplicationConfigProducerRoot extends AbstractConfigProducer<Abstra
         this.documentModel = documentModel;
         this.vespaVersion = vespaVersion;
         this.applicationId = applicationId;
+    }
+
+    private boolean useV8GeoPositions = false;
+
+    public void useFeatureFlags(ModelContext.FeatureFlags featureFlags) {
+        this.useV8GeoPositions = featureFlags.useV8GeoPositions();
     }
 
     /**
@@ -151,12 +156,16 @@ public class ApplicationConfigProducerRoot extends AbstractConfigProducer<Abstra
 
     @Override
     public void getConfig(DocumentmanagerConfig.Builder builder) {
-        new DocumentManager().produce(documentModel, builder);
+        new DocumentManager()
+            .useV8GeoPositions(this.useV8GeoPositions)
+            .produce(documentModel, builder);
     }
 
     @Override
     public void getConfig(DocumenttypesConfig.Builder builder) {
-        new DocumentTypes().produce(documentModel, builder);
+        new DocumentTypes()
+            .useV8GeoPositions(this.useV8GeoPositions)
+            .produce(documentModel, builder);
     }
 
     @Override
@@ -198,15 +207,6 @@ public class ApplicationConfigProducerRoot extends AbstractConfigProducer<Abstra
     public void getConfig(ZookeepersConfig.Builder builder) {
         if (admin != null) {
             admin.getConfig(builder);
-        }
-    }
-
-    @Override
-    public void getConfig(LoadTypeConfig.Builder builder) {
-        VespaModel model = (VespaModel) getRoot();
-        Clients clients = model.getClients();
-        if (clients != null) {
-            clients.getConfig(builder);
         }
     }
 

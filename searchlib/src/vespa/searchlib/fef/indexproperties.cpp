@@ -112,62 +112,177 @@ SecondPhase::lookup(const Properties &props)
 
 } // namespace rank
 
-namespace execute::onmatch {
-    
-const vespalib::string Attribute::NAME("vespa.execute.onmatch.attribute");
-const vespalib::string Attribute::DEFAULT_VALUE("");
-const vespalib::string Operation::NAME("vespa.execute.onmatch.operation");
-const vespalib::string Operation::DEFAULT_VALUE("");
+namespace execute {
 
-vespalib::string
-Attribute::lookup(const Properties &props, const vespalib::string & defaultValue) {
-    return lookupString(props, NAME, defaultValue);
-}
+namespace onmatch {
 
-vespalib::string
-Operation::lookup(const Properties &props, const vespalib::string & defaultValue) {
-    return lookupString(props, NAME, defaultValue);
-}
+    const vespalib::string Attribute::NAME("vespa.execute.onmatch.attribute");
+    const vespalib::string Attribute::DEFAULT_VALUE("");
+    const vespalib::string Operation::NAME("vespa.execute.onmatch.operation");
+    const vespalib::string Operation::DEFAULT_VALUE("");
 
-}
+    vespalib::string
+    Attribute::lookup(const Properties &props, const vespalib::string & defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
 
-namespace execute::onrerank {
-
-const vespalib::string Attribute::NAME("vespa.execute.onrerank.attribute");
-const vespalib::string Attribute::DEFAULT_VALUE("");
-const vespalib::string Operation::NAME("vespa.execute.onrerank.operation");
-const vespalib::string Operation::DEFAULT_VALUE("");
-
-vespalib::string
-Attribute::lookup(const Properties &props, const vespalib::string & defaultValue) {
-    return lookupString(props, NAME, defaultValue);
-}
-
-vespalib::string
-Operation::lookup(const Properties &props, const vespalib::string & defaultValue) {
-    return lookupString(props, NAME, defaultValue);
-}
+    vespalib::string
+    Operation::lookup(const Properties &props, const vespalib::string & defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
 
 }
+namespace onrerank {
 
-namespace execute::onsummary {
+    const vespalib::string Attribute::NAME("vespa.execute.onrerank.attribute");
+    const vespalib::string Attribute::DEFAULT_VALUE("");
+    const vespalib::string Operation::NAME("vespa.execute.onrerank.operation");
+    const vespalib::string Operation::DEFAULT_VALUE("");
 
-const vespalib::string Attribute::NAME("vespa.execute.onsummary.attribute");
-const vespalib::string Attribute::DEFAULT_VALUE("");
-const vespalib::string Operation::NAME("vespa.execute.onsummary.operation");
-const vespalib::string Operation::DEFAULT_VALUE("");
+    vespalib::string
+    Attribute::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
 
-vespalib::string
-Attribute::lookup(const Properties &props, const vespalib::string & defaultValue) {
-    return lookupString(props, NAME, defaultValue);
+    vespalib::string
+    Operation::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
 }
 
-vespalib::string
-Operation::lookup(const Properties &props, const vespalib::string & defaultValue) {
-    return lookupString(props, NAME, defaultValue);
-}
+namespace onsummary {
+
+    const vespalib::string Attribute::NAME("vespa.execute.onsummary.attribute");
+    const vespalib::string Attribute::DEFAULT_VALUE("");
+    const vespalib::string Operation::NAME("vespa.execute.onsummary.operation");
+    const vespalib::string Operation::DEFAULT_VALUE("");
+
+    vespalib::string
+    Attribute::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+    vespalib::string
+    Operation::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
 
 }
+}
+
+namespace mutate {
+
+const vespalib::string AllowQueryOverride::NAME("vespa.mutate.allow_query_override");
+bool AllowQueryOverride::check(const Properties &props) {
+    return lookupBool(props, NAME, false);
+}
+
+namespace on_match {
+
+    const vespalib::string Attribute::NAME("vespa.mutate.on_match.attribute");
+    const vespalib::string Attribute::DEFAULT_VALUE("");
+    const vespalib::string Operation::NAME("vespa.mutate.on_match.operation");
+    const vespalib::string Operation::DEFAULT_VALUE("");
+
+    vespalib::string
+    Attribute::lookup(const Properties &props, const vespalib::string & defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+    vespalib::string
+    Operation::lookup(const Properties &props, const vespalib::string & defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+}
+namespace on_first_phase {
+
+    const vespalib::string Attribute::NAME("vespa.mutate.on_first_phase.attribute");
+    const vespalib::string Attribute::DEFAULT_VALUE("");
+    const vespalib::string Operation::NAME("vespa.mutate.on_first_phase.operation");
+    const vespalib::string Operation::DEFAULT_VALUE("");
+
+    vespalib::string
+    Attribute::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+    vespalib::string
+    Operation::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+}
+namespace on_second_phase {
+
+    const vespalib::string Attribute::NAME("vespa.mutate.on_second_phase.attribute");
+    const vespalib::string Attribute::DEFAULT_VALUE("");
+    const vespalib::string Operation::NAME("vespa.mutate.on_second_phase.operation");
+    const vespalib::string Operation::DEFAULT_VALUE("");
+
+    vespalib::string
+    Attribute::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+    vespalib::string
+    Operation::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+}
+
+namespace on_summary {
+
+    const vespalib::string Attribute::NAME("vespa.mutate.on_summary.attribute");
+    const vespalib::string Attribute::DEFAULT_VALUE("");
+    const vespalib::string Operation::NAME("vespa.mutate.on_summary.operation");
+    const vespalib::string Operation::DEFAULT_VALUE("");
+
+    vespalib::string
+    Attribute::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+    vespalib::string
+    Operation::lookup(const Properties &props, const vespalib::string &defaultValue) {
+        return lookupString(props, NAME, defaultValue);
+    }
+
+}
+} // namespace mutate
+
+namespace feature_rename {
+    const vespalib::string Rename::NAME("vespa.feature.rename");
+
+    std::vector<std::pair<vespalib::string,vespalib::string>>
+    Rename::lookup(const Properties &props) {
+        std::vector<std::pair<vespalib::string,vespalib::string>> retval;
+        Property p = props.lookup(NAME);
+        if (p.found()) {
+            for (uint32_t i = 0; i+1 < p.size(); i += 2) {
+                vespalib::string from = p.getAt(i);
+                vespalib::string to = p.getAt(i+1);
+                retval.emplace_back(from, to);
+            }
+        }
+        return retval;
+    }
+} // namespace feature_rename
+
+namespace match {
+
+const vespalib::string Feature::NAME("vespa.match.feature");
+const std::vector<vespalib::string> Feature::DEFAULT_VALUE;
+
+std::vector<vespalib::string>
+Feature::lookup(const Properties &props)
+{
+    return lookupStringVector(props, NAME, DEFAULT_VALUE);
+}
+
+} // namespace match
 
 namespace summary {
 
@@ -205,14 +320,6 @@ IgnoreDefaultFeatures::check(const Properties &props)
 } // namespace dump
 
 namespace matching {
-
-const vespalib::string SplitUnpackingIterators::NAME("vespa.matching.split_unpacking_iterators");
-const bool SplitUnpackingIterators::DEFAULT_VALUE(false);
-bool SplitUnpackingIterators::check(const Properties &props) { return lookupBool(props, NAME, DEFAULT_VALUE); }
-
-const vespalib::string DelayUnpackingIterators::NAME("vespa.matching.delay_unpacking_iterators");
-const bool DelayUnpackingIterators::DEFAULT_VALUE(false);
-bool DelayUnpackingIterators::check(const Properties &props) { return lookupBool(props, NAME, DEFAULT_VALUE); }
 
 const vespalib::string TermwiseLimit::NAME("vespa.matching.termwise_limit");
 const double TermwiseLimit::DEFAULT_VALUE(1.0);
@@ -274,25 +381,9 @@ MinHitsPerThread::lookup(const Properties &props, uint32_t defaultValue)
     return lookupUint32(props, NAME, defaultValue);
 }
 
-const vespalib::string NearestNeighborBruteForceLimit::NAME("vespa.matching.nearest_neighbor.brute_force_limit");
-
-const double NearestNeighborBruteForceLimit::DEFAULT_VALUE(0.05);
-
-double
-NearestNeighborBruteForceLimit::lookup(const Properties &props)
-{
-    return lookup(props, DEFAULT_VALUE);
-}
-
-double
-NearestNeighborBruteForceLimit::lookup(const Properties &props, double defaultValue)
-{
-    return lookupDouble(props, NAME, defaultValue);
-}
-
 const vespalib::string GlobalFilterLowerLimit::NAME("vespa.matching.global_filter.lower_limit");
 
-const double GlobalFilterLowerLimit::DEFAULT_VALUE(0.0);
+const double GlobalFilterLowerLimit::DEFAULT_VALUE(0.05);
 
 double
 GlobalFilterLowerLimit::lookup(const Properties &props)
@@ -308,7 +399,7 @@ GlobalFilterLowerLimit::lookup(const Properties &props, double defaultValue)
 
 const vespalib::string GlobalFilterUpperLimit::NAME("vespa.matching.global_filter.upper_limit");
 
-const double GlobalFilterUpperLimit::DEFAULT_VALUE(2.0);
+const double GlobalFilterUpperLimit::DEFAULT_VALUE(1.0);
 
 double
 GlobalFilterUpperLimit::lookup(const Properties &props)

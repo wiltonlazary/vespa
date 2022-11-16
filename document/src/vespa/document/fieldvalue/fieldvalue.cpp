@@ -11,7 +11,6 @@
 #include "bytefieldvalue.h"
 #include "predicatefieldvalue.h"
 #include "iteratorhandler.h"
-#include <vespa/document/util/bytebuffer.h>
 #include <vespa/document/base/exceptions.h>
 #include <vespa/document/serialization/vespadocumentserializer.h>
 #include <vespa/vespalib/objects/nbostream.h>
@@ -27,8 +26,50 @@ namespace document {
 
 using namespace fieldvalue;
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(FieldValue, vespalib::Identifiable);
-
+const char *
+FieldValue::className() const noexcept {
+    switch (type()) {
+        case Type::BOOL:
+            return "BoolFieldValue";
+        case Type::BYTE:
+            return "ByteFieldValue";
+        case Type::SHORT:
+            return "ShortFieldValue";
+        case Type::INT:
+            return "IntFieldValue";
+        case Type::LONG:
+            return "LongFieldValue";
+        case Type::FLOAT:
+            return "FloatFieldValue";
+        case Type::DOUBLE:
+            return "DoubleFieldValue";
+        case Type::STRING:
+            return "StringFieldValue";
+        case Type::RAW:
+            return "RawFieldValue";
+        case Type::PREDICATE:
+            return "PredicateFieldValue";
+        case Type::TENSOR:
+            return "TensorFieldValue";
+        case Type::ANNOTATION_REFERENCE:
+            return "AnnotationReferenceFieldValue";
+        case Type::REFERENCE:
+            return "ReferenceFieldValue";
+        case Type::ARRAY:
+            return "ArrayFieldValue";
+        case Type::WSET:
+            return "WSetFieldValue";
+        case Type::MAP:
+            return "MapFieldValue";
+        case Type::STRUCT:
+            return "StructFieldValue";
+        case Type::DOCUMENT:
+            return "DocumentFieldValue";
+        case Type::NONE:
+        default:
+            abort();
+    }
+}
 void FieldValue::serialize(nbostream &stream) const {
     VespaDocumentSerializer serializer(stream);
     serializer.write(*this);
@@ -49,19 +90,9 @@ FieldValue::hash() const
     return vespalib::hashValue(os.data(), os.size()) ;
 }
 
-bool
-FieldValue::isA(const FieldValue& other) const {
-    return (getDataType()->isA(*other.getDataType()));
-}
 int
 FieldValue::compare(const FieldValue& other) const {
-    const DataType & a = *getDataType();
-    const DataType & b = *other.getDataType();
-    return (a < b)
-           ? -1
-           : (b < a)
-             ? 1
-             : 0;
+    return getDataType()->cmpId(*other.getDataType());
 }
 
 int
@@ -100,30 +131,6 @@ FieldValue&
 FieldValue::operator=(vespalib::stringref)
 {
     throw IllegalArgumentException("Cannot assign string to datatype " + getDataType()->toString(), VESPA_STRLOC);
-}
-
-FieldValue&
-FieldValue::operator=(int32_t)
-{
-    throw IllegalArgumentException("Cannot assign int to datatype " + getDataType()->toString(), VESPA_STRLOC);
-}
-
-FieldValue&
-FieldValue::operator=(int64_t)
-{
-    throw IllegalArgumentException("Cannot assign long to datatype " + getDataType()->toString(), VESPA_STRLOC);
-}
-
-FieldValue&
-FieldValue::operator=(float)
-{
-    throw IllegalArgumentException("Cannot assign float to datatype " + getDataType()->toString(), VESPA_STRLOC);
-}
-
-FieldValue&
-FieldValue::operator=(double)
-{
-    throw IllegalArgumentException("Cannot assign double to datatype " + getDataType()->toString(), VESPA_STRLOC);
 }
 
 char
@@ -247,7 +254,7 @@ FieldValue::createArray(const DataType & baseType)
 }
 
 std::ostream& operator<<(std::ostream& out, const FieldValue & p) {
-    p.print(out);
+    p.print(out, false, "");
     return out;
 }
 

@@ -36,7 +36,8 @@ template <typename B>
 void
 SingleValueNumericPostingAttribute<B>::mergeMemoryStats(vespalib::MemoryUsage & total)
 {
-    total.merge(this->_postingList.update_stat());
+    auto& compaction_strategy = this->getConfig().getCompactionStrategy();
+    total.merge(this->_postingList.update_stat(compaction_strategy));
 }
 
 template <typename B>
@@ -46,8 +47,8 @@ SingleValueNumericPostingAttribute<B>::applyUpdateValueChange(const Change & c,
                                                               std::map<DocId, EnumIndex> & currEnumIndices)
 {
     EnumIndex newIdx;
-    if (c.isEnumValid()) {
-        newIdx = EnumIndex(vespalib::datastore::EntryRef(c.getEnum()));
+    if (c.has_entry_ref()) {
+        newIdx = EnumIndex(vespalib::datastore::EntryRef(c.get_entry_ref()));
     } else {
         enumStore.find_index(c._data.raw(), newIdx);
     }
@@ -63,7 +64,7 @@ makePostingChange(const vespalib::datastore::EntryComparator &cmpa,
 {
     for (const auto& elem : currEnumIndices) {
         uint32_t docId = elem.first;
-        EnumIndex oldIdx = this->_enumIndices[docId];
+        EnumIndex oldIdx = this->_enumIndices[docId].load_relaxed();
         EnumIndex newIdx = elem.second;
 
         // add new posting
@@ -88,13 +89,15 @@ SingleValueNumericPostingAttribute<B>::applyValueChanges(EnumStoreBatchUpdater& 
     // used to make sure several arithmetic operations on the same document in a single commit works
     std::map<DocId, EnumIndex> currEnumIndices;
 
+    // This avoids searching for the defaultValue in the enum store for each CLEARDOC in the change vector.
+    this->cache_change_data_entry_ref(this->_defaultValue);
     for (const auto& change : this->_changes.getInsertOrder()) {
         auto enumIter = currEnumIndices.find(change._doc);
         EnumIndex oldIdx;
         if (enumIter != currEnumIndices.end()) {
             oldIdx = enumIter->second;
         } else {
-            oldIdx = this->_enumIndices[change._doc];
+            oldIdx = this->_enumIndices[change._doc].load_relaxed();
         }
 
         if (change._type == ChangeBase::UPDATE) {
@@ -102,16 +105,19 @@ SingleValueNumericPostingAttribute<B>::applyValueChanges(EnumStoreBatchUpdater& 
         } else if (change._type >= ChangeBase::ADD && change._type <= ChangeBase::DIV) {
             if (oldIdx.valid()) {
                 T oldValue = enumStore.get_value(oldIdx);
-                T newValue = this->applyArithmetic(oldValue, change);
+                T newValue = this->template applyArithmetic<T, typename Change::DataType>(oldValue, change._data.getArithOperand(), change._type);
                 EnumIndex newIdx;
                 (void) dictionary.find_index(enumStore.make_comparator(newValue), newIdx);
                 currEnumIndices[change._doc] = newIdx;
             }
         } else if(change._type == ChangeBase::CLEARDOC) {
-            this->_defaultValue._doc = change._doc;
-            applyUpdateValueChange(this->_defaultValue, enumStore, currEnumIndices);
+            Change clearDoc(this->_defaultValue);
+            clearDoc._doc = change._doc;
+            applyUpdateValueChange(clearDoc, enumStore, currEnumIndices);
         }
     }
+    // We must clear the cached entry ref as the defaultValue might be located in another data buffer on later invocations.
+    this->_defaultValue.clear_entry_ref();
 
     makePostingChange(enumStore.get_comparator(), currEnumIndices, changePost);
 
@@ -121,27 +127,30 @@ SingleValueNumericPostingAttribute<B>::applyValueChanges(EnumStoreBatchUpdater& 
 
 template <typename B>
 void
-SingleValueNumericPostingAttribute<B>::removeOldGenerations(generation_t firstUsed)
+SingleValueNumericPostingAttribute<B>::reclaim_memory(generation_t oldest_used_gen)
 {
-    SingleValueNumericEnumAttribute<B>::removeOldGenerations(firstUsed);
-    _postingList.trimHoldLists(firstUsed);
+    SingleValueNumericEnumAttribute<B>::reclaim_memory(oldest_used_gen);
+    _postingList.reclaim_memory(oldest_used_gen);
 }
 
 template <typename B>
 void
-SingleValueNumericPostingAttribute<B>::onGenerationChange(generation_t generation)
+SingleValueNumericPostingAttribute<B>::before_inc_generation(generation_t current_gen)
 {
     _postingList.freeze();
-    SingleValueNumericEnumAttribute<B>::onGenerationChange(generation);
-    _postingList.transferHoldLists(generation - 1);
+    SingleValueNumericEnumAttribute<B>::before_inc_generation(current_gen);
+    _postingList.assign_generation(current_gen);
 }
 
 template <typename B>
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 SingleValueNumericPostingAttribute<B>::getSearch(QueryTermSimple::UP qTerm,
                                                  const attribute::SearchContextParams & params) const
 {
-    return std::make_unique<SinglePostingSearchContext>(std::move(qTerm), params, *this);
+    using BaseSC = attribute::SingleNumericEnumSearchContext<T>;
+    using SC = attribute::NumericPostingSearchContext<BaseSC, SelfType, vespalib::btree::BTreeNoLeafData>;
+    BaseSC base_sc(std::move(qTerm), *this, &this->_enumIndices.acquire_elem_ref(0), this->_enumStore);
+    return std::make_unique<SC>(std::move(base_sc), params, *this);
 }
 
 } // namespace search

@@ -13,6 +13,7 @@
 #include <ostream>
 
 using vespalib::GenerationHandler;
+using vespalib::datastore::CompactionStrategy;
 using vespalib::datastore::EntryRef;
 
 namespace search::attribute {
@@ -22,28 +23,25 @@ using MyPostingStore = PostingStore<int32_t>;
 
 namespace {
 
-static constexpr uint32_t lid_limit = 20000;
-static constexpr uint32_t huge_sequence_length = 800;
+constexpr uint32_t lid_limit = 20000;
+constexpr uint32_t huge_sequence_length = 800;
 
 struct PostingStoreSetup {
-    bool enable_bitvectors;
     bool enable_only_bitvector;
-    PostingStoreSetup(bool enable_bitvectors_in, bool enable_only_bitvector_in)
-        : enable_bitvectors(enable_bitvectors_in),
-          enable_only_bitvector(enable_only_bitvector_in)
+    explicit PostingStoreSetup(bool enable_only_bitvector_in)
+        : enable_only_bitvector(enable_only_bitvector_in)
     {
     }
 };
 
 std::ostream& operator<<(std::ostream& os, const PostingStoreSetup setup)
 {
-    os << (setup.enable_bitvectors ? "bv" : "nobv") << "_" << (setup.enable_only_bitvector ? "onlybv" : "mixed");
+    os << (setup.enable_only_bitvector ? "onlybv" : "mixed");
     return os;
 }
 
 Config make_config(PostingStoreSetup param) {
     Config cfg;
-    cfg.setEnableBitVectors(param.enable_bitvectors);
     cfg.setEnableOnlyBitVector(param.enable_only_bitvector);
     return cfg;
 }
@@ -66,11 +64,11 @@ protected:
     {
         _value_store.freeze_dictionary();
         _store.freeze();
-        _value_store.transfer_hold_lists(_gen_handler.getCurrentGeneration());
-        _store.transferHoldLists(_gen_handler.getCurrentGeneration());
+        _value_store.assign_generation(_gen_handler.getCurrentGeneration());
+        _store.assign_generation(_gen_handler.getCurrentGeneration());
         _gen_handler.incGeneration();
-        _value_store.trim_hold_lists(_gen_handler.getFirstUsedGeneration());
-        _store.trimHoldLists(_gen_handler.getFirstUsedGeneration());
+        _value_store.reclaim_memory(_gen_handler.get_oldest_used_generation());
+        _store.reclaim_memory(_gen_handler.get_oldest_used_generation());
     }
 
     EntryRef add_sequence(int start_key, int end_key)
@@ -82,8 +80,8 @@ protected:
             additions.emplace_back(i, 0);
         }
         _store.apply(root,
-                     &additions[0], &additions[0] + additions.size(),
-                     &removals[0], &removals[0] + removals.size());
+                     additions.data(), additions.data() + additions.size(),
+                     removals.data(), removals.data() + removals.size());
         return root;
     }
     static std::vector<int> make_exp_sequence(int start_key, int end_key)
@@ -160,9 +158,9 @@ PostingStoreTest::test_compact_sequence(uint32_t sequence_length)
     EntryRef old_ref2 = get_posting_ref(2);
     auto usage_before = store.getMemoryUsage();
     bool compaction_done = false;
-    search::CompactionStrategy compaction_strategy(0.05, 0.2);
+    CompactionStrategy compaction_strategy(0.05, 0.2);
     for (uint32_t pass = 0; pass < 45; ++pass) {
-        store.update_stat();
+        store.update_stat(compaction_strategy);
         auto guard = _gen_handler.takeGuard();
         if (!store.consider_compact_worst_buffers(compaction_strategy)) {
             compaction_done = true;
@@ -193,9 +191,9 @@ PostingStoreTest::test_compact_btree_nodes(uint32_t sequence_length)
     EntryRef old_ref2 = get_posting_ref(2);
     auto usage_before = store.getMemoryUsage();
     bool compaction_done = false;
-    search::CompactionStrategy compaction_strategy(0.05, 0.2);
+    CompactionStrategy compaction_strategy(0.05, 0.2);
     for (uint32_t pass = 0; pass < 55; ++pass) {
-        store.update_stat();
+        store.update_stat(compaction_strategy);
         auto guard = _gen_handler.takeGuard();
         if (!store.consider_compact_worst_btree_nodes(compaction_strategy)) {
             compaction_done = true;
@@ -215,7 +213,6 @@ PostingStoreTest::test_compact_btree_nodes(uint32_t sequence_length)
     EXPECT_EQ(make_exp_sequence(5, 5 + sequence_length), get_sequence(ref2));
     auto usage_after = store.getMemoryUsage();
     if (sequence_length < huge_sequence_length ||
-        !_config.getEnableBitVectors() ||
         !_config.getEnableOnlyBitVector()) {
         EXPECT_GT(usage_before.deadBytes(), usage_after.deadBytes());
     } else {
@@ -225,7 +222,7 @@ PostingStoreTest::test_compact_btree_nodes(uint32_t sequence_length)
 
 VESPA_GTEST_INSTANTIATE_TEST_SUITE_P(PostingStoreMultiTest,
                                      PostingStoreTest,
-                                     testing::Values(PostingStoreSetup(false, false), PostingStoreSetup(true, false), PostingStoreSetup(true, true)), testing::PrintToStringParamName());
+                                     testing::Values(PostingStoreSetup(false), PostingStoreSetup(true)), testing::PrintToStringParamName());
 
 TEST_P(PostingStoreTest, require_that_nodes_for_multiple_small_btrees_are_compacted)
 {

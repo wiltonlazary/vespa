@@ -2,11 +2,10 @@
 
 #pragma once
 
-#include <vespa/searchlib/util/rawbuf.h>
-#include <vespa/searchsummary/docsummary/getdocsumargs.h>
+#include "getdocsumargs.h"
 #include <vespa/searchlib/common/featureset.h>
 #include <vespa/searchlib/common/geo_location_spec.h>
-#include <vespa/vespalib/util/jsonwriter.h>
+#include <vespa/vespalib/util/stash.h>
 
 namespace juniper {
     class Config;
@@ -33,10 +32,10 @@ class DocsumFieldWriterState;
 class GetDocsumsStateCallback
 {
 public:
-    virtual void FillSummaryFeatures(GetDocsumsState * state, IDocsumEnvironment * env) = 0;
-    virtual void FillRankFeatures(GetDocsumsState * state, IDocsumEnvironment * env) = 0;
+    virtual void fillSummaryFeatures(GetDocsumsState& state) = 0;
+    virtual void fillRankFeatures(GetDocsumsState& state) = 0;
     virtual std::unique_ptr<MatchingElements> fill_matching_elements(const MatchingElementsFields &matching_elems_fields) = 0;
-    virtual ~GetDocsumsStateCallback(void) { }
+    virtual ~GetDocsumsStateCallback() = default;
     GetDocsumsStateCallback(const GetDocsumsStateCallback &) = delete;
     GetDocsumsStateCallback & operator = (const GetDocsumsStateCallback &) = delete;
 protected:
@@ -52,56 +51,46 @@ public:
     const search::attribute::IAttributeVector * getAttribute(size_t index) const { return _attributes[index]; }
 
     GetDocsumArgs               _args;      // from getdocsums request
-
-    uint32_t                   *_docsumbuf; // from getdocsums request
-    uint32_t                    _docsumcnt; // from getdocsums request
-
+    std::vector<uint32_t>       _docsumbuf; // from getdocsums request
     KeywordExtractor           *_kwExtractor;
-    char                       *_keywords;  // list of keywords from query
 
     GetDocsumsStateCallback    &_callback;
 
     struct DynTeaserState {
-        uint32_t              _docid;  // document id ('cache key')
-        uint32_t              _input;  // input field ('cache key')
-        uint32_t              _lang;   // lang field  ('cache key')
-        juniper::Config      *_config; // juniper config ('cache key')
-        juniper::QueryHandle *_query;  // juniper query representation
-        juniper::Result      *_result; // juniper analyze result
+        std::unique_ptr<juniper::QueryHandle> _query;  // juniper query representation
     } _dynteaser;
 
 
-    char                         _docSumFieldSpaceStore[2048];
-    search::RawBuf               _docSumFieldSpace;
     std::unique_ptr<search::attribute::IAttributeContext> _attrCtx;
     std::vector<const search::attribute::IAttributeVector *> _attributes;
-    std::vector<std::unique_ptr<DocsumFieldWriterState>> _fieldWriterStates;
+private:
+    vespalib::Stash _stash;
+public:
+    // DocsumFieldWriterState instances are owned by _stash
+    std::vector<DocsumFieldWriterState*> _fieldWriterStates;
 
     // used by AbsDistanceDFW
     std::vector<search::common::GeoLocationSpec> _parsedLocations;
     void parse_locations();
 
     // used by SummaryFeaturesDFW
-    FeatureSet::SP _summaryFeatures;
+    std::shared_ptr<FeatureSet> _summaryFeatures;
     bool           _summaryFeaturesCached;
     bool           _omit_summary_features;
 
     // used by RankFeaturesDFW
-    FeatureSet::SP _rankFeatures;
+    std::shared_ptr<FeatureSet> _rankFeatures;
 
-    // Used by AttributeCombinerDFW when filtering is enabled
+    // Used by AttributeCombinerDFW and MultiAttrDFW when filtering is enabled
     std::unique_ptr<search::MatchingElements> _matching_elements;
 
     GetDocsumsState(const GetDocsumsState &) = delete;
     GetDocsumsState& operator=(const GetDocsumsState &) = delete;
-    GetDocsumsState(GetDocsumsStateCallback &callback);
+    explicit GetDocsumsState(GetDocsumsStateCallback &callback);
     ~GetDocsumsState();
 
     const MatchingElements &get_matching_elements(const MatchingElementsFields &matching_elems_fields);
-    vespalib::JSONStringer & jsonStringer();
-private:
-    // Only used by rank/summary features, so make it lazy
-    std::unique_ptr<vespalib::JSONStringer>   _jsonStringer;
+    vespalib::Stash& get_stash() noexcept { return _stash; }
 };
 
 }

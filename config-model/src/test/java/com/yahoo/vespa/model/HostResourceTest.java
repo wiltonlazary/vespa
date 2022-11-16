@@ -7,15 +7,13 @@ import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.NodeResources;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.util.Optional;
 
 import static com.yahoo.config.provision.ClusterSpec.Type.container;
-import static org.hamcrest.Matchers.endsWith;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author gjoranv
@@ -23,22 +21,22 @@ import static org.junit.Assert.assertThat;
 public class HostResourceTest {
 
     @Test
-    public void require_exception_when_no_matching_hostalias() {
+    void require_exception_when_no_matching_hostalias() {
         MockRoot root = new MockRoot();
         TestService service = new TestService(root, 1);
 
         try {
-            service.initService(root.deployLogger());
+            service.initService(root.getDeployState());
         } catch (RuntimeException e) {
-            assertThat(e.getMessage(), endsWith("No host found for service 'hostresourcetest$testservice0'. " +
+            assertTrue(e.getMessage().endsWith("No host found for service 'hostresourcetest$testservice0'. " +
                     "The hostalias is probably missing from hosts.xml."));
         }
     }
 
     @Test
-    public void host_witrh_membership() {
-        HostResource host = hostResourceWithMemberships(ClusterMembership.from(clusterSpec(container, "jdisc"), 0));
-        assertClusterMembership(host, container, "jdisc");
+    void host_with_membership() {
+        HostResource host = hostResourceWithMemberships(ClusterMembership.from(clusterSpec(container, "container"), 0));
+        assertClusterMembership(host, container, "container");
     }
 
     private void assertClusterMembership(HostResource host, ClusterSpec.Type type, String id) {

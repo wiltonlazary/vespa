@@ -5,7 +5,6 @@
 #include "raw_document_meta_data.h"
 #include <vespa/document/base/globalid.h>
 #include <vespa/document/bucket/bucketid.h>
-#include <persistence/spi/types.h>
 
 namespace proton::documentmetastore {
 
@@ -16,10 +15,10 @@ namespace proton::documentmetastore {
  **/
 struct IStore
 {
-    typedef uint32_t                DocId;
-    typedef document::GlobalId      GlobalId;
-    typedef document::BucketId      BucketId;
-    typedef storage::spi::Timestamp Timestamp;
+    using DocId = uint32_t;
+    using GlobalId = document::GlobalId;
+    using BucketId = document::BucketId;
+    using Timestamp = uint64_t;
 
     /**
      * Result after lookup in the store.
@@ -49,7 +48,7 @@ struct IStore
         }
     };
 
-    virtual ~IStore() {}
+    virtual ~IStore() = default;
 
     /**
      * Inspect the meta data associated with the given gid.
@@ -71,7 +70,7 @@ struct IStore
      **/
     virtual Result put(const GlobalId &gid,
                        const BucketId &bucketId,
-                       const Timestamp &timestamp,
+                       Timestamp timestamp,
                        uint32_t docSize,
                        DocId lid,
                        uint64_t prepare_serial_num) = 0;
@@ -83,27 +82,29 @@ struct IStore
      */
     virtual bool updateMetaData(DocId lid,
                                 const BucketId &bucketId,
-                                const Timestamp &timestamp) = 0;
+                                Timestamp timestamp) = 0;
 
     /**
      * Removes the <lid, meta data> pair with the given lid from this
      * store. Returns false if the <lid, meta data> pair was not
      * found or could not be removed.
-     * The caller must call removeComplete() after document removal is done.
+     * The caller must call removes_complete() after document removal is done.
      **/
     virtual bool remove(DocId lid, uint64_t prepare_serial_num) = 0;
 
     /**
-     * Signal that the removal of the document associated with this lid is complete.
-     * This is typically called after the document has been removed from all
-     * other data structures. The lid is now a candidate for later reuse.
+     * Signal that the removal of the documents associated with these lid is complete.
+     * This is typically called after the documents have been removed from all
+     * other data structures. The lids are now candidates for later reuse.
+     * Both remove() and removeBatch() will trigger a later call to removes_complete()
+     * at the next force commit, cf. ForceCommitDoneTask.
      */
-    virtual void removeComplete(DocId lid) = 0;
+    virtual void removes_complete(const std::vector<DocId>& lids) = 0;
 
     /**
      * Move meta data for fromLid to toLid. Mapping from gid to lid
      * is updated atomically from fromLid to toLid.
-     * The caller must call removeComplete() with fromLid after document move is done.
+     * The caller must call removes_complete() with fromLid after document move is done.
      */
     virtual void move(DocId fromLid, DocId toLid, uint64_t prepare_serial_num) = 0;
 
@@ -115,14 +116,9 @@ struct IStore
 
     /**
      * Removes a list of lids.
-     * The caller must call removeBatchComplete() after documents removal is done.
+     * The caller must call removes_complete() after documents removal is done.
      */
     virtual void removeBatch(const std::vector<DocId> &lidsToRemove, const DocId docIdLimit) = 0;
-
-    /**
-     * Signal that the removal of the documents associated with these lids is complete.
-     */
-    virtual void removeBatchComplete(const std::vector<DocId> &lidsToRemove) = 0;
 
     /**
      * Returns the raw meta data stored for the given lid.

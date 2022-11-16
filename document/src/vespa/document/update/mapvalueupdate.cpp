@@ -16,22 +16,18 @@ using namespace vespalib::xml;
 
 namespace document {
 
-IMPLEMENT_IDENTIFIABLE(MapValueUpdate, ValueUpdate);
-
-MapValueUpdate::MapValueUpdate(const FieldValue& key, const ValueUpdate& update)
-    : ValueUpdate(),
-      _key(key.clone()),
-      _update(update.clone())
+MapValueUpdate::MapValueUpdate(std::unique_ptr<FieldValue> key, std::unique_ptr<ValueUpdate> update)
+    : ValueUpdate(Map),
+      _key(std::move(key)),
+      _update(std::move(update))
 {}
 
-MapValueUpdate::MapValueUpdate(const MapValueUpdate &) = default;
-MapValueUpdate & MapValueUpdate::operator = (const MapValueUpdate &) = default;
 MapValueUpdate::~MapValueUpdate() = default;
 
 bool
 MapValueUpdate::operator==(const ValueUpdate& other) const
 {
-    if (other.getClass().id() != MapValueUpdate::classId) return false;
+    if (other.getType() != Map) return false;
     const MapValueUpdate& o(static_cast<const MapValueUpdate&>(other));
     if (*_key != *o._key) return false;
     if (*_update != *o._update) return false;
@@ -43,14 +39,14 @@ void
 MapValueUpdate::checkCompatibility(const Field& field) const
 {
     // Check compatibility of nested types.
-    if (field.getDataType().getClass().id() == ArrayDataType::classId) {
-	    if (_key->getClass().id() != IntFieldValue::classId) {
+    if (field.getDataType().isArray()) {
+        if ( !_key->isA(FieldValue::Type::INT)) {
             throw IllegalArgumentException(vespalib::make_string(
                     "Key for field '%s' is of wrong type (expected '%s', was '%s').",
                     field.getName().data(), DataType::INT->toString().c_str(),
                     _key->getDataType()->toString().c_str()), VESPA_STRLOC);
         }
-    } else if (field.getDataType().getClass().id() == WeightedSetDataType::classId) {
+    } else if (field.getDataType().isWeightedSet()) {
         const WeightedSetDataType& type = static_cast<const WeightedSetDataType&>(field.getDataType());
         if (!type.getNestedType().isValueType(*_key)) {
             throw IllegalArgumentException(vespalib::make_string(
@@ -60,7 +56,7 @@ MapValueUpdate::checkCompatibility(const Field& field) const
         }
     } else {
         throw IllegalArgumentException("MapValueUpdate does not support "
-                "datatype " + field.getDataType().toString() + ".", VESPA_STRLOC);
+                                       "datatype " + field.getDataType().toString() + ".", VESPA_STRLOC);
     }
 }
 
@@ -68,7 +64,7 @@ MapValueUpdate::checkCompatibility(const Field& field) const
 bool
 MapValueUpdate::applyTo(FieldValue& value) const
 {
-    if (value.getDataType()->getClass().id() == ArrayDataType::classId) {
+    if (value.getDataType()->isArray()) {
         ArrayFieldValue& val(static_cast<ArrayFieldValue&>(value));
         int32_t index = _key->getAsInt();
         if (index < 0 || static_cast<uint32_t>(index) >= val.size()) {
@@ -79,7 +75,7 @@ MapValueUpdate::applyTo(FieldValue& value) const
         if (!_update->applyTo(val[_key->getAsInt()])) {
             val.remove(_key->getAsInt());
         }
-    } else if (value.getDataType()->getClass().id() == WeightedSetDataType::classId) {
+    } else if (value.getDataType()->isWeightedSet()) {
         const WeightedSetDataType& type(static_cast<const WeightedSetDataType&>(*value.getDataType()));
         WeightedSetFieldValue& val(static_cast<WeightedSetFieldValue&>(value));
         WeightedSetFieldValue::iterator it = val.find(*_key);
@@ -122,7 +118,9 @@ MapValueUpdate::printXml(XmlOutputStream& xos) const
 {
     xos << XmlTag("map")
         << XmlTag("value") << *_key << XmlEndTag()
-        << XmlTag("update") << *_update << XmlEndTag()
+        << XmlTag("update");
+    _update->printXml(xos);
+    xos << XmlEndTag()
         << XmlEndTag();
 }
 
@@ -131,25 +129,18 @@ void
 MapValueUpdate::deserialize(const DocumentTypeRepo& repo, const DataType& type, nbostream & stream)
 {
     VespaDocumentDeserializer deserializer(repo, stream, Document::getNewestSerializationVersion());
-    switch(type.getClass().id()) {
-        case ArrayDataType::classId:
-        {
-            _key.reset(new IntFieldValue);
-            deserializer.read(*_key);
-            const ArrayDataType& arrayType = static_cast<const ArrayDataType&>(type);
-            _update.reset(ValueUpdate::createInstance(repo, arrayType.getNestedType(), stream).release());
-            break;
-        }
-        case WeightedSetDataType::classId:
-        {
-            const WeightedSetDataType& wset(static_cast<const WeightedSetDataType&>(type));
-            _key.reset(wset.getNestedType().createFieldValue().release());
-            deserializer.read(*_key);
-            _update.reset(ValueUpdate::createInstance(repo, *DataType::INT, stream).release());
-            break;
-        }
-        default:
-            throw DeserializeException("Can not perform map update on type " + type.toString() + ".", VESPA_STRLOC);
+    if (type.isArray()) {
+        _key.reset(new IntFieldValue);
+        deserializer.read(*_key);
+        const ArrayDataType& arrayType = static_cast<const ArrayDataType&>(type);
+        _update.reset(ValueUpdate::createInstance(repo, arrayType.getNestedType(), stream).release());
+    } else if (type.isWeightedSet()) {
+        const WeightedSetDataType& wset(static_cast<const WeightedSetDataType&>(type));
+        _key.reset(wset.getNestedType().createFieldValue().release());
+        deserializer.read(*_key);
+        _update.reset(ValueUpdate::createInstance(repo, *DataType::INT, stream).release());
+    } else {
+        throw DeserializeException("Can not perform map update on type " + type.toString() + ".", VESPA_STRLOC);
     }
 }
 

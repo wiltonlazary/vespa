@@ -17,24 +17,27 @@ class ReaderBase;
  */
 class SingleValueEnumAttributeBase {
 protected:
+    using AtomicEntryRef = vespalib::datastore::AtomicEntryRef;
+    using AtomicEntryRefVector = vespalib::RcuVectorBase<AtomicEntryRef>;
     using DocId = AttributeVector::DocId;
+    using EntryRef = vespalib::datastore::EntryRef;
     using EnumHandle = AttributeVector::EnumHandle;
     using EnumIndex = IEnumStore::Index;
-    using EnumIndexVector = vespalib::RcuVectorBase<EnumIndex>;
     using EnumIndexRemapper = IEnumStore::EnumIndexRemapper;
     using GenerationHolder = vespalib::GenerationHolder;
-
+    using EnumRefs = attribute::IAttributeVector::EnumRefs;
 public:
     using EnumIndexCopyVector = vespalib::Array<EnumIndex>;
-
-    IEnumStore::Index getEnumIndex(DocId docId) const { return _enumIndices[docId]; }
-    EnumHandle getE(DocId doc) const { return _enumIndices[doc].ref(); }
 protected:
-    SingleValueEnumAttributeBase(const attribute::Config & c, GenerationHolder &genHolder);
+
+    EntryRef acquire_enum_entry_ref(DocId docId) const noexcept { return _enumIndices.acquire_elem_ref(docId).load_acquire(); }
+    EnumHandle getE(DocId doc) const noexcept { return acquire_enum_entry_ref(doc).ref(); }
+    EnumRefs make_read_view(size_t read_size) const noexcept { return _enumIndices.make_read_view(read_size); }
+    SingleValueEnumAttributeBase(const attribute::Config & c, GenerationHolder &genHolder, const vespalib::alloc::Alloc& initial_alloc);
     ~SingleValueEnumAttributeBase();
     AttributeVector::DocId addDoc(bool & incGeneration);
 
-    EnumIndexVector _enumIndices;
+    AtomicEntryRefVector _enumIndices;
 
     EnumIndexCopyVector getIndicesCopy(uint32_t size) const;
     void remap_enum_store_refs(const EnumIndexRemapper& remapper, AttributeVector& v);
@@ -58,6 +61,9 @@ protected:
 private:
     void considerUpdateAttributeChange(const Change & c, EnumStoreBatchUpdater & inserter);
     void applyUpdateValueChange(const Change& c, EnumStoreBatchUpdater& updater);
+    EnumRefs make_enum_read_view() const noexcept override {
+        return make_read_view(this->getCommittedDocIdLimit());
+    }
 
 protected:
     // from EnumAttribute
@@ -105,8 +111,8 @@ public:
     uint32_t getValueCount(DocId doc) const override;
     void onCommit() override;
     void onUpdateStat() override;
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
     EnumHandle getEnum(DocId doc) const override {
        return getE(doc);
     }
@@ -123,7 +129,7 @@ public:
         return 1;
     }
 
-    void clearDocs(DocId lidLow, DocId lidLimit) override;
+    void clearDocs(DocId lidLow, DocId lidLimit, bool in_shrink_lid_space) override;
     void onShrinkLidSpace() override;
     std::unique_ptr<AttributeSaver> onInitSave(vespalib::stringref fileName) override;
     void onAddDocs(DocId lidLimit) override;

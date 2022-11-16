@@ -6,6 +6,7 @@ import com.yahoo.tensor.evaluation.Name;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -42,12 +43,17 @@ public class Range<NAMETYPE extends Name> extends CompositeTensorFunction<NAMETY
     }
 
     @Override
-    public String toString(ToStringContext context) {
+    public String toString(ToStringContext<NAMETYPE> context) {
         return "range(" + dimensionNames().collect(Collectors.joining(",")) + ")" + rangeFunction;
     }
 
     private Stream<String> dimensionNames() {
         return type.dimensions().stream().map(TensorType.Dimension::toString);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash("range", type, rangeFunction);
     }
 
 }

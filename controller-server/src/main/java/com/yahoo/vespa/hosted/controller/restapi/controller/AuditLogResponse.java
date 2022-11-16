@@ -1,10 +1,10 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.controller;
 
+import com.yahoo.restapi.SlimeJsonResponse;
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.Slime;
 import com.yahoo.vespa.hosted.controller.auditlog.AuditLog;
-import com.yahoo.restapi.SlimeJsonResponse;
 
 /**
  * @author mpolden
@@ -22,6 +22,7 @@ public class AuditLogResponse extends SlimeJsonResponse {
         log.entries().forEach(entry -> {
             Cursor entryObject = entryArray.addObject();
             entryObject.setString("time", entry.at().toString());
+            entryObject.setString("client", entry.client().name());
             entryObject.setString("user", entry.principal());
             entryObject.setString("method", entry.method().name());
             entryObject.setString("resource", entry.resource());

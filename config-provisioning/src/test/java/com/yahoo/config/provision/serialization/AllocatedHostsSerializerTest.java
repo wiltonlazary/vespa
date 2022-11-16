@@ -8,7 +8,7 @@ import com.yahoo.config.provision.DockerImage;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.NetworkPorts;
 import com.yahoo.config.provision.NodeResources;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.LinkedHashSet;
@@ -18,7 +18,7 @@ import java.util.Set;
 
 import static com.yahoo.config.provision.serialization.AllocatedHostsSerializer.fromJson;
 import static com.yahoo.config.provision.serialization.AllocatedHostsSerializer.toJson;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author bratseth
@@ -28,9 +28,10 @@ public class AllocatedHostsSerializerTest {
     private static final NodeResources smallSlowDiskSpeedNode = new NodeResources(0.5, 3.1, 4, 1, NodeResources.DiskSpeed.slow);
     private static final NodeResources bigSlowDiskSpeedNode = new NodeResources(1.0, 6.2, 8, 2, NodeResources.DiskSpeed.slow);
     private static final NodeResources anyDiskSpeedNode = new NodeResources(0.5, 3.1, 4, 1, NodeResources.DiskSpeed.any);
+    private static final NodeResources arm64Node = new NodeResources(0.5, 3.1, 4, 1, NodeResources.DiskSpeed.any, NodeResources.StorageType.any, NodeResources.Architecture.arm64);
 
     @Test
-    public void testAllocatedHostsSerialization() throws IOException {
+    void testAllocatedHostsSerialization() throws IOException {
         Set<HostSpec> hosts = new LinkedHashSet<>();
         hosts.add(new HostSpec("empty", List.of(), Optional.empty()));
         hosts.add(new HostSpec("with-aliases", List.of("alias1", "alias2"), Optional.empty()));
@@ -68,7 +69,17 @@ public class AllocatedHostsSerializerTest {
                                                       Optional.empty()),
                                Optional.empty(),
                                Optional.of(new NetworkPorts(List.of(new NetworkPorts.Allocation(1234, "service1", "configId1", "suffix1"),
-                                                                    new NetworkPorts.Allocation(4567, "service2", "configId2", "suffix2")))),
+                                                      new NetworkPorts.Allocation(4567, "service2", "configId2", "suffix2")))),
+                               Optional.empty()));
+        hosts.add(new HostSpec("arm64",
+                               arm64Node,
+                               arm64Node,
+                               arm64Node,
+                               ClusterMembership.from("container/test/0/0", Version.fromString("6.73.1"),
+                                                      Optional.empty()),
+                               Optional.empty(),
+                               Optional.of(new NetworkPorts(List.of(new NetworkPorts.Allocation(1234, "service1", "configId1", "suffix1"),
+                                                      new NetworkPorts.Allocation(4567, "service2", "configId2", "suffix2")))),
                                Optional.empty()));
 
         assertAllocatedHosts(AllocatedHosts.withHosts(hosts));
@@ -87,7 +98,6 @@ public class AllocatedHostsSerializerTest {
             assertEquals(expectedHost.requestedResources(), deserializedHost.requestedResources());
             assertEquals(expectedHost.version(), deserializedHost.version());
             assertEquals(expectedHost.networkPorts(), deserializedHost.networkPorts());
-            assertEquals(expectedHost.aliases(), deserializedHost.aliases());
             assertEquals(expectedHost.dockerImageRepo(), deserializedHost.dockerImageRepo());
         }
     }

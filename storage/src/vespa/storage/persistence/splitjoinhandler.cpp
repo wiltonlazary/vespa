@@ -5,7 +5,6 @@
 #include "bucketownershipnotifier.h"
 #include "splitbitdetector.h"
 #include "messages.h"
-#include <vespa/storage/common/bucketmessages.h>
 #include <vespa/persistence/spi/persistenceprovider.h>
 #include <vespa/storageapi/message/bucket.h>
 
@@ -69,8 +68,7 @@ SplitJoinHandler::handleSplitBucket(api::SplitBucketCommand& cmd, MessageTracker
     PersistenceUtil::LockResult lock1(_env.lockAndGetDisk(target1));
     PersistenceUtil::LockResult lock2(_env.lockAndGetDisk(target2));
 
-    spi::Result result = _spi.split(spiBucket, spi::Bucket(target1),
-                                    spi::Bucket(target2), tracker->context());
+    spi::Result result = _spi.split(spiBucket, spi::Bucket(target1), spi::Bucket(target2));
     if (result.hasError()) {
         tracker->fail(PersistenceUtil::convertErrorCode(result), result.getErrorMessage());
         return tracker;
@@ -125,7 +123,7 @@ SplitJoinHandler::handleSplitBucket(api::SplitBucketCommand& cmd, MessageTracker
                 spi::Bucket createTarget(target.second.bucket);
                 LOG(debug, "Split target %s was empty, but re-creating it since there are remapped operations queued to it",
                     createTarget.toString().c_str());
-                _spi.createBucket(createTarget, tracker->context());
+                _spi.createBucket(createTarget);
             }
             splitReply.getSplitInfo().emplace_back(target.second.bucket.getBucketId(),
                                                    target.first->getBucketInfo());
@@ -141,37 +139,6 @@ SplitJoinHandler::handleSplitBucket(api::SplitBucketCommand& cmd, MessageTracker
         // Delete the old entry.
         sourceEntry.remove();
     }
-    return tracker;
-}
-
-MessageTracker::UP
-SplitJoinHandler::handleSetBucketState(api::SetBucketStateCommand& cmd, MessageTracker::UP tracker) const
-{
-    tracker->setMetric(_env._metrics.setBucketStates);
-    NotificationGuard notifyGuard(_bucketOwnershipNotifier);
-
-    LOG(debug, "handleSetBucketState(): %s", cmd.toString().c_str());
-    spi::Bucket bucket(cmd.getBucket());
-    bool shouldBeActive(cmd.getState() == api::SetBucketStateCommand::ACTIVE);
-    spi::BucketInfo::ActiveState newState(shouldBeActive ? spi::BucketInfo::ACTIVE : spi::BucketInfo::NOT_ACTIVE);
-
-    spi::Result result(_spi.setActiveState(bucket, newState));
-    if (tracker->checkForError(result)) {
-        StorBucketDatabase::WrappedEntry
-                entry = _env.getBucketDatabase(bucket.getBucket().getBucketSpace()).get(cmd.getBucketId(), "handleSetBucketState");
-        if (entry.exist()) {
-            entry->info.setActive(newState == spi::BucketInfo::ACTIVE);
-            notifyGuard.notifyIfOwnershipChanged(cmd.getBucket(), cmd.getSourceIndex(), entry->info);
-            entry.write();
-        } else {
-            LOG(warning, "Got OK setCurrentState result from provider for %s, "
-                         "but bucket has disappeared from service layer database",
-                cmd.getBucketId().toString().c_str());
-        }
-
-        tracker->setReply(std::make_shared<api::SetBucketStateReply>(cmd));
-    }
-
     return tracker;
 }
 
@@ -235,11 +202,7 @@ SplitJoinHandler::handleJoinBuckets(api::JoinBucketsCommand& cmd, MessageTracker
         lock2 = _env.lockAndGetDisk(secondBucket);
     }
 
-    spi::Result result =
-            _spi.join(spi::Bucket(firstBucket),
-                      spi::Bucket(secondBucket),
-                      spi::Bucket(destBucket),
-                      tracker->context());
+    spi::Result result = _spi.join(spi::Bucket(firstBucket), spi::Bucket(secondBucket), spi::Bucket(destBucket));
     if (!tracker->checkForError(result)) {
         return tracker;
     }

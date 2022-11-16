@@ -4,17 +4,22 @@
 
 #include "i_field_index_remove_listener.h"
 #include <vespa/document/annotation/span.h>
-#include <vespa/document/datatype/datatypes.h>
-#include <vespa/document/fieldvalue/document.h>
-#include <vespa/searchlib/bitcompression/compression.h>
-#include <vespa/searchlib/bitcompression/posocccompression.h>
 #include <vespa/searchlib/index/docidandfeatures.h>
 #include <vespa/vespalib/stllike/allocator.h>
+#include <vespa/vespalib/stllike/hash_map.h>
 #include <limits>
-#include <map>
 
-namespace search::index { class FieldLengthCalculator; }
+namespace search::index {
+    class FieldLengthCalculator;
+    class Schema;
+}
 
+namespace document {
+    class FieldValue;
+    class StringFieldValue;
+    class ArrayFieldValue;
+    class WeightedSetFieldValue;
+}
 namespace search::memoryindex {
 
 class IOrderedFieldIndexInserter;
@@ -36,8 +41,7 @@ public:
         uint32_t _wordPos;
         uint32_t _elemRef;  // Offset in _elems
 
-        static constexpr uint32_t _elemRemoved =
-            std::numeric_limits<uint32_t>::max();
+        static constexpr uint32_t _elemRemoved = std::numeric_limits<uint32_t>::max();
 
         PosInfo() noexcept
             : _wordNum(0),
@@ -89,12 +93,7 @@ public:
     };
 
 private:
-    FieldInverter(const FieldInverter &) = delete;
-    FieldInverter(const FieldInverter &&) = delete;
-    FieldInverter &operator=(const FieldInverter &) = delete;
-    FieldInverter &operator=(const FieldInverter &&) = delete;
-
-    using WordBuffer = vespalib::Array<char>;
+    using WordBuffer = std::vector<char, vespalib::allocator_large<char>>;
 
     class ElemInfo {
     public:
@@ -174,7 +173,6 @@ private:
     ElemInfoVec                    _elems;
     PosInfoVec                     _positions;
     index::DocIdAndPosOccFeatures  _features;
-    UInt32Vector                   _elementWordRefs;
     UInt32Vector                   _wordRefs;
 
     using SpanTerm = std::pair<document::Span, const document::FieldValue *>;
@@ -182,9 +180,9 @@ private:
     SpanTermVector                      _terms;
 
     // Info about aborted and pending documents.
-    std::vector<PositionRange>        _abortedDocs;
-    std::map<uint32_t, PositionRange> _pendingDocs;
-    UInt32Vector                      _removeDocs;
+    std::vector<PositionRange>                  _abortedDocs;
+    vespalib::hash_map<uint32_t, PositionRange> _pendingDocs;
+    UInt32Vector                                _removeDocs;
 
     FieldIndexRemover                &_remover;
     IOrderedFieldIndexInserter       &_inserter;
@@ -284,6 +282,11 @@ public:
                   FieldIndexRemover &remover,
                   IOrderedFieldIndexInserter &inserter,
                   index::FieldLengthCalculator &calculator);
+    FieldInverter(const FieldInverter &) = delete;
+    FieldInverter(const FieldInverter &&) = delete;
+    FieldInverter &operator=(const FieldInverter &) = delete;
+    FieldInverter &operator=(const FieldInverter &&) = delete;
+    ~FieldInverter() override;
 
     /**
      * Apply pending removes using the given remover.
@@ -301,7 +304,7 @@ public:
     /**
      * Invert a normal text field, based on annotations.
      */
-    void invertField(uint32_t docId, const document::FieldValue::UP &val);
+    void invertField(uint32_t docId, const std::unique_ptr<document::FieldValue> &val);
 
     /**
      * Setup remove of word in old version of document.
@@ -313,15 +316,7 @@ public:
         _removeDocs.push_back(docId);
     }
 
-    void startDoc(uint32_t docId) {
-        assert(_docId == 0);
-        assert(docId != 0);
-        abortPendingDoc(docId);
-        _removeDocs.push_back(docId);
-        _docId = docId;
-        _elem = 0;
-        _wpos = 0;
-    }
+    void startDoc(uint32_t docId);
 
     void endDoc();
 

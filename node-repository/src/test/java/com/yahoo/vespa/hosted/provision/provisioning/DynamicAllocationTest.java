@@ -11,12 +11,13 @@ import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
-import com.yahoo.config.provision.OutOfCapacityException;
+import com.yahoo.config.provision.NodeAllocationException;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.config.provisioning.FlavorsConfig;
 import com.yahoo.transaction.NestedTransaction;
+import com.yahoo.vespa.applicationmodel.HostName;
 import com.yahoo.vespa.curator.transaction.CuratorTransaction;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.Node.State;
@@ -219,7 +220,7 @@ public class DynamicAllocationTest {
         assertEquals(2, hostsWithChildren.size());
     }
 
-    @Test(expected = OutOfCapacityException.class)
+    @Test(expected = NodeAllocationException.class)
     public void multiple_groups_are_on_separate_parent_hosts() {
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).flavorsConfig(flavorsConfig()).build();
         tester.makeReadyNodes(5, "host-small", NodeType.host, 32);
@@ -256,7 +257,7 @@ public class DynamicAllocationTest {
         try {
             hosts = tester.prepare(application1, clusterSpec, 4, 1, flavor);
             fail("Was able to deploy with 4 nodes, should not be able to use spare capacity");
-        } catch (OutOfCapacityException ignored) { }
+        } catch (NodeAllocationException ignored) { }
 
         tester.fail(hosts.get(0));
         hosts = tester.prepare(application1, clusterSpec, 3, 1, flavor);
@@ -264,6 +265,35 @@ public class DynamicAllocationTest {
 
         List<Node> finalSpareCapacity = findSpareCapacity(tester);
         assertEquals(1, finalSpareCapacity.size());
+    }
+
+    @Test
+    public void does_not_allocate_to_suspended_hosts() {
+        ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).flavorsConfig(flavorsConfig()).build();
+        tester.makeReadyNodes(4, "host-small", NodeType.host, 32);
+        tester.activateTenantHosts();
+
+        HostName randomHost = new HostName(tester.nodeRepository().nodes().list(State.active).first().get().hostname());
+        tester.orchestrator().suspend(randomHost);
+
+        ApplicationId application1 = ProvisioningTester.applicationId();
+        ClusterSpec clusterSpec = clusterSpec("myContent.t1.a1");
+        NodeResources flavor = new NodeResources(1, 4, 100, 1);
+
+        try {
+            tester.prepare(application1, clusterSpec, 4, 1, flavor);
+            fail("Should not be able to deploy 4 nodes on 4 hosts because 1 is suspended");
+        } catch (NodeAllocationException ignored) { }
+
+        // Resume the host, the deployment goes through
+        tester.orchestrator().resume(randomHost);
+        tester.activate(application1, tester.prepare(application1, clusterSpec, 4, 1, flavor));
+        Set<String> hostnames = tester.getNodes(application1, State.active).hostnames();
+
+        // Verify that previously allocated nodes are not affected by host suspension
+        tester.orchestrator().suspend(randomHost);
+        tester.activate(application1, tester.prepare(application1, clusterSpec, 4, 1, flavor));
+        assertEquals(hostnames, tester.getNodes(application1, State.active).hostnames());
     }
 
     @Test
@@ -289,7 +319,7 @@ public class DynamicAllocationTest {
         tester.activate(application1, Set.copyOf(hosts));
     }
 
-    @Test(expected = OutOfCapacityException.class)
+    @Test(expected = NodeAllocationException.class)
     public void allocation_should_fail_when_host_is_not_in_allocatable_state() {
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).flavorsConfig(flavorsConfig()).build();
         tester.makeProvisionedNodes(3, "host-small", NodeType.host, 32).forEach(node ->
@@ -310,8 +340,8 @@ public class DynamicAllocationTest {
         tester.activate(application, hosts);
 
         NodeList activeNodes = tester.nodeRepository().nodes().list().owner(application);
-        assertEquals(Set.of("127.0.127.13", "::d"), activeNodes.asList().get(0).ipConfig().primary());
-        assertEquals(Set.of("127.0.127.2", "::2"), activeNodes.asList().get(1).ipConfig().primary());
+        assertEquals(Set.of("127.0.127.2", "::2"), activeNodes.asList().get(0).ipConfig().primary());
+        assertEquals(Set.of("127.0.127.13", "::d"), activeNodes.asList().get(1).ipConfig().primary());
     }
 
     @Test
@@ -347,7 +377,7 @@ public class DynamicAllocationTest {
         tester.activate(application, hosts);
     }
 
-    private void provisionFastAndSlowThenDeploy(NodeResources.DiskSpeed requestDiskSpeed, boolean expectOutOfCapacity) {
+    private void provisionFastAndSlowThenDeploy(NodeResources.DiskSpeed requestDiskSpeed, boolean expectNodeAllocationFailure) {
         ProvisioningTester tester = new ProvisioningTester.Builder().zone(new Zone(Environment.prod, RegionName.from("us-east"))).flavorsConfig(flavorsConfig()).build();
         tester.makeReadyNodes(2, new Flavor(new NodeResources(1, 8, 120, 1, NodeResources.DiskSpeed.fast)), NodeType.host, 10, true);
         tester.makeReadyNodes(2, new Flavor(new NodeResources(1, 8, 120, 1, NodeResources.DiskSpeed.slow)), NodeType.host, 10, true);
@@ -359,12 +389,12 @@ public class DynamicAllocationTest {
 
         try {
             List<HostSpec> hosts = tester.prepare(application, cluster, 4, 1, resources);
-            if (expectOutOfCapacity) fail("Expected out of capacity");
+            if (expectNodeAllocationFailure) fail("Expected node allocation fail");
             assertEquals(4, hosts.size());
             tester.activate(application, hosts);
         }
-        catch (OutOfCapacityException e) {
-            if ( ! expectOutOfCapacity) throw e;
+        catch (NodeAllocationException e) {
+            if ( ! expectNodeAllocationFailure) throw e;
         }
     }
 

@@ -5,12 +5,11 @@ import com.yahoo.component.ComponentId;
 import com.yahoo.config.model.builder.xml.test.DomBuilderTest;
 import com.yahoo.container.bundle.BundleInstantiationSpecification;
 import com.yahoo.vespa.model.container.component.Component;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import static com.yahoo.collections.CollectionUtil.first;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * @author gjoranv
@@ -18,28 +17,28 @@ import static org.junit.Assert.assertThat;
 public class DomComponentBuilderTest extends DomBuilderTest {
 
     @Test
-    public void ensureCorrectModel() {
+    void ensureCorrectModel() {
         Component<?, ?> handler = new DomComponentBuilder().doBuild(root.getDeployState(), root, parse(
                 "<handler id='theId' class='theClass' bundle='theBundle' />"));
 
         BundleInstantiationSpecification instantiationSpecification = handler.model.bundleInstantiationSpec;
-        assertThat(instantiationSpecification.id.stringValue(), is("theId"));
-        assertThat(instantiationSpecification.classId.stringValue(), is("theClass"));
-        assertThat(instantiationSpecification.bundle.stringValue(), is("theBundle"));
+        assertEquals("theId", instantiationSpecification.id.stringValue());
+        assertEquals("theClass", instantiationSpecification.classId.stringValue());
+        assertEquals("theBundle", instantiationSpecification.bundle.stringValue());
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    public void components_can_be_nested() {
+    void components_can_be_nested() {
         Component<Component<?, ?>, ?> parent = new DomComponentBuilder().doBuild(root.getDeployState(), root, parse(
                 "<component id='parent'>",
                 "  <component id='child' />",
                 "</component>"));
 
-        assertThat(parent.getGlobalComponentId(), is(ComponentId.fromString("parent")));
+        assertEquals(ComponentId.fromString("parent"), parent.getGlobalComponentId());
         Component<?, ?> child = first(parent.getChildren().values());
         assertNotNull(child);
 
-        assertThat(child.getGlobalComponentId(), is(ComponentId.fromString("child@parent")));
+        assertEquals(ComponentId.fromString("child@parent"), child.getGlobalComponentId());
     }
 }

@@ -1,12 +1,12 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.rankingexpression.importer.operations;
 
 import ai.vespa.rankingexpression.importer.DimensionRenamer;
 import ai.vespa.rankingexpression.importer.OrderedTensorType;
 import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.searchlib.rankingexpression.evaluation.DoubleValue;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticNode;
-import com.yahoo.searchlib.rankingexpression.rule.ArithmeticOperator;
+import com.yahoo.searchlib.rankingexpression.rule.OperationNode;
+import com.yahoo.searchlib.rankingexpression.rule.Operator;
 import com.yahoo.searchlib.rankingexpression.rule.ConstantNode;
 import com.yahoo.searchlib.rankingexpression.rule.EmbracedNode;
 import com.yahoo.searchlib.rankingexpression.rule.ExpressionNode;
@@ -71,7 +71,7 @@ public class Gather extends IntermediateOperation {
     }
 
     @Override
-    protected TensorFunction lazyGetFunction() {
+    protected TensorFunction<Reference> lazyGetFunction() {
         if ( ! allInputFunctionsPresent(2)) return null;
 
         IntermediateOperation data = inputs.get(0);
@@ -92,7 +92,7 @@ public class Gather extends IntermediateOperation {
             ExpressionNode indexExpression = new ConstantNode(new DoubleValue(constantValue));
             if (constantValue < 0) {
                 ExpressionNode axisSize = new ConstantNode(new DoubleValue(dataType.dimensions().get(axis).size().get()));
-                indexExpression = new EmbracedNode(new ArithmeticNode(indexExpression, ArithmeticOperator.PLUS, axisSize));
+                indexExpression = new EmbracedNode(new OperationNode(indexExpression, Operator.plus, axisSize));
             }
             addSliceDimension(dataSliceDimensions, dataType.dimensions().get(axis).name(), indexExpression);
         } else {
@@ -125,8 +125,8 @@ public class Gather extends IntermediateOperation {
     /** to support negative indexing */
     private ExpressionNode createIndexExpression(OrderedTensorType dataType, ExpressionNode slice) {
         ExpressionNode axisSize = new ConstantNode(new DoubleValue(dataType.dimensions().get(axis).size().get()));
-        ExpressionNode plus = new EmbracedNode(new ArithmeticNode(slice, ArithmeticOperator.PLUS, axisSize));
-        ExpressionNode mod = new ArithmeticNode(plus, ArithmeticOperator.MODULO, axisSize);
+        ExpressionNode plus = new EmbracedNode(new OperationNode(slice, Operator.plus, axisSize));
+        ExpressionNode mod = new OperationNode(plus, Operator.modulo, axisSize);
         return mod;
     }
 

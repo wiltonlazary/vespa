@@ -4,6 +4,7 @@ package com.yahoo.log;
 /**
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
 class LogUtil {
     static boolean empty(String s) {

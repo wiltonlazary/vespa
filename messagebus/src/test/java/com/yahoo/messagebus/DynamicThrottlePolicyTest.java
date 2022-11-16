@@ -1,9 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.messagebus;
 
+import com.yahoo.concurrent.ManualTimer;
 import com.yahoo.messagebus.test.SimpleMessage;
 import com.yahoo.messagebus.test.SimpleReply;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
 import java.util.Collections;
@@ -16,7 +17,7 @@ import java.util.stream.IntStream;
 
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toUnmodifiableList;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * These tests are based on a simulated server, the {@link MockServer} below.
@@ -37,7 +38,7 @@ public class DynamicThrottlePolicyTest {
     }
 
     @Test
-    public void singlePolicyWithSmallWindows() {
+    void singlePolicyWithSmallWindows() {
         long operations = 1_000_000;
         int numberOfWorkers = 1;
         int maximumTasksPerWorker = 16;
@@ -46,10 +47,10 @@ public class DynamicThrottlePolicyTest {
         { // This setup is lucky with the artificial local maxima for latency, and gives good results. See below for counter-examples.
             int workPerSuccess = 8;
 
-            CustomTimer timer = new CustomTimer();
+            ManualTimer timer = new ManualTimer();
             DynamicThrottlePolicy policy = new DynamicThrottlePolicy(timer).setMinWindowSize(1)
-                                                                           .setWindowSizeIncrement(0.1)
-                                                                           .setResizeRate(100);
+                    .setWindowSizeIncrement(0.1)
+                    .setResizeRate(100);
             Summary summary = run(operations, workPerSuccess, numberOfWorkers, maximumTasksPerWorker, workerParallelism, timer, policy);
 
             double minMaxPending = numberOfWorkers * workerParallelism;
@@ -64,10 +65,10 @@ public class DynamicThrottlePolicyTest {
         { // This setup is not so lucky, and the artificial behaviour pushes it into overload.
             int workPerSuccess = 5;
 
-            CustomTimer timer = new CustomTimer();
+            ManualTimer timer = new ManualTimer();
             DynamicThrottlePolicy policy = new DynamicThrottlePolicy(timer).setMinWindowSize(1)
-                                                                           .setWindowSizeIncrement(0.1)
-                                                                           .setResizeRate(100);
+                    .setWindowSizeIncrement(0.1)
+                    .setResizeRate(100);
             Summary summary = run(operations, workPerSuccess, numberOfWorkers, maximumTasksPerWorker, workerParallelism, timer, policy);
 
             double maxMaxPending = numberOfWorkers * maximumTasksPerWorker;
@@ -80,10 +81,10 @@ public class DynamicThrottlePolicyTest {
         { // This setup is not so lucky either, and the artificial behaviour keeps it far below a good throughput.
             int workPerSuccess = 4;
 
-            CustomTimer timer = new CustomTimer();
+            ManualTimer timer = new ManualTimer();
             DynamicThrottlePolicy policy = new DynamicThrottlePolicy(timer).setMinWindowSize(1)
-                                                                           .setWindowSizeIncrement(0.1)
-                                                                           .setResizeRate(100);
+                    .setWindowSizeIncrement(0.1)
+                    .setResizeRate(100);
             Summary summary = run(operations, workPerSuccess, numberOfWorkers, maximumTasksPerWorker, workerParallelism, timer, policy);
 
             double minMaxPending = numberOfWorkers * workerParallelism;
@@ -96,11 +97,11 @@ public class DynamicThrottlePolicyTest {
 
     /** Sort of a dummy test, as the conditions are perfect. In a more realistic scenario, below, the algorithm needs luck to climb this high. */
     @Test
-    public void singlePolicySingleWorkerWithIncreasingParallelism() {
-        for (int i = 0; i < 4; i++) {
-            CustomTimer timer = new CustomTimer();
+    void singlePolicySingleWorkerWithIncreasingParallelism() {
+        for (int exponent = 0; exponent < 4; exponent++) {
+            ManualTimer timer = new ManualTimer();
             DynamicThrottlePolicy policy = new DynamicThrottlePolicy(timer);
-            int scaleFactor = (int) Math.pow(10, i);
+            int scaleFactor = (int) Math.pow(10, exponent);
             long operations = 3_000L * scaleFactor;
             int workPerSuccess = 6;
             int numberOfWorkers = 1;
@@ -119,11 +120,11 @@ public class DynamicThrottlePolicyTest {
 
     /** A more realistic test, where throughput gradually flattens with increasing window size, and with more variance in throughput. */
     @Test
-    public void singlePolicyIncreasingWorkersWithNoParallelism() {
-        for (int i = 0; i < 4; i++) {
-            CustomTimer timer = new CustomTimer();
+    void singlePolicyIncreasingWorkersWithNoParallelism() {
+        for (int exponent = 0; exponent < 4; exponent++) {
+            ManualTimer timer = new ManualTimer();
             DynamicThrottlePolicy policy = new DynamicThrottlePolicy(timer);
-            int scaleFactor = (int) Math.pow(10, i);
+            int scaleFactor = (int) Math.pow(10, exponent);
             long operations = 2_000L * scaleFactor;
             // workPerSuccess determines the latency of the simulated server, which again determines the impact of the
             // synthetic attractors of the algorithm, around latencies which give (close to) integer log10(1 / latency).
@@ -143,20 +144,20 @@ public class DynamicThrottlePolicyTest {
             double maxMaxPending = numberOfWorkers * maximumTasksPerWorker;
             assertInRange(minMaxPending, summary.averagePending, maxMaxPending);
             assertInRange(minMaxPending, summary.averageWindows[0], maxMaxPending);
-            assertInRange(1, summary.inefficiency, 1 + 0.25 * i); // Even slower ramp-up.
+            assertInRange(1, summary.inefficiency, 1 + 0.25 * exponent); // Even slower ramp-up.
             assertInRange(0, summary.waste, 0);
         }
     }
 
     @Test
-    public void twoWeightedPoliciesWithUnboundedTaskQueue() {
-        for (int i = 0; i < 10; i++) {
+    void twoWeightedPoliciesWithUnboundedTaskQueue() {
+        for (int repeat = 0; repeat < 3; repeat++) {
             long operations = 1_000_000;
             int workPerSuccess = 6 + (int) (30 * Math.random());
             int numberOfWorkers = 1 + (int) (10 * Math.random());
             int maximumTasksPerWorker = 100_000;
             int workerParallelism = 32;
-            CustomTimer timer = new CustomTimer();
+            ManualTimer timer = new ManualTimer();
             DynamicThrottlePolicy policy1 = new DynamicThrottlePolicy(timer);
             DynamicThrottlePolicy policy2 = new DynamicThrottlePolicy(timer).setWeight(0.5);
             Summary summary = run(operations, workPerSuccess, numberOfWorkers, maximumTasksPerWorker, workerParallelism, timer, policy1, policy2);
@@ -173,21 +174,21 @@ public class DynamicThrottlePolicyTest {
     }
 
     @Test
-    public void tenPoliciesVeryParallelServerWithShortTaskQueue() {
-        for (int i = 0; i < 10; i++) {
+    void tenPoliciesVeryParallelServerWithShortTaskQueue() {
+        for (int repeat = 0; repeat < 2; repeat++) {
             long operations = 1_000_000;
             int workPerSuccess = 6;
             int numberOfWorkers = 6;
             int maximumTasksPerWorker = 180 + (int) (120 * Math.random());
             int workerParallelism = 60 + (int) (40 * Math.random());
-            CustomTimer timer = new CustomTimer();
+            ManualTimer timer = new ManualTimer();
             int p = 10;
             DynamicThrottlePolicy[] policies = IntStream.range(0, p)
-                                                        .mapToObj(j -> new DynamicThrottlePolicy(timer)
-                                                                .setWeight((j + 1.0) / p)
-                                                                .setWindowSizeIncrement(5)
-                                                                .setMinWindowSize(1))
-                                                        .toArray(DynamicThrottlePolicy[]::new);
+                    .mapToObj(j -> new DynamicThrottlePolicy(timer)
+                            .setWeight((j + 1.0) / p)
+                            .setWindowSizeIncrement(5)
+                            .setMinWindowSize(1))
+                    .toArray(DynamicThrottlePolicy[]::new);
             Summary summary = run(operations, workPerSuccess, numberOfWorkers, maximumTasksPerWorker, workerParallelism, timer, policies);
 
             double minMaxPending = numberOfWorkers * workerParallelism;
@@ -195,11 +196,11 @@ public class DynamicThrottlePolicyTest {
             assertInRange(minMaxPending, summary.averagePending, maxMaxPending);
             for (int j = 0; j < p; j++) {
                 double expectedShare = (j + 1) / (0.5 * p * (p + 1));
-                double imperfectionFactor = 1.5;
+                double imperfectionFactor = 1.6;
                 // Actual shares are not distributed perfectly proportionally to weights, but close enough.
                 assertInRange(minMaxPending * expectedShare / imperfectionFactor,
-                              summary.averageWindows[j],
-                              maxMaxPending * expectedShare * imperfectionFactor);
+                        summary.averageWindows[j],
+                        maxMaxPending * expectedShare * imperfectionFactor);
             }
             assertInRange(1.0, summary.inefficiency, 1.05);
             assertInRange(0, summary.waste, 0.1);
@@ -208,12 +209,12 @@ public class DynamicThrottlePolicyTest {
 
     static void assertInRange(double lower, double actual, double upper) {
         System.err.printf("%10.4f  <= %10.4f  <= %10.4f\n", lower, actual, upper);
-        assertTrue(actual + " should be not be smaller than " + lower, lower <= actual);
-        assertTrue(actual + " should be not be greater than " + upper, upper >= actual);
+        assertTrue(lower <= actual, actual + " should be not be smaller than " + lower);
+        assertTrue(upper >= actual, actual + " should be not be greater than " + upper);
     }
 
     private Summary run(long operations, int workPerSuccess, int numberOfWorkers, int maximumTasksPerWorker,
-                        int workerParallelism, CustomTimer timer, DynamicThrottlePolicy... policies) {
+                        int workerParallelism, ManualTimer timer, DynamicThrottlePolicy... policies) {
         System.err.printf("\n### Running %d operations of %d ticks each against %d workers with parallelism %d and queue size %d\n",
                           operations, workPerSuccess, numberOfWorkers, workerParallelism, maximumTasksPerWorker);
 
@@ -250,7 +251,7 @@ public class DynamicThrottlePolicyTest {
             ++ticks;
             totalPending += resource.pending();
             resource.tick();
-            ++timer.millis;
+            timer.advance(1);
         }
 
         for (int i = 0; i < windows.length; i++)

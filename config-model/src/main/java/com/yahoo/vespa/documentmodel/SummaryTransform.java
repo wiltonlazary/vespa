@@ -18,13 +18,14 @@ public enum SummaryTransform {
     POSITIONS("positions"),
     RANKFEATURES("rankfeatures"),
     SUMMARYFEATURES("summaryfeatures"),
-    TEXTEXTRACTOR("textextractor"),
     GEOPOS("geopos"),
     ATTRIBUTECOMBINER("attributecombiner"),
     MATCHED_ELEMENTS_FILTER("matchedelementsfilter"),
-    MATCHED_ATTRIBUTE_ELEMENTS_FILTER("matchedattributeelementsfilter");
+    MATCHED_ATTRIBUTE_ELEMENTS_FILTER("matchedattributeelementsfilter"),
+    COPY("copy"),
+    DOCUMENT_ID("documentid");
 
-    private String name;
+    private final String name;
 
     SummaryTransform(String name) {
         this.name=name;
@@ -36,33 +37,20 @@ public enum SummaryTransform {
 
     /** Returns the bolded version of this transform if possible, throws if not */
     public SummaryTransform bold() {
-        switch (this) {
-        case NONE:
-        case BOLDED:
-            return BOLDED;
-
-        case DYNAMICBOLDED:
-        case DYNAMICTEASER:
-            return DYNAMICBOLDED;
-
-        default:
-            throw new IllegalArgumentException("Can not bold a '" + this + "' field.");
-        }
+        return switch (this) {
+            case NONE, BOLDED -> BOLDED;
+            case DYNAMICBOLDED, DYNAMICTEASER -> DYNAMICBOLDED;
+            default -> throw new IllegalArgumentException("Can not bold a '" + this + "' field.");
+        };
     }
 
     /** Returns the unbolded version of this transform */
     public SummaryTransform unbold() {
-        switch (this) {
-        case NONE:
-        case BOLDED:
-            return NONE;
-
-        case DYNAMICBOLDED:
-            return DYNAMICTEASER;
-
-        default:
-            return this;
-        }
+        return switch (this) {
+            case NONE, BOLDED -> NONE;
+            case DYNAMICBOLDED -> DYNAMICTEASER;
+            default -> this;
+        };
     }
 
     /** Returns whether this value is bolded */
@@ -82,23 +70,16 @@ public enum SummaryTransform {
 
     /** Returns whether this transform always gets its value by accessing memory only */
     public boolean isInMemory() {
-        switch (this) {
-        case ATTRIBUTE:
-        case DISTANCE:
-        case POSITIONS:
-        case GEOPOS:
-        case RANKFEATURES:
-        case SUMMARYFEATURES:
-        case ATTRIBUTECOMBINER:
-        case MATCHED_ATTRIBUTE_ELEMENTS_FILTER:
-            return true;
-
-        default:
-            return false;
-        }
+        return switch (this) {
+            case ATTRIBUTE, DISTANCE, POSITIONS, GEOPOS, RANKFEATURES, SUMMARYFEATURES, ATTRIBUTECOMBINER, MATCHED_ATTRIBUTE_ELEMENTS_FILTER ->
+                    true;
+            default -> false;
+        };
     }
 
+    @Override
     public String toString() {
         return name;
     }
+
 }

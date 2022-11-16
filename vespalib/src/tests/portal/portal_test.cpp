@@ -22,7 +22,7 @@ using namespace vespalib::test;
 vespalib::string do_http(int port, CryptoEngine::SP crypto, const vespalib::string &method, const vespalib::string &uri, bool send_host = true) {
     auto socket = SocketSpec::from_port(port).client_address().connect();
     ASSERT_TRUE(socket.valid());
-    auto conn = SyncCryptoSocket::create_client(*crypto, std::move(socket), local_spec);
+    auto conn = SyncCryptoSocket::create_client(*crypto, std::move(socket), make_local_spec());
     vespalib::string http_req = vespalib::make_string("%s %s HTTP/1.1\r\n"
                                                       "My-Header: my value\r\n"
                                                       "%s"
@@ -52,7 +52,7 @@ vespalib::string make_expected_response(const vespalib::string &content_type, co
                                  "Content-Length: %zu\r\n"
                                  "X-XSS-Protection: 1; mode=block\r\n"
                                  "X-Frame-Options: DENY\r\n"
-                                 "Content-Security-Policy: default-src 'none'\r\n"
+                                 "Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n"
                                  "X-Content-Type-Options: nosniff\r\n"
                                  "Cache-Control: no-store\r\n"
                                  "Pragma: no-cache\r\n"
@@ -262,18 +262,18 @@ TEST("require that connection errors do not block shutdown by leaking resources"
         auto bound = portal->bind("/test", handler);
         { // close before sending anything
             auto socket = SocketSpec::from_port(portal->listen_port()).client_address().connect();
-            auto conn = SyncCryptoSocket::create_client(*crypto.engine, std::move(socket), local_spec);
+            auto conn = SyncCryptoSocket::create_client(*crypto.engine, std::move(socket), make_local_spec());
         }
         { // send partial request then close connection
             auto socket = SocketSpec::from_port(portal->listen_port()).client_address().connect();
-            auto conn = SyncCryptoSocket::create_client(*crypto.engine, std::move(socket), local_spec);
+            auto conn = SyncCryptoSocket::create_client(*crypto.engine, std::move(socket), make_local_spec());
             vespalib::string req = "GET /test HTTP/1.1\r\n"
                                    "Host: local";
             ASSERT_EQUAL(conn->write(req.data(), req.size()), ssize_t(req.size()));
         }
         { // send request then close without reading response
             auto socket = SocketSpec::from_port(portal->listen_port()).client_address().connect();
-            auto conn = SyncCryptoSocket::create_client(*crypto.engine, std::move(socket), local_spec);
+            auto conn = SyncCryptoSocket::create_client(*crypto.engine, std::move(socket), make_local_spec());
             vespalib::string req = "GET /test HTTP/1.1\r\n"
                                    "Host: localhost\r\n"
                                    "\r\n";

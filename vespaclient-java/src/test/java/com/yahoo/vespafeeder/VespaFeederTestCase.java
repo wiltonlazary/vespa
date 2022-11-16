@@ -22,22 +22,15 @@ import com.yahoo.feedhandler.VespaFeedHandler;
 import com.yahoo.text.Utf8;
 import com.yahoo.vespaclient.config.FeederConfig;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class VespaFeederTestCase {
 
-    @Rule
-    public ExpectedException exception = ExpectedException.none();
-
     @Test
-    public void testParseArgs() throws Exception {
-        String argsS="--abortondataerror false --abortonsenderror false --file foo.xml --maxpending 10" +
+    void testParseArgs() throws Exception {
+        String argsS = "--abortondataerror false --abortonsenderror false --file foo.xml --maxpending 10" +
                 " --maxfeedrate 29 --mode benchmark --noretry --route e6 --timeout 13 --trace 4" +
                 " --validate -v bar.xml --priority LOW_1";
 
@@ -55,30 +48,30 @@ public class VespaFeederTestCase {
         assertTrue(arguments.isVerbose());
         assertFalse(config.createifnonexistent());
 
-        assertEquals("LOW_1", arguments.getPriority());
+        assertEquals("LOW_1", arguments.getPriority()); // TODO remove on Vespa 9
         assertEquals("benchmark", arguments.getMode());
         assertEquals("foo.xml", arguments.getFiles().get(0));
         assertEquals("bar.xml", arguments.getFiles().get(1));
     }
 
     @Test
-    public void requireThatCreateIfNonExistentArgumentCanBeParsed() throws Exception {
-        String argsS="--create-if-non-existent --file foo.xml";
+    void requireThatCreateIfNonExistentArgumentCanBeParsed() throws Exception {
+        String argsS = "--create-if-non-existent --file foo.xml";
         Arguments arguments = new Arguments(argsS.split(" "), DummySessionFactory.createWithAutoReply());
         assertTrue(arguments.getFeederConfig().createifnonexistent());
     }
 
     @Test
-    public void requireThatnumThreadsBeParsed() throws Exception {
-        String argsS="--numthreads 5";
+    void requireThatnumThreadsBeParsed() throws Exception {
+        String argsS = "--numthreads 5";
         Arguments arguments = new Arguments(argsS.split(" "), DummySessionFactory.createWithAutoReply());
         assertEquals(5, arguments.getNumThreads());
         assertEquals(1, new Arguments("".split(" "), DummySessionFactory.createWithAutoReply()).getNumThreads());
     }
 
     @Test
-    public void testHelp() throws Exception {
-        String argsS="-h";
+    void testHelp() throws Exception {
+        String argsS = "-h";
 
         try {
             new Arguments(argsS.split(" "), null);
@@ -89,7 +82,7 @@ public class VespaFeederTestCase {
     }
 
     @Test
-    public void requireCorrectInputTypeDetection() throws IOException {
+    void requireCorrectInputTypeDetection() throws IOException {
         {
             BufferedInputStream b = new BufferedInputStream(
                     new ByteArrayInputStream(Utf8.toBytes("[]")));
@@ -113,16 +106,16 @@ public class VespaFeederTestCase {
     }
 
     @Test
-    public void testRenderErrors() {
+    void testRenderErrors() {
         {
-            String[] errors = { "foo" };
+            String[] errors = {"foo"};
             assertRenderErrorOutput("Errors:\n" +
-                                    "-------\n" +
-                                    "    foo\n", errors);
+                    "-------\n" +
+                    "    foo\n", errors);
         }
 
         {
-            String[] errors = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"};
+            String[] errors = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"};
             assertRenderErrorOutput("First 10 errors (of 11):\n" +
                     "------------------------\n" +
                     "    1\n    2\n    3\n    4\n    5\n    6\n    7\n    8\n    9\n    10\n", errors);
@@ -135,7 +128,7 @@ public class VespaFeederTestCase {
     }
 
     @Test
-    public void testCreateProgressPrinter() throws Exception {
+    void testCreateProgressPrinter() throws Exception {
         assert(getProgressPrinter("--mode benchmark") instanceof BenchmarkProgressPrinter);
         assert(getProgressPrinter("") instanceof ProgressPrinter);
     }
@@ -150,14 +143,16 @@ public class VespaFeederTestCase {
         }
     }
 
+    // TODO: Remove on Vespa 9
     @Test
-    public void feedFile() throws Exception {
+    @SuppressWarnings("removal")
+    void feedFile() throws Exception {
         FeedFixture f = new FeedFixture();
         Arguments arguments = new Arguments("--file src/test/files/myfeed.xml --priority LOW_1".split(" "), f.sessionFactory);
         new VespaFeeder(arguments, f.typeManager).parseFiles(System.in, f.printStream);
 
         assertEquals(3, f.sessionFactory.messages.size());
-        assertEquals(DocumentProtocol.Priority.LOW_1, ((PutDocumentMessage)f.sessionFactory.messages.get(0)).getPriority());
+        assertEquals(DocumentProtocol.Priority.LOW_1, ((PutDocumentMessage) f.sessionFactory.messages.get(0)).getPriority()); // TODO: Remove on Vespa 9
         assertEquals("id:test:news::foo", ((PutDocumentMessage) f.sessionFactory.messages.get(0)).getDocumentPut().getDocument().getId().toString());
         DocumentUpdate update = ((UpdateDocumentMessage) f.sessionFactory.messages.get(1)).getDocumentUpdate();
         assertEquals("id:test:news::foo", update.getId().toString());
@@ -168,15 +163,16 @@ public class VespaFeederTestCase {
     }
 
     @Test
-    public void feedJson() throws Exception {
+    void feedJson() throws Exception {
         FeedFixture feedFixture = feed("src/test/files/myfeed.json", true);
 
         assertJsonFeedState(feedFixture);
     }
 
+    @SuppressWarnings("removal") // TODO: Remove on Vespa 9
     protected void assertJsonFeedState(FeedFixture feedFixture) {
         assertEquals(3, feedFixture.sessionFactory.messages.size());
-        assertEquals(DocumentProtocol.Priority.LOW_1, ((PutDocumentMessage)feedFixture.sessionFactory.messages.get(0)).getPriority());
+        assertEquals(DocumentProtocol.Priority.LOW_1, ((PutDocumentMessage)feedFixture.sessionFactory.messages.get(0)).getPriority()); // TODO: Remove on Vespa 9
         assertEquals("id:test:news::foo", ((PutDocumentMessage) feedFixture.sessionFactory.messages.get(0)).getDocumentPut().getDocument().getId().toString());
         DocumentUpdate update = ((UpdateDocumentMessage) feedFixture.sessionFactory.messages.get(1)).getDocumentUpdate();
         assertEquals("id:test:news::foo", update.getId().toString());
@@ -187,7 +183,7 @@ public class VespaFeederTestCase {
     }
 
     @Test
-    public void requireThatCreateIfNonExistentArgumentIsUsed() throws Exception {
+    void requireThatCreateIfNonExistentArgumentIsUsed() throws Exception {
         FeedFixture f = new FeedFixture();
         Arguments arguments = new Arguments("--file src/test/files/myfeed.xml --create-if-non-existent".split(" "), f.sessionFactory);
         new VespaFeeder(arguments, f.typeManager).parseFiles(System.in, f.printStream);
@@ -198,10 +194,11 @@ public class VespaFeederTestCase {
     }
 
     @Test
-    public void feedMalformedJson() throws Exception {
-        exception.expect(VespaFeeder.FeedErrorException.class);
-        exception.expectMessage("JsonParseException");
-        feed("src/test/files/malformedfeed.json", false);
+    void feedMalformedJson() throws Exception {
+        Throwable exception = assertThrows(VespaFeeder.FeedErrorException.class, () -> {
+            feed("src/test/files/malformedfeed.json", false);
+        });
+        assertTrue(exception.getMessage().contains("JsonParseException"));
     }
 
     protected FeedFixture feed(String feed, boolean abortOnDataError) throws Exception {

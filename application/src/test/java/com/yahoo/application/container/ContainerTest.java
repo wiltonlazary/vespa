@@ -8,24 +8,19 @@ import com.yahoo.application.container.handler.Request;
 import com.yahoo.application.container.handler.Response;
 import com.yahoo.application.container.handlers.TestHandler;
 import com.yahoo.component.ComponentSpecification;
-import com.yahoo.container.Container;
-import com.yahoo.jdisc.http.server.jetty.JettyHttpServer;
-import com.yahoo.jdisc.service.ServerProvider;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.nio.charset.CharacterCodingException;
 import java.nio.file.FileSystems;
 
 import static com.yahoo.application.container.JDisc.fromServicesXml;
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.CoreMatchers.hasItem;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author Tony Vaagenes
@@ -35,7 +30,7 @@ import static org.junit.Assert.fail;
 public class ContainerTest {
 
     @Test
-    public void container_can_be_used_as_top_level_element() {
+    void container_can_be_used_as_top_level_element() {
         try (JDisc container = fromServicesXml("<container version=\"1.0\">" + //
                 "<search />" + //
                 "</container>", Networking.disable)) {
@@ -44,7 +39,7 @@ public class ContainerTest {
     }
 
     @Test
-    public void container_id_can_be_set() {
+    void container_id_can_be_set() {
         try (JDisc container = fromServicesXml("<container version=\"1.0\" id=\"my-service-id\">" + //
                 "<search />" + //
                 "</container>", Networking.disable)) {
@@ -53,7 +48,7 @@ public class ContainerTest {
     }
 
     @Test
-    public void container_can_be_embedded_in_services_tag() {
+    void container_can_be_embedded_in_services_tag() {
         try (JDisc container = fromServicesXml("<services>" + //
                 "<container version=\"1.0\" id=\"my-service-id\">" + //
                 "<search />" + //
@@ -63,22 +58,22 @@ public class ContainerTest {
         }
     }
 
+    // container is unused inside the try block
     @Test
-    @SuppressWarnings("try") // container is unused inside the try block
-    public void multiple_container_elements_gives_exception() {
+    @SuppressWarnings("try")
+    void multiple_container_elements_gives_exception() {
         try (JDisc container = fromServicesXml("<services>" + //
                 "<container version=\"1.0\" id=\"id1\" />" + //
                 "<container version=\"1.0\" />" + //
-                "<jdisc version=\"1.0\"/>" + //
                 "</services>", Networking.disable)) {
             fail("expected exception");
         } catch (Exception e) {
-            assertThat(e.getMessage(), containsString("container id='id1', container id='', jdisc id=''"));
+            assertTrue(e.getMessage().contains("container id='id1', container id=''"));
         }
     }
 
     @Test
-    public void handleRequest_yields_response_from_correct_request_handler() {
+    void handleRequest_yields_response_from_correct_request_handler() {
         final String handlerClass = TestHandler.class.getName();
         try (JDisc container = fromServicesXml("<container version=\"1.0\">" + //
                 "<handler id=\"test-handler\" class=\"" + handlerClass + "\">" + //
@@ -87,7 +82,7 @@ public class ContainerTest {
                 "</container>", Networking.disable)) {
             Response response = container.handleRequest(new Request("http://foo/TestHandler"));
             try {
-                assertThat(response.getBodyAsString(), is(TestHandler.RESPONSE));
+                assertEquals(TestHandler.RESPONSE, response.getBodyAsString());
             } catch (CharacterCodingException e) {
                 throw new RuntimeException(e);
             }
@@ -95,27 +90,27 @@ public class ContainerTest {
     }
 
     @Test
-    public void load_searcher_from_bundle() {
+    void load_searcher_from_bundle() {
         try (JDisc container = JDisc.fromPath(FileSystems.getDefault().getPath("src/test/app-packages/searcher-app"),
                 Networking.disable)) {
             Result result = container.search().process(ComponentSpecification.fromString("default"),
                     new Query("?query=ignored"));
-            assertThat(result.hits().get(0).getField("title").toString(), is("Heal the World!"));
+            assertEquals("Heal the World!", result.hits().get(0).getField("title").toString());
         }
     }
 
     @Test
-    public void document_types_can_be_accessed() throws Exception {
+    void document_types_can_be_accessed() throws Exception {
         try (Application application = new ApplicationBuilder().documentType("example", EXAMPLE_DOCUMENT)
                 .servicesXml(CONTAINER_WITH_DOCUMENT_PROCESSING).build()) {
             JDisc container = application.getJDisc("container");
             DocumentProcessing processing = container.documentProcessing();
-            assertThat(processing.getDocumentTypes().keySet(), hasItem("example"));
+            assertTrue(processing.getDocumentTypes().containsKey("example"));
         }
     }
 
     @Test
-    public void annotation_types_can_be_accessed() throws Exception {
+    void annotation_types_can_be_accessed() throws Exception {
         try (Application application = new ApplicationBuilder().documentType("example", "search example {\n" + //
                 "  " + EXAMPLE_DOCUMENT + "\n" + //
                 "  annotation exampleAnnotation {}\n" + //
@@ -123,13 +118,13 @@ public class ContainerTest {
                 servicesXml(CONTAINER_WITH_DOCUMENT_PROCESSING).build()) {
             JDisc container = application.getJDisc("container");
             DocumentProcessing processing = container.documentProcessing();
-            assertThat(processing.getAnnotationTypes().keySet(), hasItem("exampleAnnotation"));
+            assertTrue(processing.getAnnotationTypes().containsKey("exampleAnnotation"));
         }
     }
 
-    @Ignore // Enable this when static state has been removed.
+    @Disabled // Enable this when static state has been removed.
     @Test
-    public void multiple_containers_can_be_run_in_parallel() throws Exception {
+    void multiple_containers_can_be_run_in_parallel() throws Exception {
         try (JDisc jdisc1 = jdiscWithHttp(); JDisc jdisc2 = jdiscWithHttp()) {
             sendRequest(jdisc1);
             sendRequest(jdisc2);
@@ -138,7 +133,7 @@ public class ContainerTest {
 
     private void sendRequest(JDisc jdisc) throws CharacterCodingException {
         Response response = jdisc.handleRequest(new Request("http://foo/TestHandler"));
-        assertThat(response.getBodyAsString(), is(TestHandler.RESPONSE));
+        assertEquals(TestHandler.RESPONSE, response.getBodyAsString());
     }
 
     public static final String CONTAINER_WITH_DOCUMENT_PROCESSING = //
@@ -167,15 +162,6 @@ public class ContainerTest {
                         "<accesslog type=\"disabled\" />" +
                         "</container>";
         return JDisc.fromServicesXml(xml, Networking.disable);
-    }
-
-    public static int getListenPort() {
-        for (ServerProvider server : Container.get().getServerProviderRegistry().allComponents()) {
-            if (null != server && server instanceof JettyHttpServer) {
-                return ((JettyHttpServer) server).getListenPort();
-            }
-        }
-        throw new RuntimeException("No http server found");
     }
 
 }

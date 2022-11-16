@@ -38,12 +38,14 @@ private:
 public:
 
     ClosenessBlueprint();
+    ~ClosenessBlueprint() override;
     void visitDumpFeatures(const fef::IIndexEnvironment & env, fef::IDumpFeatureVisitor & visitor) const override;
     fef::Blueprint::UP createInstance() const override;
     fef::ParameterDescriptions getDescriptions() const override {
         return fef::ParameterDescriptions().desc().string().desc().string().string();
     }
     bool setup(const fef::IIndexEnvironment & env, const fef::ParameterList & params) override;
+    void prepareSharedState(const fef::IQueryEnvironment& env, fef::IObjectStore& store) const override;
     fef::FeatureExecutor &createExecutor(const fef::IQueryEnvironment &env, vespalib::Stash &stash) const override;
 };
 

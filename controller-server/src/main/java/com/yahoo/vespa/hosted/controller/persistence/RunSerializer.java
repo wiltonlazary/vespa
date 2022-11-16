@@ -10,10 +10,9 @@ import com.yahoo.slime.Inspector;
 import com.yahoo.slime.ObjectTraverser;
 import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationVersion;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
+import com.yahoo.vespa.hosted.controller.api.integration.deployment.RevisionId;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.RunId;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.SourceRevision;
 import com.yahoo.vespa.hosted.controller.deployment.ConvergenceSummary;
 import com.yahoo.vespa.hosted.controller.deployment.Run;
 import com.yahoo.vespa.hosted.controller.deployment.RunStatus;
@@ -24,10 +23,10 @@ import com.yahoo.vespa.hosted.controller.deployment.Versions;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.NavigableMap;
 import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.TreeMap;
 
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.aborted;
@@ -35,7 +34,10 @@ import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.deploymentF
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.endpointCertificateTimeout;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.error;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.installationFailed;
-import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.outOfCapacity;
+import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.invalidApplication;
+import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.noTests;
+import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.nodeAllocationFailure;
+import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.reset;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.running;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.success;
 import static com.yahoo.vespa.hosted.controller.deployment.RunStatus.testFailure;
@@ -72,7 +74,6 @@ class RunSerializer {
     //          - REMOVING FIELDS: Stop reading the field first. Stop writing it on a later version.
     //          - CHANGING THE FORMAT OF A FIELD: Don't do it bro.
 
-    // TODO: Remove "steps" when there are no traces of it in the controllers
     private static final String stepsField = "steps";
     private static final String stepDetailsField = "stepDetails";
     private static final String startTimeField = "startTime";
@@ -81,18 +82,12 @@ class RunSerializer {
     private static final String numberField = "number";
     private static final String startField = "start";
     private static final String endField = "end";
+    private static final String sleepingUntilField = "sleepingUntil";
     private static final String statusField = "status";
     private static final String versionsField = "versions";
     private static final String isRedeploymentField = "isRedeployment";
     private static final String platformVersionField = "platform";
-    private static final String repositoryField = "repository";
-    private static final String branchField = "branch";
-    private static final String commitField = "commit";
-    private static final String authorEmailField = "authorEmail";
     private static final String deployedDirectlyField = "deployedDirectly";
-    private static final String compileVersionField = "compileVersion";
-    private static final String buildTimeField = "buildTime";
-    private static final String sourceUrlField = "sourceUrl";
     private static final String buildField = "build";
     private static final String sourceField = "source";
     private static final String lastTestRecordField = "lastTestRecord";
@@ -101,6 +96,7 @@ class RunSerializer {
     private static final String convergenceSummaryField = "convergenceSummaryV2";
     private static final String testerCertificateField = "testerCertificate";
     private static final String isDryRunField = "isDryRun";
+    private static final String reasonField = "reason";
 
     Run runFromSlime(Slime slime) {
         return runFromSlime(slime.get());
@@ -113,7 +109,7 @@ class RunSerializer {
             Run run = runFromSlime(runObject);
             runs.put(run.id(), run);
         });
-        return runs;
+        return Collections.unmodifiableNavigableMap(runs);
     }
 
     private Run runFromSlime(Inspector runObject) {
@@ -129,14 +125,16 @@ class RunSerializer {
 
             steps.put(typedStep, new StepInfo(typedStep, stepStatusOf(status.asString()), startTime));
         });
-        return new Run(new RunId(ApplicationId.fromSerializedForm(runObject.field(applicationField).asString()),
-                                 JobType.fromJobName(runObject.field(jobTypeField).asString()),
-                                 runObject.field(numberField).asLong()),
+        RunId id = new RunId(ApplicationId.fromSerializedForm(runObject.field(applicationField).asString()),
+                             JobType.ofSerialized(runObject.field(jobTypeField).asString()),
+                                 runObject.field(numberField).asLong());
+        return new Run(id,
                        steps,
-                       versionsFromSlime(runObject.field(versionsField)),
+                       versionsFromSlime(runObject.field(versionsField), id),
                        runObject.field(isRedeploymentField).asBool(),
                        SlimeUtils.instant(runObject.field(startField)),
                        SlimeUtils.optionalInstant(runObject.field(endField)),
+                       SlimeUtils.optionalInstant(runObject.field(sleepingUntilField)),
                        runStatusOf(runObject.field(statusField).asString()),
                        runObject.field(lastTestRecordField).asLong(),
                        Instant.EPOCH.plus(runObject.field(lastVespaLogTimestampField).asLong(), ChronoUnit.MICROS),
@@ -145,45 +143,30 @@ class RunSerializer {
                        Optional.of(runObject.field(testerCertificateField))
                                .filter(Inspector::valid)
                                .map(certificate -> X509CertificateUtils.fromPem(certificate.asString())),
-                       runObject.field(isDryRunField).valid() && runObject.field(isDryRunField).asBool());
+                       runObject.field(isDryRunField).valid() && runObject.field(isDryRunField).asBool(),
+                       SlimeUtils.optionalString(runObject.field(reasonField)));
     }
 
-    private Versions versionsFromSlime(Inspector versionsObject) {
+    private Versions versionsFromSlime(Inspector versionsObject, RunId id) {
         Version targetPlatformVersion = Version.fromString(versionsObject.field(platformVersionField).asString());
-        ApplicationVersion targetApplicationVersion = applicationVersionFrom(versionsObject);
+        RevisionId targetRevision = revisionFrom(versionsObject, id);
 
         Optional<Version> sourcePlatformVersion = versionsObject.field(sourceField).valid()
                 ? Optional.of(Version.fromString(versionsObject.field(sourceField).field(platformVersionField).asString()))
                 : Optional.empty();
-        Optional<ApplicationVersion> sourceApplicationVersion = versionsObject.field(sourceField).valid()
-                ? Optional.of(applicationVersionFrom(versionsObject.field(sourceField)))
+        Optional<RevisionId> sourceRevision = versionsObject.field(sourceField).valid()
+                ? Optional.of(revisionFrom(versionsObject.field(sourceField), id))
                 : Optional.empty();
 
-        return new Versions(targetPlatformVersion, targetApplicationVersion, sourcePlatformVersion, sourceApplicationVersion);
+        return new Versions(targetPlatformVersion, targetRevision, sourcePlatformVersion, sourceRevision);
     }
 
-    private ApplicationVersion applicationVersionFrom(Inspector versionObject) {
-        if ( ! versionObject.field(buildField).valid())
-            return ApplicationVersion.unknown;
-
+    private RevisionId revisionFrom(Inspector versionObject, RunId id) {
         long buildNumber = versionObject.field(buildField).asLong();
-        // TODO jonmv: Remove source revision
-        Optional<SourceRevision> source = Optional.of(new SourceRevision(versionObject.field(repositoryField).asString(),
-                                                                         versionObject.field(branchField).asString(),
-                                                                         versionObject.field(commitField).asString()))
-                                                  .filter(revision -> ! revision.commit().isBlank() && ! revision.repository().isBlank() && ! revision.branch().isBlank());
-        Optional<String> authorEmail = SlimeUtils.optionalString(versionObject.field(authorEmailField));
-        Optional<Version> compileVersion = SlimeUtils.optionalString(versionObject.field(compileVersionField)).map(Version::fromString);
-        Optional<Instant> buildTime = SlimeUtils.optionalInstant(versionObject.field(buildTimeField));
-        Optional<String> sourceUrl = SlimeUtils.optionalString(versionObject.field(sourceUrlField));
-        Optional<String> commit = SlimeUtils.optionalString(versionObject.field(commitField));
-
-        // TODO (freva): Simplify once this has rolled out everywhere
-        Inspector deployedDirectlyInspector = versionObject.field(deployedDirectlyField);
-        boolean deployedDirectly = deployedDirectlyInspector.valid() && deployedDirectlyInspector.asBool();
-
-        return new ApplicationVersion(source, OptionalLong.of(buildNumber), authorEmail,
-                                      compileVersion, buildTime, sourceUrl, commit, deployedDirectly);
+        boolean production =      versionObject.field(deployedDirectlyField).valid() // TODO jonmv: remove after migration
+                             &&   buildNumber > 0
+                             && ! versionObject.field(deployedDirectlyField).asBool();
+        return production ? RevisionId.forProduction(buildNumber) : RevisionId.forDevelopment(buildNumber, id.job());
     }
 
     // Don't change this — introduce a separate array instead.
@@ -223,14 +206,15 @@ class RunSerializer {
 
     private void toSlime(Run run, Cursor runObject) {
         runObject.setString(applicationField, run.id().application().serializedForm());
-        runObject.setString(jobTypeField, run.id().type().jobName());
+        runObject.setString(jobTypeField, run.id().type().serialized());
         runObject.setBool(isRedeploymentField, run.isRedeployment());
         runObject.setLong(numberField, run.id().number());
         runObject.setLong(startField, run.start().toEpochMilli());
         run.end().ifPresent(end -> runObject.setLong(endField, end.toEpochMilli()));
+        run.sleepUntil().ifPresent(end -> runObject.setLong(sleepingUntilField, end.toEpochMilli()));
         runObject.setString(statusField, valueOf(run.status()));
         runObject.setLong(lastTestRecordField, run.lastTestLogEntry());
-        runObject.setLong(lastVespaLogTimestampField, Instant.EPOCH.until(run.lastVespaLogTimestamp(), ChronoUnit.MICROS));
+        if (run.lastVespaLogTimestamp().isAfter(Instant.EPOCH)) runObject.setLong(lastVespaLogTimestampField, Instant.EPOCH.until(run.lastVespaLogTimestamp(), ChronoUnit.MICROS));
         run.noNodesDownSince().ifPresent(noNodesDownSince -> runObject.setLong(noNodesDownSinceField, noNodesDownSince.toEpochMilli()));
         run.convergenceSummary().ifPresent(convergenceSummary -> toSlime(convergenceSummary, runObject.setArray(convergenceSummaryField)));
         run.testerCertificate().ifPresent(certificate -> runObject.setString(testerCertificateField, X509CertificateUtils.toPem(certificate)));
@@ -245,29 +229,21 @@ class RunSerializer {
                         stepDetailsObject.setObject(valueOf(step)).setLong(startTimeField, valueOf(startTime))));
 
         Cursor versionsObject = runObject.setObject(versionsField);
-        toSlime(run.versions().targetPlatform(), run.versions().targetApplication(), versionsObject);
+        toSlime(run.versions().targetPlatform(), run.versions().targetRevision(), versionsObject);
         run.versions().sourcePlatform().ifPresent(sourcePlatformVersion -> {
             toSlime(sourcePlatformVersion,
-                    run.versions().sourceApplication()
+                    run.versions().sourceRevision()
                        .orElseThrow(() -> new IllegalArgumentException("Source versions must be both present or absent.")),
                     versionsObject.setObject(sourceField));
         });
         runObject.setBool(isDryRunField, run.isDryRun());
+        run.reason().ifPresent(reason -> runObject.setString(reasonField, reason));
     }
 
-    private void toSlime(Version platformVersion, ApplicationVersion applicationVersion, Cursor versionsObject) {
+    private void toSlime(Version platformVersion, RevisionId revsion, Cursor versionsObject) {
         versionsObject.setString(platformVersionField, platformVersion.toString());
-        applicationVersion.buildNumber().ifPresent(number -> versionsObject.setLong(buildField, number));
-        // TODO jonmv: Remove source revision.
-        applicationVersion.source().map(SourceRevision::repository).ifPresent(repository -> versionsObject.setString(repositoryField, repository));
-        applicationVersion.source().map(SourceRevision::branch).ifPresent(branch -> versionsObject.setString(branchField, branch));
-        applicationVersion.source().map(SourceRevision::commit).ifPresent(commit -> versionsObject.setString(commitField, commit));
-        applicationVersion.authorEmail().ifPresent(email -> versionsObject.setString(authorEmailField, email));
-        applicationVersion.compileVersion().ifPresent(version -> versionsObject.setString(compileVersionField, version.toString()));
-        applicationVersion.buildTime().ifPresent(time -> versionsObject.setLong(buildTimeField, time.toEpochMilli()));
-        applicationVersion.sourceUrl().ifPresent(url -> versionsObject.setString(sourceUrlField, url));
-        applicationVersion.commit().ifPresent(commit -> versionsObject.setString(commitField, commit));
-        versionsObject.setBool(deployedDirectlyField, applicationVersion.isDeployedDirectly());
+        versionsObject.setLong(buildField, revsion.number());
+        versionsObject.setBool(deployedDirectlyField, ! revsion.isProduction());
     }
 
     // Don't change this - introduce a separate array with new values if needed.
@@ -354,35 +330,38 @@ class RunSerializer {
     }
 
     static String valueOf(RunStatus status) {
-        switch (status) {
-            case running                    : return "running";
-            case outOfCapacity              : return "outOfCapacity";
-            case endpointCertificateTimeout : return "endpointCertificateTimeout";
-            case deploymentFailed           : return "deploymentFailed";
-            case installationFailed         : return "installationFailed";
-            case testFailure                : return "testFailure";
-            case error                      : return "error";
-            case success                    : return "success";
-            case aborted                    : return "aborted";
-
-            default: throw new AssertionError("No value defined for '" + status + "'!");
-        }
+        return switch (status) {
+            case running                    -> "running";
+            case nodeAllocationFailure      -> "nodeAllocationFailure";
+            case endpointCertificateTimeout -> "endpointCertificateTimeout";
+            case deploymentFailed           -> "deploymentFailed";
+            case invalidApplication         -> "invalidApplication";
+            case installationFailed         -> "installationFailed";
+            case testFailure                -> "testFailure";
+            case noTests                    -> "noTests";
+            case error                      -> "error";
+            case success                    -> "success";
+            case aborted                    -> "aborted";
+            case reset                      -> "reset";
+        };
     }
 
     static RunStatus runStatusOf(String status) {
-        switch (status) {
-            case "running"                    : return running;
-            case "outOfCapacity"              : return outOfCapacity;
-            case "endpointCertificateTimeout" : return endpointCertificateTimeout;
-            case "deploymentFailed"           : return deploymentFailed;
-            case "installationFailed"         : return installationFailed;
-            case "testFailure"                : return testFailure;
-            case "error"                      : return error;
-            case "success"                    : return success;
-            case "aborted"                    : return aborted;
-
-            default: throw new IllegalArgumentException("No run status defined by '" + status + "'!");
-        }
+        return switch (status) {
+            case "running"                    -> running;
+            case "nodeAllocationFailure"      -> nodeAllocationFailure;
+            case "endpointCertificateTimeout" -> endpointCertificateTimeout;
+            case "deploymentFailed"           -> deploymentFailed;
+            case "invalidApplication"         -> invalidApplication;
+            case "installationFailed"         -> installationFailed;
+            case "noTests"                    -> noTests;
+            case "testFailure"                -> testFailure;
+            case "error"                      -> error;
+            case "success"                    -> success;
+            case "aborted"                    -> aborted;
+            case "reset"                      -> reset;
+            default -> throw new IllegalArgumentException("No run status defined by '" + status + "'!");
+        };
     }
 
 }

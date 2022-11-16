@@ -17,12 +17,17 @@ public class MockHorizonClient implements HorizonClient {
     }
 
     @Override
-    public HorizonResponse getDashboard() {
+    public HorizonResponse getDashboard(int dashboardId) {
         return HorizonResponse.empty();
     }
 
     @Override
     public HorizonResponse getTopFolders() {
+        return HorizonResponse.empty();
+    }
+
+    @Override
+    public HorizonResponse getMetaData(byte[] query) {
         return HorizonResponse.empty();
     }
 

@@ -6,6 +6,8 @@
 #include "btreetraits.h"
 #include <vespa/vespalib/datastore/datastore.h>
 
+namespace vespalib::datastore { class CompactingBuffers; }
+
 namespace vespalib::btree {
 
 class BTreeNodeReclaimer
@@ -25,7 +27,7 @@ template <typename EntryType>
 class BTreeNodeBufferType : public datastore::BufferType<EntryType, FrozenBtreeNode<EntryType>>
 {
     using ParentType = datastore::BufferType<EntryType, FrozenBtreeNode<EntryType>>;
-    using ParentType::_emptyEntry;
+    using ParentType::empty_entry;
     using ParentType::_arraySize;
     using ElemCount = typename ParentType::ElemCount;
     using CleanContext = typename ParentType::CleanContext;
@@ -56,6 +58,7 @@ public:
     typedef typename LeafNodeType::RefPair LeafNodeTypeRefPair;
     typedef vespalib::GenerationHandler::generation_t generation_t;
     using EntryRef = datastore::EntryRef;
+    using CompactionStrategy = datastore::CompactionStrategy;
 
     enum NodeTypes
     {
@@ -153,32 +156,24 @@ public:
         _store.holdElem(ref, 1);
     }
 
-    void freeElem(EntryRef ref) {
-        _store.freeElem(ref, 1);
-    }
+    std::unique_ptr<vespalib::datastore::CompactingBuffers> start_compact_worst(const CompactionStrategy& compaction_strategy);
 
-    std::vector<uint32_t> startCompact();
-
-    std::vector<uint32_t> start_compact_worst();
-
-    void finishCompact(const std::vector<uint32_t> &toHold);
-
-    void transferHoldLists(generation_t generation) {
-        _store.transferHoldLists(generation);
+    void assign_generation(generation_t current_gen) {
+        _store.assign_generation(current_gen);
     }
 
     // Inherit doc from DataStoreBase
-    datastore::DataStoreBase::MemStats getMemStats() const {
+    datastore::MemoryStats getMemStats() const {
         return _store.getMemStats();
     }
 
     // Inherit doc from DataStoreBase
-    void trimHoldLists(generation_t usedGen) {
-        _store.trimHoldLists(usedGen);
+    void reclaim_memory(generation_t oldest_used_gen) {
+        _store.reclaim_memory(oldest_used_gen);
     }
 
-    void clearHoldLists() {
-        _store.clearHoldLists();
+    void reclaim_all_memory() {
+        _store.reclaim_all_memory();
     }
 
     // Inherit doc from DataStoreBase

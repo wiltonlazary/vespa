@@ -2,18 +2,18 @@
 
 package com.yahoo.vespa.clustercontroller.core.rpc;
 
-import com.yahoo.jrt.slobrok.api.SlobrokList;
-import com.yahoo.jrt.slobrok.api.Mirror;
 import com.yahoo.jrt.Supervisor;
 import com.yahoo.jrt.Transport;
-import com.yahoo.vdslib.state.NodeType;
+import com.yahoo.jrt.slobrok.api.Mirror;
+import com.yahoo.jrt.slobrok.api.SlobrokList;
 import com.yahoo.vdslib.state.Node;
-import java.util.logging.Level;
+import com.yahoo.vdslib.state.NodeType;
+import com.yahoo.vespa.clustercontroller.core.ContentCluster;
+import com.yahoo.vespa.clustercontroller.core.FleetControllerContext;
 import com.yahoo.vespa.clustercontroller.core.NodeInfo;
 import com.yahoo.vespa.clustercontroller.core.NodeLookup;
 import com.yahoo.vespa.clustercontroller.core.Timer;
-import com.yahoo.vespa.clustercontroller.core.ContentCluster;
-import com.yahoo.vespa.clustercontroller.core.listeners.NodeAddedOrRemovedListener;
+import com.yahoo.vespa.clustercontroller.core.listeners.SlobrokListener;
 
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -21,41 +21,51 @@ import java.util.List;
 import java.util.Map;
 import java.util.StringTokenizer;
 import java.util.TreeMap;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class SlobrokClient implements NodeLookup {
 
     public static final Logger log = Logger.getLogger(SlobrokClient.class.getName());
 
+    private final FleetControllerContext context;
     private final Timer timer;
     private String[] connectionSpecs;
     private Mirror mirror;
     private Supervisor supervisor;
     private boolean freshMirror = false;
 
-    public SlobrokClient(Timer timer) {
+    public SlobrokClient(FleetControllerContext context, Timer timer, String[] connectionSpecs) {
+        this.context = context;
         this.timer = timer;
+        this.connectionSpecs = connectionSpecs;
+        setup();
     }
 
-    public boolean equalsExistingSpec(String spec[]) {
+    public boolean equalsExistingSpec(String[] spec) {
         if (spec == null && connectionSpecs == null) return true;
-        if (spec == null && connectionSpecs != null) return false;
-        if (spec != null && connectionSpecs == null) return false;
+        if (spec == null) return false;
+        if (connectionSpecs == null) return false;
         if (spec.length != connectionSpecs.length) return false;
-        for (int i=0, n=spec.length; i<n; ++i) {
+        for (int i = 0, n = spec.length; i < n; ++i) {
             if (!spec[i].equals(connectionSpecs[i])) return false;
         }
         return true;
     }
 
-    public void setSlobrokConnectionSpecs(String slobrokConnectionSpecs[]) {
+    public void setSlobrokConnectionSpecs(String[] slobrokConnectionSpecs) {
         if (equalsExistingSpec(slobrokConnectionSpecs)) return;
+
         this.connectionSpecs = slobrokConnectionSpecs;
         shutdown();
+        setup();
+    }
+
+    private void setup() {
         supervisor = new Supervisor(new Transport("slobrok-client"));
         supervisor.setDropEmptyBuffers(true);
         SlobrokList slist = new SlobrokList();
-        slist.setup(slobrokConnectionSpecs);
+        slist.setup(connectionSpecs);
         mirror = new Mirror(supervisor, slist);
         freshMirror = true;
     }
@@ -75,15 +85,14 @@ public class SlobrokClient implements NodeLookup {
     }
 
     @Override
-    public boolean updateCluster(ContentCluster cluster, NodeAddedOrRemovedListener listener) {
+    public boolean updateCluster(ContentCluster cluster, SlobrokListener listener) {
         if (mirror == null) return false;
+
         int mirrorVersion = mirror.updates();
         if (freshMirror) {
             freshMirror = false;
         } else if (cluster.getSlobrokGenerationCount() == mirrorVersion) {
-            if (log.isLoggable(Level.FINEST)) {
-                log.log(Level.FINEST, "Slobrok still at generation count " + cluster.getSlobrokGenerationCount() + ". Not updating.");
-            }
+            context.log(log, Level.FINEST, () -> "Slobrok still at generation count " + cluster.getSlobrokGenerationCount() + ". Not updating.");
             return false;
         }
 
@@ -123,7 +132,7 @@ public class SlobrokClient implements NodeLookup {
             // XXX we really would like to cross-check the actual RPC address against what's configured,
             // but this information does not seem to be available to the cluster controller currently.
             NodeInfo nodeInfo = cluster.clusterInfo().getNodeInfo(data.node);
-            if (nodeInfo == null) continue; // slobrok may contain nonconfigured nodes during state transitions
+            if (nodeInfo == null) continue; // slobrok may contain non-configured nodes during state transitions
             cluster.clusterInfo().setRpcAddress(data.node, data.rpcAddress);
             if (listener != null)
                 listener.handleNewNode(nodeInfo); // TODO: We'll never add new nodes here, move this to where clusterInfo.setNodes is called?
@@ -148,18 +157,20 @@ public class SlobrokClient implements NodeLookup {
             }
         }
         cluster.setSlobrokGenerationCount(mirrorVersion);
-        for (NodeInfo nodeInfo : cluster.getNodeInfo()) {
-            if (slobrokNodes.containsKey(nodeInfo.getNode()) && nodeInfo.isRpcAddressOutdated()) {
-                log.log(Level.WARNING, "Node " + nodeInfo
-                        + " was tagged NOT in slobrok even though it is. It was in the following lists:"
-                        + (newNodes.contains(nodeInfo.getNode()) ? " newNodes" : "")
-                        + (missingNodeInfos.contains(nodeInfo) ? " missingNodes" : "")
-                        + (alteredRpcAddressNodes.contains(nodeInfo.getNode()) ? " alteredNodes" : "")
-                        + (returningNodeInfos.contains(nodeInfo) ? " returningNodes" : ""));
+        for (NodeInfo nodeInfo : cluster.getNodeInfos()) {
+            if (slobrokNodes.containsKey(nodeInfo.getNode()) && nodeInfo.isNotInSlobrok()) {
+                context.log(log,
+                            Level.WARNING,
+                            "Node " + nodeInfo
+                            + " was tagged NOT in slobrok even though it is. It was in the following lists:"
+                            + (newNodes.contains(nodeInfo.getNode()) ? " newNodes" : "")
+                            + (missingNodeInfos.contains(nodeInfo) ? " missingNodes" : "")
+                            + (alteredRpcAddressNodes.contains(nodeInfo.getNode()) ? " alteredNodes" : "")
+                            + (returningNodeInfos.contains(nodeInfo) ? " returningNodes" : ""));
                 nodeInfo.markRpcAddressLive();
             }
         }
-        log.log(Level.FINEST, "Slobrok information updated to generation " + cluster.getSlobrokGenerationCount());
+        context.log(log, Level.FINEST, () -> "Slobrok information updated to generation " + cluster.getSlobrokGenerationCount());
         return true;
     }
 
@@ -171,7 +182,7 @@ public class SlobrokClient implements NodeLookup {
             List<SlobrokData> alteredRpcAddress,
             List<NodeInfo> returningRpcAddressNodeInfos)
     {
-        Iterator<NodeInfo> oldIt = oldCluster.getNodeInfo().iterator();
+        Iterator<NodeInfo> oldIt = oldCluster.getNodeInfos().iterator();
         Iterator<SlobrokData> newIt = slobrokNodes.values().iterator();
         NodeInfo oldNext = null;
         SlobrokData newNext = null;
@@ -184,7 +195,7 @@ public class SlobrokClient implements NodeLookup {
                 newNext = null;
             } else if (newNext == null || newNext.node.compareTo(oldNext.getNode()) > 0) {
                 assert(slobrokNodes.get(oldNext.getNode()) == null);
-                if (!oldNext.isRpcAddressOutdated() && oldNext.getRpcAddress() != null) {
+                if (oldNext.isInSlobrok() && oldNext.getRpcAddress() != null) {
                     missingNodeInfos.add(oldNext);
                 }
                 oldNext = null;
@@ -192,7 +203,7 @@ public class SlobrokClient implements NodeLookup {
                 assert(newNext.rpcAddress != null);
                 if (oldNext.getRpcAddress() == null || !oldNext.getRpcAddress().equals(newNext.rpcAddress)) {
                     alteredRpcAddress.add(newNext);
-                } else if (oldNext.isRpcAddressOutdated()) {
+                } else if (oldNext.isNotInSlobrok()) {
                     returningRpcAddressNodeInfos.add(oldNext);
                 }
                 oldNext = null;
@@ -204,7 +215,7 @@ public class SlobrokClient implements NodeLookup {
     private Map<Node, SlobrokData> getSlobrokData(String pattern) {
         Map<Node, SlobrokData> result = new TreeMap<>();
         List<Mirror.Entry> entries = mirror.lookup(pattern);
-        log.log(Level.FINEST, "Looking for slobrok entries with pattern '" + pattern + "'. Found " + entries.size() + " entries.");
+        context.log(log, Level.FINEST, () -> "Looking for slobrok entries with pattern '" + pattern + "'. Found " + entries.size() + " entries.");
         for (Mirror.Entry entry : entries) {
             StringTokenizer st = new StringTokenizer(entry.getName(), "/");
             String addressType = st.nextToken();

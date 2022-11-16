@@ -2,11 +2,12 @@
 package com.yahoo.vespa.hosted.node.admin.integration;
 
 import com.yahoo.config.provision.DockerImage;
-import com.yahoo.vespa.hosted.node.admin.container.ContainerName;
 import com.yahoo.vespa.hosted.node.admin.configserver.noderepository.NodeSpec;
+import com.yahoo.vespa.hosted.node.admin.container.ContainerName;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContextImpl;
-import org.junit.Test;
+import com.yahoo.vespa.test.file.TestFileSystem;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
@@ -21,8 +22,8 @@ import static org.mockito.Mockito.verify;
 public class ContainerFailTest {
 
     @Test
-    public void test() {
-        DockerImage dockerImage = DockerImage.fromString("registry.example.com/dockerImage");
+    void test() {
+        DockerImage dockerImage = DockerImage.fromString("registry.example.com/repo/image");
         try (ContainerTester tester = new ContainerTester(List.of(dockerImage))) {
             ContainerName containerName = new ContainerName("host1");
             String hostname = "host1.test.yahoo.com";
@@ -33,15 +34,15 @@ public class ContainerFailTest {
                     .build();
             tester.addChildNodeRepositoryNode(nodeSpec);
 
-            NodeAgentContext context = NodeAgentContextImpl.builder(nodeSpec).build();
+            NodeAgentContext context = NodeAgentContextImpl.builder(nodeSpec).fileSystem(TestFileSystem.create()).build();
 
-            tester.inOrder(tester.containerOperations).createContainer(containerMatcher(containerName), any(), any());
+            tester.inOrder(tester.containerOperations).createContainer(containerMatcher(containerName), any());
             tester.inOrder(tester.containerOperations).resumeNode(containerMatcher(containerName));
 
             tester.containerOperations.removeContainer(context, tester.containerOperations.getContainer(context).get());
 
             tester.inOrder(tester.containerOperations).removeContainer(containerMatcher(containerName), any());
-            tester.inOrder(tester.containerOperations).createContainer(containerMatcher(containerName), any(), any());
+            tester.inOrder(tester.containerOperations).createContainer(containerMatcher(containerName), any());
             tester.inOrder(tester.containerOperations).resumeNode(containerMatcher(containerName));
 
             verify(tester.nodeRepository, never()).updateNodeAttributes(any(), any());

@@ -1,8 +1,10 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.service;
 
 import ai.vespa.metricsproxy.core.MonitoringConfig;
 import com.yahoo.container.di.componentgraph.Provider;
+
+import java.time.Duration;
 
 /**
  * @author gjoranv
@@ -17,8 +19,9 @@ public class SystemPollerProvider implements Provider<SystemPoller> {
      */
     public SystemPollerProvider (VespaServices services, MonitoringConfig monitoringConfig) {
         if (runningOnLinux()) {
-            poller = new SystemPoller(services.getVespaServices(), 60 * monitoringConfig.intervalMinutes());
-            poller.poll();
+            Duration interval = Duration.ofMinutes(monitoringConfig.intervalMinutes());
+            poller = new SystemPoller(services.getVespaServices(), interval);
+            poller.schedule(Duration.ofSeconds(5));
         } else {
             poller = null;
         }

@@ -32,8 +32,7 @@ import org.junit.Test;
 import java.util.List;
 import java.util.Map;
 
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -58,11 +57,12 @@ public class OrchestratorTest {
         var timer = new TestTimer();
         var clustercontroller = new ClusterControllerClientFactoryMock();
         var applicationApiFactory = new ApplicationApiFactory(3, 5, timer.toUtcClock());
-        var policy = new HostedVespaPolicy(new HostedVespaClusterPolicy(flagSource, zone), clustercontroller, applicationApiFactory);
+        var clusterPolicy = new HostedVespaClusterPolicy(flagSource, zone);
+        var policy = new HostedVespaPolicy(clusterPolicy, clustercontroller, applicationApiFactory, flagSource);
         var zone = new Zone(SystemName.cd, Environment.prod, RegionName.from("cd-us-east-1"));
         this.superModelManager = new MySuperModelProvider();
         var duperModel = new DuperModel();
-        this.duperModelManager = new DuperModelManager(true, false, superModelManager, duperModel, flagSource, zone.system());
+        this.duperModelManager = new DuperModelManager(true, false, superModelManager, duperModel);
         this.monitorManager = mock(UnionMonitorManager.class);
         var metric = mock(Metric.class);
         var serviceMonitor = new ServiceMonitorImpl(duperModelManager, monitorManager, metric, timer, zone);
@@ -87,9 +87,9 @@ public class OrchestratorTest {
 
         // There is one config server application with 3 nodes
         ApplicationId applicationId = new ConfigServerApplication().getApplicationId();
-        var cfg1 = com.yahoo.config.provision.HostName.from("cfg1");
-        var cfg2 = com.yahoo.config.provision.HostName.from("cfg2");
-        var cfg3 = com.yahoo.config.provision.HostName.from("cfg3");
+        var cfg1 = com.yahoo.config.provision.HostName.of("cfg1");
+        var cfg2 = com.yahoo.config.provision.HostName.of("cfg2");
+        var cfg3 = com.yahoo.config.provision.HostName.of("cfg3");
         duperModelManager.infraApplicationActivated(applicationId, List.of(cfg1, cfg2, cfg3));
         duperModelManager.infraApplicationsIsNowComplete();
 
@@ -101,8 +101,8 @@ public class OrchestratorTest {
             orchestrator.acquirePermissionToRemove(toApplicationModelHostName(cfg2));
             fail();
         } catch (HostStateChangeDeniedException e) {
-            assertThat(e.getMessage(), containsString("Changing the state of cfg2 would violate enough-services-up"));
-            assertThat(e.getMessage(), containsString("[cfg1] are suspended."));
+            assertTrue(e.getMessage().contains("Changing the state of cfg2 would violate enough-services-up"));
+            assertTrue(e.getMessage().contains("[cfg1] are suspended."));
         }
 
         // cfg1 is removed from the application
@@ -113,8 +113,8 @@ public class OrchestratorTest {
             orchestrator.acquirePermissionToRemove(toApplicationModelHostName(cfg2));
             fail();
         } catch (HostStateChangeDeniedException e) {
-            assertThat(e.getMessage(), containsString("Changing the state of cfg2 would violate enough-services-up"));
-            assertThat(e.getMessage(), containsString("[1 missing config server] are down."));
+            assertTrue(e.getMessage().contains("Changing the state of cfg2 would violate enough-services-up"));
+            assertTrue(e.getMessage().contains("[1 missing config server] are down."));
         }
 
         // cfg1 is reprovisioned, added to the node repo, and activated
@@ -128,8 +128,8 @@ public class OrchestratorTest {
             orchestrator.acquirePermissionToRemove(toApplicationModelHostName(cfg1));
             fail();
         } catch (HostStateChangeDeniedException e) {
-            assertThat(e.getMessage(), containsString("Changing the state of cfg1 would violate enough-services-up"));
-            assertThat(e.getMessage(), containsString("[cfg2] are suspended"));
+            assertTrue(e.getMessage().contains("Changing the state of cfg1 would violate enough-services-up"));
+            assertTrue(e.getMessage().contains("[cfg2] are suspended"));
         }
 
         // etc (should be the same as for cfg1)

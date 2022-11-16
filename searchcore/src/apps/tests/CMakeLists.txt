@@ -3,6 +3,7 @@ vespa_add_executable(searchcore_persistenceconformance_test_app TEST
     SOURCES
     persistenceconformance_test.cpp
     DEPENDS
+    searchcore_test
     searchcore_server
     searchcore_initializer
     searchcore_reprocessing
@@ -21,5 +22,4 @@ vespa_add_executable(searchcore_persistenceconformance_test_app TEST
     searchcore_fconfig
     vdstestlib
     persistence_persistence_conformancetest
-    searchlib_searchlib_uca
 )

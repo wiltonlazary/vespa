@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller;
 
 import com.yahoo.component.Version;
@@ -7,6 +7,7 @@ import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.SystemName;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.RoutingMethod;
 import com.yahoo.config.provision.zone.ZoneApi;
@@ -16,8 +17,8 @@ import com.yahoo.text.Text;
 import com.yahoo.vespa.athenz.api.AthenzDomain;
 import com.yahoo.vespa.athenz.api.AthenzPrincipal;
 import com.yahoo.vespa.athenz.api.AthenzUser;
-import com.yahoo.vespa.athenz.api.OktaAccessToken;
-import com.yahoo.vespa.athenz.api.OktaIdentityToken;
+import com.yahoo.vespa.athenz.api.OAuthCredentials;
+import com.yahoo.vespa.flags.FlagSource;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.controller.api.identifiers.Property;
@@ -54,7 +55,7 @@ import com.yahoo.vespa.hosted.controller.security.Credentials;
 import com.yahoo.vespa.hosted.controller.security.TenantSpec;
 import com.yahoo.vespa.hosted.controller.tenant.AthenzTenant;
 import com.yahoo.vespa.hosted.controller.tenant.Tenant;
-import com.yahoo.vespa.hosted.controller.versions.ControllerVersion;
+import com.yahoo.vespa.hosted.controller.api.identifiers.ControllerVersion;
 import com.yahoo.vespa.hosted.controller.versions.VersionStatus;
 import com.yahoo.vespa.hosted.rotation.config.RotationsConfig;
 import com.yahoo.yolean.concurrent.Sleeper;
@@ -74,8 +75,8 @@ import java.util.logging.Handler;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Convenience methods for controller tests.
@@ -93,6 +94,7 @@ public final class ControllerTester {
     private final ServiceRegistryMock serviceRegistry;
     private final CuratorDb curator;
     private final RotationsConfig rotationsConfig;
+    private final InMemoryFlagSource flagSource;
     private final AtomicLong nextPropertyId = new AtomicLong(1000);
     private final AtomicInteger nextProjectId = new AtomicInteger(1000);
     private final AtomicInteger nextDomainId = new AtomicInteger(1000);
@@ -108,11 +110,11 @@ public final class ControllerTester {
     }
 
     public ControllerTester(ServiceRegistryMock serviceRegistryMock) {
-        this(new AthenzDbMock(), new MockCuratorDb(), defaultRotationsConfig(), serviceRegistryMock);
+        this(new AthenzDbMock(), new MockCuratorDb(serviceRegistryMock.zoneRegistry().system()), defaultRotationsConfig(), serviceRegistryMock);
     }
 
     public ControllerTester(RotationsConfig rotationsConfig, SystemName system) {
-        this(new AthenzDbMock(), new MockCuratorDb(), rotationsConfig, new ServiceRegistryMock(system));
+        this(new AthenzDbMock(), new MockCuratorDb(system), rotationsConfig, new ServiceRegistryMock(system));
     }
 
     public ControllerTester(MockCuratorDb curatorDb) {
@@ -120,22 +122,24 @@ public final class ControllerTester {
     }
 
     public ControllerTester() {
-        this(defaultRotationsConfig(), new MockCuratorDb());
+        this(defaultRotationsConfig(), new MockCuratorDb(new ServiceRegistryMock().zoneRegistry().system()));
     }
 
     public ControllerTester(SystemName system) {
-        this(new AthenzDbMock(), new MockCuratorDb(), defaultRotationsConfig(), new ServiceRegistryMock(system));
+        this(new AthenzDbMock(), new MockCuratorDb(system), defaultRotationsConfig(), new ServiceRegistryMock(system));
     }
 
-    private ControllerTester(AthenzDbMock athenzDb, boolean inContainer,
-                             CuratorDb curator, RotationsConfig rotationsConfig,
-                             ServiceRegistryMock serviceRegistry, Controller controller) {
+    private ControllerTester(AthenzDbMock athenzDb, boolean inContainer, CuratorDb curator,
+                             RotationsConfig rotationsConfig, ServiceRegistryMock serviceRegistry,
+                             InMemoryFlagSource flagSource, Controller controller) {
         this.athenzDb = athenzDb;
         this.inContainer = inContainer;
         this.clock = serviceRegistry.clock();
         this.serviceRegistry = serviceRegistry;
         this.curator = curator;
         this.rotationsConfig = rotationsConfig;
+        this.flagSource = flagSource.withBooleanFlag(PermanentFlags.ENABLE_PUBLIC_SIGNUP_FLOW.id(), true)
+                                    .withListFlag(PermanentFlags.INCOMPATIBLE_VERSIONS.id(), List.of(), String.class);
         this.controller = controller;
 
         // Make root logger use time from manual clock
@@ -149,8 +153,14 @@ public final class ControllerTester {
     private ControllerTester(AthenzDbMock athenzDb,
                              CuratorDb curator, RotationsConfig rotationsConfig,
                              ServiceRegistryMock serviceRegistry) {
-        this(athenzDb, false, curator, rotationsConfig, serviceRegistry,
-             createController(curator, rotationsConfig, athenzDb, serviceRegistry));
+        this(athenzDb, curator, rotationsConfig, serviceRegistry, new InMemoryFlagSource());
+    }
+
+    private ControllerTester(AthenzDbMock athenzDb,
+                             CuratorDb curator, RotationsConfig rotationsConfig,
+                             ServiceRegistryMock serviceRegistry, InMemoryFlagSource flagSource) {
+        this(athenzDb, false, curator, rotationsConfig, serviceRegistry, flagSource,
+             createController(curator, rotationsConfig, athenzDb, serviceRegistry, flagSource));
     }
 
     /** Creates a ControllerTester built on the ContainerTester's controller. This controller can not be recreated. */
@@ -160,6 +170,7 @@ public final class ControllerTester {
              tester.controller().curator(),
              null,
              tester.serviceRegistry(),
+             tester.flagSource(),
              tester.controller());
     }
 
@@ -178,6 +189,8 @@ public final class ControllerTester {
     public ManualClock clock() { return clock; }
 
     public AthenzDbMock athenzDb() { return athenzDb; }
+
+    public InMemoryFlagSource flagSource() { return flagSource; }
 
     public MemoryNameService nameService() {
         return serviceRegistry.nameService();
@@ -203,9 +216,9 @@ public final class ControllerTester {
     }
 
     /** Set the zones and system for this and bootstrap infrastructure nodes */
-    public ControllerTester setZones(List<ZoneId> zones, SystemName system) {
-        zoneRegistry().setZones(zones.stream().map(ZoneApiMock::from).collect(Collectors.toList()))
-                      .setSystemName(system);
+    public ControllerTester setZones(List<ZoneId> zones) {
+        ZoneApiMock.Builder builder = ZoneApiMock.newBuilder().withSystem(zoneRegistry().system());
+        zoneRegistry().setZones(zones.stream().map(zone -> builder.with(zone).build()).collect(Collectors.toList()));
         configServer().bootstrap(zones, SystemApplication.notController());
         return this;
     }
@@ -218,16 +231,16 @@ public final class ControllerTester {
     }
 
     /** Create a new controller instance. Useful to verify that controller state is rebuilt from persistence */
-    public final void createNewController() {
+    public void createNewController() {
         if (inContainer)
             throw new UnsupportedOperationException("Cannot recreate this controller");
-        controller = createController(curator, rotationsConfig, athenzDb, serviceRegistry);
+        controller = createController(curator, rotationsConfig, athenzDb, serviceRegistry, flagSource);
     }
 
     /** Upgrade controller to given version */
     public void upgradeController(Version version, String commitSha, Instant commitDate) {
         for (var hostname : controller().curator().cluster()) {
-            upgradeController(HostName.from(hostname), version, commitSha, commitDate);
+            upgradeController(HostName.of(hostname), version, commitSha, commitDate);
         }
     }
 
@@ -251,7 +264,7 @@ public final class ControllerTester {
         for (ZoneApi zone : zoneRegistry().zones().all().zones()) {
             for (SystemApplication application : systemApplications) {
                 if (!application.hasApplicationPackage()) {
-                    configServer().nodeRepository().upgrade(zone.getId(), application.nodeType(), version);
+                    configServer().nodeRepository().upgrade(zone.getId(), application.nodeType(), version, false);
                 }
                 configServer().setVersion(version, application.id(), zone.getId());
                 configServer().convergeServices(application.id(), zone.getId());
@@ -262,6 +275,7 @@ public final class ControllerTester {
 
     /** Upgrade entire system to given version */
     public void upgradeSystem(Version version) {
+        ((MockMavenRepository) controller.mavenRepository()).addVersion(version);
         upgradeController(version);
         upgradeSystemApplications(version);
     }
@@ -320,7 +334,7 @@ public final class ControllerTester {
                                                            new Property("Property" + propertyId),
                                                            Optional.ofNullable(propertyId).map(Object::toString).map(PropertyId::new));
         AthenzCredentials credentials = new AthenzCredentials(
-                new AthenzPrincipal(user), domain, new OktaIdentityToken("okta-identity-token"), new OktaAccessToken("okta-access-token"));
+                new AthenzPrincipal(user), domain, OAuthCredentials.createForTesting("okta-access-token", "okta-identity-token"));
         controller().tenants().create(tenantSpec, credentials);
         contact.ifPresent(value -> controller().tenants().lockOrThrow(name, LockedTenant.Athenz.class, tenant ->
                 controller().tenants().store(tenant.with(value))));
@@ -331,7 +345,7 @@ public final class ControllerTester {
     private TenantName createCloudTenant(String tenantName) {
         TenantName tenant = TenantName.from(tenantName);
         TenantSpec spec = new CloudTenantSpec(tenant, "token");
-        controller().tenants().create(spec, new Auth0Credentials(new SimplePrincipal("dev"), Set.of(Role.administrator(tenant))));
+        controller().tenants().create(spec, new Auth0Credentials(new SimplePrincipal("dev-" + tenantName), Set.of(Role.administrator(tenant))));
         return tenant;
     }
 
@@ -342,8 +356,7 @@ public final class ControllerTester {
             case athenz:
                 return new AthenzCredentials(new AthenzPrincipal(new AthenzUser("user")),
                                                                              ((AthenzTenant) tenant).domain(),
-                                                                             new OktaIdentityToken("okta-identity-token"),
-                                                                             new OktaAccessToken("okta-access-token"));
+                                                                             OAuthCredentials.createForTesting("okta-access-token", "okta-identity-token"));
             case cloud:
                 return new Credentials(new SimplePrincipal("dev"));
 
@@ -358,7 +371,7 @@ public final class ControllerTester {
 
     public Application createApplication(String tenant, String applicationName, String instanceName) {
         Application application = createApplication(tenant, applicationName);
-        controller().applications().createInstance(application.id().instance(instanceName));
+        controller().applications().createInstance(application.id().instance(instanceName), Tags.empty());
         return application;
     }
 
@@ -375,15 +388,13 @@ public final class ControllerTester {
 
     private static Controller createController(CuratorDb curator, RotationsConfig rotationsConfig,
                                                AthenzDbMock athensDb,
-                                               ServiceRegistryMock serviceRegistry) {
-        InMemoryFlagSource flagSource = new InMemoryFlagSource()
-                .withBooleanFlag(PermanentFlags.ENABLE_PUBLIC_SIGNUP_FLOW.id(), true);
+                                               ServiceRegistryMock serviceRegistry,
+                                               FlagSource flagSource) {
         Controller controller = new Controller(curator,
                                                rotationsConfig,
                                                serviceRegistry.zoneRegistry().system().isPublic() ?
                                                        new CloudAccessControl(new MockUserManagement(), flagSource, serviceRegistry) :
                                                        new AthenzFacade(new AthenzClientFactoryMock(athensDb)),
-                                               () -> "test-controller",
                                                flagSource,
                                                new MockMavenRepository(),
                                                serviceRegistry,

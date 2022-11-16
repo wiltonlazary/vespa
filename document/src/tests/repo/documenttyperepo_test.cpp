@@ -17,7 +17,6 @@
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/exceptions.h>
 #include <set>
-#include <vespa/config/helper/configgetter.h>
 
 
 using config::AsciiConfigWriter;
@@ -26,7 +25,6 @@ using std::vector;
 using vespalib::Identifiable;
 using vespalib::IllegalArgumentException;
 using vespalib::string;
-using vespalib::compression::CompressionConfig;
 
 using namespace document::config_builder;
 using namespace document;
@@ -42,9 +40,6 @@ const int32_t body_id = 31;
 const string type_name_2 = "test_2";
 const string header_name_2 = type_name_2 + ".header";
 const string body_name_2 = type_name_2 + ".body";
-const int32_t comp_level = 10;
-const int32_t comp_minres = 80;
-const size_t comp_minsize = 120;
 const string field_name = "field_name";
 const string derived_name = "derived";
 
@@ -78,25 +73,6 @@ TEST("requireThatDocumentTypeCanBeLookedUpWhenIdIsNotAHash") {
 
     const DocumentType *type = repo.getDocumentType(type_name);
     ASSERT_TRUE(type);
-}
-
-TEST("requireThatStructsCanConfigureCompression") {
-    DocumenttypesConfigBuilderHelper builder;
-    typedef DocumenttypesConfig::Documenttype::Datatype::Sstruct Sstruct;
-    builder.document(doc_type_id, type_name,
-                     Struct(header_name),
-                     Struct(body_name).setCompression(
-                             Sstruct::Compression::Type::LZ4,
-                             comp_level, comp_minres, comp_minsize));
-    DocumentTypeRepo repo(builder.config());
-
-    const CompressionConfig &comp_config =
-        repo.getDocumentType(type_name)->getFieldsType()
-        .getCompressionConfig();
-    EXPECT_EQUAL(CompressionConfig::LZ4, comp_config.type);
-    EXPECT_EQUAL(comp_level, comp_config.compressionLevel);
-    EXPECT_EQUAL(comp_minres, comp_config.threshold);
-    EXPECT_EQUAL(comp_minsize, comp_config.minSize);
 }
 
 TEST("requireThatStructsCanHaveFields") {
@@ -171,8 +147,7 @@ TEST("requireThatAnnotationReferencesCanBeConfigured") {
         .annotationType(annotation_type_id, "foo", -1);
     DocumentTypeRepo repo(builder.config());
 
-    const AnnotationReferenceDataType &ar =
-        getFieldDataType<AnnotationReferenceDataType>(repo);
+    const AnnotationReferenceDataType &ar = getFieldDataType<AnnotationReferenceDataType>(repo);
     EXPECT_EQUAL(annotation_type_id, ar.getAnnotationType().getId());
 }
 
@@ -401,8 +376,8 @@ TEST("requireThatDocumentTypesCanBeIterated") {
     DocumentTypeRepo repo(builder.config());
 
     set<int> ids;
-    repo.forEachDocumentType(*DocumentTypeRepo::makeLambda(
-            [&ids](const DocumentType &type) { ids.insert(type.getId()); }));
+    repo.forEachDocumentType(
+            [&ids](const DocumentType &type) { ids.insert(type.getId()); });
 
     EXPECT_EQUAL(3u, ids.size());
     ASSERT_TRUE(ids.count(DataType::T_DOCUMENT));

@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.deployment;
 
 import com.yahoo.config.provision.ApplicationId;
@@ -29,7 +29,7 @@ public class JobId {
         if (o == null || getClass() != o.getClass()) return false;
         JobId jobId = (JobId) o;
         return application.equals(jobId.application) &&
-               type == jobId.type;
+               type.equals(jobId.type);
     }
 
     @Override

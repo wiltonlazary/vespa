@@ -3,7 +3,6 @@ package com.yahoo.vespa.hosted.controller.api.integration.configserver;
 
 import com.yahoo.slime.Inspector;
 import com.yahoo.slime.SlimeUtils;
-import org.apache.hc.core5.http.ClassicHttpRequest;
 
 import java.util.stream.Stream;
 
@@ -35,13 +34,14 @@ public class ConfigServerException extends RuntimeException {
         INVALID_APPLICATION_PACKAGE,
         METHOD_NOT_ALLOWED,
         NOT_FOUND,
-        OUT_OF_CAPACITY,
+        NODE_ALLOCATION_FAILURE,
         REQUEST_TIMEOUT,
         UNKNOWN_VESPA_VERSION,
         PARENT_HOST_NOT_READY,
         CERTIFICATE_NOT_READY,
         LOAD_BALANCER_NOT_READY,
-        INCOMPLETE_RESPONSE
+        INCOMPLETE_RESPONSE,
+        CONFIG_NOT_CONVERGED
     }
 
     public static ConfigServerException readException(byte[] body, String context) {

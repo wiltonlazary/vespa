@@ -19,10 +19,7 @@ import com.yahoo.vespa.model.builder.xml.dom.DomAdminV2Builder;
 import com.yahoo.vespa.model.filedistribution.FileDistributionConfigProducer;
 import com.yahoo.vespa.model.filedistribution.FileReferencesRepository;
 import org.w3c.dom.Document;
-import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
 
-import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -64,9 +61,9 @@ public class MockRoot extends AbstractConfigProducerRoot {
 
     public MockRoot(String rootConfigId, DeployState deployState) {
         super(rootConfigId);
-        hostSystem = new HostSystem(this, "hostsystem", deployState.getProvisioner(), deployState.getDeployLogger());
+        hostSystem = new HostSystem(this, "hostsystem", deployState.getProvisioner(), deployState.getDeployLogger(), deployState.isHosted());
         this.deployState = deployState;
-        fileReferencesRepository = new FileReferencesRepository();
+        fileReferencesRepository = new FileReferencesRepository(deployState.getFileRegistry());
     }
 
     public FileDistributionConfigProducer getFileDistributionConfigProducer() {
@@ -143,13 +140,9 @@ public class MockRoot extends AbstractConfigProducerRoot {
                 "<?xml version='1.0' encoding='utf-8' ?>" +
                 "<services>" + xml + "</services>";
 
-        try {
-            Document doc = XmlHelper.getDocumentBuilder().parse(new InputSource(new StringReader(servicesXml)));
-            setAdmin(new DomAdminV2Builder(ConfigModelContext.ApplicationType.DEFAULT, false, new ArrayList<>()).
-                    build(deployState, this, XML.getChildren(doc.getDocumentElement(), "admin").get(0)));
-        } catch (SAXException | IOException e) {
-            throw new RuntimeException(e);
-        }
+        Document doc = XmlHelper.getDocument(new StringReader(servicesXml));
+        setAdmin(new DomAdminV2Builder(ConfigModelContext.ApplicationType.DEFAULT, false, new ArrayList<>())
+                         .build(deployState, this, XML.getChildren(doc.getDocumentElement(), "admin").get(0)));
     }
 
     public final void setAdmin(Admin admin) {

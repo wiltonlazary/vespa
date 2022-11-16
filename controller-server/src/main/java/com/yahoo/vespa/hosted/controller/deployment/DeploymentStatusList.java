@@ -1,8 +1,9 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.deployment;
 
 import com.yahoo.collections.AbstractFilteringList;
 import com.yahoo.component.Version;
+import com.yahoo.vespa.hosted.controller.application.Change;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -24,7 +25,7 @@ public class DeploymentStatusList extends AbstractFilteringList<DeploymentStatus
 
     /** Returns the subset of applications which have changes left to deploy; blocked, or deploying */
     public DeploymentStatusList withChanges() {
-        return matching(status -> status.application().instances().values().stream()
+        return matching(status -> status.application().productionInstances().values().stream()
                                         .anyMatch(instance -> instance.change().hasTargets() || status.outstandingChange(instance.name()).hasTargets()));
     }
 
@@ -36,8 +37,10 @@ public class DeploymentStatusList extends AbstractFilteringList<DeploymentStatus
 
     /** Returns the subset of applications which have been failing an application change since the given instant */
     public DeploymentStatusList failingApplicationChangeSince(Instant threshold) {
-        return matching(status -> status.instanceJobs().values().stream()
-                                        .anyMatch(jobs -> failingApplicationChangeSince(jobs, threshold)));
+        return matching(status -> status.instanceJobs().entrySet().stream()
+                                        .anyMatch(jobs -> failingApplicationChangeSince(jobs.getValue(),
+                                                                                        status.application().require(jobs.getKey().instance()).change(),
+                                                                                        threshold)));
     }
 
     private static boolean failingUpgradeToVersionSince(JobList jobs, Version version, Instant threshold) {
@@ -47,10 +50,8 @@ public class DeploymentStatusList extends AbstractFilteringList<DeploymentStatus
                      .isEmpty();
     }
 
-    private static boolean failingApplicationChangeSince(JobList jobs, Instant threshold) {
-        return ! jobs.failingApplicationChange()
-                     .firstFailing().endedNoLaterThan(threshold)
-                     .isEmpty();
+    private static boolean failingApplicationChangeSince(JobList jobs, Change change, Instant threshold) {
+        return change.revision().map(revision -> ! jobs.failingWithBrokenRevisionSince(revision, threshold).isEmpty()).orElse(false);
     }
 
 }

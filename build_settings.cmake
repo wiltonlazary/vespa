@@ -4,10 +4,10 @@
 include(${CMAKE_CURRENT_LIST_DIR}/vtag.cmake)
 
 if (VESPA_USE_SANITIZER)
-    if (VESPA_USE_SANITIZER STREQUAL "address" OR VESPA_USE_SANITIZER STREQUAL "thread")
+    if (VESPA_USE_SANITIZER STREQUAL "address" OR VESPA_USE_SANITIZER STREQUAL "thread" OR VESPA_USE_SANITIZER STREQUAL "undefined")
         message("-- Instrumenting code using ${VESPA_USE_SANITIZER} sanitizer")
     else()
-        message(FATAL_ERROR "Unsupported sanitizer option '${VESPA_USE_SANITIZER}'. Supported: 'address' or 'thread'")
+        message(FATAL_ERROR "Unsupported sanitizer option '${VESPA_USE_SANITIZER}'. Supported: 'address', 'thread' or 'undefined'")
     endif()
 endif()
 
@@ -26,15 +26,23 @@ set(AUTORUN_UNIT_TESTS FALSE CACHE BOOL "If TRUE, tests will be run immediately 
 
 # Warnings
 set(C_WARN_OPTS "-Wuninitialized -Werror -Wall -W -Wchar-subscripts -Wcomment -Wformat -Wparentheses -Wreturn-type -Wswitch -Wtrigraphs -Wunused -Wshadow -Wpointer-arith -Wcast-qual -Wcast-align -Wwrite-strings")
-if (VESPA_USE_SANITIZER)
+if (VESPA_USE_SANITIZER OR VESPA_DISABLE_INLINE_WARNINGS)
     # Instrumenting code changes binary size, which triggers inlining warnings that
     # don't happen during normal, non-instrumented compilation.
 else()
     set(C_WARN_OPTS "-Winline ${C_WARN_OPTS}")
 endif()
+if (VESPA_USE_SANITIZER)
+  if (VESPA_USE_SANITIZER STREQUAL "thread" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0)
+    # Turn off warning about std::atomic_thread_fence not being supported by
+    # address sanitizer.
+    set(C_WARN_OPTS "${C_WARN_OPTS} -Wno-tsan")
+  endif()
+endif()
 
 # Warnings that are specific to C++ compilation
 # Note: this is not a union of C_WARN_OPTS, since CMAKE_CXX_FLAGS already includes CMAKE_C_FLAGS, which in turn includes C_WARN_OPTS transitively
+set(VESPA_ATOMIC_LIB "atomic")
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
   set(CXX_SPECIFIC_WARN_OPTS "-Wnon-virtual-dtor -Wformat-security -Wno-overloaded-virtual")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-delete-null-pointer-checks -fsized-deallocation")
@@ -43,7 +51,6 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" ST
     set(VESPA_GCC_LIB "")
     set(VESPA_STDCXX_FS_LIB "")
   else()
-    set(VESPA_ATOMIC_LIB "atomic")
     if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8.0)
       set(VESPA_GCC_LIB "gcc")
       set(VESPA_STDCXX_FS_LIB "stdc++fs")
@@ -53,18 +60,7 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" ST
     endif()
   endif()
 else()
-  set(CXX_SPECIFIC_WARN_OPTS "-Wnoexcept -Wsuggest-override -Wnon-virtual-dtor -Wformat-security")
-  if(VESPA_OS_DISTRO_COMBINED STREQUAL "centos 8" OR
-      (VESPA_OS_DISTRO STREQUAL "rocky" AND
-	VESPA_OS_DISTRO_VERSION VERSION_GREATER_EQUAL "8" AND
-	VESPA_OS_DISTRO_VERSION VERSION_LESS "9") OR
-      (VESPA_OS_DISTRO STREQUAL "rhel" AND
-	VESPA_OS_DISTRO_VERSION VERSION_GREATER_EQUAL "8" AND
-	VESPA_OS_DISTRO_VERSION VERSION_LESS "9"))
-    set(VESPA_ATOMIC_LIB "")
-  else()
-    set(VESPA_ATOMIC_LIB "atomic")
-  endif()
+  set(CXX_SPECIFIC_WARN_OPTS "-Wnoexcept -Wsuggest-override -Wnon-virtual-dtor -Wformat-security -Wmismatched-tags")
   set(VESPA_GCC_LIB "gcc")
   set(VESPA_STDCXX_FS_LIB "stdc++fs")
 endif()
@@ -73,6 +69,11 @@ if(VESPA_OS_DISTRO_COMBINED STREQUAL "debian 10")
   unset(VESPA_XXHASH_DEFINE)
 else()
   set(VESPA_XXHASH_DEFINE "-DXXH_INLINE_ALL")
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND VESPA_USE_LTO)
+  # Enable lto
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto -ffat-lto-objects")
 endif()
 
 # C and C++ compiler flags
@@ -86,6 +87,20 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ")
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility-inlines-hidden ")
+endif()
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11.0)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcoroutines")
+endif()
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DGOOGLE_PROTOBUF_NO_RDTSC")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_NO_CXX98_FUNCTION_BASE")
+  endif()
+endif()
+
+# Hardening
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND VESPA_USE_HARDENING)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fstack-protector-strong -fasynchronous-unwind-tables -fstack-clash-protection -fcf-protection")
 endif()
 
 # Linker flags
@@ -146,6 +161,20 @@ if(VALGRIND_EXECUTABLE)
     set(VALGRIND_OPTIONS "--leak-check=yes --error-exitcode=1 --run-libc-freeres=no --track-origins=yes --suppressions=${VALGRIND_SUPPRESSIONS_FILE}")
     set(VALGRIND_COMMAND "${VALGRIND_EXECUTABLE} ${VALGRIND_OPTIONS}")
 endif()
+# Automatically set sanitizer suppressions file and arguments for unit tests
+if(VESPA_USE_SANITIZER)
+    if(VESPA_USE_SANITIZER STREQUAL "thread")
+        set(VESPA_SANITIZER_SUPPRESSIONS_FILE "${PROJECT_SOURCE_DIR}/tsan-suppressions.txt")
+        # Maximize the amount of history we can track, including mutex order inversion histories
+        set(VESPA_SANITIZER_ENV "TSAN_OPTIONS=suppressions=${VESPA_SANITIZER_SUPPRESSIONS_FILE} history_size=7 detect_deadlocks=1 second_deadlock_stack=1")
+    endif()
+endif()
+# Dump stack when finding issues in unit tests using undefined sanitizer
+if(VESPA_USE_SANITIZER)
+    if(VESPA_USE_SANITIZER STREQUAL "undefined")
+        set(VESPA_SANITIZER_ENV "UBSAN_OPTIONS=print_stacktrace=1")
+    endif()
+endif()
 
 if(VESPA_LLVM_VERSION)
 else()
@@ -163,6 +192,10 @@ endif()
 if(VESPA_USER)
 else()
   set(VESPA_USER "vespa")
+endif()
+
+if(NOT DEFINED VESPA_GROUP)
+  set(VESPA_GROUP "vespa")
 endif()
 
 if(VESPA_UNPRIVILEGED)

@@ -2,8 +2,8 @@
 
 #pragma once
 
+#include "i_enum_store.h"
 #include <vespa/searchcommon/common/undefinedvalues.h>
-#include <vespa/searchlib/attribute/i_enum_store.h>
 #include <vespa/vespalib/datastore/entryref.h>
 
 namespace search
@@ -40,9 +40,7 @@ public:
         }
     };
 
-    class DocOrderCompare : public std::binary_function<LoadedValue<T>,
-                                                        LoadedValue<T>,
-                                                        bool>
+    class DocOrderCompare
     {
     public:
         bool
@@ -103,9 +101,10 @@ public:
         T        _value;
         uint32_t _eidx;
     };
+
     uint32_t                         _docId;
     uint32_t                         _idx;
-    vespalib::datastore::EntryRef                  _pidx;
+    vespalib::datastore::EntryRef    _pidx;
 private:
     int32_t                          _weight;
     Value                            _value;

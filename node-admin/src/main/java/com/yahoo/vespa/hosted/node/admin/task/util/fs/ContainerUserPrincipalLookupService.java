@@ -1,7 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.fs;
 
-import com.google.common.collect.ImmutableBiMap;
+import com.yahoo.vespa.hosted.node.admin.nodeagent.UserScope;
+import com.yahoo.vespa.hosted.node.admin.task.util.file.UnixUser;
 
 import java.io.IOException;
 import java.nio.file.attribute.GroupPrincipal;
@@ -9,58 +10,63 @@ import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.function.Function;
 
 /**
- * @author valerijf
+ * @author freva
  */
-class ContainerUserPrincipalLookupService extends UserPrincipalLookupService {
-
-    /** Total number of UID/GID that are mapped for each container */
-    private static final int ID_RANGE = 1 << 16;
-
-    /**
-     * IDs outside the ID range are translated to the overflow ID before being written to disk:
-     * https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/admin-guide/sysctl/fs.rst#overflowgid--overflowuid */
-    static final int OVERFLOW_ID = 65_534;
-
-    private static final ImmutableBiMap<String, Integer> CONTAINER_IDS_BY_NAME = ImmutableBiMap.<String, Integer>builder()
-            .put("root", 0)
-            .put("vespa", 1000)
-            .build();
+public class ContainerUserPrincipalLookupService extends UserPrincipalLookupService {
 
     private final UserPrincipalLookupService baseFsUserPrincipalLookupService;
-    private final int uidOffset;
-    private final int gidOffset;
+    private final UserScope userScope;
 
-    ContainerUserPrincipalLookupService(UserPrincipalLookupService baseFsUserPrincipalLookupService, int uidOffset, int gidOffset) {
-        this.baseFsUserPrincipalLookupService = baseFsUserPrincipalLookupService;
-        this.uidOffset = uidOffset;
-        this.gidOffset = gidOffset;
+    ContainerUserPrincipalLookupService(UserPrincipalLookupService baseFsUserPrincipalLookupService, UserScope userScope) {
+        this.baseFsUserPrincipalLookupService = Objects.requireNonNull(baseFsUserPrincipalLookupService);
+        this.userScope = Objects.requireNonNull(userScope);
     }
 
-    public int containerUidToHostUid(int containerUid) { return containerIdToHostId(containerUid, uidOffset); }
-    public int containerGidToHostGid(int containerGid) { return containerIdToHostId(containerGid, gidOffset); }
-    public int hostUidToContainerUid(int hostUid) { return hostIdToContainerId(hostUid, uidOffset); }
-    public int hostGidToContainerGid(int hostGid) { return hostIdToContainerId(hostGid, gidOffset); }
+    public UserScope userScope() { return userScope; }
+
+    public int userIdOnHost(int containerUid)  { return userScope.namespace().userIdOnHost(containerUid); }
+    public int groupIdOnHost(int containerGid) { return userScope.namespace().groupIdOnHost(containerGid); }
+    public int userIdInContainer(int hostUid)  { return userScope.namespace().userIdInContainer(hostUid); }
+    public int groupIdInContainer(int hostGid) { return userScope.namespace().groupIdInContainer(hostGid); }
 
     @Override
     public ContainerUserPrincipal lookupPrincipalByName(String name) throws IOException {
-        int containerUid = resolve(name);
-        String hostUid = String.valueOf(containerUidToHostUid(containerUid));
-        return new ContainerUserPrincipal(containerUid, baseFsUserPrincipalLookupService.lookupPrincipalByName(hostUid));
+        int containerUid = resolveName(name, UnixUser::uid, UnixUser::name);
+        String user = resolveId(containerUid, UnixUser::uid, UnixUser::name);
+        String hostUid = String.valueOf(userIdOnHost(containerUid));
+        return new ContainerUserPrincipal(containerUid, user, baseFsUserPrincipalLookupService.lookupPrincipalByName(hostUid));
     }
 
     @Override
     public ContainerGroupPrincipal lookupPrincipalByGroupName(String group) throws IOException {
-        int containerGid = resolve(group);
-        String hostGid = String.valueOf(containerGidToHostGid(containerGid));
-        return new ContainerGroupPrincipal(containerGid, baseFsUserPrincipalLookupService.lookupPrincipalByGroupName(hostGid));
+        int containerGid = resolveName(group, UnixUser::gid, UnixUser::group);
+        String name = resolveId(containerGid, UnixUser::gid, UnixUser::group);
+        String hostGid = String.valueOf(groupIdOnHost(containerGid));
+        return new ContainerGroupPrincipal(containerGid, name, baseFsUserPrincipalLookupService.lookupPrincipalByGroupName(hostGid));
     }
 
-    private static int resolve(String name) throws UserPrincipalNotFoundException {
-        Integer id = CONTAINER_IDS_BY_NAME.get(name);
-        if (id != null) return id;
+    public ContainerUserPrincipal userPrincipal(int uid, UserPrincipal baseFsPrincipal) {
+        String name = resolveId(uid, UnixUser::uid, UnixUser::name);
+        return new ContainerUserPrincipal(uid, name, baseFsPrincipal);
+    }
+    
+    public ContainerGroupPrincipal groupPrincipal(int gid, GroupPrincipal baseFsPrincipal) {
+        String name = resolveId(gid, UnixUser::gid, UnixUser::group);
+        return new ContainerGroupPrincipal(gid, name, baseFsPrincipal);
+    }
+
+    private String resolveId(int id, Function<UnixUser, Integer> idExtractor, Function<UnixUser, String> nameExtractor) {
+        if (idExtractor.apply(userScope.root()) == id) return nameExtractor.apply(userScope.root());
+        if (idExtractor.apply(userScope.vespa()) == id) return nameExtractor.apply(userScope.vespa());
+        return String.valueOf(id);
+    }
+
+    private int resolveName(String name, Function<UnixUser, Integer> idExtractor, Function<UnixUser, String> nameExtractor) throws UserPrincipalNotFoundException {
+        if (name.equals(nameExtractor.apply(userScope.root()))) return idExtractor.apply(userScope.root());
+        if (name.equals(nameExtractor.apply(userScope.vespa()))) return idExtractor.apply(userScope.vespa());
 
         try {
             return Integer.parseInt(name);
@@ -74,9 +80,9 @@ class ContainerUserPrincipalLookupService extends UserPrincipalLookupService {
         private final String name;
         private final UserPrincipal baseFsPrincipal;
 
-        private NamedPrincipal(int id, UserPrincipal baseFsPrincipal) {
+        private NamedPrincipal(int id, String name, UserPrincipal baseFsPrincipal) {
             this.id = id;
-            this.name = Optional.ofNullable(CONTAINER_IDS_BY_NAME.inverse().get(id)).orElseGet(() -> Integer.toString(id));
+            this.name = Objects.requireNonNull(name);
             this.baseFsPrincipal = Objects.requireNonNull(baseFsPrincipal);
         }
 
@@ -113,23 +119,12 @@ class ContainerUserPrincipalLookupService extends UserPrincipalLookupService {
     }
 
     static final class ContainerUserPrincipal extends NamedPrincipal {
-        ContainerUserPrincipal(int id, UserPrincipal baseFsPrincipal) { super(id, baseFsPrincipal); }
+        private ContainerUserPrincipal(int id, String name, UserPrincipal baseFsPrincipal) { super(id, name, baseFsPrincipal); }
     }
 
     static final class ContainerGroupPrincipal extends NamedPrincipal implements GroupPrincipal {
-        ContainerGroupPrincipal(int id, GroupPrincipal baseFsPrincipal) { super(id, baseFsPrincipal); }
+        private ContainerGroupPrincipal(int id, String name, GroupPrincipal baseFsPrincipal) { super(id, name, baseFsPrincipal); }
 
         @Override public GroupPrincipal baseFsPrincipal() { return (GroupPrincipal) super.baseFsPrincipal(); }
-    }
-
-    private static int containerIdToHostId(int id, int idOffset) {
-        if (id < 0 || id > ID_RANGE)
-            throw new IllegalArgumentException("Invalid container id: " + id);
-        return idOffset + id;
-    }
-
-    private static int hostIdToContainerId(int id, int idOffset) {
-        id = id - idOffset;
-        return id < 0 || id >= ID_RANGE ? OVERFLOW_ID : id;
     }
 }

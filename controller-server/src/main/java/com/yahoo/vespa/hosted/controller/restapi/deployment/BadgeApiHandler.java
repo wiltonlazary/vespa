@@ -4,7 +4,7 @@ package com.yahoo.vespa.hosted.controller.restapi.deployment;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.jdisc.http.HttpRequest.Method;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.Path;
@@ -15,6 +15,7 @@ import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentStatus;
 import com.yahoo.vespa.hosted.controller.deployment.JobStatus;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 import com.yahoo.yolean.Exceptions;
 
 import java.io.IOException;
@@ -25,7 +26,6 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -36,7 +36,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * @author jonmv
  */
 @SuppressWarnings("unused") // Handler
-public class BadgeApiHandler extends LoggingRequestHandler {
+public class BadgeApiHandler extends ThreadedHttpRequestHandler {
 
     private final static Logger log = Logger.getLogger(BadgeApiHandler.class.getName());
 
@@ -59,8 +59,7 @@ public class BadgeApiHandler extends LoggingRequestHandler {
         } catch (IllegalArgumentException|IllegalStateException e) {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
         } catch (RuntimeException e) {
-            log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
-            return ErrorResponse.internalServerError(Exceptions.toMessageString(e));
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
 
@@ -81,16 +80,14 @@ public class BadgeApiHandler extends LoggingRequestHandler {
                               () -> {
                                   DeploymentStatus status = controller.jobController().deploymentStatus(controller.applications().requireApplication(TenantAndApplicationId.from(id)));
                                   Predicate<JobStatus> isDeclaredJob = job -> status.jobSteps().get(job.id()) != null && status.jobSteps().get(job.id()).isDeclared();
-                                  return Badges.overviewBadge(id,
-                                                              status.jobs().instance(id.instance()).matching(isDeclaredJob),
-                                                              controller.system());
+                                  return Badges.overviewBadge(id, status.jobs().instance(id.instance()).matching(isDeclaredJob));
                               });
     }
 
     /** Returns a URI which points to a history badge for the given application and job type. */
     private HttpResponse historyBadge(String tenant, String application, String instance, String jobName, String historyLength) {
         ApplicationId id = ApplicationId.from(tenant, application, instance);
-        JobType type = JobType.fromJobName(jobName);
+        JobType type = JobType.fromJobName(jobName, controller.zoneRegistry());
         int length = historyLength == null ? 5 : Math.min(32, Math.max(0, Integer.parseInt(historyLength)));
         return cachedResponse(new Key(id, type, length),
                               controller.clock().instant(),
@@ -135,7 +132,7 @@ public class BadgeApiHandler extends LoggingRequestHandler {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
             Key key = (Key) o;
-            return historyLength == key.historyLength && id.equals(key.id) && type == key.type;
+            return historyLength == key.historyLength && id.equals(key.id) && Objects.equals(type, key.type);
         }
 
         @Override

@@ -12,6 +12,7 @@ import com.yahoo.vespa.hosted.provision.autoscale.NodeTimeseries;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,15 +26,22 @@ import java.util.Set;
  */
 public class NodeRepoStats {
 
+    private final double totalCost;
+    private final double totalAllocatedCost;
     private final Load load;
     private final Load activeLoad;
     private final List<ApplicationStats> applicationStats;
 
-    private NodeRepoStats(Load load, Load activeLoad, List<ApplicationStats> applicationStats) {
+    private NodeRepoStats(double totalCost, double totalAllocatedCost, Load load, Load activeLoad, List<ApplicationStats> applicationStats) {
+        this.totalCost = totalCost;
+        this.totalAllocatedCost = totalAllocatedCost;
         this.load = load;
         this.activeLoad = activeLoad;
         this.applicationStats = List.copyOf(applicationStats);
     }
+
+    public double totalCost() { return totalCost; }
+    public double totalAllocatedCost() { return totalAllocatedCost; }
 
     /**
      * Returns the current average work-extracting utilization in this node repo over all nodes.
@@ -49,15 +57,19 @@ public class NodeRepoStats {
 
     public static NodeRepoStats computeOver(NodeRepository nodeRepository) {
         NodeList allNodes = nodeRepository.nodes().list();
-        List<NodeTimeseries> allNodeTimeseries = nodeRepository.metricsDb().getNodeTimeseries(Duration.ofHours(1), Set.of());
+        double totalCost = allNodes.hosts().stream().mapToDouble(host -> host.resources().cost()).sum();
+        double totalAllocatedCost = allNodes.not().hosts().stream()
+                                            .filter(node -> node.allocation().isPresent())
+                                            .mapToDouble(node -> node.resources().cost()).sum();
 
+        List<NodeTimeseries> allNodeTimeseries = nodeRepository.metricsDb().getNodeTimeseries(Duration.ofHours(1), Set.of());
         Pair<Load, Load> load = computeLoad(allNodes, allNodeTimeseries);
         List<ApplicationStats> applicationStats = computeApplicationStats(allNodes, allNodeTimeseries);
-        return new NodeRepoStats(load.getFirst(), load.getSecond(), applicationStats);
+        return new NodeRepoStats(totalCost, totalAllocatedCost, load.getFirst(), load.getSecond(), applicationStats);
     }
 
     private static Pair<Load, Load> computeLoad(NodeList allNodes, List<NodeTimeseries> allNodeTimeseries) {
-        NodeResources totalActiveResources = NodeResources.zero();
+        NodeResources totalActiveResources = NodeResources.zero().justNumbers();
         Load load = Load.zero();
         for (var nodeTimeseries : allNodeTimeseries) {
             Optional<Node> node = allNodes.node(nodeTimeseries.hostname());
@@ -66,13 +78,17 @@ public class NodeRepoStats {
             Optional<NodeMetricSnapshot> snapshot = nodeTimeseries.last();
             if (snapshot.isEmpty()) continue;
 
-            load = load.add(snapshot.get().load().multiply(node.get().resources()));
-            totalActiveResources = totalActiveResources.add(node.get().resources().justNumbers());
+            NodeResources resources = node.get().resources();
+
+            load = load.add(snapshot.get().load().multiply(resources));
+            totalActiveResources = totalActiveResources.add(resources.justNumbers());
         }
 
-        NodeResources totalHostResources = NodeResources.zero();
-        for (var host : allNodes.hosts())
+        NodeResources totalHostResources = NodeResources.zero().justNumbers();
+        for (var host : allNodes.hosts()) {
+
             totalHostResources = totalHostResources.add(host.resources().justNumbers());
+        }
 
         return new Pair<>(load.divide(totalHostResources), load.divide(totalActiveResources));
     }
@@ -86,8 +102,8 @@ public class NodeRepoStats {
                                             .not().tester()
                                             .groupingBy(node -> node.allocation().get().owner()).entrySet()) {
 
-            NodeResources totalResources = NodeResources.zero();
-            NodeResources totalUtilizedResources = NodeResources.zero();
+            NodeResources totalResources = NodeResources.zero().justNumbers();
+            NodeResources totalUtilizedResources = NodeResources.zero().justNumbers();
             for (var node : applicationNodes.getValue()) {
                 var snapshot = snapshotsByHost.get(node.hostname());
                 if (snapshot == null) continue;
@@ -111,12 +127,11 @@ public class NodeRepoStats {
         return snapshots;
     }
 
-    private static double divide(double a, double b) {
-        if (a == 0 && b == 0) return 0;
-        return a / b;
-    }
-
     public static class ApplicationStats implements Comparable<ApplicationStats> {
+
+        private static final Comparator<ApplicationStats> comparator = Comparator.comparingDouble(ApplicationStats::unutilizedCost).reversed()
+                                                                                 .thenComparingDouble(ApplicationStats::cost)
+                                                                                 .thenComparing(ApplicationStats::id);
 
         private final ApplicationId id;
         private final Load load;
@@ -144,7 +159,7 @@ public class NodeRepoStats {
 
         @Override
         public int compareTo(NodeRepoStats.ApplicationStats other) {
-            return -Double.compare(this.unutilizedCost(), other.unutilizedCost());
+            return comparator.compare(this, other);
         }
 
     }

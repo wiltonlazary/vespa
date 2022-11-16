@@ -124,7 +124,9 @@ handleReadError(const char *text, FastOS_FileInterface &file, ssize_t len, ssize
         e += fmt(" Truncate to %" PRId64 " and continue", lastKnownGoodPos);
         LOG(error, "%s", e.c_str());
         FastOS_File truncateFile(file.GetFileName());
-        file.Close();
+        if ( ! file.Close()) {
+            e += getError(file);
+        }
         if ( truncateFile.OpenWriteOnlyExisting()) {
             if (truncateFile.SetSize(lastKnownGoodPos)) {
                 if (truncateFile.Close()) {
@@ -164,7 +166,7 @@ DomainPart::readPacket(FastOS_FileInterface & transLog, SerialNumRange wanted, s
     Packet packet(targetSize);
     int64_t fSize(transLog.GetSize());
     int64_t currPos(transLog.GetPosition());
-    for(size_t i(0); (packet.sizeBytes() < targetSize) && (currPos < fSize) && (packet.range().to() < wanted.to()); i++) {
+    while ((packet.sizeBytes() < targetSize) && (currPos < fSize) && (packet.range().to() < wanted.to())) {
         IChunk::UP chunk;
         if (read(transLog, chunk, buf, allowTruncate)) {
             if (chunk) {
@@ -230,12 +232,12 @@ DomainPart::buildPacketMapping(bool allowTruncate)
         const int64_t firstPos(currPos);
         Packet packet = readPacket(transLog, all, TARGET_PACKET_SIZE, allowTruncate);
         if (!packet.empty()) {
-            _sz += packet.size();
+            set_size(size() + packet.size());
             const SerialNum firstSerial = packet.range().from();
             if (currPos == _headerLen) {
-                _range.from(firstSerial);
+                set_range_from(firstSerial);
             }
-            _range.to(packet.range().to());
+            set_range_to(packet.range().to());
             // Called only from constructor so no need to hold lock
             _skipList.emplace_back(firstSerial, firstPos);
         } else {
@@ -243,17 +245,15 @@ DomainPart::buildPacketMapping(bool allowTruncate)
         }
         currPos = transLog.GetPosition();
     }
-    transLog.Close();
     return currPos;
 }
 
-DomainPart::DomainPart(const string & name, const string & baseDir, SerialNum s, Encoding encoding,
-                       uint8_t compressionLevel, const FileHeaderContext &fileHeaderContext, bool allowTruncate)
-    : _encoding(encoding),
-      _compressionLevel(compressionLevel),
-      _lock(),
+DomainPart::DomainPart(const string & name, const string & baseDir, SerialNum s,
+                       const FileHeaderContext &fileHeaderContext, bool allowTruncate)
+    : _lock(),
       _fileLock(),
-      _range(s),
+      _range_from(s),
+      _range_to(s ? s - 1 : s),
       _sz(0),
       _byteSize(0),
       _fileName(fmt("%s/%s-%016" PRIu64, baseDir.c_str(), name.c_str(), s)),
@@ -296,7 +296,7 @@ DomainPart::DomainPart(const string & name, const string & baseDir, SerialNum s,
                                 _transLog->GetFileName(), _transLog->GetSize()));
     }
     handleSync(*_transLog);
-    _writtenSerial = _range.to();
+    _writtenSerial = get_range_to();
     _syncedSerial = _writtenSerial;
     assert(int64_t(byteSize()) == _transLog->GetSize());
     assert(int64_t(byteSize()) == _transLog->GetPosition());
@@ -369,48 +369,34 @@ bool
 DomainPart::erase(SerialNum to)
 {
     bool retval(true);
-    if (to > _range.to()) {
+    if (to > get_range_to()) {
         close();
         _transLog->Delete();
     } else {
-        _range.from(std::max(to, _range.from()));
+        auto range_from = get_range_from();
+        if (to > range_from) {
+            set_range_from(to);
+        }
     }
     return retval;
 }
 
 void
-DomainPart::commit(SerialNum firstSerial, const Packet &packet)
+DomainPart::commit(const SerializedChunk & serialized)
 {
+    SerialNumRange range = serialized.range();
+
     int64_t firstPos(byteSize());
-    nbostream_longlivedbuf h(packet.getHandle().data(), packet.getHandle().size());
-    if (_range.from() == 0) {
-        _range.from(firstSerial);
+    assert(get_range_to() < range.to());
+    set_size(size() + serialized.getNumEntries());
+    set_range_to(range.to());
+    if (get_range_from() == 0) {
+        set_range_from(range.from());
     }
-    IChunk::UP chunk = IChunk::create(_encoding, _compressionLevel);
-    for (size_t i(0); h.size() > 0; i++) {
-        //LOG(spam,
-        //"Pos(%d) Len(%d), Lim(%d), Remaining(%d)",
-        //h.getPos(), h.getLength(), h.getLimit(), h.getRemaining());
-        Packet::Entry entry;
-        entry.deserialize(h);
-        if (_range.to() < entry.serial()) {
-            chunk->add(entry);
-            if (_encoding.getCompression() == Encoding::Compression::none) {
-                write(*_transLog, *chunk);
-                chunk = IChunk::create(_encoding, _compressionLevel);
-            }
-            _sz++;
-            _range.to(entry.serial());
-        } else {
-            throw runtime_error(fmt("Incoming serial number(%" PRIu64 ") must be bigger than the last one (%" PRIu64 ").",
-                                    entry.serial(), _range.to()));
-        }
-    }
-    if ( ! chunk->getEntries().empty()) {
-        write(*_transLog, *chunk);
-    }
+
+    write(*_transLog, range, serialized.getData());
     std::lock_guard guard(_lock);
-    _skipList.emplace_back(firstSerial, firstPos);
+    _skipList.emplace_back(range.from(), firstPos);
 }
 
 void
@@ -445,26 +431,16 @@ DomainPart::visit(FastOS_FileInterface &file, SerialNumRange &r, Packet &packet)
 }
 
 void
-DomainPart::write(FastOS_FileInterface &file, const IChunk & chunk)
+DomainPart::write(FastOS_FileInterface &file, SerialNumRange range, vespalib::ConstBufferRef buf)
 {
-    nbostream os;
-    size_t begin = os.wp();
-    os << _encoding.getRaw();  // Placeholder for encoding
-    os << uint32_t(0);         // Placeholder for size
-    Encoding realEncoding = chunk.encode(os);
-    size_t end = os.wp();
-    os.wp(0);
-    os << realEncoding.getRaw();  //Patching real encoding
-    os << uint32_t(end - (begin + sizeof(uint32_t) + sizeof(uint8_t))); // Patching actual size.
-    os.wp(end);
     std::lock_guard guard(_writeLock);
-    if ( ! file.CheckedWrite(os.data(), os.size()) ) {
-        throw runtime_error(handleWriteError("Failed writing the entry.", file, byteSize(), chunk.range(), os.size()));
+    size_t written = file.Write2(buf.data(), buf.size());
+    if ( written != buf.size() ) {
+        throw runtime_error(handleWriteError("Failed writing the entry.", file, byteSize(), range, buf.size()));
     }
-    LOG(debug, "Wrote chunk with %zu entries and %zu bytes, range[%" PRIu64 ", %" PRIu64 "] encoding(wanted=%x, real=%x)",
-        chunk.getEntries().size(), os.size(), chunk.range().from(), chunk.range().to(), _encoding.getRaw(), realEncoding.getRaw());
-    _writtenSerial = chunk.range().to();
-    _byteSize.fetch_add(os.size(), std::memory_order_release);
+    LOG(debug, "Wrote chunk with and %zu bytes, range[%" PRIu64 ", %" PRIu64 "]", buf.size(), range.from(), range.to());
+    _writtenSerial = range.to();
+    _byteSize.fetch_add(buf.size(), std::memory_order_release);
 }
 
 bool

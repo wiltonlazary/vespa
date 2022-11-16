@@ -2,6 +2,7 @@
 #include "summaryengine.h"
 #include <vespa/vespalib/data/slime/slime.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/cpu_usage.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.summaryengine.summaryengine");
@@ -10,6 +11,7 @@ using namespace search::engine;
 using namespace proton;
 using vespalib::Memory;
 using vespalib::slime::Inspector;
+using vespalib::CpuUsage;
 
 namespace {
 
@@ -59,8 +61,9 @@ SummaryEngine::SummaryEngine(size_t numThreads, bool async)
     : _lock(),
       _async(async),
       _closed(false),
+      _forward_issues(true),
       _handlers(),
-      _executor(numThreads, 128_Ki, summary_engine_executor),
+      _executor(numThreads, 128_Ki, CpuUsage::wrap(summary_engine_executor, CpuUsage::Category::READ)),
       _metrics(std::make_unique<DocsumMetrics>())
 { }
 
@@ -140,12 +143,21 @@ SummaryEngine::getDocsums(DocsumRequest::UP req)
             }
         }
         updateDocsumMetrics(vespalib::to_s(req->getTimeUsed()), getNumDocs(*reply));
+        if (req->expired()) {
+            vespalib::Issue::report("docsum request timed out; results may be incomplete");
+        }
     }
     if (! reply) {
         reply = std::make_unique<DocsumReply>();
     }
     reply->setRequest(std::move(req));
-    reply->setIssues(std::move(my_issues));
+    if (_forward_issues) {
+        reply->setIssues(std::move(my_issues));
+    } else {
+        my_issues->for_each_message([](const auto &msg){
+            LOG(warning, "unhandled issue: %s", msg.c_str());
+        });
+    }
     return reply;
 }
 

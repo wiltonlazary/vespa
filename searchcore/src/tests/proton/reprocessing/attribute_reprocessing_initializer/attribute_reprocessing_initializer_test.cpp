@@ -11,8 +11,11 @@
 #include <vespa/searchcore/proton/reprocessing/i_reprocessing_handler.h>
 #include <vespa/searchcore/proton/test/attribute_utils.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/test/directory_handler.h>
+#include <vespa/searchlib/attribute/attributevector.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/gtest/gtest.h>
 #include <vespa/vespalib/test/insertion_operators.h>
 #include <vespa/vespalib/util/foreground_thread_executor.h>
@@ -93,7 +96,8 @@ MyConfig::MyConfig()
       _shared(),
       _hwInfo(),
       _mgr(new AttributeManager(TEST_DIR, "test.subdb", TuneFileAttributes(),
-                                _fileHeaderContext, _attributeFieldWriter, _shared, _hwInfo)),
+                                _fileHeaderContext, std::make_shared<search::attribute::Interlock>(),
+                                _attributeFieldWriter, _shared, _hwInfo)),
       _schema()
 {}
 MyConfig::~MyConfig() = default;
@@ -149,7 +153,8 @@ public:
           _attributeFieldWriter(),
           _shared(),
           _hwInfo(),
-          _mgr(new AttributeManager(TEST_DIR, "test.subdb", TuneFileAttributes(), _fileHeaderContext,
+          _mgr(new AttributeManager(TEST_DIR, "test.subdb", TuneFileAttributes(),
+                                    _fileHeaderContext, std::make_shared<search::attribute::Interlock>(),
                                     _attributeFieldWriter, _shared, _hwInfo)),
           _oldCfg(),
           _newCfg(),
@@ -302,7 +307,7 @@ TEST(InterruptedTest, require_that_added_attribute_aspect_with_flushed_attribute
         auto writer = dir->getWriter();
         writer->createInvalidSnapshot(INIT_SERIAL_NUM);
         auto snapshotdir = writer->getSnapshotDir(INIT_SERIAL_NUM);
-        vespalib::mkdir(snapshotdir);
+        std::filesystem::create_directory(std::filesystem::path(snapshotdir));
         writer->markValidSnapshot(INIT_SERIAL_NUM);
         auto av = AttributeFactory::createAttribute(snapshotdir + "/a",
                                                     Config(BasicType::STRING));

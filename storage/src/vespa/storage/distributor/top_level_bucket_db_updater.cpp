@@ -7,6 +7,7 @@
 #include "top_level_distributor.h"
 #include "distributor_bucket_space.h"
 #include "distributormetricsset.h"
+#include "node_supported_features_repo.h"
 #include "simpleclusterinformation.h"
 #include "stripe_access_guard.h"
 #include <vespa/document/bucket/fixed_bucket_spaces.h>
@@ -47,11 +48,12 @@ TopLevelBucketDBUpdater::TopLevelBucketDBUpdater(const DistributorNodeContext& n
       _chained_sender(chained_sender),
       _outdated_nodes_map(),
       _transition_timer(_node_ctx.clock()),
+      _node_supported_features_repo(std::make_shared<const NodeSupportedFeaturesRepo>()),
       _stale_reads_enabled(false)
 {
     // FIXME STRIPE top-level Distributor needs a proper way to track the current cluster state bundle!
     propagate_active_state_bundle_internally(true); // We're just starting up so assume ownership transfer.
-    bootstrap_distribution_config(bootstrap_distribution);
+    bootstrap_distribution_config(std::move(bootstrap_distribution));
 }
 
 TopLevelBucketDBUpdater::~TopLevelBucketDBUpdater() = default;
@@ -309,14 +311,12 @@ bool
 TopLevelBucketDBUpdater::onRequestBucketInfoReply(
         const std::shared_ptr<api::RequestBucketInfoReply>& repl)
 {
-    if (pending_cluster_state_accepted(repl)) {
-        return true;
-    }
-    return false;
+    attempt_accept_reply_by_current_pending_state(repl);
+    return true;
 }
 
-bool
-TopLevelBucketDBUpdater::pending_cluster_state_accepted(
+void
+TopLevelBucketDBUpdater::attempt_accept_reply_by_current_pending_state(
         const std::shared_ptr<api::RequestBucketInfoReply>& repl)
 {
     if (_pending_cluster_state.get()
@@ -326,11 +326,14 @@ TopLevelBucketDBUpdater::pending_cluster_state_accepted(
             auto guard = _stripe_accessor.rendezvous_and_hold_all();
             process_completed_pending_cluster_state(*guard);
         }
-        return true;
+    } else {
+        // Reply is not recognized, so its corresponding command must have been
+        // sent by a previous, preempted cluster state. We must still swallow the
+        // reply to prevent it from being passed further down a storage chain that
+        // does not expect it.
+        LOG(spam, "Reply %s was not accepted by pending cluster state",
+            repl->toString().c_str());
     }
-    LOG(spam, "Reply %s was not accepted by pending cluster state",
-        repl->toString().c_str());
-    return false;
 }
 
 void
@@ -392,6 +395,10 @@ TopLevelBucketDBUpdater::activate_pending_cluster_state(StripeAccessGuard& guard
         // initiated by the cluster controller!
         guard.notify_distribution_change_enabled();
     }
+
+    _node_supported_features_repo = _node_supported_features_repo->make_union_of(
+            _pending_cluster_state->gathered_node_supported_features());
+    guard.update_node_supported_features_repo(_node_supported_features_repo);
 
     guard.update_read_snapshot_after_activation(_pending_cluster_state->getNewClusterStateBundle());
     _pending_cluster_state.reset();

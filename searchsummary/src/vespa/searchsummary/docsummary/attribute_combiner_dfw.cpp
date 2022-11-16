@@ -18,7 +18,7 @@ namespace search::docsummary {
 
 AttributeCombinerDFW::AttributeCombinerDFW(const vespalib::string &fieldName, bool filter_elements,
                                            std::shared_ptr<MatchingElementsFields> matching_elems_fields)
-    : ISimpleDFW(),
+    : SimpleDFW(),
       _stateIndex(0),
       _filter_elements(filter_elements),
       _fieldName(fieldName),
@@ -29,25 +29,19 @@ AttributeCombinerDFW::AttributeCombinerDFW(const vespalib::string &fieldName, bo
 AttributeCombinerDFW::~AttributeCombinerDFW() = default;
 
 bool
-AttributeCombinerDFW::IsGenerated() const
-{
-    return true;
-}
-
-bool
 AttributeCombinerDFW::setFieldWriterStateIndex(uint32_t fieldWriterStateIndex)
 {
     _stateIndex = fieldWriterStateIndex;
     return true;
 }
 
-std::unique_ptr<IDocsumFieldWriter>
+std::unique_ptr<DocsumFieldWriter>
 AttributeCombinerDFW::create(const vespalib::string &fieldName, IAttributeContext &attrCtx, bool filter_elements,
                              std::shared_ptr<MatchingElementsFields> matching_elems_fields)
 {
     StructFieldsResolver structFields(fieldName, attrCtx, true);
     if (structFields.has_error()) {
-        return std::unique_ptr<IDocsumFieldWriter>();
+        return {};
     } else if (structFields.is_map_of_struct()) {
         return std::make_unique<StructMapAttributeCombinerDFW>(fieldName, structFields, filter_elements, std::move(matching_elems_fields));
     }
@@ -55,15 +49,15 @@ AttributeCombinerDFW::create(const vespalib::string &fieldName, IAttributeContex
 }
 
 void
-AttributeCombinerDFW::insertField(uint32_t docid, GetDocsumsState *state, ResType, vespalib::slime::Inserter &target)
+AttributeCombinerDFW::insertField(uint32_t docid, GetDocsumsState& state, vespalib::slime::Inserter &target) const
 {
-    auto &fieldWriterState = state->_fieldWriterStates[_stateIndex];
+    auto& fieldWriterState = state._fieldWriterStates[_stateIndex];
     if (!fieldWriterState) {
         const MatchingElements *matching_elements = nullptr;
         if (_filter_elements) {
-            matching_elements = &state->get_matching_elements(*_matching_elems_fields);
+            matching_elements = &state.get_matching_elements(*_matching_elems_fields);
         }
-        fieldWriterState = allocFieldWriterState(*state->_attrCtx, matching_elements);
+        fieldWriterState = allocFieldWriterState(*state._attrCtx, state.get_stash(), matching_elements);
     }
     fieldWriterState->insertField(docid, target);
 }

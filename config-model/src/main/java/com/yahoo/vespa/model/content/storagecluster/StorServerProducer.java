@@ -1,22 +1,19 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.content.storagecluster;
 
-import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.vespa.config.content.core.StorServerConfig;
-import com.yahoo.vespa.model.content.cluster.ContentCluster;
 import com.yahoo.vespa.model.builder.xml.dom.ModelElement;
-
-import java.util.Optional;
+import com.yahoo.vespa.model.content.cluster.ContentCluster;
 
 /**
  * Serves config for stor-server for storage clusters (clusters of storage nodes).
  */
 public class StorServerProducer implements StorServerConfig.Producer {
     public static class Builder {
-        StorServerProducer build(ModelContext.Properties properties, ModelElement element) {
+        StorServerProducer build(ModelElement element) {
             ModelElement tuning = element.child("tuning");
 
-            StorServerProducer producer = new StorServerProducer(ContentCluster.getClusterId(element), properties.featureFlags());
+            StorServerProducer producer = new StorServerProducer(ContentCluster.getClusterId(element));
             if (tuning == null) return producer;
 
             ModelElement merges = tuning.child("merges");
@@ -28,11 +25,9 @@ public class StorServerProducer implements StorServerConfig.Producer {
         }
     }
 
-    private String clusterName;
+    private final String clusterName;
     private Integer maxMergesPerNode;
     private Integer queueSize;
-    private Integer bucketDBStripeBits;
-    private Boolean ignoreMergeQueueLimit;
 
     private StorServerProducer setMaxMergesPerNode(Integer value) {
         if (value != null) {
@@ -46,16 +41,9 @@ public class StorServerProducer implements StorServerConfig.Producer {
         }
         return this;
     }
-    private StorServerProducer setBucketDBStripeBits(Integer value) {
-        bucketDBStripeBits = value;
-        return this;
-    }
 
-    StorServerProducer(String clusterName, ModelContext.FeatureFlags featureFlags) {
+    StorServerProducer(String clusterName) {
         this.clusterName = clusterName;
-        maxMergesPerNode = featureFlags.maxConcurrentMergesPerNode();
-        queueSize = featureFlags.maxMergeQueueSize();
-        ignoreMergeQueueLimit = featureFlags.ignoreMergeQueueLimit();
     }
 
     @Override
@@ -71,12 +59,6 @@ public class StorServerProducer implements StorServerConfig.Producer {
         }
         if (queueSize != null) {
             builder.max_merge_queue_size(queueSize);
-        }
-        if (bucketDBStripeBits != null) {
-            builder.content_node_bucket_db_stripe_bits(bucketDBStripeBits);
-        }
-        if (ignoreMergeQueueLimit != null) {
-            builder.disable_queue_limits_for_chained_merges(ignoreMergeQueueLimit);
         }
     }
 }

@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.clustercontroller.apps.clustercontroller;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ClusterInfoConfig;
 import java.util.logging.Level;
 import com.yahoo.vespa.clustercontroller.apputil.communication.http.JDiscHttpRequestHandler;
@@ -15,6 +15,7 @@ import java.util.TreeMap;
 import java.util.logging.Logger;
 
 public class StateRestApiV2Handler extends JDiscHttpRequestHandler {
+
     private static final Logger log = Logger.getLogger(StateRestApiV2Handler.class.getName());
 
     @Inject

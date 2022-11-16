@@ -3,9 +3,10 @@
 #include "ranksetup.h"
 #include "indexproperties.h"
 #include "featurenameparser.h"
+#include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/vespalib/stllike/asciistream.h>
 
-#include <vespa/log/log.h>
-LOG_SETUP(".fef.ranksetup");
+using vespalib::make_string_short::fmt;
 
 namespace {
 class VisitorAdapter : public search::fef::IDumpFeatureVisitor
@@ -21,21 +22,20 @@ public:
 } // namespace <unnamed>
 
 namespace search::fef {
-    
-using namespace indexproperties;    
+
+using namespace indexproperties;
 
 RankSetup::RankSetup(const BlueprintFactory &factory, const IIndexEnvironment &indexEnv)
     : _factory(factory),
       _indexEnv(indexEnv),
       _first_phase_resolver(std::make_shared<BlueprintResolver>(factory, indexEnv)),
       _second_phase_resolver(std::make_shared<BlueprintResolver>(factory, indexEnv)),
+      _match_resolver(std::make_shared<BlueprintResolver>(factory, indexEnv)),
       _summary_resolver(std::make_shared<BlueprintResolver>(factory, indexEnv)),
       _dumpResolver(std::make_shared<BlueprintResolver>(factory, indexEnv)),
       _firstPhaseRankFeature(),
       _secondPhaseRankFeature(),
       _degradationAttribute(),
-      _split_unpacking_iterators(false),
-      _delay_unpacking_iterators(false),
       _termwise_limit(1.0),
       _numThreads(0),
       _minHitsPerThread(0),
@@ -49,8 +49,11 @@ RankSetup::RankSetup(const BlueprintFactory &factory, const IIndexEnvironment &i
       _degradationSamplePercentage(0.2),
       _degradationPostFilterMultiplier(1.0),
       _rankScoreDropLimit(0),
+      _match_features(),
       _summaryFeatures(),
       _dumpFeatures(),
+      _warnings(),
+      _feature_rename_map(),
       _ignoreDefaultRankFeatures(false),
       _compiled(false),
       _compileError(false),
@@ -62,12 +65,13 @@ RankSetup::RankSetup(const BlueprintFactory &factory, const IIndexEnvironment &i
       _softTimeoutEnabled(false),
       _softTimeoutTailCost(0.1),
       _softTimeoutFactor(0.5),
-      _nearest_neighbor_brute_force_limit(0.05),
       _global_filter_lower_limit(0.0),
       _global_filter_upper_limit(1.0),
-      _executeOnMatch(),
-      _executeOnReRank(),
-      _executeOnSummary()
+      _mutateOnMatch(),
+      _mutateOnFirstPhase(),
+      _mutateOnSecondPhase(),
+      _mutateOnSummary(),
+      _mutateAllowQueryOverride(false)
 { }
 
 RankSetup::~RankSetup() = default;
@@ -77,6 +81,9 @@ RankSetup::configure()
 {
     setFirstPhaseRank(rank::FirstPhase::lookup(_indexEnv.getProperties()));
     setSecondPhaseRank(rank::SecondPhase::lookup(_indexEnv.getProperties()));
+    for (const auto &feature: match::Feature::lookup(_indexEnv.getProperties())) {
+        add_match_feature(feature);
+    }
     std::vector<vespalib::string> summaryFeatures = summary::Feature::lookup(_indexEnv.getProperties());
     for (const auto & feature : summaryFeatures) {
         addSummaryFeature(feature);
@@ -86,8 +93,9 @@ RankSetup::configure()
     for (const auto & feature : dumpFeatures) {
         addDumpFeature(feature);
     }
-    split_unpacking_iterators(matching::SplitUnpackingIterators::check(_indexEnv.getProperties()));
-    delay_unpacking_iterators(matching::DelayUnpackingIterators::check(_indexEnv.getProperties()));
+    for (const auto & rename : feature_rename::Rename::lookup(_indexEnv.getProperties())) {
+        _feature_rename_map[rename.first] = rename.second;
+    }
     set_termwise_limit(matching::TermwiseLimit::lookup(_indexEnv.getProperties()));
     setNumThreadsPerSearch(matching::NumThreadsPerSearch::lookup(_indexEnv.getProperties()));
     setMinHitsPerThread(matching::MinHitsPerThread::lookup(_indexEnv.getProperties()));
@@ -110,57 +118,75 @@ RankSetup::configure()
     setSoftTimeoutEnabled(softtimeout::Enabled::lookup(_indexEnv.getProperties()));
     setSoftTimeoutTailCost(softtimeout::TailCost::lookup(_indexEnv.getProperties()));
     setSoftTimeoutFactor(softtimeout::Factor::lookup(_indexEnv.getProperties()));
-    set_nearest_neighbor_brute_force_limit(matching::NearestNeighborBruteForceLimit::lookup(_indexEnv.getProperties()));
     set_global_filter_lower_limit(matching::GlobalFilterLowerLimit::lookup(_indexEnv.getProperties()));
     set_global_filter_upper_limit(matching::GlobalFilterUpperLimit::lookup(_indexEnv.getProperties()));
-    _executeOnMatch._attribute = execute::onmatch::Attribute::lookup(_indexEnv.getProperties());
-    _executeOnMatch._operation = execute::onmatch::Operation::lookup(_indexEnv.getProperties());
-    _executeOnReRank._attribute = execute::onrerank::Attribute::lookup(_indexEnv.getProperties());
-    _executeOnReRank._operation = execute::onrerank::Operation::lookup(_indexEnv.getProperties());
-    _executeOnSummary._attribute = execute::onsummary::Attribute::lookup(_indexEnv.getProperties());
-    _executeOnSummary._operation = execute::onsummary::Operation::lookup(_indexEnv.getProperties());
+    _mutateOnMatch._attribute = mutate::on_match::Attribute::lookup(_indexEnv.getProperties());
+    _mutateOnMatch._operation = mutate::on_match::Operation::lookup(_indexEnv.getProperties());
+    _mutateOnFirstPhase._attribute = mutate::on_first_phase::Attribute::lookup(_indexEnv.getProperties());
+    _mutateOnFirstPhase._operation = mutate::on_first_phase::Operation::lookup(_indexEnv.getProperties());
+    _mutateOnSecondPhase._attribute = mutate::on_second_phase::Attribute::lookup(_indexEnv.getProperties());
+    _mutateOnSecondPhase._operation = mutate::on_second_phase::Operation::lookup(_indexEnv.getProperties());
+    _mutateOnSummary._attribute = mutate::on_summary::Attribute::lookup(_indexEnv.getProperties());
+    _mutateOnSummary._operation = mutate::on_summary::Operation::lookup(_indexEnv.getProperties());
+    _mutateAllowQueryOverride = mutate::AllowQueryOverride::check(_indexEnv.getProperties());
 }
 
 void
 RankSetup::setFirstPhaseRank(const vespalib::string &featureName)
 {
-    LOG_ASSERT(!_compiled);
+    assert(!_compiled);
     _firstPhaseRankFeature = featureName;
 }
 
 void
 RankSetup::setSecondPhaseRank(const vespalib::string &featureName)
 {
-    LOG_ASSERT(!_compiled);
+    assert(!_compiled);
     _secondPhaseRankFeature = featureName;
+}
+
+void
+RankSetup::add_match_feature(const vespalib::string &match_feature)
+{
+    assert(!_compiled);
+    _match_features.push_back(match_feature);
 }
 
 void
 RankSetup::addSummaryFeature(const vespalib::string &summaryFeature)
 {
-    LOG_ASSERT(!_compiled);
+    assert(!_compiled);
     _summaryFeatures.push_back(summaryFeature);
 }
 
 void
 RankSetup::addDumpFeature(const vespalib::string &dumpFeature)
 {
-    LOG_ASSERT(!_compiled);
+    assert(!_compiled);
     _dumpFeatures.push_back(dumpFeature);
 }
 
+void
+RankSetup::compileAndCheckForErrors(BlueprintResolver &bpr) {
+    bool ok = bpr.compile();
+    if ( ! ok ) {
+        _compileError = true;
+        const auto & warnings = bpr.getWarnings();
+        _warnings.insert(_warnings.end(), warnings.begin(), warnings.end());
+    }
+}
 bool
 RankSetup::compile()
 {
-    LOG_ASSERT(!_compiled);
+    assert(!_compiled);
     if (!_firstPhaseRankFeature.empty()) {
         FeatureNameParser parser(_firstPhaseRankFeature);
         if (parser.valid()) {
             _firstPhaseRankFeature = parser.featureName();
             _first_phase_resolver->addSeed(_firstPhaseRankFeature);
         } else {
-            LOG(warning, "invalid feature name for initial rank: '%s'",
-                _firstPhaseRankFeature.c_str());
+            vespalib::string e = fmt("invalid feature name for initial rank: '%s'", _firstPhaseRankFeature.c_str());
+            _warnings.emplace_back(e);
             _compileError = true;
         }
     }
@@ -170,10 +196,13 @@ RankSetup::compile()
             _secondPhaseRankFeature = parser.featureName();
             _second_phase_resolver->addSeed(_secondPhaseRankFeature);
         } else {
-            LOG(warning, "invalid feature name for final rank: '%s'",
-                _secondPhaseRankFeature.c_str());
+            vespalib::string e = fmt("invalid feature name for final rank: '%s'", _secondPhaseRankFeature.c_str());
+            _warnings.emplace_back(e);
             _compileError = true;
         }
+    }
+    for (const auto &feature: _match_features) {
+        _match_resolver->addSeed(feature);
     }
     for (const auto & feature :_summaryFeatures) {
         _summary_resolver->addSeed(feature);
@@ -186,11 +215,12 @@ RankSetup::compile()
         _dumpResolver->addSeed(feature);
     }
     _indexEnv.hintFeatureMotivation(IIndexEnvironment::RANK);
-    _compileError |= !_first_phase_resolver->compile();
-    _compileError |= !_second_phase_resolver->compile();
-    _compileError |= !_summary_resolver->compile();
+    compileAndCheckForErrors(*_first_phase_resolver);
+    compileAndCheckForErrors(*_second_phase_resolver);
+    compileAndCheckForErrors(*_match_resolver);
+    compileAndCheckForErrors(*_summary_resolver);
     _indexEnv.hintFeatureMotivation(IIndexEnvironment::DUMP);
-    _compileError |= !_dumpResolver->compile();
+    compileAndCheckForErrors(*_dumpResolver);
     _compiled = true;
     return !_compileError;
 }
@@ -198,16 +228,28 @@ RankSetup::compile()
 void
 RankSetup::prepareSharedState(const IQueryEnvironment &queryEnv, IObjectStore &objectStore) const
 {
-    LOG_ASSERT(_compiled && !_compileError);
+    assert(_compiled && !_compileError);
     for (const auto &spec : _first_phase_resolver->getExecutorSpecs()) {
         spec.blueprint->prepareSharedState(queryEnv, objectStore);
     }
     for (const auto &spec : _second_phase_resolver->getExecutorSpecs()) {
         spec.blueprint->prepareSharedState(queryEnv, objectStore);
     }
+    for (const auto &spec : _match_resolver->getExecutorSpecs()) {
+        spec.blueprint->prepareSharedState(queryEnv, objectStore);
+    }
     for (const auto &spec : _summary_resolver->getExecutorSpecs()) {
         spec.blueprint->prepareSharedState(queryEnv, objectStore);
     }
+}
+
+vespalib::string
+RankSetup::getJoinedWarnings() const {
+    vespalib::asciistream os;
+    for (const auto & m : _warnings) {
+        os << m << "\n";
+    }
+    return os.str();
 }
 
 }

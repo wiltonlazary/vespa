@@ -4,6 +4,7 @@
 #include <vespa/searchcore/proton/server/bucketmovejob.h>
 #include <vespa/searchcore/proton/server/executor_thread_service.h>
 #include <vespa/searchcore/proton/server/document_db_maintenance_config.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/persistence/dummyimpl/dummy_bucket_executor.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/util/lambdatask.h>
@@ -23,6 +24,8 @@ using storage::spi::BucketInfo;
 using BlockedReason = IBlockableMaintenanceJob::BlockedReason;
 using MoveOperationVector = std::vector<MoveOperation>;
 using storage::spi::dummy::DummyBucketExecutor;
+using vespalib::MonitoredRefCount;
+using vespalib::RetainGuard;
 using vespalib::ThreadStackExecutor;
 
 struct ControllerFixtureBase : public ::testing::Test
@@ -33,20 +36,20 @@ struct ControllerFixtureBase : public ::testing::Test
     test::BucketHandler         _bucketHandler;
     MyBucketModifiedHandler     _modifiedHandler;
     std::shared_ptr<bucketdb::BucketDBOwner> _bucketDB;
-    MySubDb                     _ready;
-    MySubDb                     _notReady;
-    BucketCreateNotifier        _bucketCreateNotifier;
-    test::DiskMemUsageNotifier  _diskMemUsageNotifier;
-    MonitoredRefCount           _refCount;
-    ThreadStackExecutor         _singleExecutor;
-    ExecutorThreadService       _master;
-    DummyBucketExecutor         _bucketExecutor;
-    MyMoveHandler               _moveHandler;
-    DocumentDBTaggedMetrics     _metrics;
+    MySubDb                         _ready;
+    MySubDb                         _notReady;
+    BucketCreateNotifier            _bucketCreateNotifier;
+    test::DiskMemUsageNotifier      _diskMemUsageNotifier;
+    MonitoredRefCount               _refCount;
+    ThreadStackExecutor             _singleExecutor;
+    SyncableExecutorThreadService   _master;
+    DummyBucketExecutor             _bucketExecutor;
+    MyMoveHandler                   _moveHandler;
+    DocumentDBTaggedMetrics         _metrics;
     std::shared_ptr<BucketMoveJob>  _bmj;
-    MyCountJobRunner            _runner;
+    MyCountJobRunner                _runner;
     ControllerFixtureBase(const BlockableMaintenanceJobConfig &blockableConfig, bool storeMoveDoneContexts);
-    ~ControllerFixtureBase();
+    ~ControllerFixtureBase() override;
     ControllerFixtureBase &addReady(const BucketId &bucket) {
         _calc->addReady(bucket);
         return *this;
@@ -139,7 +142,7 @@ const BlockableMaintenanceJobConfig BLOCKABLE_CONFIG(RESOURCE_LIMIT_FACTOR, MAX_
 
 struct ControllerFixture : public ControllerFixtureBase
 {
-    ControllerFixture(const BlockableMaintenanceJobConfig &blockableConfig = BLOCKABLE_CONFIG)
+    explicit ControllerFixture(const BlockableMaintenanceJobConfig &blockableConfig = BLOCKABLE_CONFIG)
         : ControllerFixtureBase(blockableConfig, blockableConfig.getMaxOutstandingMoveOps() != MAX_OUTSTANDING_OPS)
     {
         _builder.createDocs(1, 1, 4); // 3 docs
@@ -292,7 +295,7 @@ TEST_F(ControllerFixture, require_that_we_move_buckets_in_several_steps)
     EXPECT_EQ(0, numPending());
     EXPECT_EQ(7u, docsMoved().size());
     EXPECT_EQ(3u, bucketsModified().size());
-    EXPECT_EQ(_ready.bucket(2), bucketsModified()[0]);
+    ASSERT_EQ(_ready.bucket(2), bucketsModified()[0]);
     EXPECT_EQ(_notReady.bucket(3), bucketsModified()[1]);
     EXPECT_EQ(_notReady.bucket(4), bucketsModified()[2]);
 }
@@ -430,9 +433,9 @@ TEST_F(ControllerFixture, require_that_de_activated_bucket_is_not_moved_if_new_c
 
 TEST_F(ControllerFixture, ready_bucket_not_moved_to_not_ready_if_node_is_marked_as_retired)
 {
-    _calc->setNodeRetired(true);
     // Bucket 2 would be moved from ready to not ready in a non-retired case, but not when retired.
-    addReady(_ready.bucket(1));
+    remReady(_ready.bucket(1));
+    _calc->setNodeRetired(true);
     masterExecute([this]() {
         _bmj->recompute();
         _bmj->scanAndMove(4, 3);
@@ -446,10 +449,10 @@ TEST_F(ControllerFixture, ready_bucket_not_moved_to_not_ready_if_node_is_marked_
 // but test this case for the sake of completion.
 TEST_F(ControllerFixture, inactive_not_ready_bucket_not_moved_to_ready_if_node_is_marked_as_retired)
 {
+    remReady(_ready.bucket(1));
+    remReady(_ready.bucket(2));
+    remReady(_notReady.bucket(3));
     _calc->setNodeRetired(true);
-    addReady(_ready.bucket(1));
-    addReady(_ready.bucket(2));
-    addReady(_notReady.bucket(3));
     masterExecute([this]() {
         _bmj->recompute();
         _bmj->scanAndMove(4, 3);
@@ -459,12 +462,12 @@ TEST_F(ControllerFixture, inactive_not_ready_bucket_not_moved_to_ready_if_node_i
     EXPECT_EQ(0u, docsMoved().size());
 }
 
-TEST_F(ControllerFixture, explicitly_active_not_ready_bucket_can_be_moved_to_ready_even_if_node_is_marked_as_retired)
+TEST_F(ControllerFixture, explicitly_active_not_ready_bucket_can_not_be_moved_to_ready_if_node_is_marked_as_retired)
 {
+    remReady(_ready.bucket(1));
+    remReady(_ready.bucket(2));
+    remReady(_notReady.bucket(3));
     _calc->setNodeRetired(true);
-    addReady(_ready.bucket(1));
-    addReady(_ready.bucket(2));
-    addReady(_notReady.bucket(3));
     _bmj->recompute();
     masterExecute([this]() {
         activateBucket(_notReady.bucket(3));
@@ -472,13 +475,56 @@ TEST_F(ControllerFixture, explicitly_active_not_ready_bucket_can_be_moved_to_rea
         EXPECT_TRUE(_bmj->done());
     });
     sync();
-    ASSERT_EQ(2u, docsMoved().size());
-    assertEqual(_notReady.bucket(3), _notReady.docs(3)[0], 2, 1, docsMoved()[0]);
-    assertEqual(_notReady.bucket(3), _notReady.docs(3)[1], 2, 1, docsMoved()[1]);
-    ASSERT_EQ(1u, bucketsModified().size());
-    EXPECT_EQ(_notReady.bucket(3), bucketsModified()[0]);
+    ASSERT_EQ(0u, docsMoved().size());
+    ASSERT_EQ(0u, bucketsModified().size());
 }
 
+TEST_F(ControllerFixture, explicitly_active_not_ready_bucket_can_not_be_moved_to_ready)
+{
+    addReady(_ready.bucket(1));
+    addReady(_ready.bucket(2));
+    remReady(_notReady.bucket(3));
+    _bmj->recompute();
+    masterExecute([this]() {
+        activateBucket(_notReady.bucket(3));
+        _bmj->scanAndMove(4, 3);
+        EXPECT_TRUE(_bmj->done());
+    });
+    sync();
+    ASSERT_EQ(0u, docsMoved().size());
+    ASSERT_EQ(0u, bucketsModified().size());
+}
+
+TEST_F(ControllerFixture, bucket_change_notification_is_not_lost_with_concurrent_bucket_movers)
+{
+    addReady(_ready.bucket(1));
+    _bmj->recompute(); // Bucket 1 should be (and is) ready, bucket 2 is ready (but should not be).
+    _bucketExecutor.defer_new_tasks(); // Don't execute immediately, we need to force multiple pending moves
+    masterExecute([this]() {
+        deactivateBucket(_ready.bucket(2));
+        _bmj->scanAndMove(4, 3);
+        // New deactivation received from above prior to completion of scan. This can happen since
+        // moves are asynchronous and the distributor can send new (de-)activations before the old move is done.
+        // In our case, we've enforced that another move is already pending in the bucket executor.
+        deactivateBucket(_ready.bucket(2));
+        _bmj->scanAndMove(4, 3);
+    });
+    sync();
+    ASSERT_EQ(_bucketExecutor.num_deferred_tasks(), 2u);
+    _bucketExecutor.schedule_single_deferred_task();
+    sync();
+    // We have to fake that moving a document marks it as not found in the source sub DB.
+    // This doesn't automatically happen when using mocks. The most important part is that
+    // we ensure that moving isn't erroneously tested as if it were idempotent.
+    for (const auto& move : docsMoved()) {
+        failRetrieveForLid(move.getPrevLid());
+    }
+    _bucketExecutor.schedule_single_deferred_task();
+    sync();
+    EXPECT_TRUE(_bmj->done());
+    ASSERT_EQ(1u, bucketsModified().size());
+    EXPECT_EQ(_ready.bucket(2), bucketsModified()[0]);
+}
 
 TEST_F(ControllerFixture, require_that_notifyCreateBucket_causes_bucket_to_be_reconsidered_by_job)
 {
@@ -512,7 +558,7 @@ TEST_F(ControllerFixture, require_that_notifyCreateBucket_causes_bucket_to_be_re
 
 struct ResourceLimitControllerFixture : public ControllerFixture
 {
-    ResourceLimitControllerFixture(double resourceLimitFactor = RESOURCE_LIMIT_FACTOR) :
+    explicit ResourceLimitControllerFixture(double resourceLimitFactor = RESOURCE_LIMIT_FACTOR) :
         ControllerFixture(BlockableMaintenanceJobConfig(resourceLimitFactor, MAX_OUTSTANDING_OPS))
     {}
 
@@ -586,7 +632,7 @@ TEST_F(ResourceLimitControllerFixture_1_2, require_that_bucket_move_uses_resourc
 
 struct MaxOutstandingMoveOpsFixture : public ControllerFixtureBase
 {
-    MaxOutstandingMoveOpsFixture(uint32_t maxOutstandingOps)
+    explicit MaxOutstandingMoveOpsFixture(uint32_t maxOutstandingOps)
         : ControllerFixtureBase(BlockableMaintenanceJobConfig(RESOURCE_LIMIT_FACTOR, maxOutstandingOps), true)
     {
         _builder.createDocs(1, 1, 2);

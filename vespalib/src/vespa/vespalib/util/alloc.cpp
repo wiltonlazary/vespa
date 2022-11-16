@@ -1,5 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #include "alloc.h"
+#include "atomic.h"
 #include "memory_allocator.h"
 #include "round_up_to_page_size.h"
 #include <sys/mman.h>
@@ -17,11 +18,13 @@
 #include <vespa/log/log.h>
 LOG_SETUP(".vespalib.alloc");
 
+using namespace vespalib::atomic;
+
 namespace vespalib {
 
 namespace {
 
-volatile bool _G_hasHugePageFailureJustHappened(false);
+std::atomic<bool> _G_hasHugePageFailureJustHappened(false);
 bool _G_SilenceCoreOnOOM(false);
 int  _G_HugeFlags = 0;
 size_t _G_MMapLogLimit = std::numeric_limits<size_t>::max();
@@ -225,14 +228,22 @@ getDefaultAutoAllocator(AutoAllocatorsMap & map) {
 }
 
 AutoAllocatorsMapWithDefault
+createAutoAllocatorsWithDefault() __attribute__((noinline));
+
+AutoAllocatorsMapWithDefault
 createAutoAllocatorsWithDefault() {
     AutoAllocatorsMapWithDefault tmp(createAutoAllocators(), nullptr);
     tmp.second = &getDefaultAutoAllocator(tmp.first);
     return tmp;
 }
 
+AutoAllocatorsMapWithDefault &
+availableAutoAllocators() {
+    static AutoAllocatorsMapWithDefault  S_availableAutoAllocators = createAutoAllocatorsWithDefault();
+    return S_availableAutoAllocators;
+}
 
-AutoAllocatorsMapWithDefault  _G_availableAutoAllocators = createAutoAllocatorsWithDefault();
+
 alloc::HeapAllocator _G_heapAllocatorDefault;
 alloc::AlignedHeapAllocator _G_512BalignedHeapAllocator(512);
 alloc::AlignedHeapAllocator _G_1KalignedHeapAllocator(1_Ki);
@@ -265,12 +276,12 @@ MMapAllocator::getDefault() {
 
 MemoryAllocator &
 AutoAllocator::getDefault() {
-    return *_G_availableAutoAllocators.second;
+    return *availableAutoAllocators().second;
 }
 
 MemoryAllocator &
 AutoAllocator::getAllocator(size_t mmapLimit, size_t alignment) {
-    return getAutoAllocator(_G_availableAutoAllocators.first, mmapLimit, alignment);
+    return getAutoAllocator(availableAutoAllocators().first, mmapLimit, alignment);
 }
 
 MemoryAllocator::PtrAndSize
@@ -328,8 +339,8 @@ MMapAllocator::salloc(size_t sz, void * wantedAddress)
         }
         buf = mmap(wantedAddress, sz, prot, flags | _G_HugeFlags, -1, 0);
         if (buf == MAP_FAILED) {
-            if ( ! _G_hasHugePageFailureJustHappened ) {
-                _G_hasHugePageFailureJustHappened = true;
+            if ( ! load_relaxed(_G_hasHugePageFailureJustHappened)) {
+                store_relaxed(_G_hasHugePageFailureJustHappened, true);
                 LOG(debug, "Failed allocating %ld bytes with hugepages due too '%s'."
                           " Will resort to ordinary mmap until it works again.",
                            sz, FastOS_FileInterface::getLastErrorString().c_str());
@@ -347,11 +358,12 @@ MMapAllocator::salloc(size_t sz, void * wantedAddress)
                 }
             }
         } else {
-            if (_G_hasHugePageFailureJustHappened) {
-                _G_hasHugePageFailureJustHappened = false;
-            }
+            store_relaxed(_G_hasHugePageFailureJustHappened, false);
         }
 #ifdef __linux__
+        if (madvise(buf, sz, MADV_HUGEPAGE) != 0) {
+            // Just an advise, not everyone will listen...
+        }
         if (sz >= _G_MMapNoCoreLimit) {
             if (madvise(buf, sz, MADV_DONTDUMP) != 0) {
                 LOG(warning, "Failed madvise(%p, %ld, MADV_DONTDUMP) = '%s'", buf, sz, FastOS_FileInterface::getLastErrorString().c_str());
@@ -381,6 +393,9 @@ MMapAllocator::sresize_inplace(PtrAndSize current, size_t newSize) {
 
 size_t
 MMapAllocator::extend_inplace(PtrAndSize current, size_t newSize) {
+    if (current.second == 0u) {
+        return 0u;
+    }
     PtrAndSize got = MMapAllocator::salloc(newSize - current.second, static_cast<char *>(current.first)+current.second);
     if ((static_cast<const char *>(current.first) + current.second) == static_cast<const char *>(got.first)) {
         return current.second + got.second;
@@ -404,10 +419,21 @@ void MMapAllocator::free(PtrAndSize alloc) const {
 void MMapAllocator::sfree(PtrAndSize alloc)
 {
     if (alloc.first != nullptr) {
-        int retval = madvise(alloc.first, alloc.second, MADV_DONTNEED);
-        assert(retval == 0);
-        retval = munmap(alloc.first, alloc.second);
-        assert(retval == 0);
+        int madvise_retval = madvise(alloc.first, alloc.second, MADV_DONTNEED);
+        if (madvise_retval != 0) {
+            std::error_code ec(errno, std::system_category());
+            if (errno == EINVAL) {
+                LOG(debug, "madvise(%p, %lx)=%d, errno=%s", alloc.first, alloc.second, madvise_retval, ec.message().c_str());
+            } else {
+                LOG(warning, "madvise(%p, %lx)=%d, errno=%s", alloc.first, alloc.second, madvise_retval, ec.message().c_str());
+            }
+        }
+        int munmap_retval = munmap(alloc.first, alloc.second);
+        if (munmap_retval != 0) {
+            std::error_code ec(errno, std::system_category());
+            LOG(warning, "munmap(%p, %lx)=%d, errno=%s", alloc.first, alloc.second, munmap_retval, ec.message().c_str());
+            abort();
+        }
         if (alloc.second >= _G_MMapLogLimit) {
             std::lock_guard guard(_G_lock);
             MMapInfo info = _G_HugeMappings[alloc.first];
@@ -431,33 +457,33 @@ AutoAllocator::resize_inplace(PtrAndSize current, size_t newSize) const {
 
 MMapAllocator::PtrAndSize
 AutoAllocator::alloc(size_t sz) const {
-    if (useMMap(sz)) {
-        sz = roundUpToHugePages(sz);
-        return MMapAllocator::salloc(sz, nullptr);
-    } else {
+    if ( ! useMMap(sz)) {
         if (_alignment == 0) {
             return HeapAllocator::salloc(sz);
         } else {
             return AlignedHeapAllocator(_alignment).alloc(sz);
         }
+    } else {
+        sz = roundUpToHugePages(sz);
+        return MMapAllocator::salloc(sz, nullptr);
     }
 }
 
 void
 AutoAllocator::free(PtrAndSize alloc) const {
-    if (isMMapped(alloc.second)) {
-        return MMapAllocator::sfree(alloc);
-    } else {
+    if ( ! isMMapped(alloc.second)) {
         return HeapAllocator::sfree(alloc);
+    } else {
+        return MMapAllocator::sfree(alloc);
     }
 }
 
 void
 AutoAllocator::free(void * ptr, size_t sz) const {
-    if (useMMap(sz)) {
-        return MMapAllocator::sfree(PtrAndSize(ptr, roundUpToHugePages(sz)));
-    } else {
+    if ( ! useMMap(sz)) {
         return HeapAllocator::sfree(PtrAndSize(ptr, sz));
+    } else {
+        return MMapAllocator::sfree(PtrAndSize(ptr, roundUpToHugePages(sz)));
     }
 }
 
@@ -466,6 +492,11 @@ AutoAllocator::free(void * ptr, size_t sz) const {
 const MemoryAllocator *
 MemoryAllocator::select_allocator(size_t mmapLimit, size_t alignment) {
     return & AutoAllocator::getAllocator(mmapLimit, alignment);
+}
+
+const MemoryAllocator *
+MemoryAllocator::select_allocator() {
+    return & AutoAllocator::getDefault();
 }
 
 Alloc
@@ -477,6 +508,9 @@ Alloc::allocHeap(size_t sz)
 bool
 Alloc::resize_inplace(size_t newSize)
 {
+    if (newSize == 0u) {
+        return size() == 0u;
+    }
     size_t extendedSize = _allocator->resize_inplace(_alloc, newSize);
     if (extendedSize >= newSize) {
         _alloc.second = extendedSize;

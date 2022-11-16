@@ -2,7 +2,6 @@
 package com.yahoo.documentapi.messagebus;
 
 import com.yahoo.documentapi.DocumentAccessParams;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocolPoliciesConfig;
 import com.yahoo.messagebus.SourceSessionParams;
@@ -26,23 +25,8 @@ public class MessageBusParams extends DocumentAccessParams {
     private RPCNetworkParams rpcNetworkParams = new RPCNetworkParams();
     private com.yahoo.messagebus.MessageBusParams mbusParams = new com.yahoo.messagebus.MessageBusParams();
     private SourceSessionParams sourceSessionParams = new SourceSessionParams();
-    private LoadTypeSet loadTypes;
 
-    public MessageBusParams() {
-        this(new LoadTypeSet());
-    }
-
-    public MessageBusParams(LoadTypeSet loadTypes) {
-        this.loadTypes = loadTypes;
-    }
-
-    /**
-     *
-     * @return Returns the set of load types accepted by this Vespa installation
-     */
-    public LoadTypeSet getLoadTypes() {
-        return loadTypes;
-    }
+    public MessageBusParams() {}
 
     /**
      * Returns the id to resolve to routing config.

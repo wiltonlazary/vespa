@@ -5,6 +5,7 @@
 #include "memoryindexwrapper.h"
 #include <vespa/searchlib/common/serialnumfileheadercontext.h>
 #include <vespa/searchlib/diskindex/fusion.h>
+#include <vespa/searchlib/index/schemautil.h>
 
 using search::diskindex::Fusion;
 using search::common::FileHeaderContext;
@@ -68,9 +69,9 @@ IndexManager::MaintainerOperations::runFusion(const Schema &schema,
                                               std::shared_ptr<IFlushToken> flush_token)
 {
     SerialNumFileHeaderContext fileHeaderContext(_fileHeaderContext, serialNum);
-    const bool dynamic_k_doc_pos_occ_format = false;
-    return Fusion::merge(schema, outputDir, sources, selectorArray, dynamic_k_doc_pos_occ_format,
-                         _tuneFileIndexing, fileHeaderContext, _threadingService.shared(), std::move(flush_token));
+    Fusion fusion(schema, outputDir, sources, selectorArray,
+                  _tuneFileIndexing, fileHeaderContext);
+    return fusion.merge(_threadingService.shared(), std::move(flush_token));
 }
 
 
@@ -80,7 +81,7 @@ IndexManager::IndexManager(const vespalib::string &baseDir,
                            SerialNum serialNum,
                            Reconfigurer &reconfigurer,
                            IThreadingService &threadingService,
-                           vespalib::SyncableThreadExecutor & warmupExecutor,
+                           vespalib::Executor & warmupExecutor,
                            const search::TuneFileIndexManager &tuneFileIndexManager,
                            const search::TuneFileAttributes &tuneFileAttributes,
                            const FileHeaderContext &fileHeaderContext) :

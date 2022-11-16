@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.tenant;
 
-import com.google.common.testing.EqualsTester;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.config.provision.TenantName;
 import org.junit.Before;
@@ -11,9 +10,8 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
 
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 
 /**
  * @author Ulf Lilleengen
@@ -51,18 +49,17 @@ public class TenantTest {
 
     @Test
     public void equals() {
-        new EqualsTester()
-                .addEqualityGroup(t1, t2)
-                .addEqualityGroup(t3)
-                .addEqualityGroup(t4)
-                .testEquals();
+        assertEquals(t1, t2);
+        assertNotEquals(t1, t3);
+        assertNotEquals(t1, t4);
+        assertNotEquals(t3, t4);
     }
 
     @Test
     public void hashcode() {
-        assertThat(t1.hashCode(), is(t2.hashCode()));
-        assertThat(t1.hashCode(), is(not(t3.hashCode())));
-        assertThat(t1.hashCode(), is(not(t4.hashCode())));
+        assertEquals(t1.hashCode(), t2.hashCode());
+        assertNotEquals(t1.hashCode(), t3.hashCode());
+        assertNotEquals(t1.hashCode(), t4.hashCode());
     }
 
 }

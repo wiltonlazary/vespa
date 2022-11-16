@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.processing.handler;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.ComponentId;
 import com.yahoo.component.ComponentSpecification;
 import com.yahoo.component.chain.Chain;
@@ -43,6 +43,7 @@ import static com.yahoo.component.chain.ChainsConfigurer.prepareChainRegistry;
  * @author Tony Vaagenes
  * @author Steinar Knutsen
  */
+@SuppressWarnings("deprecation") // super class is deprecated
 public abstract class AbstractProcessingHandler<COMPONENT extends Processor> extends LoggingRequestHandler {
 
     private final static CompoundName freezeListenerKey =new CompoundName("processing.freezeListener");
@@ -186,7 +187,7 @@ public abstract class AbstractProcessingHandler<COMPONENT extends Processor> ext
     private void populate(String prefixName,Map<String,?> parameters,Properties properties) {
         CompoundName prefix = new CompoundName(prefixName);
         for (Map.Entry<String,?> entry : parameters.entrySet())
-            properties.set(prefix.append(entry.getKey()),entry.getValue());
+            properties.set(prefix.append(entry.getKey()), entry.getValue());
     }
 
     private static class FreezeListener implements Runnable, ResponseReceiver {
@@ -244,7 +245,8 @@ public abstract class AbstractProcessingHandler<COMPONENT extends Processor> ext
 
             // Render if we have a renderer capable of it
             if (getRenderer() instanceof AsynchronousSectionedRenderer) {
-                ((AsynchronousSectionedRenderer) getRenderer()).renderBeforeHandover(new ContentChannelOutputStream(channel), response, execution, request);
+                ((AsynchronousSectionedRenderer) getRenderer()).renderResponseBeforeHandover(
+                        new ContentChannelOutputStream(channel), response, execution, request);
             }
         }
 

@@ -2,12 +2,12 @@
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/stllike/string.h>
 #include <vespa/document/base/documentid.h>
-#include <vespa/vespalib/util/sequencedtaskexecutor.h>
-#include <vespa/searchcore/proton/common/monitored_refcount.h>
 #include <vespa/searchcore/proton/reference/gid_to_lid_change_listener.h>
 #include <vespa/searchlib/common/i_gid_to_lid_mapper_factory.h>
 #include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/vespalib/util/gate.h>
+#include <vespa/vespalib/util/monitored_refcount.h>
+#include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <vespa/searchlib/test/mock_gid_to_lid_mapping.h>
 #include <map>
 #include <vespa/log/log.h>
@@ -16,12 +16,13 @@ LOG_SETUP("gid_to_lid_change_listener_test");
 using document::GlobalId;
 using document::BucketId;
 using document::DocumentId;
-using vespalib::GenerationHandler;
 using search::attribute::Config;
 using search::attribute::BasicType;
 using search::attribute::Reference;
 using search::attribute::ReferenceAttribute;
 using search::attribute::test::MockGidToLidMapperFactory;
+using vespalib::MonitoredRefCount;
+using vespalib::GenerationHandler;
 
 namespace proton {
 
@@ -56,7 +57,7 @@ struct Fixture
     std::unique_ptr<GidToLidChangeListener>  _listener;
 
     Fixture()
-        : _attr(std::make_shared<ReferenceAttribute>("test", Config(BasicType::REFERENCE))),
+        : _attr(std::make_shared<ReferenceAttribute>("test")),
           _writer(vespalib::SequencedTaskExecutor::create(test_executor, 1)),
           _refCount(),
           _listener()
@@ -102,8 +103,8 @@ struct Fixture
         gate.await();
     }
 
-    void notifyListenerRegistered() {
-        _listener->notifyRegistered();
+    void notifyListenerRegistered(const std::vector<GlobalId>& removes) {
+        _listener->notifyRegistered(removes);
     }
 };
 
@@ -143,10 +144,35 @@ TEST_F("Test that target lids are populated when listener is registered", Fixtur
         std::make_shared<MyGidToLidMapperFactory>();
     f._attr->setGidToLidMapperFactory(factory);
     f.allocListener();
-    f.notifyListenerRegistered();
+    f.notifyListenerRegistered({});
     TEST_DO(f.assertTargetLid(10, 1));
     TEST_DO(f.assertTargetLid(17, 2));
     TEST_DO(f.assertTargetLid(10, 3));
+    TEST_DO(f.assertTargetLid(0, 4));
+    TEST_DO(f.assertNoTargetLid(5));
+}
+
+TEST_F("Test that removed target lids are pruned when listener is registered", Fixture)
+{
+    f.ensureDocIdLimit(6);
+    f.set(1, toGid(doc1));
+    f.set(2, toGid(doc2));
+    f.set(3, toGid(doc1));
+    f.set(4, toGid(doc3));
+    f.commit();
+    TEST_DO(f.assertTargetLid(0, 1));
+    TEST_DO(f.assertTargetLid(0, 2));
+    TEST_DO(f.assertTargetLid(0, 3));
+    TEST_DO(f.assertTargetLid(0, 4));
+    TEST_DO(f.assertNoTargetLid(5));
+    std::shared_ptr<search::IGidToLidMapperFactory> factory =
+        std::make_shared<MyGidToLidMapperFactory>();
+    f._attr->setGidToLidMapperFactory(factory);
+    f.allocListener();
+    f.notifyListenerRegistered({ toGid(doc1) });
+    TEST_DO(f.assertTargetLid(0, 1));
+    TEST_DO(f.assertTargetLid(17, 2));
+    TEST_DO(f.assertTargetLid(0, 3));
     TEST_DO(f.assertTargetLid(0, 4));
     TEST_DO(f.assertNoTargetLid(5));
 }

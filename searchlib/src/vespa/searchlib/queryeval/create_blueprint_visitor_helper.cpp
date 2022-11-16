@@ -31,7 +31,7 @@ CreateBlueprintVisitorHelper::getResult()
 
 void
 CreateBlueprintVisitorHelper::visitPhrase(query::Phrase &n) {
-    auto phrase = std::make_unique<SimplePhraseBlueprint>(_field, _requestContext, n.is_expensive());
+    auto phrase = std::make_unique<SimplePhraseBlueprint>(_field, n.is_expensive());
     for (const query::Node * child : n.getChildren()) {
         FieldSpecList fields;
         fields.add(phrase->getNextChildField(_field));
@@ -88,6 +88,14 @@ CreateBlueprintVisitorHelper::visitWandTerm(query::WandTerm &n) {
     createWeightedSet(std::make_unique<ParallelWeakAndBlueprint>(_field, n.getTargetNumHits(),
                                                                  n.getScoreThreshold(), n.getThresholdBoostFactor()),
                       n);
+}
+
+void CreateBlueprintVisitorHelper::visit(query::TrueQueryNode &) {
+    setResult(std::make_unique<AlwaysTrueBlueprint>());
+}
+
+void CreateBlueprintVisitorHelper::visit(query::FalseQueryNode &) {
+    setResult(std::make_unique<EmptyBlueprint>());
 }
 
 }

@@ -13,6 +13,8 @@
 #include "unique_store_comparator.h"
 #include "unique_store_entry.h"
 
+namespace vespalib::alloc { class MemoryAllocator; }
+
 namespace vespalib::datastore {
 
 template <typename Allocator>
@@ -47,29 +49,29 @@ private:
     using generation_t = vespalib::GenerationHandler::generation_t;
 
 public:
-    UniqueStore();
-    UniqueStore(std::unique_ptr<IUniqueStoreDictionary> dict);
+    UniqueStore(std::shared_ptr<alloc::MemoryAllocator> memory_allocator);
+    UniqueStore(std::unique_ptr<IUniqueStoreDictionary> dict, std::shared_ptr<alloc::MemoryAllocator> memory_allocator);
     ~UniqueStore();
     void set_dictionary(std::unique_ptr<IUniqueStoreDictionary> dict);
     UniqueStoreAddResult add(EntryConstRefType value);
     EntryRef find(EntryConstRefType value);
     EntryConstRefType get(EntryRef ref) const { return _allocator.get(ref); }
     void remove(EntryRef ref);
-    std::unique_ptr<Remapper> compact_worst(bool compact_memory, bool compact_address_space);
+    std::unique_ptr<Remapper> compact_worst(CompactionSpec compaction_spec, const CompactionStrategy& compaction_strategy);
     vespalib::MemoryUsage getMemoryUsage() const;
     vespalib::MemoryUsage get_values_memory_usage() const { return _store.getMemoryUsage(); }
     vespalib::MemoryUsage get_dictionary_memory_usage() const { return _dict->get_memory_usage(); }
-    vespalib::AddressSpace get_address_space_usage() const;
+    vespalib::AddressSpace get_values_address_space_usage() const;
 
     // TODO: Consider exposing only the needed functions from allocator
     Allocator& get_allocator() { return _allocator; }
     const Allocator& get_allocator() const { return _allocator; }
     IUniqueStoreDictionary& get_dictionary() { return *_dict; }
-    inline const DataStoreType& get_data_store() const { return _allocator.get_data_store(); }
+    inline const DataStoreType& get_data_store() const noexcept { return _allocator.get_data_store(); }
 
     // Pass on hold list management to underlying store
-    void transferHoldLists(generation_t generation);
-    void trimHoldLists(generation_t firstUsed);
+    void assign_generation(generation_t current_gen);
+    void reclaim_memory(generation_t oldest_used_gen);
     vespalib::GenerationHolder &getGenerationHolder() { return _store.getGenerationHolder(); }
     void setInitializing(bool initializing) { _store.setInitializing(initializing); }
     void freeze();

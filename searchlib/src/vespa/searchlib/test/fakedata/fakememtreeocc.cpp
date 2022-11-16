@@ -5,19 +5,21 @@
 #include <vespa/searchlib/common/flush_token.h>
 #include <vespa/searchlib/memoryindex/posting_iterator.h>
 #include <vespa/searchlib/queryeval/iterators.h>
-#include <vespa/searchlib/util/postingpriorityqueue.h>
+#include <vespa/searchlib/util/posting_priority_queue_merger.hpp>
 #include <vespa/vespalib/datastore/buffer_type.hpp>
 #include <vespa/vespalib/btree/btreeiterator.hpp>
 #include <vespa/vespalib/btree/btreenode.hpp>
 #include <vespa/vespalib/btree/btreenodeallocator.hpp>
 #include <vespa/vespalib/btree/btreenodestore.hpp>
 #include <vespa/vespalib/btree/btreeroot.hpp>
+#include <vespa/vespalib/datastore/compaction_strategy.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".fakememtreeocc");
 
 using search::fef::TermFieldMatchData;
 using search::fef::TermFieldMatchDataPosition;
+using vespalib::datastore::CompactionStrategy;
 
 namespace search::fakedata {
 
@@ -167,9 +169,9 @@ FakeMemTreeOccMgr::freeze()
 
 
 void
-FakeMemTreeOccMgr::transferHoldLists()
+FakeMemTreeOccMgr::assign_generation()
 {
-    _allocator.transferHoldLists(_generationHandler.getCurrentGeneration());
+    _allocator.assign_generation(_generationHandler.getCurrentGeneration());
 }
 
 void
@@ -180,9 +182,9 @@ FakeMemTreeOccMgr::incGeneration()
 
 
 void
-FakeMemTreeOccMgr::trimHoldLists()
+FakeMemTreeOccMgr::reclaim_memory()
 {
-    _allocator.trimHoldLists(_generationHandler.getFirstUsedGeneration());
+    _allocator.reclaim_memory(_generationHandler.get_oldest_used_generation());
 }
 
 
@@ -190,23 +192,21 @@ void
 FakeMemTreeOccMgr::sync()
 {
     freeze();
-    transferHoldLists();
+    assign_generation();
     incGeneration();
-    trimHoldLists();
+    reclaim_memory();
 }
 
 
 void
 FakeMemTreeOccMgr::add(uint32_t wordIdx, index::DocIdAndFeatures &features)
 {
-    typedef FeatureStore::RefType RefType;
-
+    using Aligner = FeatureStore::Aligner;
     const FakeWord *fw = _fakeWords[wordIdx];
 
     std::pair<EntryRef, uint64_t> r =
         _featureStore.addFeatures(fw->getPackedIndex(), features);
-
-    _featureSizes[wordIdx] += RefType::align((r.second + 7) / 8) * 8;
+    _featureSizes[wordIdx] += Aligner::align((r.second + 7) / 8) * 8;
 
     _unflushed.push_back(PendingOp(wordIdx, features.doc_id(), r.first));
 
@@ -240,7 +240,7 @@ FakeMemTreeOccMgr::sortUnflushed()
 void
 FakeMemTreeOccMgr::flush()
 {
-    typedef FeatureStore::RefType RefType;
+    using Aligner = FeatureStore::Aligner;
     typedef std::vector<PendingOp>::iterator I;
 
     if (_unflushed.empty())
@@ -263,8 +263,8 @@ FakeMemTreeOccMgr::flush()
         lastWord = wordIdx;
         if (i->getRemove()) {
             if (itr.valid() && itr.getKey() == docId) {
-                uint64_t bits = _featureStore.bitSize(fw->getPackedIndex(), EntryRef(itr.getData().get_features()));
-                _featureSizes[wordIdx] -= RefType::align((bits + 7) / 8) * 8;
+                uint64_t bits = _featureStore.bitSize(fw->getPackedIndex(), EntryRef(itr.getData().get_features_relaxed()));
+                _featureSizes[wordIdx] -= Aligner::align((bits + 7) / 8) * 8;
                 tree.remove(itr);
             }
         } else {
@@ -282,7 +282,9 @@ FakeMemTreeOccMgr::compactTrees()
 {
     // compact full trees by calling incremental compaction methods in a loop
 
-    std::vector<uint32_t> toHold = _allocator.startCompact();
+    // Use a compaction strategy that will compact all active buffers
+    auto compaction_strategy = CompactionStrategy::make_compact_all_active_buffers_strategy();
+    auto compacting_buffers = _allocator.start_compact_worst(compaction_strategy);
     for (uint32_t wordIdx = 0; wordIdx < _postingIdxs.size(); ++wordIdx) {
         PostingIdx &pidx(*_postingIdxs[wordIdx].get());
         Tree &tree = pidx._tree;
@@ -293,7 +295,7 @@ FakeMemTreeOccMgr::compactTrees()
             itr.moveNextLeafNode();
         }
     }
-    _allocator.finishCompact(toHold);
+    compacting_buffers->finish();
     sync();
 }
 
@@ -352,7 +354,7 @@ FakeMemTreeOccFactory::setup(const std::vector<const FakeWord *> &fws)
         ++wordIdx;
     }
 
-    PostingPriorityQueue<FakeWord::RandomizedReader> heap;
+    PostingPriorityQueueMerger<FakeWord::RandomizedReader, FakeWord::RandomizedWriter> heap;
     std::vector<FakeWord::RandomizedReader>::iterator i(r.begin());
     std::vector<FakeWord::RandomizedReader>::iterator ie(r.end());
     FlushToken flush_token;
@@ -363,8 +365,11 @@ FakeMemTreeOccFactory::setup(const std::vector<const FakeWord *> &fws)
         }
         ++i;
     }
-    heap.merge(_mgr, 4, flush_token);
-    assert(heap.empty());
+    heap.setup(4);
+    heap.set_merge_chunk(100000);
+    while (!heap.empty()) {
+        heap.merge(_mgr, flush_token);
+    }
     _mgr.finalize();
 }
 

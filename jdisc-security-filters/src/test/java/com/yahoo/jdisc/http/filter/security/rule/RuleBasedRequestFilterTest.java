@@ -8,13 +8,13 @@ import com.yahoo.container.jdisc.RequestHandlerTestDriver.MockResponseHandler;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.http.filter.DiscFilterRequest;
-import com.yahoo.jdisc.http.filter.security.rule.RuleBasedFilterConfig.DefaultRule;
-import com.yahoo.jdisc.http.filter.security.rule.RuleBasedFilterConfig.Rule;
-import com.yahoo.test.json.JsonTestHelper;
+import com.yahoo.jdisc.http.filter.util.FilterTestUtils;
+import com.yahoo.vespa.config.jdisc.http.filter.RuleBasedFilterConfig;
+import com.yahoo.vespa.config.jdisc.http.filter.RuleBasedFilterConfig.DefaultRule;
+import com.yahoo.vespa.config.jdisc.http.filter.RuleBasedFilterConfig.Rule;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.net.URI;
 import java.util.List;
 import java.util.Set;
 
@@ -25,7 +25,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * @author bjorncs
@@ -51,7 +50,7 @@ class RuleBasedRequestFilterTest {
         Metric metric = mock(Metric.class);
         RuleBasedRequestFilter filter = new RuleBasedRequestFilter(metric, config);
         MockResponseHandler responseHandler = new MockResponseHandler();
-        filter.filter(request("PATCH", "http://myserver:80/path-to-resource"), responseHandler);
+        filter.filter(request("PATCH", "http://myserver:80/path-to-resource%2F"), responseHandler);
 
         assertAllowed(responseHandler, metric);
 
@@ -218,10 +217,7 @@ class RuleBasedRequestFilterTest {
     }
 
     private static DiscFilterRequest request(String method, String uri) {
-        DiscFilterRequest request = mock(DiscFilterRequest.class);
-        when(request.getMethod()).thenReturn(method);
-        when(request.getUri()).thenReturn(URI.create(uri));
-        return request;
+        return FilterTestUtils.newRequestBuilder().withMethod(method).withUri(uri).build();
     }
 
     private static void assertAllowed(MockResponseHandler handler, Metric metric) {
@@ -237,7 +233,7 @@ class RuleBasedRequestFilterTest {
         ObjectNode expectedJson = jsonMapper.createObjectNode();
         expectedJson.put("message", expectedMessage).put("code", expectedCode);
         JsonNode actualJson = jsonMapper.readTree(handler.readAll().getBytes());
-        JsonTestHelper.assertJsonEquals(expectedJson, actualJson);
+        assertEquals(expectedJson, actualJson);
     }
 
 }

@@ -5,7 +5,6 @@
 #include "btreenode.h"
 #include "btreenodeallocator.h"
 #include "btreetraits.h"
-#include <vespa/fastos/dynamiclibrary.h>
 
 namespace vespalib::btree {
 
@@ -112,6 +111,9 @@ public:
     {
         return _node->getData(_idx);
     }
+
+    // Only use during compaction when changing reference to moved value
+    DataType &getWData() { return getWNode()->getWData(_idx); }
 
     bool
     valid() const
@@ -881,6 +883,9 @@ public:
         _leaf.getWNode()->writeData(_leaf.getIdx(), data);
     }
 
+    // Only use during compaction when changing reference to moved value
+    DataType &getWData() { return _leaf.getWData(); }
+
     /**
      * Set a new key for the current iterator position.
      * The new key must have the same semantic meaning as the old key.
@@ -982,7 +987,6 @@ private:
 
 extern template class BTreeIteratorBase<uint32_t, uint32_t, NoAggregated>;
 extern template class BTreeIteratorBase<uint32_t, BTreeNoLeafData, NoAggregated>;
-extern template class BTreeIteratorBase<datastore::EntryRef, BTreeNoLeafData, NoAggregated>;
 extern template class BTreeIteratorBase<uint32_t, int32_t, MinMaxAggregated>;
 extern template class BTreeConstIterator<uint32_t, uint32_t, NoAggregated>;
 extern template class BTreeConstIterator<uint32_t, BTreeNoLeafData, NoAggregated>;

@@ -5,11 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yahoo.document.DataType;
 import com.yahoo.document.Document;
 import com.yahoo.document.DocumentId;
-import com.yahoo.document.fieldset.AllFields;
+import com.yahoo.document.fieldset.DocumentOnly;
 import com.yahoo.documentapi.messagebus.MessageBusDocumentAccess;
 import com.yahoo.documentapi.messagebus.MessageBusSyncSession;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadType;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
 import com.yahoo.documentapi.messagebus.protocol.GetDocumentMessage;
 import com.yahoo.documentapi.messagebus.protocol.GetDocumentReply;
@@ -17,11 +15,9 @@ import com.yahoo.messagebus.Error;
 import com.yahoo.messagebus.Reply;
 import com.yahoo.vespaclient.ClusterDef;
 import com.yahoo.vespaclient.ClusterList;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatcher;
 
 import java.io.ByteArrayOutputStream;
@@ -33,8 +29,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
@@ -62,10 +57,7 @@ public class DocumentRetrieverTest {
     private PrintStream oldOut;
     private PrintStream oldErr;
 
-    @Rule
-    public final ExpectedException exception = ExpectedException.none();
-
-    @Before
+    @BeforeEach
     public void setUpStreams() {
         oldOut = System.out;
         oldErr = System.err;
@@ -73,7 +65,7 @@ public class DocumentRetrieverTest {
         System.setErr(new PrintStream(errContent));
     }
 
-    @Before
+    @BeforeEach
     public void prepareMessageBusMocks() {
         this.mockedFactory = mock(DocumentAccessFactory.class);
         this.mockedDocumentAccess = mock(MessageBusDocumentAccess.class);
@@ -82,7 +74,7 @@ public class DocumentRetrieverTest {
         when(mockedDocumentAccess.createSyncSession(any())).thenReturn(mockedSession);
     }
 
-    @After
+    @AfterEach
     public void cleanUpStreams() {
         System.setOut(oldOut);
         System.setErr(oldErr);
@@ -96,11 +88,10 @@ public class DocumentRetrieverTest {
                 .setCluster("")
                 .setRoute("default")
                 .setConfigId("client")
-                .setFieldSet(AllFields.NAME)
+                .setFieldSet(DocumentOnly.NAME)
                 .setPrintIdsOnly(false)
                 .setHelp(false)
                 .setShowDocSize(false)
-                .setLoadTypeName("")
                 .setNoRetry(false)
                 .setTraceLevel(0)
                 .setTimeout(0)
@@ -128,39 +119,35 @@ public class DocumentRetrieverTest {
         return new DocumentRetriever(
                 clusterList,
                 mockedFactory,
-                new LoadTypeSet(),
                 params);
     }
 
+    // TODO: Remove on Vespa 9
     @Test
-    public void testSendSingleMessage() throws DocumentRetrieverException {
+    @SuppressWarnings("removal")
+    void testSendSingleMessage() throws DocumentRetrieverException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1))
                 .setPriority(DocumentProtocol.Priority.HIGH_1)
                 .setNoRetry(true)
-                .setLoadTypeName("loadtype")
                 .build();
 
         when(mockedSession.syncSend(any())).thenReturn(createDocumentReply(DOC_ID_1));
 
-        LoadTypeSet loadTypeSet = new LoadTypeSet();
-        loadTypeSet.addLoadType(1, "loadtype", DocumentProtocol.Priority.HIGH_1);
         DocumentRetriever documentRetriever = new DocumentRetriever(
                 new ClusterList(),
                 mockedFactory,
-                loadTypeSet,
                 params);
         documentRetriever.retrieveDocuments();
 
         verify(mockedSession, times(1)).syncSend(argThat((ArgumentMatcher<GetDocumentMessage>) o ->
-                o.getPriority().equals(DocumentProtocol.Priority.HIGH_1) &&
-                !o.getRetryEnabled() &&
-                o.getLoadType().equals(new LoadType(1, "loadtype", DocumentProtocol.Priority.HIGH_1))));
+                o.getPriority().equals(DocumentProtocol.Priority.HIGH_1) && // TODO remove on Vespa 9
+                        !o.getRetryEnabled()));
         assertContainsDocument(DOC_ID_1);
     }
 
     @Test
-    public void testMultipleMessages() throws DocumentRetrieverException {
+    void testMultipleMessages() throws DocumentRetrieverException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1, DOC_ID_2, DOC_ID_3))
                 .build();
@@ -180,7 +167,7 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testJsonOutput() throws DocumentRetrieverException, IOException {
+    void testJsonOutput() throws DocumentRetrieverException, IOException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1, DOC_ID_2, DOC_ID_3))
                 .setJsonOutput(true)
@@ -204,7 +191,7 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testShutdownHook() throws DocumentRetrieverException {
+    void testShutdownHook() throws DocumentRetrieverException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1))
                 .build();
@@ -220,20 +207,7 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testInvalidLoadType() throws DocumentRetrieverException {
-        exception.expect(DocumentRetrieverException.class);
-        exception.expectMessage("Loadtype with name 'undefinedloadtype' does not exist.\n");
-
-        ClientParameters params = createParameters()
-                .setLoadTypeName("undefinedloadtype")
-                .build();
-
-        DocumentRetriever documentRetriever = createDocumentRetriever(params);
-        documentRetriever.retrieveDocuments();
-    }
-
-    @Test
-    public void testClusterLookup() throws DocumentRetrieverException {
+    void testClusterLookup() throws DocumentRetrieverException {
         final String cluster = "storage",
                 expectedRoute = "[Content:cluster=storage]";
 
@@ -250,35 +224,37 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testInvalidClusterName() throws DocumentRetrieverException {
-        exception.expect(DocumentRetrieverException.class);
-        exception.expectMessage("The Vespa cluster contains the content clusters storage, not invalidclustername. Please select a valid vespa cluster.");
+    void testInvalidClusterName() throws DocumentRetrieverException {
+        Throwable exception = assertThrows(DocumentRetrieverException.class, () -> {
 
-        ClientParameters params = createParameters()
-                .setCluster("invalidclustername")
-                .build();
+            ClientParameters params = createParameters()
+                    .setCluster("invalidclustername")
+                    .build();
 
-        ClusterList clusterList = new ClusterList(Collections.singletonList(new ClusterDef("storage")));
+            ClusterList clusterList = new ClusterList(Collections.singletonList(new ClusterDef("storage")));
 
-        DocumentRetriever documentRetriever = createDocumentRetriever(params, clusterList);
-        documentRetriever.retrieveDocuments();
+            DocumentRetriever documentRetriever = createDocumentRetriever(params, clusterList);
+            documentRetriever.retrieveDocuments();
+        });
+        assertTrue(exception.getMessage().contains("The Vespa cluster contains the content clusters storage, not invalidclustername. Please select a valid vespa cluster."));
     }
 
     @Test
-    public void testEmtpyClusterList() throws DocumentRetrieverException {
-        exception.expect(DocumentRetrieverException.class);
-        exception.expectMessage("The Vespa cluster does not have any content clusters declared.");
+    void testEmtpyClusterList() throws DocumentRetrieverException {
+        Throwable exception = assertThrows(DocumentRetrieverException.class, () -> {
 
-        ClientParameters params = createParameters()
-                .setCluster("invalidclustername")
-                .build();
+            ClientParameters params = createParameters()
+                    .setCluster("invalidclustername")
+                    .build();
 
-        DocumentRetriever documentRetriever = createDocumentRetriever(params);
-        documentRetriever.retrieveDocuments();
+            DocumentRetriever documentRetriever = createDocumentRetriever(params);
+            documentRetriever.retrieveDocuments();
+        });
+        assertTrue(exception.getMessage().contains("The Vespa cluster does not have any content clusters declared."));
     }
 
     @Test
-    public void testHandlingErrorFromMessageBus() throws DocumentRetrieverException {
+    void testHandlingErrorFromMessageBus() throws DocumentRetrieverException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1))
                 .build();
@@ -294,7 +270,7 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testShowDocSize() throws DocumentRetrieverException {
+    void testShowDocSize() throws DocumentRetrieverException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1))
                 .setShowDocSize(true)
@@ -310,7 +286,7 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testPrintIdOnly() throws DocumentRetrieverException {
+    void testPrintIdOnly() throws DocumentRetrieverException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1))
                 .setPrintIdsOnly(true)
@@ -325,7 +301,7 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testDocumentNotFound() throws DocumentRetrieverException {
+    void testDocumentNotFound() throws DocumentRetrieverException {
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1))
                 .setPrintIdsOnly(true)
@@ -341,7 +317,7 @@ public class DocumentRetrieverTest {
     }
 
     @Test
-    public void testTrace() throws DocumentRetrieverException {
+    void testTrace() throws DocumentRetrieverException {
         final int traceLevel = 9;
         ClientParameters params = createParameters()
                 .setDocumentIds(asIterator(DOC_ID_1))

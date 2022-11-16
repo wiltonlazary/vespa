@@ -7,6 +7,7 @@ import com.yahoo.vespa.hosted.node.admin.container.image.ContainerImageDownloade
 import com.yahoo.vespa.hosted.node.admin.container.image.ContainerImagePruner;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.ContainerData;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
+import com.yahoo.vespa.hosted.node.admin.task.util.file.UnixUser;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.CommandLine;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.CommandResult;
 
@@ -33,15 +34,15 @@ public class ContainerOperations {
     private final ContainerImagePruner imagePruner;
     private final ContainerStatsCollector containerStatsCollector;
 
-    public ContainerOperations(ContainerEngine containerEngine, FileSystem fileSystem) {
+    public ContainerOperations(ContainerEngine containerEngine, CGroup cgroup, FileSystem fileSystem) {
         this.containerEngine = Objects.requireNonNull(containerEngine);
         this.imageDownloader = new ContainerImageDownloader(containerEngine);
         this.imagePruner = new ContainerImagePruner(containerEngine, Clock.systemUTC());
-        this.containerStatsCollector = new ContainerStatsCollector(Objects.requireNonNull(fileSystem));
+        this.containerStatsCollector = new ContainerStatsCollector(cgroup, fileSystem);
     }
 
-    public void createContainer(NodeAgentContext context, ContainerData containerData, ContainerResources containerResources) {
-        containerEngine.createContainer(context, containerData, containerResources);
+    public ContainerData createContainer(NodeAgentContext context, ContainerResources containerResources) {
+        return containerEngine.createContainer(context, containerResources);
     }
 
     public void startContainer(NodeAgentContext context) {
@@ -66,13 +67,13 @@ public class ContainerOperations {
     }
 
     /** Executes a command inside container identified by given context. Does NOT throw on non-zero exit code */
-    public CommandResult executeCommandInContainerAsRoot(NodeAgentContext context, String... command) {
-        return executeCommandInContainerAsRoot(context, CommandLine.DEFAULT_TIMEOUT.toSeconds(), command);
+    public CommandResult executeCommandInContainer(NodeAgentContext context, UnixUser user, String... command) {
+        return executeCommandInContainer(context, user, CommandLine.DEFAULT_TIMEOUT, command);
     }
 
     /** Execute command inside container identified by given context. Does NOT throw on non-zero exit code */
-    public CommandResult executeCommandInContainerAsRoot(NodeAgentContext context, Long timeoutSeconds, String... command) {
-        return containerEngine.executeAsRoot(context, Duration.ofSeconds(timeoutSeconds), command);
+    public CommandResult executeCommandInContainer(NodeAgentContext context, UnixUser user, Duration timeout, String... command) {
+        return containerEngine.execute(context, user, timeout, command);
     }
 
     /** Execute command in inside containers network namespace, identified by given context. Throws on non-zero exit code */
@@ -86,7 +87,7 @@ public class ContainerOperations {
     }
 
     /**
-     * Suspend node and return output. Suspending a node means the node should be taken temporarly offline,
+     * Suspend node and return output. Suspending a node means the node should be taken temporarily offline,
      * such that maintenance of the node can be done (upgrading, rebooting, etc).
      */
     public String suspendNode(NodeAgentContext context) {
@@ -141,8 +142,8 @@ public class ContainerOperations {
     }
 
     private String executeNodeCtlInContainer(NodeAgentContext context, String program) {
-        String[] command = new String[] {context.pathInNodeUnderVespaHome("bin/vespa-nodectl").toString(), program};
-        return executeCommandInContainerAsRoot(context, command).getOutput();
+        String[] command = new String[] {context.paths().underVespaHome("bin/vespa-nodectl").pathInContainer(), program};
+        return executeCommandInContainer(context, context.users().vespa(), command).getOutput();
     }
 
 }

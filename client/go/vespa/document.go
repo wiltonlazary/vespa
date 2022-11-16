@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,7 +63,7 @@ func sendOperation(documentId string, jsonFile string, service *Service, operati
 			return util.FailureWithDetail("Could not open file '"+jsonFile+"'", err.Error())
 		}
 		defer fileReader.Close()
-		documentData, err = ioutil.ReadAll(fileReader)
+		documentData, err = io.ReadAll(fileReader)
 		if err != nil {
 			return util.FailureWithDetail("Failed to read '"+jsonFile+"'", err.Error())
 		}
@@ -101,10 +100,10 @@ func sendOperation(documentId string, jsonFile string, service *Service, operati
 		URL:    url,
 		Method: operationToHTTPMethod(operation),
 		Header: header,
-		Body:   ioutil.NopCloser(bytes.NewReader(documentData)),
+		Body:   io.NopCloser(bytes.NewReader(documentData)),
 	}
 	response, err := serviceDo(service, request, jsonFile, options)
-	if response == nil {
+	if err != nil {
 		return util.Failure("Request failed: " + err.Error())
 	}
 
@@ -139,7 +138,8 @@ func operationToHTTPMethod(operation string) string {
 	case "remove":
 		return "DELETE"
 	}
-	panic("Unexpected document operation ''" + operation + "'")
+	util.JustExitMsg("Unexpected document operation ''" + operation + "'")
+	panic("unreachable")
 }
 
 func serviceDo(service *Service, request *http.Request, filename string, options OperationOptions) (*http.Response, error) {
@@ -153,7 +153,7 @@ func serviceDo(service *Service, request *http.Request, filename string, options
 			cmd.Header(k, v)
 		}
 	}
-	cmd.BodyFile = filename
+	cmd.WithBodyFile(filename)
 	cmd.Certificate = service.TLSOptions.CertificateFile
 	cmd.PrivateKey = service.TLSOptions.PrivateKeyFile
 	out := cmd.String() + "\n"
@@ -179,7 +179,7 @@ func Get(documentId string, service *Service, options OperationOptions) util.Ope
 		Method: "GET",
 	}
 	response, err := serviceDo(service, request, "", options)
-	if response == nil {
+	if err != nil {
 		return util.Failure("Request failed: " + err.Error())
 	}
 

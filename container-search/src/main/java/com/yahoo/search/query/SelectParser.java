@@ -16,6 +16,7 @@ import com.yahoo.prelude.query.CompositeItem;
 import com.yahoo.prelude.query.DotProductItem;
 import com.yahoo.prelude.query.EquivItem;
 import com.yahoo.prelude.query.ExactStringItem;
+import com.yahoo.prelude.query.FuzzyItem;
 import com.yahoo.prelude.query.IntItem;
 import com.yahoo.prelude.query.Item;
 import com.yahoo.prelude.query.Limit;
@@ -60,6 +61,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.yahoo.search.yql.YqlParser.MAX_EDIT_DISTANCE;
+import static com.yahoo.search.yql.YqlParser.PREFIX_LENGTH;
 import static com.yahoo.slime.Type.ARRAY;
 import static com.yahoo.slime.Type.DOUBLE;
 import static com.yahoo.slime.Type.LONG;
@@ -82,6 +85,7 @@ import static com.yahoo.search.yql.YqlParser.DISTANCE_THRESHOLD;
 import static com.yahoo.search.yql.YqlParser.DOT_PRODUCT;
 import static com.yahoo.search.yql.YqlParser.EQUIV;
 import static com.yahoo.search.yql.YqlParser.FILTER;
+import static com.yahoo.search.yql.YqlParser.FUZZY;
 import static com.yahoo.search.yql.YqlParser.GEO_LOCATION;
 import static com.yahoo.search.yql.YqlParser.HIT_LIMIT;
 import static com.yahoo.search.yql.YqlParser.HNSW_EXPLORE_ADDITIONAL_HITS;
@@ -515,9 +519,6 @@ public class SelectParser implements Parser {
                 if (TARGET_NUM_HITS.equals(annotation_name)) {
                     weakAnd.setN((int)(annotation_value.asDouble()));
                 }
-                if (SCORE_THRESHOLD.equals(annotation_name)) {
-                    weakAnd.setScoreThreshold((int)(annotation_value.asDouble()));
-                }
             });
         }
 
@@ -926,6 +927,8 @@ public class SelectParser implements Parser {
                 return instantiateONearItem(field, key, value);
             case EQUIV:
                 return instantiateEquivItem(field, key, value);
+            case FUZZY:
+                return instantiateFuzzyItem(field, key, value);
             case ALTERNATIVES:
                 return instantiateWordAlternativesItem(field, key, value);
             default:
@@ -1153,6 +1156,22 @@ public class SelectParser implements Parser {
         }
 
         return leafStyleSettings(getAnnotations(value), equiv);
+    }
+
+    private Item instantiateFuzzyItem(String field, String key, Inspector value) {
+        HashMap<Integer, Inspector> children = childMap(value);
+        HashMap<String, Inspector> annotations = getAnnotationMap(value);
+
+        Preconditions.checkArgument(children.size() == 1, "Expected 1 argument, got %s.", children.size());
+
+        String wordData = children.get(0).asString();
+
+        Integer maxEditDistance = getIntegerAnnotation(MAX_EDIT_DISTANCE, annotations, FuzzyItem.DEFAULT_MAX_EDIT_DISTANCE);
+        Integer prefixLength = getIntegerAnnotation(PREFIX_LENGTH, annotations, FuzzyItem.DEFAULT_PREFIX_LENGTH);
+
+        FuzzyItem fuzzy = new FuzzyItem(field, true, wordData, maxEditDistance, prefixLength);
+
+        return leafStyleSettings(getAnnotations(value), fuzzy);
     }
 
     private Item instantiateWordAlternativesItem(String field, String key, Inspector value) {

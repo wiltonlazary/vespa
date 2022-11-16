@@ -8,17 +8,20 @@
 #include <vespa/searchcore/proton/flushengine/shrink_lid_space_flush_target.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
 #include <vespa/searchlib/attribute/integerbase.h>
-#include <vespa/searchlib/common/indexmetainfo.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/common/flush_token.h>
+#include <vespa/searchlib/common/indexmetainfo.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/test/directory_handler.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/datastore/datastorebase.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/foreground_thread_executor.h>
 #include <vespa/vespalib/util/foregroundtaskexecutor.h>
+#include <vespa/vespalib/util/idestructorcallback.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
+#include <filesystem>
 #include <thread>
 
 #include <vespa/log/log.h>
@@ -296,7 +299,8 @@ struct AttributeManagerFixture
 
 AttributeManagerFixture::AttributeManagerFixture(BaseFixture &bf)
     : _msp(std::make_shared<AttributeManager>(test_dir, "test.subdb", TuneFileAttributes(),
-                                              bf._fileHeaderContext, bf._attributeFieldWriter, bf._shared, bf._hwInfo)),
+                                              bf._fileHeaderContext, std::make_shared<search::attribute::Interlock>(),
+                                              bf._attributeFieldWriter, bf._shared, bf._hwInfo)),
       _m(*_msp)
 {}
 AttributeManagerFixture::~AttributeManagerFixture() = default;
@@ -432,9 +436,9 @@ Test::requireThatCleanUpIsPerformedAfterFlush()
     std::string base = "flush/a6";
     std::string snap10 = "flush/a6/snapshot-10";
     std::string snap20 = "flush/a6/snapshot-20";
-    vespalib::mkdir(base, false);
-    vespalib::mkdir(snap10, false);
-    vespalib::mkdir(snap20, false);
+    std::filesystem::create_directory(std::filesystem::path(base));
+    std::filesystem::create_directory(std::filesystem::path(snap10));
+    std::filesystem::create_directory(std::filesystem::path(snap20));
     IndexMetaInfo info("flush/a6");
     info.addSnapshot(IndexMetaInfo::Snapshot(true, 10, "snapshot-10"));
     info.addSnapshot(IndexMetaInfo::Snapshot(false, 20, "snapshot-20"));
@@ -568,13 +572,13 @@ Test::requireThatShrinkWorks()
     EXPECT_FALSE(av->canShrinkLidSpace());
     EXPECT_EQUAL(1000u, av->getNumDocs());
     EXPECT_EQUAL(100u, av->getCommittedDocIdLimit());
-    aw.heartBeat(51);
+    aw.heartBeat(51, IDestructorCallback::SP());
     EXPECT_TRUE(av->wantShrinkLidSpace());
     EXPECT_FALSE(av->canShrinkLidSpace());
     EXPECT_EQUAL(ft->getApproxMemoryGain().getBefore(),
                  ft->getApproxMemoryGain().getAfter());
     g.reset();
-    aw.heartBeat(52);
+    aw.heartBeat(52, IDestructorCallback::SP());
     EXPECT_TRUE(av->wantShrinkLidSpace());
     EXPECT_TRUE(av->canShrinkLidSpace());
     EXPECT_TRUE(ft->getApproxMemoryGain().getBefore() >
@@ -658,7 +662,7 @@ Test::Main()
     if (_argc > 0) {
         DummyFileHeaderContext::setCreator(_argv[0]);
     }
-    vespalib::rmdir(test_dir, true);
+    std::filesystem::remove_all(std::filesystem::path(test_dir));
     TEST_DO(requireThatUpdaterAndFlusherCanRunConcurrently());
     TEST_DO(requireThatFlushableAttributeReportsMemoryUsage());
     TEST_DO(requireThatFlushableAttributeManagesSyncTokenInfo());

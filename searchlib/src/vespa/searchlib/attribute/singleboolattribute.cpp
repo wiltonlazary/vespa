@@ -1,14 +1,17 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "singleboolattribute.h"
 #include "attributevector.hpp"
 #include "iattributesavetarget.h"
 #include "ipostinglistsearchcontext.h"
 #include "primitivereader.h"
-#include "singleboolattribute.h"
+#include "search_context.h"
+#include "valuemodifier.h"
 #include <vespa/searchlib/common/bitvectoriterator.h>
 #include <vespa/searchlib/query/query_term_simple.h>
 #include <vespa/searchlib/queryeval/emptysearch.h>
 #include <vespa/searchlib/util/file_settings.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/data/databuffer.h>
 #include <vespa/vespalib/util/size_literals.h>
 
@@ -17,22 +20,23 @@ namespace search {
 using attribute::Config;
 
 SingleBoolAttribute::
-SingleBoolAttribute(const vespalib::string &baseFileName, const GrowStrategy & grow)
-    : IntegerAttributeTemplate<int8_t>(baseFileName, Config(BasicType::BOOL, CollectionType::SINGLE).setGrowStrategy(grow), BasicType::BOOL),
-      _bv(0, 0, getGenerationHolder())
+SingleBoolAttribute(const vespalib::string &baseFileName, const GrowStrategy & grow, bool paged)
+    : IntegerAttributeTemplate<int8_t>(baseFileName, Config(BasicType::BOOL, CollectionType::SINGLE).setGrowStrategy(grow).setPaged(paged), BasicType::BOOL),
+      _init_alloc(get_initial_alloc()),
+      _bv(0, 0, getGenerationHolder(), get_memory_allocator() ? &_init_alloc : nullptr)
 {
 }
 
 SingleBoolAttribute::~SingleBoolAttribute()
 {
-    getGenerationHolder().clearHoldLists();
+    getGenerationHolder().reclaim_all();
 }
 
 void
 SingleBoolAttribute::ensureRoom(DocId docIdLimit) {
-    if (_bv.capacity() < docIdLimit) {
+    if (_bv.writer().capacity() < docIdLimit) {
         const GrowStrategy & gs = this->getConfig().getGrowStrategy();
-        uint32_t newSize = docIdLimit + (docIdLimit * gs.getDocsGrowFactor()) + gs.getDocsGrowDelta();
+        uint32_t newSize = docIdLimit + (docIdLimit * gs.getGrowFactor()) + gs.getGrowDelta();
         bool incGen = _bv.reserve(newSize);
         if (incGen) {
             incGeneration();
@@ -49,7 +53,7 @@ SingleBoolAttribute::addDoc(DocId & doc) {
     incNumDocs();
     doc = getNumDocs() - 1;
     updateUncommittedDocIdLimit(doc);
-    removeAllOldGenerations();
+    reclaim_unused_memory();
     return true;
 }
 
@@ -66,17 +70,17 @@ SingleBoolAttribute::onCommit() {
                 setBit(change._doc, change._data != 0);
             } else if ((change._type >= ChangeBase::ADD) && (change._type <= ChangeBase::DIV)) {
                 std::atomic_thread_fence(std::memory_order_release);
-                int8_t val = applyArithmetic(getFast(change._doc), change);
+                int8_t val = applyArithmetic<int8_t, largeint_t>(getFast(change._doc), change._data.getArithOperand(), change._type);
                 setBit(change._doc, val != 0);
             } else if (change._type == ChangeBase::CLEARDOC) {
                 std::atomic_thread_fence(std::memory_order_release);
-                _bv.clearBitAndMaintainCount(change._doc);
+                _bv.writer().clearBitAndMaintainCount(change._doc);
             }
         }
     }
 
     std::atomic_thread_fence(std::memory_order_release);
-    removeAllOldGenerations();
+    reclaim_unused_memory();
 
     _changes.clear();
 }
@@ -89,19 +93,20 @@ SingleBoolAttribute::onAddDocs(DocId docIdLimit) {
 void
 SingleBoolAttribute::onUpdateStat() {
     vespalib::MemoryUsage usage;
-    usage.setAllocatedBytes(_bv.extraByteSize());
-    usage.setUsedBytes(_bv.sizeBytes());
-    usage.mergeGenerationHeldBytes(getGenerationHolder().getHeldBytes());
+    usage.setAllocatedBytes(_bv.writer().extraByteSize());
+    usage.setUsedBytes(_bv.writer().sizeBytes());
+    usage.mergeGenerationHeldBytes(getGenerationHolder().get_held_bytes());
     usage.merge(this->getChangeVectorMemoryUsage());
-    this->updateStatistics(_bv.size(), _bv.size(), usage.allocatedBytes(), usage.usedBytes(),
+    this->updateStatistics(_bv.writer().size(), _bv.writer().size(), usage.allocatedBytes(), usage.usedBytes(),
                            usage.deadBytes(), usage.allocatedBytesOnHold());
 }
 
 namespace {
 
-class BitVectorSearchContext : public AttributeVector::SearchContext, public attribute::IPostingListSearchContext
+class BitVectorSearchContext : public attribute::SearchContext, public attribute::IPostingListSearchContext
 {
 private:
+    uint32_t _doc_id_limit;
     const BitVector & _bv;
     bool _invert;
     bool _valid;
@@ -120,7 +125,7 @@ private:
     }
 
 public:
-    BitVectorSearchContext(std::unique_ptr<QueryTermSimple> qTerm, const SingleBoolAttribute & bv);
+    BitVectorSearchContext(std::unique_ptr<QueryTermSimple> qTerm, const SingleBoolAttribute & attr);
 
     std::unique_ptr<queryeval::SearchIterator>
     createFilterIterator(fef::TermFieldMatchData * matchData, bool strict) override;
@@ -131,6 +136,7 @@ public:
 
 BitVectorSearchContext::BitVectorSearchContext(std::unique_ptr<QueryTermSimple> qTerm, const SingleBoolAttribute & attr)
     : SearchContext(attr),
+      _doc_id_limit(attr.getCommittedDocIdLimit()),
       _bv(attr.getBitVector()),
       _invert(false),
       _valid(qTerm->isValid())
@@ -150,7 +156,7 @@ BitVectorSearchContext::createFilterIterator(fef::TermFieldMatchData * matchData
     if (!valid()) {
         return std::make_unique<queryeval::EmptySearch>();
     }
-    return BitVectorIterator::create(&_bv, _attr.getCommittedDocIdLimit(), *matchData, strict, _invert);
+    return BitVectorIterator::create(&_bv, _doc_id_limit, *matchData, strict, _invert);
 }
 
 void
@@ -173,7 +179,7 @@ BitVectorSearchContext::approximateHits() const {
 
 }
 
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 SingleBoolAttribute::getSearch(std::unique_ptr<QueryTermSimple> term, const attribute::SearchContextParams &) const {
     return std::make_unique<BitVectorSearchContext>(std::move(term), *this);
 }
@@ -185,14 +191,14 @@ SingleBoolAttribute::onLoad(vespalib::Executor *)
     bool ok(attrReader.hasData());
     if (ok) {
         setCreateSerialNum(attrReader.getCreateSerialNum());
-        getGenerationHolder().clearHoldLists();
-        _bv.clear();
+        getGenerationHolder().reclaim_all();
+        _bv.writer().clear();
         uint32_t numDocs = attrReader.getNextData();
         _bv.extend(numDocs);
-        ssize_t bytesRead = attrReader.getReader().read(_bv.getStart(), _bv.sizeBytes());
-        _bv.invalidateCachedCount();
-        _bv.countTrueBits();
-        assert(bytesRead == _bv.sizeBytes());
+        ssize_t bytesRead = attrReader.getReader().read(_bv.writer().getStart(), _bv.writer().sizeBytes());
+        _bv.writer().invalidateCachedCount();
+        _bv.writer().countTrueBits();
+        assert(bytesRead == _bv.writer().sizeBytes());
         setNumDocs(numDocs);
         setCommittedDocIdLimit(numDocs);
     }
@@ -205,7 +211,7 @@ SingleBoolAttribute::onSave(IAttributeSaveTarget &saveTarget)
 {
     assert(!saveTarget.getEnumerated());
     const size_t numDocs(getCommittedDocIdLimit());
-    const size_t sz(sizeof(uint32_t) + _bv.sizeBytes());
+    const size_t sz(sizeof(uint32_t) + _bv.writer().sizeBytes());
     IAttributeSaveTarget::Buffer buf(saveTarget.datWriter().allocBuf(sz));
 
     char *p = buf->getFree();
@@ -213,8 +219,8 @@ SingleBoolAttribute::onSave(IAttributeSaveTarget &saveTarget)
     uint32_t numDocs2 = numDocs;
     memcpy(p, &numDocs2, sizeof(uint32_t));
     p += sizeof(uint32_t);
-    memcpy(p, _bv.getStart(), _bv.sizeBytes());
-    p += _bv.sizeBytes();
+    memcpy(p, _bv.writer().getStart(), _bv.writer().sizeBytes());
+    p += _bv.writer().sizeBytes();
     assert(p == e);
     (void) e;
     buf->moveFreeToData(sz);
@@ -223,7 +229,7 @@ SingleBoolAttribute::onSave(IAttributeSaveTarget &saveTarget)
 }
 
 void
-SingleBoolAttribute::clearDocs(DocId lidLow, DocId lidLimit)
+SingleBoolAttribute::clearDocs(DocId lidLow, DocId lidLimit, bool)
 {
     assert(lidLow <= lidLimit);
     assert(lidLimit <= getNumDocs());
@@ -247,17 +253,17 @@ uint64_t
 SingleBoolAttribute::getEstimatedSaveByteSize() const
 {
     constexpr uint64_t headerSize = FileSettings::DIRECTIO_ALIGNMENT + sizeof(uint32_t);
-    return headerSize + _bv.sizeBytes();
+    return headerSize + _bv.reader().sizeBytes();
 }
 
 void
-SingleBoolAttribute::removeOldGenerations(generation_t firstUsed) {
-    getGenerationHolder().trimHoldLists(firstUsed);
+SingleBoolAttribute::reclaim_memory(generation_t oldest_used_gen) {
+    getGenerationHolder().reclaim(oldest_used_gen);
 }
 
 void
-SingleBoolAttribute::onGenerationChange(generation_t generation) {
-    getGenerationHolder().transferHoldLists(generation - 1);
+SingleBoolAttribute::before_inc_generation(generation_t current_gen) {
+    getGenerationHolder().assign_generation(current_gen);
 }
 
 }

@@ -179,8 +179,9 @@ public:
     /**
        Set the priority we should send messages from this operation with.
     */
-    void setPriority(api::StorageMessage::Priority priority)
-    { _priority = priority; }
+    void setPriority(api::StorageMessage::Priority priority) noexcept {
+        _priority = priority;
+    }
 
     /**
      * Returns true if we are blocked to start this operation given
@@ -217,7 +218,7 @@ public:
     /**
      * Should return true if the given message type should block this operation.
      */
-    virtual bool shouldBlockThisOperation(uint32_t messageType, uint8_t priority) const;
+    virtual bool shouldBlockThisOperation(uint32_t messageType, uint16_t node, uint8_t priority) const;
 
 protected:
     friend struct IdealStateManagerTest;

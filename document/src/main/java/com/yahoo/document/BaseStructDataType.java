@@ -1,9 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.document;
 
-import com.yahoo.compress.CompressionType;
-import com.yahoo.compress.Compressor;
-
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,8 +14,6 @@ public abstract class BaseStructDataType extends StructuredDataType {
 
     protected Map<Integer, Field> fieldIds = new LinkedHashMap<>();
     protected Map<String, Field> fields = new LinkedHashMap<>();
-
-    protected Compressor compressor = new Compressor(CompressionType.NONE);
 
     BaseStructDataType(String name) {
         super(name);
@@ -99,29 +94,6 @@ public abstract class BaseStructDataType extends StructuredDataType {
 
     public int getFieldCount() {
         return fields.size();
-    }
-
-    /** Returns the compressor to use to compress data of this type */
-    public Compressor getCompressor() { return compressor; }
-
-    /** Returns a view of the configuration of the compressor used to compress this type */
-    public CompressionConfig getCompressionConfig() {
-        // CompressionConfig accepts a percentage (but exposes a factor) ...
-        float compressionThresholdPercentage = (float)compressor.compressionThresholdFactor() * 100;
-
-        return new CompressionConfig(compressor.type(),
-                                     compressor.level(),
-                                     compressionThresholdPercentage,
-                                     compressor.compressMinSizeBytes());
-    }
-
-    /** Set the config to the compressor used to compress data of this type */
-    public void setCompressionConfig(CompressionConfig config) {
-        CompressionType type = config.type;
-        compressor = new Compressor(type,
-                                    config.compressionLevel,
-                                    config.thresholdFactor(),
-                                    (int)config.minsize);
     }
 
 }

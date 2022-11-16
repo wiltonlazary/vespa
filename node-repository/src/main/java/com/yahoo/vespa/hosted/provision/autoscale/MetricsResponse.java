@@ -60,7 +60,7 @@ public class MetricsResponse {
     private void consumeNode(Inspector nodeObject, NodeList applicationNodes, NodeRepository nodeRepository) {
         String hostname = nodeObject.field("hostname").asString();
         Optional<Node> node = applicationNodes.node(hostname);
-        if (node.isEmpty()) return; // Node is not part of this cluster any more
+        if (node.isEmpty()) return; // Node is not part of this cluster any longer
 
         ListMap<String, Double> nodeValues = new ListMap<>();
         Instant at = consumeNodeMetrics(nodeObject.field("node"), nodeValues);
@@ -197,9 +197,9 @@ public class MetricsResponse {
             @Override
             public List<String> metricResponseNames() {
                 return List.of("feed.http-requests.rate",
-                               "vds.filestor.alldisks.allthreads.put.sum.count.rate",
-                               "vds.filestor.alldisks.allthreads.remove.sum.count.rate",
-                               "vds.filestor.alldisks.allthreads.update.sum.count.rate"); }
+                               "vds.filestor.allthreads.put.count.rate",
+                               "vds.filestor.allthreads.remove.count.rate",
+                               "vds.filestor.allthreads.update.count.rate"); }
 
         };
 

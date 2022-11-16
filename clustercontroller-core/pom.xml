@@ -5,14 +5,20 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../parent/pom.xml</relativePath>
     </parent>
     <artifactId>clustercontroller-core</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <packaging>container-plugin</packaging>
     <name>${project.artifactId}</name>
     <dependencies>
+        <dependency>
+            <groupId>com.yahoo.vespa</groupId>
+            <artifactId>annotations</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <!-- required for bundle-plugin to generate import-package statements for Java's standard library -->
             <groupId>com.yahoo.vespa</groupId>
@@ -21,8 +27,8 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
-	        <groupId>com.google.guava</groupId>
-	        <artifactId>guava</artifactId>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -32,13 +38,14 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
-            <artifactId>mockito-core</artifactId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>${mockito.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -47,8 +54,14 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.codehaus.jettison</groupId>
-            <artifactId>jettison</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -125,44 +138,9 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <forkCount>4</forkCount>
+                    <rerunFailingTestsCount>5</rerunFailingTestsCount>
                 </configuration>
             </plugin>
         </plugins>
     </build>
-    <profiles>
-        <profile>
-            <id>systemtests</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-surefire-plugin</artifactId>
-                        <configuration>
-                            <includes>
-                                <include>**/DatabaseTest.java</include>
-                                <include>**/MasterElectionTest.java</include>
-                            </includes>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-        <profile>
-            <id>factory-tests</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-surefire-plugin</artifactId>
-                        <configuration>
-                            <excludes>
-                                <exclude>**/DatabaseTest.java</exclude>
-                                <exclude>**/MasterElectionTest.java</exclude>
-                            </excludes>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-    </profiles>
 </project>

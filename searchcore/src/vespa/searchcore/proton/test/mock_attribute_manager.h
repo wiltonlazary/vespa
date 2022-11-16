@@ -1,10 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
-#include <vespa/vespalib/util/hdr_abort.h>
-#include <vespa/searchlib/test/mock_attribute_manager.h>
 #include <vespa/searchcore/proton/attribute/i_attribute_manager.h>
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
+#include <vespa/searchlib/test/mock_attribute_manager.h>
+#include <vespa/vespalib/util/hdr_abort.h>
+#include <cassert>
 
 namespace proton::test {
 
@@ -14,7 +15,7 @@ private:
     std::vector<search::AttributeVector*> _writables;
     std::unique_ptr<ImportedAttributesRepo> _importedAttributes;
     vespalib::ISequencedTaskExecutor* _writer;
-    vespalib::ThreadExecutor* _shared;
+    vespalib::Executor* _shared;
 
 public:
     MockAttributeManager()
@@ -33,7 +34,7 @@ public:
     void set_writer(vespalib::ISequencedTaskExecutor& writer) {
         _writer = &writer;
     }
-    void set_shared_executor(vespalib::ThreadExecutor& shared) {
+    void set_shared_executor(vespalib::Executor& shared) {
         _shared = &shared;
     }
     search::AttributeGuard::UP getAttribute(const vespalib::string &name) const override {
@@ -48,7 +49,7 @@ public:
     search::attribute::IAttributeContext::UP createContext() const override {
         return _mock.createContext();
     }
-    IAttributeManager::SP create(const AttributeCollectionSpec &) const override {
+    IAttributeManager::SP create(AttributeCollectionSpec &&) const override {
         return IAttributeManager::SP();
     }
     std::vector<searchcorespi::IFlushTarget::SP> getFlushTargets() const override {
@@ -72,7 +73,7 @@ public:
         assert(_writer != nullptr);
         return *_writer;
     }
-    vespalib::ThreadExecutor& get_shared_executor() const override {
+    vespalib::Executor& get_shared_executor() const override {
         assert(_shared != nullptr);
         return *_shared;
     }
@@ -86,8 +87,9 @@ public:
     const std::vector<search::AttributeVector *> &getWritableAttributes() const override {
         return _writables;
     }
-    void asyncForEachAttribute(std::shared_ptr<IConstAttributeFunctor>) const override {
-    }
+    void asyncForEachAttribute(std::shared_ptr<IConstAttributeFunctor>) const override { }
+    void asyncForEachAttribute(std::shared_ptr<IAttributeFunctor>, OnDone) const override { }
+
     ExclusiveAttributeReadAccessor::UP getExclusiveReadAccessor(const vespalib::string &) const override {
         return ExclusiveAttributeReadAccessor::UP();
     }

@@ -72,6 +72,9 @@ findhost () {
 findroot
 findhost
 
+ROOT=${VESPA_HOME%/}
+export ROOT
+
 # END environment bootstrap section
 
 Usage() {
@@ -97,6 +100,11 @@ Fail() {
 
 FixDataDirectory() {
     if ! [ -d "$1" ]; then
+        if [ -e "$1" ]; then
+            # TODO: Remove this if-branch once >=7.511 has rolled out everywhere
+            echo "Removing file '$1'"
+            rm "$1"
+        fi
         echo "Creating data directory '$1'"
         mkdir -p "$1" || exit 1
     fi
@@ -115,7 +123,7 @@ StartCommand() {
         Fail "Service must match regex '$service_regex'"
     fi
 
-    local pidfile="$VESPA_HOME/var/run/$service.pid"
+    local pidfile="${VESPA_HOME}/var/run/$service.pid"
     if [ "$force" = false ] && test -r "$pidfile"; then
         echo "$service is already running as PID $(< "$pidfile") according to $pidfile"
         return
@@ -125,22 +133,26 @@ StartCommand() {
     export VESPA_SERVICE_NAME="$service"
 
     # stuff for the process:
-    local appdir="$VESPA_HOME/conf/$service-app"
-    local cfpfile="$VESPA_HOME/var/jdisc_container/$service.properties"
-    local bundlecachedir="$VESPA_HOME/var/vespa/bundlecache/$service"
+    local appdir="${VESPA_HOME}/conf/$service-app"
+    local cfpfile="${VESPA_HOME}/var/jdisc_container/$service.properties"
+    local bundlecachedir="${VESPA_HOME}/var/vespa/bundlecache/$service"
 
-    cd "$VESPA_HOME" || Fail "Cannot cd to $VESPA_HOME"
+    cd "${VESPA_HOME}" || Fail "Cannot cd to ${VESPA_HOME}"
 
     fixlimits
+
+    # If JAVA_HOME is set in the environment, the sourcing of common-env.sh
+    # elsewhere in this file ensures $JAVA_HOME/bin is first in PATH, so 'java'
+    # may be invoked w/o path.  In any case, checkjava verifies bare 'java'.
     checkjava
 
     FixDataDirectory "$(dirname "$pidfile")"
 
-    local vespa_log="$VESPA_HOME/logs/vespa/vespa.log"
+    local vespa_log="${VESPA_HOME}/logs/vespa/vespa.log"
     export VESPA_LOG_TARGET="file:$vespa_log"
     FixDataDirectory "$(dirname "$vespa_log")"
 
-    export VESPA_LOG_CONTROL_FILE="$VESPA_HOME/var/db/vespa/logcontrol/$service.logcontrol"
+    export VESPA_LOG_CONTROL_FILE="${VESPA_HOME}/var/db/vespa/logcontrol/$service.logcontrol"
     export VESPA_LOG_CONTROL_DIR="$(dirname "$VESPA_LOG_CONTROL_FILE")"
     FixDataDirectory "$VESPA_LOG_CONTROL_DIR"
 
@@ -151,26 +163,30 @@ StartCommand() {
     export standalone_jdisc_container__app_location="$appdir"
 
     # class path
-    CP="$VESPA_HOME/lib/jars/jdisc_core-jar-with-dependencies.jar"
+    CP="${VESPA_HOME}/lib/jars/jdisc_core-jar-with-dependencies.jar"
 
     FixDataDirectory "$(dirname "$cfpfile")"
     printenv > "$cfpfile"
     FixDataDirectory "$bundlecachedir"
+    FixDataDirectory "${VESPA_HOME}/var/crash"
 
+    heap_min=$(get_min_heap_mb "${jvm_arguments}" 128)
+    heap_max=$(get_max_heap_mb "${jvm_arguments}" 2048)
     java \
-        -Xms128m -Xmx2048m \
+        -Xms${heap_min}m -Xmx${heap_max}m \
         -XX:+PreserveFramePointer \
+        $(get_jvm_hugepage_settings $heap_max) \
         -XX:+HeapDumpOnOutOfMemoryError \
-        -XX:HeapDumpPath="$VESPA_HOME/var/crash" \
+        -XX:HeapDumpPath="${VESPA_HOME}/var/crash" \
         -XX:+ExitOnOutOfMemoryError \
-        --illegal-access=warn \
         --add-opens=java.base/java.io=ALL-UNNAMED \
         --add-opens=java.base/java.lang=ALL-UNNAMED \
         --add-opens=java.base/java.net=ALL-UNNAMED \
         --add-opens=java.base/java.nio=ALL-UNNAMED \
         --add-opens=java.base/jdk.internal.loader=ALL-UNNAMED \
         --add-opens=java.base/sun.security.ssl=ALL-UNNAMED  \
-        -Djava.library.path="$VESPA_HOME/lib64" \
+        -Djava.library.path="${VESPA_HOME}/lib64" \
+        -Djava.security.properties=${VESPA_HOME}/conf/vespa/java.security.override \
         -Djava.awt.headless=true \
         -Dsun.rmi.dgc.client.gcInterval=3600000 \
         -Dsun.net.client.defaultConnectTimeout=5000 \
@@ -180,10 +196,10 @@ StartCommand() {
         -Djdisc.config.file="$cfpfile" \
         -Djdisc.export.packages= \
         -Djdisc.cache.path="$bundlecachedir" \
-        -Djdisc.bundle.path="$VESPA_HOME/lib/jars" \
-        -Djdisc.logger.enabled=true \
-        -Djdisc.logger.level=ALL \
-        -Djdisc.logger.tag="jdisc/$service" \
+        -Djdisc.bundle.path="${VESPA_HOME}/lib/jars" \
+        -Djdisc.logger.enabled=false \
+        -Djdisc.logger.level=WARNING \
+        -Djdisc.logger.tag="$service" \
         -Dfile.encoding=UTF-8 \
         -cp "$CP" \
         "${jvm_arguments[@]}" \
@@ -257,7 +273,7 @@ StopCommand() {
     local service="$2"
     local force="$3"
 
-    local pidfile="$VESPA_HOME/var/run/$service.pid"
+    local pidfile="${VESPA_HOME}/var/run/$service.pid"
     if ! test -r "$pidfile"; then
         echo "$service is not running"
         return

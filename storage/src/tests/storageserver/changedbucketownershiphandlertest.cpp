@@ -13,6 +13,7 @@
 #include <vespa/storageapi/message/persistence.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/update/documentupdate.h>
+#include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/test/make_document_bucket.h>
 #include <vespa/storage/storageserver/changedbucketownershiphandler.h>
 #include <vespa/vdslib/distribution/distribution.h>
@@ -125,7 +126,7 @@ ChangedBucketOwnershipHandlerTest::SetUp()
 
     _app.reset(new TestServiceLayerApp);
     _top.reset(new DummyStorageLink);
-    _handler = new ChangedBucketOwnershipHandler(config.getConfigId(),
+    _handler = new ChangedBucketOwnershipHandler(config::ConfigUri(config.getConfigId()),
                                                  _app->getComponentRegister());
     _top->push_back(std::unique_ptr<StorageLink>(_handler));
     _bottom = new DummyStorageLink;

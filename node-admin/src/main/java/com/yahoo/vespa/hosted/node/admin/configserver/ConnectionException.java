@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.configserver;
 
 import com.yahoo.vespa.hosted.node.admin.nodeadmin.ConvergenceException;
@@ -15,7 +15,7 @@ import java.net.SocketTimeoutException;
 public class ConnectionException extends ConvergenceException {
 
     private ConnectionException(String message, Throwable cause) {
-        super(message, cause);
+        super(message, cause, true);
     }
 
     /**

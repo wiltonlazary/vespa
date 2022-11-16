@@ -1,20 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/document/fieldvalue/intfieldvalue.h>
-#include <vespa/document/fieldvalue/stringfieldvalue.h>
-#include <vespa/document/update/arithmeticvalueupdate.h>
-#include <vespa/document/update/assignvalueupdate.h>
-#include <vespa/document/update/mapvalueupdate.h>
-#include <vespa/fastlib/io/bufferedfile.h>
+
 #include <vespa/searchlib/attribute/address_space_components.h>
 #include <vespa/searchlib/attribute/attribute.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
 #include <vespa/searchlib/attribute/attributeguard.h>
 #include <vespa/searchlib/attribute/attributememorysavetarget.h>
-#include <vespa/searchlib/attribute/attributevector.hpp>
-#include <vespa/searchlib/attribute/attrvector.h>
 #include <vespa/searchlib/attribute/multienumattribute.hpp>
-#include <vespa/searchlib/attribute/multinumericattribute.h>
 #include <vespa/searchlib/attribute/multistringattribute.h>
 #include <vespa/searchlib/attribute/multivalueattribute.hpp>
 #include <vespa/searchlib/attribute/predicate_attribute.h>
@@ -23,9 +15,19 @@
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/test/weighted_type_test_utils.h>
 #include <vespa/searchlib/util/randomgenerator.h>
-#include <vespa/vespalib/io/fileutil.h>
-#include <vespa/vespalib/testkit/testapp.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/update/arithmeticvalueupdate.h>
+#include <vespa/document/update/assignvalueupdate.h>
+#include <vespa/document/update/mapvalueupdate.h>
+#include <vespa/vespalib/gtest/gtest.h>
+#include <vespa/vespalib/util/mmap_file_allocator_factory.h>
+#include <vespa/vespalib/util/round_up_to_page_size.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/fastos/file.h>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 
 #include <vespa/log/log.h>
@@ -43,10 +45,22 @@ using vespalib::string;
 
 namespace {
 
-string empty;
 string tmpDir("tmp");
 string clsDir("clstmp");
 string asuDir("asutmp");
+
+}
+
+namespace search {
+
+namespace {
+
+string empty;
+
+string make_scoped_trace_msg(string prefix, const search::attribute::Config &config)
+{
+    return prefix + ", basic type=" + config.basicType().asString() + ", collection type=" + config.collectionType().asString();
+}
 
 bool
 isUnsignedSmallIntAttribute(const BasicType::Type &type)
@@ -71,21 +85,23 @@ template <typename BufferType>
 void
 expectZero(const BufferType &b)
 {
-    EXPECT_EQUAL(0, b);
+    EXPECT_EQ(0, b);
 }
 
 template <>
 void
 expectZero(const string &b)
 {
-    EXPECT_EQUAL(empty, b);
+    EXPECT_EQ(empty, b);
 }
 
 uint64_t
 statSize(const string &fileName)
 {
     FastOS_StatInfo statInfo;
-    if (EXPECT_TRUE(FastOS_File::Stat(fileName.c_str(), &statInfo))) {
+    bool stat_result = true;
+    EXPECT_TRUE(FastOS_File::Stat(fileName.c_str(), &statInfo)) << (stat_result = false, "");
+    if (stat_result) {
         return statInfo._size;
     } else {
         return 0u;
@@ -157,14 +173,12 @@ bool contains_value(const Container& c, size_t elems, const V& value) {
 
 }
 
-namespace search {
-
 using attribute::CollectionType;
 using attribute::Config;
 
-class AttributeTest : public vespalib::TestApp
+class AttributeTest : public ::testing::Test
 {
-private:
+protected:
     typedef AttributeVector::SP AttributePtr;
 
     void addDocs(const AttributePtr & v, size_t sz);
@@ -275,39 +289,40 @@ private:
     void testReaderDuringLastUpdate();
 
     void testPendingCompaction();
+    void testConditionalCommit();
+
+    int test_paged_attribute(const vespalib::string& name, const vespalib::string& swapfile, const search::attribute::Config& cfg);
+    void test_paged_attributes();
 
 public:
     AttributeTest();
-    int Main() override;
 };
 
 AttributeTest::AttributeTest() = default;
 
 void AttributeTest::testBaseName()
 {
-    AttributeVector::BaseName v("attr1");
-    EXPECT_EQUAL(v.getAttributeName(), "attr1");
+    attribute::BaseName v("attr1");
+    EXPECT_EQ(v.getAttributeName(), "attr1");
     EXPECT_TRUE(v.getDirName().empty());
     v = "attribute/attr1/attr1";
-    EXPECT_EQUAL(v.getAttributeName(), "attr1");
-    EXPECT_EQUAL(v.getDirName(), "attribute/attr1");
+    EXPECT_EQ(v.getAttributeName(), "attr1");
+    EXPECT_EQ(v.getDirName(), "attribute/attr1");
     v = "attribute/attr1/snapshot-X/attr1";
-    EXPECT_EQUAL(v.getAttributeName(), "attr1");
-    EXPECT_EQUAL(v.getDirName(), "attribute/attr1/snapshot-X");
+    EXPECT_EQ(v.getAttributeName(), "attr1");
+    EXPECT_EQ(v.getDirName(), "attribute/attr1/snapshot-X");
     v = "/attribute/attr1/snapshot-X/attr1";
-    EXPECT_EQUAL(v.getAttributeName(), "attr1");
-    EXPECT_EQUAL(v.getDirName(), "/attribute/attr1/snapshot-X");
+    EXPECT_EQ(v.getAttributeName(), "attr1");
+    EXPECT_EQ(v.getDirName(), "/attribute/attr1/snapshot-X");
     v = "index.1/1.ready/attribute/attr1/snapshot-X/attr1";
-    EXPECT_EQUAL(v.getAttributeName(), "attr1");
-    EXPECT_EQUAL(v.getDirName(), "index.1/1.ready/attribute/attr1/snapshot-X");
+    EXPECT_EQ(v.getAttributeName(), "attr1");
+    EXPECT_EQ(v.getDirName(), "index.1/1.ready/attribute/attr1/snapshot-X");
     v = "/index.1/1.ready/attribute/attr1/snapshot-X/attr1";
-    EXPECT_EQUAL(v.getAttributeName(), "attr1");
-    EXPECT_EQUAL(v.getDirName(),
-                 "/index.1/1.ready/attribute/attr1/snapshot-X");
+    EXPECT_EQ(v.getAttributeName(), "attr1");
+    EXPECT_EQ(v.getDirName(), "/index.1/1.ready/attribute/attr1/snapshot-X");
     v = "xxxyyyy/zzz/index.1/1.ready/attribute/attr1/snapshot-X/attr1";
-    EXPECT_EQUAL(v.getAttributeName(), "attr1");
-    EXPECT_EQUAL(v.getDirName(),
-               "xxxyyyy/zzz/index.1/1.ready/attribute/attr1/snapshot-X");
+    EXPECT_EQ(v.getAttributeName(), "attr1");
+    EXPECT_EQ(v.getDirName(), "xxxyyyy/zzz/index.1/1.ready/attribute/attr1/snapshot-X");
 }
 
 void AttributeTest::addDocs(const AttributePtr & v, size_t sz)
@@ -402,20 +417,25 @@ void AttributeTest::populate(StringAttribute & v, unsigned seed)
     v.commit();
 }
 
-template <>
-void AttributeTest::populateSimple(IntegerAttribute & v, uint32_t docIdLow, uint32_t docIdHigh)
+void populateSimpleUncommitted(IntegerAttribute & v, uint32_t docIdLow, uint32_t docIdHigh)
 {
-    for(uint32_t docId(docIdLow); docId < docIdHigh; ++docId) {
+    for (uint32_t docId(docIdLow); docId < docIdHigh; ++docId) {
         v.clearDoc(docId);
         EXPECT_TRUE( v.update(docId, docId + 1) );
     }
+}
+
+template <>
+void AttributeTest::populateSimple(IntegerAttribute & v, uint32_t docIdLow, uint32_t docIdHigh)
+{
+    populateSimpleUncommitted(v, docIdLow, docIdHigh);
     v.commit();
 }
 
 template <typename VectorType, typename BufferType>
 void AttributeTest::compare(VectorType & a, VectorType & b)
 {
-    EXPECT_EQUAL(a.getNumDocs(), b.getNumDocs());
+    EXPECT_EQ(a.getNumDocs(), b.getNumDocs());
     ASSERT_TRUE(a.getNumDocs() == b.getNumDocs());
     uint32_t asz(a.getMaxValueCount());
     uint32_t bsz(b.getMaxValueCount());
@@ -425,10 +445,10 @@ void AttributeTest::compare(VectorType & a, VectorType & b)
     for (size_t i(0), m(a.getNumDocs()); i < m; i++) {
         ASSERT_TRUE(asz >= static_cast<uint32_t>(a.getValueCount(i)));
         ASSERT_TRUE(bsz >= static_cast<uint32_t>(b.getValueCount(i)));
-        EXPECT_EQUAL(a.getValueCount(i), b.getValueCount(i));
+        EXPECT_EQ(a.getValueCount(i), b.getValueCount(i));
         ASSERT_TRUE(a.getValueCount(i) == b.getValueCount(i));
-        EXPECT_EQUAL(static_cast<const AttributeVector &>(a).get(i, av, asz), static_cast<uint32_t>(a.getValueCount(i)));
-        EXPECT_EQUAL(static_cast<const AttributeVector &>(b).get(i, bv, bsz), static_cast<uint32_t>(b.getValueCount(i)));
+        EXPECT_EQ(static_cast<const AttributeVector &>(a).get(i, av, asz), static_cast<uint32_t>(a.getValueCount(i)));
+        EXPECT_EQ(static_cast<const AttributeVector &>(b).get(i, bv, bsz), static_cast<uint32_t>(b.getValueCount(i)));
         const size_t min_common_value_count = std::min(a.getValueCount(i), b.getValueCount(i));
         if (a.hasWeightedSetType()) {
             ASSERT_TRUE(b.hasWeightedSetType());
@@ -436,7 +456,7 @@ void AttributeTest::compare(VectorType & a, VectorType & b)
             std::sort(bv, bv + min_common_value_count, order_by_value());
         }
         for(size_t j = 0; j < min_common_value_count; j++) {
-            EXPECT_EQUAL(av[j], bv[j]);
+            EXPECT_EQ(av[j], bv[j]);
         }
     }
     delete [] bv;
@@ -478,19 +498,19 @@ void AttributeTest::testReload(const AttributePtr & a)
     EXPECT_TRUE( a->save(b->getBaseFileName()) );
     a->commit(true);
     if (preciseEstimatedSize(*a)) {
-        EXPECT_EQUAL(statSize(*b), a->getEstimatedSaveByteSize());
+        EXPECT_EQ(statSize(*b), a->getEstimatedSaveByteSize());
     } else {
         double estSize = a->getEstimatedSaveByteSize();
         double actSize = statSize(*b);
-        EXPECT_LESS_EQUAL(actSize * 1.0, estSize * 1.3);
-        EXPECT_GREATER_EQUAL(actSize * 1.0, estSize * 0.7);
+        EXPECT_LE(actSize * 1.0, estSize * 1.3);
+        EXPECT_GE(actSize * 1.0, estSize * 0.7);
     }
     EXPECT_TRUE( a->save(c->getBaseFileName()) );
     if (preciseEstimatedSize(*a)) {
-        EXPECT_EQUAL(statSize(*c), a->getEstimatedSaveByteSize());
+        EXPECT_EQ(statSize(*c), a->getEstimatedSaveByteSize());
     }
     EXPECT_TRUE( b->load() );
-    EXPECT_EQUAL(43u, b->getCreateSerialNum());
+    EXPECT_EQ(43u, b->getCreateSerialNum());
     compare<VectorType, BufferType>
         (*(static_cast<VectorType *>(a.get())), *(static_cast<VectorType *>(b.get())));
     EXPECT_TRUE( c->load() );
@@ -766,10 +786,17 @@ AttributeTest::checkCount(const AttributePtr & ptr, uint32_t doc, uint32_t value
                           uint32_t numValues, const BufferType & value)
 {
     std::vector<BufferType> buffer(valueCount);
-    if (!EXPECT_EQUAL(valueCount, ptr->getValueCount(doc))) return false;
-    if (!EXPECT_EQUAL(valueCount, ptr->get(doc, &buffer[0], buffer.size()))) return false;
-    if (!EXPECT_EQUAL(numValues, static_cast<uint32_t>(std::count(buffer.begin(), buffer.end(), value)))) return false;
-    return true;
+    bool result = true;
+    EXPECT_EQ(valueCount, ptr->getValueCount(doc)) << (result = false, "");
+    if (!result) {
+        return false;
+    }
+    EXPECT_EQ(valueCount, ptr->get(doc, buffer.data(), buffer.size())) << (result = false, "");
+    if (!result) {
+        return false;
+    }
+    EXPECT_EQ(numValues, static_cast<uint32_t>(std::count(buffer.begin(), buffer.end(), value))) << (result = false, "");
+    return result;
 }
 
 template <typename BufferType>
@@ -780,7 +807,7 @@ AttributeTest::checkContent(const AttributePtr & ptr, uint32_t doc, uint32_t val
     std::vector<BufferType> buffer(valueCount);
     bool retval = true;
     EXPECT_TRUE((retval = retval && (static_cast<uint32_t>(ptr->getValueCount(doc)) == valueCount)));
-    EXPECT_TRUE((retval = retval && (ptr->get(doc, &buffer[0], buffer.size()) == valueCount)));
+    EXPECT_TRUE((retval = retval && (ptr->get(doc, buffer.data(), buffer.size()) == valueCount)));
     for (uint32_t i = 0; i < valueCount; ++i) {
         EXPECT_TRUE((retval = retval && (buffer[i] == values[i % range])));
     }
@@ -841,7 +868,7 @@ AttributeTest::testSingle(const AttributePtr & ptr, const std::vector<BufferType
             ptr->clearDoc(doc);
         }
         ptr->commit();
-        EXPECT_EQUAL(1u, ptr->get(doc, &buffer[0], buffer.size()));
+        EXPECT_EQ(1u, ptr->get(doc, buffer.data(), buffer.size()));
         if (doc % 2 == 0) {
             if (smallUInt) {
                 expectZero(buffer[0]);
@@ -850,7 +877,7 @@ AttributeTest::testSingle(const AttributePtr & ptr, const std::vector<BufferType
             }
         } else {
             EXPECT_TRUE(!attribute::isUndefined<BaseType>(buffer[0]));
-            EXPECT_EQUAL(values[i], buffer[0]);
+            EXPECT_EQ(values[i], buffer[0]);
         }
     }
     EXPECT_TRUE(!v.clearDoc(ptr->getNumDocs()));
@@ -938,8 +965,8 @@ AttributeTest::testArray(const AttributePtr & ptr, const std::vector<BufferType>
 
 
     // test update()
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 0u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
     size_t sumAppends(0);
     for (uint32_t doc = 0; doc < ptr->getNumDocs(); ++doc) {
         uint32_t valueCount = doc % numUniques;
@@ -955,8 +982,8 @@ AttributeTest::testArray(const AttributePtr & ptr, const std::vector<BufferType>
         EXPECT_TRUE(checkCount(ptr, doc, 1, 1, values[i]));
     }
     EXPECT_TRUE(!v.update(ptr->getNumDocs(), values[0]));
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), (1 + 2)*ptr->getNumDocs() + sumAppends);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), sumAppends);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), (1 + 2)*ptr->getNumDocs() + sumAppends);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), sumAppends);
 
 
     // test append()
@@ -1120,8 +1147,8 @@ AttributeTest::testWeightedSet(const AttributePtr & ptr, const std::vector<Buffe
     std::sort(ordered_values.begin(), ordered_values.end(), order_by_weight());
 
     // fill and check
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 0u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
     for (uint32_t doc = 0; doc < numDocs; ++doc) {
         uint32_t valueCount = doc;
         v.clearDoc(doc);
@@ -1129,15 +1156,15 @@ AttributeTest::testWeightedSet(const AttributePtr & ptr, const std::vector<Buffe
             EXPECT_TRUE(v.append(doc, values[j].getValue(), values[j].getWeight()));
         }
         commit(ptr);
-        ASSERT_TRUE(ptr->get(doc, &buffer[0], buffer.size()) == valueCount);
+        ASSERT_TRUE(ptr->get(doc, buffer.data(), buffer.size()) == valueCount);
         std::sort(buffer.begin(), buffer.begin() + valueCount, order_by_weight());
         for (uint32_t j = 0; j < valueCount; ++j) {
             EXPECT_TRUE(buffer[j].getValue() == ordered_values[j].getValue());
             EXPECT_TRUE(buffer[j].getWeight() == ordered_values[j].getWeight());
         }
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), numDocs + (numDocs*(numDocs-1))/2);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), numDocs + (numDocs*(numDocs-1))/2);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
 
     // test append()
     for (uint32_t doc = 0; doc < numDocs; ++doc) {
@@ -1146,24 +1173,24 @@ AttributeTest::testWeightedSet(const AttributePtr & ptr, const std::vector<Buffe
         // append non-existent value
         EXPECT_TRUE(v.append(doc, values[doc].getValue(), values[doc].getWeight()));
         commit(ptr);
-        ASSERT_TRUE(ptr->get(doc, &buffer[0], buffer.size()) == valueCount + 1);
+        ASSERT_TRUE(ptr->get(doc, buffer.data(), buffer.size()) == valueCount + 1);
         EXPECT_TRUE(contains(buffer, valueCount + 1, values[doc]));
 
         // append existent value
         EXPECT_TRUE(v.append(doc, values[doc].getValue(), values[doc].getWeight() + 10));
         commit(ptr);
-        ASSERT_TRUE(ptr->get(doc, &buffer[0], buffer.size()) == valueCount + 1);
+        ASSERT_TRUE(ptr->get(doc, buffer.data(), buffer.size()) == valueCount + 1);
         EXPECT_TRUE(contains(buffer, valueCount + 1, BufferType(values[doc].getValue(), values[doc].getWeight() + 10)));
 
         // append non-existent value two times
         EXPECT_TRUE(v.append(doc, values[doc + 1].getValue(), values[doc + 1].getWeight()));
         EXPECT_TRUE(v.append(doc, values[doc + 1].getValue(), values[doc + 1].getWeight() + 10));
         commit(ptr);
-        ASSERT_TRUE(ptr->get(doc, &buffer[0], buffer.size()) == valueCount + 2);
+        ASSERT_TRUE(ptr->get(doc, buffer.data(), buffer.size()) == valueCount + 2);
         EXPECT_TRUE(contains(buffer, valueCount + 2, BufferType(values[doc + 1].getValue(), values[doc + 1].getWeight() + 10)));
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), numDocs + (numDocs*(numDocs-1))/2 + numDocs*4);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), numDocs + (numDocs*(numDocs-1))/2 + numDocs*4);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
 
     // test remove()
     for (uint32_t doc = 0; doc < numDocs; ++doc) {
@@ -1176,15 +1203,15 @@ AttributeTest::testWeightedSet(const AttributePtr & ptr, const std::vector<Buffe
         EXPECT_TRUE(static_cast<uint32_t>(v.getValueCount(doc)) == valueCount + 2);
 
         // remove existent value
-        ASSERT_TRUE(ptr->get(doc, &buffer[0], buffer.size()) == valueCount + 2);
+        ASSERT_TRUE(ptr->get(doc, buffer.data(), buffer.size()) == valueCount + 2);
         EXPECT_TRUE(contains_value(buffer, valueCount + 2, values[doc + 1].getValue()));
         EXPECT_TRUE(v.remove(doc, values[doc + 1].getValue(), 0));
         commit(ptr);
-        ASSERT_TRUE(ptr->get(doc, &buffer[0], buffer.size()) == valueCount + 1);
+        ASSERT_TRUE(ptr->get(doc, buffer.data(), buffer.size()) == valueCount + 1);
         EXPECT_FALSE(contains_value(buffer, valueCount + 1, values[doc + 1].getValue()));
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), numDocs + (numDocs*(numDocs-1))/2 + numDocs*4 + numDocs * 2);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), numDocs + (numDocs*(numDocs-1))/2 + numDocs*4 + numDocs * 2);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
 }
 
 void
@@ -1212,8 +1239,8 @@ AttributeTest::testWeightedSet()
             testWeightedSet<IntegerAttribute, AttributeVector::WeightedInt>(ptr, values);
             IAttributeVector::EnumHandle e;
             EXPECT_TRUE(ptr->findEnum("1", e));
-            EXPECT_EQUAL(1u, ptr->findFoldedEnums("1").size());
-            EXPECT_EQUAL(e, ptr->findFoldedEnums("1")[0]);
+            EXPECT_EQ(1u, ptr->findFoldedEnums("1").size());
+            EXPECT_EQ(e, ptr->findFoldedEnums("1")[0]);
 
         }
     }
@@ -1238,8 +1265,8 @@ AttributeTest::testWeightedSet()
             testWeightedSet<FloatingPointAttribute, AttributeVector::WeightedFloat>(ptr, values);
             IAttributeVector::EnumHandle e;
             EXPECT_TRUE(ptr->findEnum("1", e));
-            EXPECT_EQUAL(1u, ptr->findFoldedEnums("1").size());
-            EXPECT_EQUAL(e, ptr->findFoldedEnums("1")[0]);
+            EXPECT_EQ(1u, ptr->findFoldedEnums("1").size());
+            EXPECT_EQ(e, ptr->findFoldedEnums("1")[0]);
         }
     }
     { // StringAttribute
@@ -1264,8 +1291,8 @@ AttributeTest::testWeightedSet()
             testWeightedSet<StringAttribute, AttributeVector::WeightedString>(ptr, values);
             IAttributeVector::EnumHandle e;
             EXPECT_TRUE(ptr->findEnum("string00", e));
-            EXPECT_EQUAL(1u, ptr->findFoldedEnums("StRiNg00").size());
-            EXPECT_EQUAL(e, ptr->findFoldedEnums("StRiNg00")[0]);
+            EXPECT_EQ(1u, ptr->findFoldedEnums("StRiNg00").size());
+            EXPECT_EQ(e, ptr->findFoldedEnums("StRiNg00")[0]);
         }
     }
 }
@@ -1279,13 +1306,13 @@ AttributeTest::testArithmeticValueUpdate(const AttributePtr & ptr)
     typedef document::ArithmeticValueUpdate Arith;
     auto & vec = static_cast<VectorType &>(*ptr.get());
     addDocs(ptr, 13);
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 0u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
     for (uint32_t doc = 0; doc < 13; ++doc) {
         ASSERT_TRUE(vec.update(doc, 100));
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 13u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 13u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
     ptr->commit();
 
     EXPECT_TRUE(vec.apply(0, Arith(Arith::Add, 10)));
@@ -1301,73 +1328,73 @@ AttributeTest::testArithmeticValueUpdate(const AttributePtr & ptr)
     EXPECT_TRUE(vec.apply(10, Arith(Arith::Mul, 1.2)));
     EXPECT_TRUE(vec.apply(11, Arith(Arith::Mul, 0.8)));
     EXPECT_TRUE(vec.apply(12, Arith(Arith::Div, 0.8)));
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 26u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 13u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 26u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 13u);
     ptr->commit();
 
     std::vector<BufferType> buf(1);
     ptr->get(0, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 110);
+    EXPECT_EQ(buf[0], 110);
     ptr->get(1, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 90);
+    EXPECT_EQ(buf[0], 90);
     ptr->get(2, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 90);
+    EXPECT_EQ(buf[0], 90);
     ptr->get(3, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 110);
+    EXPECT_EQ(buf[0], 110);
     ptr->get(4, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 1000);
+    EXPECT_EQ(buf[0], 1000);
     ptr->get(5, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], -1000);
+    EXPECT_EQ(buf[0], -1000);
     ptr->get(6, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 10);
+    EXPECT_EQ(buf[0], 10);
     ptr->get(7, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], -10);
+    EXPECT_EQ(buf[0], -10);
     if (ptr->getBasicType() == BasicType::INT32) {
         ptr->get(8, &buf[0], 1);
-        EXPECT_EQUAL(buf[0], 110);
+        EXPECT_EQ(buf[0], 110);
         ptr->get(9, &buf[0], 1);
-        EXPECT_EQUAL(buf[0], 90);
+        EXPECT_EQ(buf[0], 90);
     } else if (ptr->getBasicType() == BasicType::FLOAT ||
                ptr->getBasicType() == BasicType::DOUBLE)
     {
         ptr->get(8, &buf[0], 1);
-        EXPECT_EQUAL(buf[0], 110.5);
+        EXPECT_EQ(buf[0], 110.5);
         ptr->get(9, &buf[0], 1);
-        EXPECT_EQUAL(buf[0], 89.5);
+        EXPECT_EQ(buf[0], 89.5);
     } else {
         ASSERT_TRUE(false);
     }
     ptr->get(10, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 120);
+    EXPECT_EQ(buf[0], 120);
     ptr->get(11, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 80);
+    EXPECT_EQ(buf[0], 80);
     ptr->get(12, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 125);
+    EXPECT_EQ(buf[0], 125);
 
 
     // try several arithmetic operations on the same document in a single commit
     ASSERT_TRUE(vec.update(0, 1100));
     ASSERT_TRUE(vec.update(1, 1100));
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 28u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 13u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 28u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 13u);
     for (uint32_t i = 0; i < 10; ++i) {
         ASSERT_TRUE(vec.apply(0, Arith(Arith::Add, 10)));
         ASSERT_TRUE(vec.apply(1, Arith(Arith::Add, 10)));
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 48u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 33u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 48u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 33u);
     ptr->commit();
     ptr->get(0, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 1200);
+    EXPECT_EQ(buf[0], 1200);
     ptr->get(1, &buf[0], 1);
-    EXPECT_EQUAL(buf[0], 1200);
+    EXPECT_EQ(buf[0], 1200);
 
     ASSERT_TRUE(vec.update(0, 10));
     ASSERT_TRUE(vec.update(1, 10));
     ASSERT_TRUE(vec.update(2, 10));
     ASSERT_TRUE(vec.update(3, 10));
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 52u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 33u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 52u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 33u);
     for (uint32_t i = 0; i < 8; ++i) {
         EXPECT_TRUE(vec.apply(0, Arith(Arith::Mul, 1.2)));
         EXPECT_TRUE(vec.apply(1, Arith(Arith::Mul, 2.3)));
@@ -1375,35 +1402,35 @@ AttributeTest::testArithmeticValueUpdate(const AttributePtr & ptr)
         EXPECT_TRUE(vec.apply(3, Arith(Arith::Mul, 5.6)));
         ptr->commit();
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 84u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 65u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 84u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 65u);
 
 
     // try divide by zero
     ASSERT_TRUE(vec.update(0, 100));
     EXPECT_TRUE(vec.apply(0, Arith(Arith::Div, 0)));
     ptr->commit();
-    if (ptr->getClass().inherits(FloatingPointAttribute::classId)) {
-        EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 86u);
-        EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 66u);
+    if (ptr->isFloatingPointType()) {
+        EXPECT_EQ(ptr->getStatus().getUpdateCount(), 86u);
+        EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 66u);
     } else { // does not apply for interger attributes
-        EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 85u);
-        EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 65u);
+        EXPECT_EQ(ptr->getStatus().getUpdateCount(), 85u);
+        EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 65u);
     }
     ptr->get(0, &buf[0], 1);
     if (ptr->getBasicType() == BasicType::INT32) {
-        EXPECT_EQUAL(buf[0], 100);
+        EXPECT_EQ(buf[0], 100);
     }
 
     // try divide by zero with empty change vector
     EXPECT_TRUE(vec.apply(0, Arith(Arith::Div, 0)));
     ptr->commit();
-    if (ptr->getClass().inherits(FloatingPointAttribute::classId)) {
-        EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 87u);
-        EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 67u);
+    if (ptr->isFloatingPointType()) {
+        EXPECT_EQ(ptr->getStatus().getUpdateCount(), 87u);
+        EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 67u);
     } else { // does not apply for interger attributes
-        EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 85u);
-        EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 65u);
+        EXPECT_EQ(ptr->getStatus().getUpdateCount(), 85u);
+        EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 65u);
     }
 }
 
@@ -1457,10 +1484,10 @@ AttributeTest::testArithmeticWithUndefinedValue(const AttributePtr & ptr, BaseTy
     std::vector<BufferType> buf(1);
     ptr->get(0, &buf[0], 1);
 
-    if (ptr->getClass().inherits(FloatingPointAttribute::classId)) {
+    if (ptr->isFloatingPointType()) {
         EXPECT_TRUE(std::isnan(buf[0]));
     } else {
-        EXPECT_EQUAL(buf[0], after);
+        EXPECT_EQ(buf[0], after);
     }
 }
 
@@ -1500,69 +1527,69 @@ AttributeTest::testMapValueUpdate(const AttributePtr & ptr, BufferType initValue
     for (uint32_t doc = 0; doc < 7; ++doc) {
         ASSERT_TRUE(vec.append(doc, initValue.getValue(), 100));
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 7u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 7u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 0u);
 
-    EXPECT_TRUE(ptr->apply(0, MapVU(initFieldValue, ArithVU(ArithVU::Add, 10))));
-    EXPECT_TRUE(ptr->apply(1, MapVU(initFieldValue, ArithVU(ArithVU::Sub, 10))));
-    EXPECT_TRUE(ptr->apply(2, MapVU(initFieldValue, ArithVU(ArithVU::Mul, 10))));
-    EXPECT_TRUE(ptr->apply(3, MapVU(initFieldValue, ArithVU(ArithVU::Div, 10))));
-    EXPECT_TRUE(ptr->apply(6, MapVU(initFieldValue, AssignValueUpdate(IntFieldValue(70)))));
+    EXPECT_TRUE(ptr->apply(0, MapVU(std::unique_ptr<FieldValue>(initFieldValue.clone()), std::make_unique<ArithVU>(ArithVU::Add, 10))));
+    EXPECT_TRUE(ptr->apply(1, MapVU(std::unique_ptr<FieldValue>(initFieldValue.clone()), std::make_unique<ArithVU>(ArithVU::Sub, 10))));
+    EXPECT_TRUE(ptr->apply(2, MapVU(std::unique_ptr<FieldValue>(initFieldValue.clone()), std::make_unique<ArithVU>(ArithVU::Mul, 10))));
+    EXPECT_TRUE(ptr->apply(3, MapVU(std::unique_ptr<FieldValue>(initFieldValue.clone()), std::make_unique<ArithVU>(ArithVU::Div, 10))));
+    EXPECT_TRUE(ptr->apply(6, MapVU(std::unique_ptr<FieldValue>(initFieldValue.clone()), std::make_unique<AssignValueUpdate>(std::make_unique<IntFieldValue>(70)))));
     ptr->commit();
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 12u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 5u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 12u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 5u);
 
     std::vector<BufferType> buf(2);
     ptr->get(0, &buf[0], 2);
-    EXPECT_EQUAL(buf[0].getWeight(), 110);
+    EXPECT_EQ(buf[0].getWeight(), 110);
     ptr->get(1, &buf[0], 2);
-    EXPECT_EQUAL(buf[0].getWeight(), 90);
+    EXPECT_EQ(buf[0].getWeight(), 90);
     ptr->get(2, &buf[0], 2);
-    EXPECT_EQUAL(buf[0].getWeight(), 1000);
+    EXPECT_EQ(buf[0].getWeight(), 1000);
     ptr->get(3, &buf[0], 2);
-    EXPECT_EQUAL(buf[0].getWeight(), 10);
+    EXPECT_EQ(buf[0].getWeight(), 10);
     ptr->get(6, &buf[0], 2);
-    EXPECT_EQUAL(buf[0].getWeight(), 70);
+    EXPECT_EQ(buf[0].getWeight(), 70);
 
     // removeifzero
-    EXPECT_TRUE(ptr->apply(4, MapVU(initFieldValue, ArithVU(ArithVU::Sub, 100))));
+    EXPECT_TRUE(ptr->apply(4, MapVU(std::unique_ptr<FieldValue>(initFieldValue.clone()), std::make_unique<ArithVU>(ArithVU::Sub, 100))));
     ptr->commit();
     if (removeIfZero) {
-        EXPECT_EQUAL(ptr->get(4, &buf[0], 2), uint32_t(0));
+        EXPECT_EQ(ptr->get(4, &buf[0], 2), uint32_t(0));
     } else {
-        EXPECT_EQUAL(ptr->get(4, &buf[0], 2), uint32_t(1));
-        EXPECT_EQUAL(buf[0].getWeight(), 0);
+        EXPECT_EQ(ptr->get(4, &buf[0], 2), uint32_t(1));
+        EXPECT_EQ(buf[0].getWeight(), 0);
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 13u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 6u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 13u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 6u);
 
     // createifnonexistant
-    EXPECT_TRUE(ptr->apply(5, MapVU(nonExistant, ArithVU(ArithVU::Add, 10))));
+    EXPECT_TRUE(ptr->apply(5, MapVU(std::unique_ptr<FieldValue>(nonExistant.clone()), std::make_unique<ArithVU>(ArithVU::Add, 10))));
     ptr->commit();
     if (createIfNonExistant) {
-        EXPECT_EQUAL(ptr->get(5, &buf[0], 2), uint32_t(2));
+        EXPECT_EQ(ptr->get(5, &buf[0], 2), uint32_t(2));
         std::sort(buf.begin(), buf.begin() + 2, order_by_weight());
-        EXPECT_EQUAL(buf[0].getWeight(), 10);
-        EXPECT_EQUAL(buf[1].getWeight(), 100);
+        EXPECT_EQ(buf[0].getWeight(), 10);
+        EXPECT_EQ(buf[1].getWeight(), 100);
     } else {
-        EXPECT_EQUAL(ptr->get(5, &buf[0], 2), uint32_t(1));
-        EXPECT_EQUAL(buf[0].getWeight(), 100);
+        EXPECT_EQ(ptr->get(5, &buf[0], 2), uint32_t(1));
+        EXPECT_EQ(buf[0].getWeight(), 100);
     }
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 14u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 7u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 14u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 7u);
 
 
     // try divide by zero (should be ignored)
     vec.clearDoc(0);
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 15u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 15u);
     ASSERT_TRUE(vec.append(0, initValue.getValue(), 12345));
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 16u);
-    EXPECT_TRUE(ptr->apply(0, MapVU(initFieldValue, ArithVU(ArithVU::Div, 0))));
-    EXPECT_EQUAL(ptr->getStatus().getUpdateCount(), 16u);
-    EXPECT_EQUAL(ptr->getStatus().getNonIdempotentUpdateCount(), 7u);
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 16u);
+    EXPECT_TRUE(ptr->apply(0, MapVU(std::unique_ptr<FieldValue>(initFieldValue.clone()), std::make_unique<ArithVU>(ArithVU::Div, 0))));
+    EXPECT_EQ(ptr->getStatus().getUpdateCount(), 16u);
+    EXPECT_EQ(ptr->getStatus().getNonIdempotentUpdateCount(), 7u);
     ptr->commit();
     ptr->get(0, &buf[0], 1);
-    EXPECT_EQUAL(buf[0].getWeight(), 12345);
+    EXPECT_EQ(buf[0].getWeight(), 12345);
 }
 
 void
@@ -1574,8 +1601,7 @@ AttributeTest::testMapValueUpdate()
             (ptr, AttributeVector::WeightedInt(64, 1), IntFieldValue(64), IntFieldValue(32), false, false);
     }
     { // remove if zero
-        AttributePtr ptr = createAttribute("wsint32", Config(BasicType::INT32,
-                                                             CollectionType(CollectionType::WSET, true, false)));
+        AttributePtr ptr = createAttribute("wsint32", Config(BasicType::INT32, CollectionType(CollectionType::WSET, true, false)));
         testMapValueUpdate<IntegerAttribute, AttributeVector::WeightedInt>
             (ptr, AttributeVector::WeightedInt(64, 1), IntFieldValue(64), IntFieldValue(32), true, false);
     }
@@ -1654,16 +1680,16 @@ AttributeTest::testStatus()
             EXPECT_TRUE(appendToVector(sa, i, 1, values));
         }
         ptr->commit(true);
-        EXPECT_EQUAL(ptr->getStatus().getNumDocs(), 100u);
-        EXPECT_EQUAL(ptr->getStatus().getNumValues(), 100u);
-        EXPECT_EQUAL(ptr->getStatus().getNumUniqueValues(), 1u);
+        EXPECT_EQ(ptr->getStatus().getNumDocs(), 100u);
+        EXPECT_EQ(ptr->getStatus().getNumValues(), 100u);
+        EXPECT_EQ(ptr->getStatus().getNumUniqueValues(), 1u);
         size_t expUsed = 0;
         expUsed += 1 * InternalNodeSize + 1 * LeafNodeSize; // enum store tree
         expUsed += 1 * 32; // enum store (uniquevalues * bytes per entry)
         // multi value mapping (numdocs * sizeof(MappingIndex) + numvalues * sizeof(EnumIndex))
         expUsed += 100 * sizeof(vespalib::datastore::EntryRef) + 100 * 4;
-        EXPECT_GREATER_EQUAL(ptr->getStatus().getUsed(), expUsed);
-        EXPECT_GREATER_EQUAL(ptr->getStatus().getAllocated(), expUsed);
+        EXPECT_GE(ptr->getStatus().getUsed(), expUsed);
+        EXPECT_GE(ptr->getStatus().getAllocated(), expUsed);
     }
 
     {
@@ -1677,17 +1703,17 @@ AttributeTest::testStatus()
             EXPECT_TRUE(appendToVector(sa, i, numValuesPerDoc, values));
         }
         ptr->commit(true);
-        EXPECT_EQUAL(ptr->getStatus().getNumDocs(), numDocs);
-        EXPECT_EQUAL(ptr->getStatus().getNumValues(), numDocs*numValuesPerDoc);
-        EXPECT_EQUAL(ptr->getStatus().getNumUniqueValues(), numUniq);
+        EXPECT_EQ(ptr->getStatus().getNumDocs(), numDocs);
+        EXPECT_EQ(ptr->getStatus().getNumValues(), numDocs*numValuesPerDoc);
+        EXPECT_EQ(ptr->getStatus().getNumUniqueValues(), numUniq);
         size_t expUsed = 0;
         expUsed += 1 * InternalNodeSize + 1 * LeafNodeSize; // Approximate enum store tree
         expUsed += 272; // TODO Approximate... enum store (16 unique values, 17 bytes per entry)
         // multi value mapping (numdocs * sizeof(MappingIndex) + numvalues * sizeof(EnumIndex) +
         // 32 + numdocs * sizeof(Array<EnumIndex>) (due to vector vector))
         expUsed += 32 + numDocs * sizeof(vespalib::datastore::EntryRef) + numDocs * numValuesPerDoc * sizeof(IEnumStore::Index) + ((numValuesPerDoc > 1024) ? numDocs * NestedVectorSize : 0);
-        EXPECT_GREATER_EQUAL(ptr->getStatus().getUsed(), expUsed);
-        EXPECT_GREATER_EQUAL(ptr->getStatus().getAllocated(), expUsed);
+        EXPECT_GE(ptr->getStatus().getUsed(), expUsed);
+        EXPECT_GE(ptr->getStatus().getAllocated(), expUsed);
     }
 }
 
@@ -1700,16 +1726,16 @@ AttributeTest::testNullProtection()
     string good("good");
     string evil("evil string");
     string pureEvil("evil");
-    EXPECT_EQUAL(strlen(evil.data()),  len);
-    EXPECT_EQUAL(strlen(evil.c_str()), len);
+    EXPECT_EQ(strlen(evil.data()),  len);
+    EXPECT_EQ(strlen(evil.c_str()), len);
     evil[len1] = 0; // replace space with '\0'
-    EXPECT_EQUAL(strlen(evil.data()),  len1);
-    EXPECT_EQUAL(strlen(evil.c_str()), len1);
-    EXPECT_EQUAL(strlen(evil.data()  + len1), 0u);
-    EXPECT_EQUAL(strlen(evil.c_str() + len1), 0u);
-    EXPECT_EQUAL(strlen(evil.data()  + len1 + 1), len2);
-    EXPECT_EQUAL(strlen(evil.c_str() + len1 + 1), len2);
-    EXPECT_EQUAL(evil.size(), len);
+    EXPECT_EQ(strlen(evil.data()),  len1);
+    EXPECT_EQ(strlen(evil.c_str()), len1);
+    EXPECT_EQ(strlen(evil.data()  + len1), 0u);
+    EXPECT_EQ(strlen(evil.c_str() + len1), 0u);
+    EXPECT_EQ(strlen(evil.data()  + len1 + 1), len2);
+    EXPECT_EQ(strlen(evil.c_str() + len1 + 1), len2);
+    EXPECT_EQ(evil.size(), len);
     { // string
         AttributeVector::DocId docId;
         std::vector<string> buf(16);
@@ -1719,8 +1745,8 @@ AttributeTest::testNullProtection()
         EXPECT_TRUE(v.update(docId, evil));
         v.commit();
         size_t n = static_cast<const AttributeVector &>(v).get(docId, &buf[0], buf.size());
-        EXPECT_EQUAL(n, 1u);
-        EXPECT_EQUAL(buf[0], pureEvil);
+        EXPECT_EQ(n, 1u);
+        EXPECT_EQ(buf[0], pureEvil);
     }
     { // string array
         AttributeVector::DocId docId;
@@ -1733,10 +1759,10 @@ AttributeTest::testNullProtection()
         EXPECT_TRUE(v.append(0, good, 1));
         v.commit();
         size_t n = static_cast<const AttributeVector &>(v).get(0, &buf[0], buf.size());
-        EXPECT_EQUAL(n, 3u);
-        EXPECT_EQUAL(buf[0], good);
-        EXPECT_EQUAL(buf[1], pureEvil);
-        EXPECT_EQUAL(buf[2], good);
+        EXPECT_EQ(n, 3u);
+        EXPECT_EQ(buf[0], good);
+        EXPECT_EQ(buf[1], pureEvil);
+        EXPECT_EQ(buf[2], good);
     }
     { // string set
         AttributeVector::DocId docId;
@@ -1748,22 +1774,22 @@ AttributeTest::testNullProtection()
         EXPECT_TRUE(v.append(0, evil, 20));
         v.commit();
         size_t n = static_cast<const AttributeVector &>(v).get(0, &buf[0], buf.size());
-        EXPECT_EQUAL(n, 2u);
+        EXPECT_EQ(n, 2u);
         if (buf[0].getValue() != good) {
             std::swap(buf[0], buf[1]);
         }
-        EXPECT_EQUAL(buf[0].getValue(), good);
-        EXPECT_EQUAL(buf[0].getWeight(), 10);
-        EXPECT_EQUAL(buf[1].getValue(), pureEvil);
-        EXPECT_EQUAL(buf[1].getWeight(), 20);
+        EXPECT_EQ(buf[0].getValue(), good);
+        EXPECT_EQ(buf[0].getWeight(), 10);
+        EXPECT_EQ(buf[1].getValue(), pureEvil);
+        EXPECT_EQ(buf[1].getWeight(), 20);
 
         // remove
         EXPECT_TRUE(v.remove(0, evil, 20));
         v.commit();
         n = static_cast<const AttributeVector &>(v).get(0, &buf[0], buf.size());
-        EXPECT_EQUAL(n, 1u);
-        EXPECT_EQUAL(buf[0].getValue(), good);
-        EXPECT_EQUAL(buf[0].getWeight(), 10);
+        EXPECT_EQ(n, 1u);
+        EXPECT_EQ(buf[0].getValue(), good);
+        EXPECT_EQ(buf[0].getWeight(), 10);
     }
 }
 
@@ -1774,54 +1800,54 @@ AttributeTest::testGeneration(const AttributePtr & attr, bool exactStatus)
     auto & ia = static_cast<IntegerAttribute &>(*attr.get());
     // add docs to trigger inc generation when data vector is full
     AttributeVector::DocId docId;
-    EXPECT_EQUAL(0u, ia.getCurrentGeneration());
+    EXPECT_EQ(0u, ia.getCurrentGeneration());
     EXPECT_TRUE(ia.addDoc(docId));
-    EXPECT_EQUAL(0u, ia.getCurrentGeneration());
+    EXPECT_EQ(0u, ia.getCurrentGeneration());
     EXPECT_TRUE(ia.addDoc(docId));
-    EXPECT_EQUAL(0u, ia.getCurrentGeneration());
+    EXPECT_EQ(0u, ia.getCurrentGeneration());
     ia.commit(true);
-    EXPECT_EQUAL(1u, ia.getCurrentGeneration());
+    EXPECT_EQ(1u, ia.getCurrentGeneration());
     uint64_t lastAllocated;
     uint64_t lastOnHold;
     vespalib::MemoryUsage changeVectorMemoryUsage(attr->getChangeVectorMemoryUsage());
     size_t changeVectorAllocated = changeVectorMemoryUsage.allocatedBytes();
     if (exactStatus) {
-        EXPECT_EQUAL(2u + changeVectorAllocated, ia.getStatus().getAllocated());
-        EXPECT_EQUAL(0u, ia.getStatus().getOnHold());
+        EXPECT_EQ(2u + changeVectorAllocated, ia.getStatus().getAllocated());
+        EXPECT_EQ(0u, ia.getStatus().getOnHold());
     } else {
-        EXPECT_LESS(0u + changeVectorAllocated, ia.getStatus().getAllocated());
-        EXPECT_EQUAL(0u, ia.getStatus().getOnHold());
+        EXPECT_LT(0u + changeVectorAllocated, ia.getStatus().getAllocated());
+        EXPECT_EQ(0u, ia.getStatus().getOnHold());
         lastAllocated = ia.getStatus().getAllocated();
         lastOnHold = ia.getStatus().getOnHold();
     }
     {
         AttributeGuard ag(attr); // guard on generation 1
         EXPECT_TRUE(ia.addDoc(docId)); // inc gen
-        EXPECT_EQUAL(2u, ia.getCurrentGeneration());
+        EXPECT_EQ(2u, ia.getCurrentGeneration());
         ia.commit(true);
-        EXPECT_EQUAL(3u, ia.getCurrentGeneration());
+        EXPECT_EQ(3u, ia.getCurrentGeneration());
         if (exactStatus) {
-            EXPECT_EQUAL(6u + changeVectorAllocated, ia.getStatus().getAllocated());
-            EXPECT_EQUAL(2u, ia.getStatus().getOnHold()); // no cleanup due to guard
+            EXPECT_EQ(6u + changeVectorAllocated, ia.getStatus().getAllocated());
+            EXPECT_EQ(2u, ia.getStatus().getOnHold()); // no cleanup due to guard
         } else {
-            EXPECT_LESS(lastAllocated, ia.getStatus().getAllocated());
-            EXPECT_LESS(lastOnHold, ia.getStatus().getOnHold());
+            EXPECT_LT(lastAllocated, ia.getStatus().getAllocated());
+            EXPECT_LT(lastOnHold, ia.getStatus().getOnHold());
             lastAllocated = ia.getStatus().getAllocated();
             lastOnHold = ia.getStatus().getOnHold();
         }
     }
     EXPECT_TRUE(ia.addDoc(docId));
-    EXPECT_EQUAL(3u, ia.getCurrentGeneration());
+    EXPECT_EQ(3u, ia.getCurrentGeneration());
     {
         AttributeGuard ag(attr); // guard on generation 3
         ia.commit(true);
-        EXPECT_EQUAL(4u, ia.getCurrentGeneration());
+        EXPECT_EQ(4u, ia.getCurrentGeneration());
         if (exactStatus) {
-            EXPECT_EQUAL(4u + changeVectorAllocated, ia.getStatus().getAllocated());
-            EXPECT_EQUAL(0u, ia.getStatus().getOnHold()); // cleanup at end of addDoc()
+            EXPECT_EQ(4u + changeVectorAllocated, ia.getStatus().getAllocated());
+            EXPECT_EQ(0u, ia.getStatus().getOnHold()); // cleanup at end of addDoc()
         } else {
-            EXPECT_GREATER(lastAllocated, ia.getStatus().getAllocated());
-            EXPECT_GREATER(lastOnHold, ia.getStatus().getOnHold());
+            EXPECT_GT(lastAllocated, ia.getStatus().getAllocated());
+            EXPECT_GT(lastOnHold, ia.getStatus().getOnHold());
             lastAllocated = ia.getStatus().getAllocated();
             lastOnHold = ia.getStatus().getOnHold();
         }
@@ -1829,27 +1855,27 @@ AttributeTest::testGeneration(const AttributePtr & attr, bool exactStatus)
     {
         AttributeGuard ag(attr); // guard on generation 4
         EXPECT_TRUE(ia.addDoc(docId)); // inc gen
-        EXPECT_EQUAL(5u, ia.getCurrentGeneration());
+        EXPECT_EQ(5u, ia.getCurrentGeneration());
         ia.commit();
-        EXPECT_EQUAL(6u, ia.getCurrentGeneration());
+        EXPECT_EQ(6u, ia.getCurrentGeneration());
         if (exactStatus) {
-            EXPECT_EQUAL(10u + changeVectorAllocated, ia.getStatus().getAllocated());
-            EXPECT_EQUAL(4u, ia.getStatus().getOnHold()); // no cleanup due to guard
+            EXPECT_EQ(10u + changeVectorAllocated, ia.getStatus().getAllocated());
+            EXPECT_EQ(4u, ia.getStatus().getOnHold()); // no cleanup due to guard
         } else {
-            EXPECT_LESS(lastAllocated, ia.getStatus().getAllocated());
-            EXPECT_LESS(lastOnHold, ia.getStatus().getOnHold());
+            EXPECT_LT(lastAllocated, ia.getStatus().getAllocated());
+            EXPECT_LT(lastOnHold, ia.getStatus().getOnHold());
             lastAllocated = ia.getStatus().getAllocated();
             lastOnHold = ia.getStatus().getOnHold();
         }
     }
     ia.commit(true);
-    EXPECT_EQUAL(7u, ia.getCurrentGeneration());
+    EXPECT_EQ(7u, ia.getCurrentGeneration());
     if (exactStatus) {
-        EXPECT_EQUAL(6u + changeVectorAllocated, ia.getStatus().getAllocated());
-        EXPECT_EQUAL(0u, ia.getStatus().getOnHold()); // cleanup at end of commit()
+        EXPECT_EQ(6u + changeVectorAllocated, ia.getStatus().getAllocated());
+        EXPECT_EQ(0u, ia.getStatus().getOnHold()); // cleanup at end of commit()
     } else {
-        EXPECT_GREATER(lastAllocated, ia.getStatus().getAllocated());
-        EXPECT_GREATER(lastOnHold, ia.getStatus().getOnHold());
+        EXPECT_GT(lastAllocated, ia.getStatus().getAllocated());
+        EXPECT_GT(lastOnHold, ia.getStatus().getOnHold());
     }
 }
 
@@ -1894,7 +1920,7 @@ AttributeTest::testCreateSerialNum()
     EXPECT_TRUE(attr->save());
     AttributePtr attr2 = createAttribute("int32", cfg);
     EXPECT_TRUE(attr2->load());
-    EXPECT_EQUAL(42u, attr2->getCreateSerialNum());
+    EXPECT_EQ(42u, attr2->getCreateSerialNum());
 }
 
 void
@@ -1910,7 +1936,7 @@ AttributeTest::testPredicateHeaderTags()
     EXPECT_TRUE(datHeader.hasTag("predicate.arity"));
     EXPECT_TRUE(datHeader.hasTag("predicate.lower_bound"));
     EXPECT_TRUE(datHeader.hasTag("predicate.upper_bound"));
-    EXPECT_EQUAL(8u, datHeader.getTag("predicate.arity").asInteger());
+    EXPECT_EQ(8u, datHeader.getTag("predicate.arity").asInteger());
 }
 
 template <typename VectorType, typename BufferType>
@@ -1936,25 +1962,25 @@ AttributeTest::testCompactLidSpace(const Config &config,
     auto &v2 = static_cast<VectorType &>(*attr2.get());
     attr2->addDocs(trimmedDocs);
     populate(v2, 17);
-    EXPECT_EQUAL(trimmedDocs, attr2->getNumDocs());
-    EXPECT_EQUAL(trimmedDocs, attr2->getCommittedDocIdLimit());
-    EXPECT_EQUAL(highDocs, attr->getNumDocs());
-    EXPECT_EQUAL(highDocs, attr->getCommittedDocIdLimit());
+    EXPECT_EQ(trimmedDocs, attr2->getNumDocs());
+    EXPECT_EQ(trimmedDocs, attr2->getCommittedDocIdLimit());
+    EXPECT_EQ(highDocs, attr->getNumDocs());
+    EXPECT_EQ(highDocs, attr->getCommittedDocIdLimit());
     attr->compactLidSpace(trimmedDocs);
-    EXPECT_EQUAL(highDocs, attr->getNumDocs());
-    EXPECT_EQUAL(trimmedDocs, attr->getCommittedDocIdLimit());
+    EXPECT_EQ(highDocs, attr->getNumDocs());
+    EXPECT_EQ(trimmedDocs, attr->getCommittedDocIdLimit());
     EXPECT_TRUE(attr->save());
-    EXPECT_EQUAL(highDocs, attr->getNumDocs());
-    EXPECT_EQUAL(trimmedDocs, attr->getCommittedDocIdLimit());
+    EXPECT_EQ(highDocs, attr->getNumDocs());
+    EXPECT_EQ(trimmedDocs, attr->getCommittedDocIdLimit());
     AttributePtr attr3 = AttributeFactory::createAttribute(name, cfg);
     EXPECT_TRUE(attr3->load());
-    EXPECT_EQUAL(trimmedDocs, attr3->getNumDocs());
-    EXPECT_EQUAL(trimmedDocs, attr3->getCommittedDocIdLimit());
+    EXPECT_EQ(trimmedDocs, attr3->getNumDocs());
+    EXPECT_EQ(trimmedDocs, attr3->getCommittedDocIdLimit());
     auto &v3 = static_cast<VectorType &>(*attr3.get());
     compare<VectorType, BufferType>(v2, v3);
     attr->shrinkLidSpace();
-    EXPECT_EQUAL(trimmedDocs, attr->getNumDocs());
-    EXPECT_EQUAL(trimmedDocs, attr->getCommittedDocIdLimit());
+    EXPECT_EQ(trimmedDocs, attr->getNumDocs());
+    EXPECT_EQ(trimmedDocs, attr->getCommittedDocIdLimit());
     compare<VectorType, BufferType>(v, v3);
 }
 
@@ -1985,6 +2011,7 @@ AttributeTest::testCompactLidSpaceForPredicateAttribute(const Config &config)
 void
 AttributeTest::testCompactLidSpace(const Config &config)
 {
+    SCOPED_TRACE(make_scoped_trace_msg("compact lid space", config));
     switch (config.basicType().type()) {
     case BasicType::BOOL:
     case BasicType::UINT2:
@@ -2025,42 +2052,42 @@ AttributeTest::testCompactLidSpace(const Config &config)
 void
 AttributeTest::testCompactLidSpace()
 {
-    TEST_DO(testCompactLidSpace(Config(BasicType::BOOL, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::UINT2, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::UINT4, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT8, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT8, CollectionType::ARRAY)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT8, CollectionType::WSET)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT16, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT16, CollectionType::ARRAY)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT16, CollectionType::WSET)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT32, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT32, CollectionType::ARRAY)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT32, CollectionType::WSET)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT64, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT64, CollectionType::ARRAY)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::INT64, CollectionType::WSET)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::FLOAT, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::FLOAT, CollectionType::ARRAY)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::FLOAT, CollectionType::WSET)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::DOUBLE, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::DOUBLE, CollectionType::ARRAY)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::DOUBLE, CollectionType::WSET)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::STRING, CollectionType::SINGLE)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::STRING, CollectionType::ARRAY)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::STRING, CollectionType::WSET)));
-    TEST_DO(testCompactLidSpace(Config(BasicType::PREDICATE, CollectionType::SINGLE)));
+    testCompactLidSpace(Config(BasicType::BOOL, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::UINT2, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::UINT4, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::INT8, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::INT8, CollectionType::ARRAY));
+    testCompactLidSpace(Config(BasicType::INT8, CollectionType::WSET));
+    testCompactLidSpace(Config(BasicType::INT16, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::INT16, CollectionType::ARRAY));
+    testCompactLidSpace(Config(BasicType::INT16, CollectionType::WSET));
+    testCompactLidSpace(Config(BasicType::INT32, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::INT32, CollectionType::ARRAY));
+    testCompactLidSpace(Config(BasicType::INT32, CollectionType::WSET));
+    testCompactLidSpace(Config(BasicType::INT64, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::INT64, CollectionType::ARRAY));
+    testCompactLidSpace(Config(BasicType::INT64, CollectionType::WSET));
+    testCompactLidSpace(Config(BasicType::FLOAT, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::FLOAT, CollectionType::ARRAY));
+    testCompactLidSpace(Config(BasicType::FLOAT, CollectionType::WSET));
+    testCompactLidSpace(Config(BasicType::DOUBLE, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::DOUBLE, CollectionType::ARRAY));
+    testCompactLidSpace(Config(BasicType::DOUBLE, CollectionType::WSET));
+    testCompactLidSpace(Config(BasicType::STRING, CollectionType::SINGLE));
+    testCompactLidSpace(Config(BasicType::STRING, CollectionType::ARRAY));
+    testCompactLidSpace(Config(BasicType::STRING, CollectionType::WSET));
+    testCompactLidSpace(Config(BasicType::PREDICATE, CollectionType::SINGLE));
 }
 
 namespace {
 
 uint32_t
-get_default_value_ref_count(AttributeVector &attr)
+get_default_value_ref_count(AttributeVector &attr, int32_t defaultValue)
 {
     auto *enum_store_base = attr.getEnumStoreBase();
     auto &enum_store = dynamic_cast<EnumStoreT<int32_t> &>(*enum_store_base);
     IAttributeVector::EnumHandle default_value_handle(0);
-    if (enum_store.find_enum(attr.getDefaultValue(), default_value_handle)) {
+    if (enum_store.find_enum(defaultValue, default_value_handle)) {
         vespalib::datastore::EntryRef default_value_ref(default_value_handle);
         assert(default_value_ref.valid());
         return enum_store.get_ref_count(default_value_ref);
@@ -2079,14 +2106,15 @@ AttributeTest::test_default_value_ref_count_is_updated_after_shrink_lid_space()
     cfg.setFastSearch(true);
     vespalib::string name = "shrink";
     AttributePtr attr = AttributeFactory::createAttribute(name, cfg);
+    const auto & iattr = dynamic_cast<const search::IntegerAttributeTemplate<int32_t> &>(*attr);
     attr->addReservedDoc();
     attr->addDocs(10);
-    EXPECT_EQUAL(11u, get_default_value_ref_count(*attr));
+    EXPECT_EQ(11u, get_default_value_ref_count(*attr, iattr.defaultValue()));
     attr->compactLidSpace(6);
-    EXPECT_EQUAL(11u, get_default_value_ref_count(*attr));
+    EXPECT_EQ(11u, get_default_value_ref_count(*attr, iattr.defaultValue()));
     attr->shrinkLidSpace();
-    EXPECT_EQUAL(6u, attr->getNumDocs());
-    EXPECT_EQUAL(6u, get_default_value_ref_count(*attr));
+    EXPECT_EQ(6u, attr->getNumDocs());
+    EXPECT_EQ(6u, get_default_value_ref_count(*attr, iattr.defaultValue()));
 }
 
 template <typename AttributeType>
@@ -2106,30 +2134,30 @@ AttributeTest::requireThatAddressSpaceUsageIsReported(const Config &config, bool
     AddressSpaceUsage after = attrPtr->getAddressSpaceUsage();
     if (attrPtr->hasEnum()) {
         LOG(info, "requireThatAddressSpaceUsageIsReported(%s): Has enum", attrName.c_str());
-        EXPECT_EQUAL(before.enum_store_usage().used(), 1u);
-        EXPECT_EQUAL(before.enum_store_usage().dead(), 1u);
-        EXPECT_GREATER(after.enum_store_usage().used(), before.enum_store_usage().used());
-        EXPECT_GREATER_EQUAL(after.enum_store_usage().limit(), before.enum_store_usage().limit());
-        EXPECT_GREATER(after.enum_store_usage().limit(), 4200000000u);
+        EXPECT_EQ(before.enum_store_usage().used(), 1u);
+        EXPECT_EQ(before.enum_store_usage().dead(), 1u);
+        EXPECT_GT(after.enum_store_usage().used(), before.enum_store_usage().used());
+        EXPECT_GE(after.enum_store_usage().limit(), before.enum_store_usage().limit());
+        EXPECT_GT(after.enum_store_usage().limit(), 4200000000u);
     } else {
         LOG(info, "requireThatAddressSpaceUsageIsReported(%s): NOT enum", attrName.c_str());
-        EXPECT_EQUAL(before.enum_store_usage().used(), 0u);
-        EXPECT_EQUAL(before.enum_store_usage().dead(), 0u);
-        EXPECT_EQUAL(after.enum_store_usage(), before.enum_store_usage());
-        EXPECT_EQUAL(AddressSpaceComponents::default_enum_store_usage(), after.enum_store_usage());
+        EXPECT_EQ(before.enum_store_usage().used(), 0u);
+        EXPECT_EQ(before.enum_store_usage().dead(), 0u);
+        EXPECT_EQ(after.enum_store_usage(), before.enum_store_usage());
+        EXPECT_EQ(AddressSpaceComponents::default_enum_store_usage(), after.enum_store_usage());
     }
     if (attrPtr->hasMultiValue()) {
         LOG(info, "requireThatAddressSpaceUsageIsReported(%s): Has multi-value", attrName.c_str());
-        EXPECT_EQUAL(before.multi_value_usage().used(), 1u);
-        EXPECT_EQUAL(before.multi_value_usage().dead(), 1u);
-        EXPECT_GREATER_EQUAL(after.multi_value_usage().used(), before.multi_value_usage().used());
-        EXPECT_GREATER(after.multi_value_usage().limit(), before.multi_value_usage().limit());
-        EXPECT_GREATER((1ull << 32), after.multi_value_usage().limit());
+        EXPECT_EQ(before.multi_value_usage().used(), 1u);
+        EXPECT_EQ(before.multi_value_usage().dead(), 1u);
+        EXPECT_GE(after.multi_value_usage().used(), before.multi_value_usage().used());
+        EXPECT_GT(after.multi_value_usage().limit(), before.multi_value_usage().limit());
+        EXPECT_GT((1ull << 32), after.multi_value_usage().limit());
     } else {
         LOG(info, "requireThatAddressSpaceUsageIsReported(%s): NOT multi-value", attrName.c_str());
-        EXPECT_EQUAL(before.multi_value_usage().used(), 0u);
-        EXPECT_EQUAL(after.multi_value_usage(), before.multi_value_usage());
-        EXPECT_EQUAL(AddressSpaceComponents::default_multi_value_usage(), after.multi_value_usage());
+        EXPECT_EQ(before.multi_value_usage().used(), 0u);
+        EXPECT_EQ(after.multi_value_usage(), before.multi_value_usage());
+        EXPECT_EQ(AddressSpaceComponents::default_multi_value_usage(), after.multi_value_usage());
     }
 }
 
@@ -2137,6 +2165,7 @@ template <typename AttributeType>
 void
 AttributeTest::requireThatAddressSpaceUsageIsReported(const Config &config)
 {
+    SCOPED_TRACE(make_scoped_trace_msg("address space is reported", config));
     requireThatAddressSpaceUsageIsReported<AttributeType>(config, false);
     requireThatAddressSpaceUsageIsReported<AttributeType>(config, true);
 }
@@ -2144,12 +2173,12 @@ AttributeTest::requireThatAddressSpaceUsageIsReported(const Config &config)
 void
 AttributeTest::requireThatAddressSpaceUsageIsReported()
 {
-    TEST_DO(requireThatAddressSpaceUsageIsReported<IntegerAttribute>(Config(BasicType::INT32, CollectionType::SINGLE)));
-    TEST_DO(requireThatAddressSpaceUsageIsReported<IntegerAttribute>(Config(BasicType::INT32, CollectionType::ARRAY)));
-    TEST_DO(requireThatAddressSpaceUsageIsReported<FloatingPointAttribute>(Config(BasicType::FLOAT, CollectionType::SINGLE)));
-    TEST_DO(requireThatAddressSpaceUsageIsReported<FloatingPointAttribute>(Config(BasicType::FLOAT, CollectionType::ARRAY)));
-    TEST_DO(requireThatAddressSpaceUsageIsReported<StringAttribute>(Config(BasicType::STRING, CollectionType::SINGLE)));
-    TEST_DO(requireThatAddressSpaceUsageIsReported<StringAttribute>(Config(BasicType::STRING, CollectionType::ARRAY)));
+    requireThatAddressSpaceUsageIsReported<IntegerAttribute>(Config(BasicType::INT32, CollectionType::SINGLE));
+    requireThatAddressSpaceUsageIsReported<IntegerAttribute>(Config(BasicType::INT32, CollectionType::ARRAY));
+    requireThatAddressSpaceUsageIsReported<FloatingPointAttribute>(Config(BasicType::FLOAT, CollectionType::SINGLE));
+    requireThatAddressSpaceUsageIsReported<FloatingPointAttribute>(Config(BasicType::FLOAT, CollectionType::ARRAY));
+    requireThatAddressSpaceUsageIsReported<StringAttribute>(Config(BasicType::STRING, CollectionType::SINGLE));
+    requireThatAddressSpaceUsageIsReported<StringAttribute>(Config(BasicType::STRING, CollectionType::ARRAY));
 }
 
 template <typename AttributeType, typename BufferType>
@@ -2196,6 +2225,7 @@ template <typename AttributeType, typename BufferType>
 void
 AttributeTest::testReaderDuringLastUpdate(const Config &config)
 {
+    SCOPED_TRACE(make_scoped_trace_msg("reader during last update", config));
     testReaderDuringLastUpdate<AttributeType, BufferType>(config, false, false);
     testReaderDuringLastUpdate<AttributeType, BufferType>(config, true, false);
     testReaderDuringLastUpdate<AttributeType, BufferType>(config, false, true);
@@ -2205,15 +2235,15 @@ AttributeTest::testReaderDuringLastUpdate(const Config &config)
 void
 AttributeTest::testReaderDuringLastUpdate()
 {
-    TEST_DO((testReaderDuringLastUpdate<IntegerAttribute,AttributeVector::largeint_t>(Config(BasicType::INT32, CollectionType::SINGLE))));
-    TEST_DO((testReaderDuringLastUpdate<IntegerAttribute,AttributeVector::largeint_t>(Config(BasicType::INT32, CollectionType::ARRAY))));
-    TEST_DO((testReaderDuringLastUpdate<IntegerAttribute,AttributeVector::WeightedInt>(Config(BasicType::INT32, CollectionType::WSET))));
-    TEST_DO((testReaderDuringLastUpdate<FloatingPointAttribute,double>(Config(BasicType::FLOAT, CollectionType::SINGLE))));
-    TEST_DO((testReaderDuringLastUpdate<FloatingPointAttribute,double>(Config(BasicType::FLOAT, CollectionType::ARRAY))));
-    TEST_DO((testReaderDuringLastUpdate<FloatingPointAttribute,FloatingPointAttribute::WeightedFloat>(Config(BasicType::FLOAT, CollectionType::WSET))));
-    TEST_DO((testReaderDuringLastUpdate<StringAttribute,string>(Config(BasicType::STRING, CollectionType::SINGLE))));
-    TEST_DO((testReaderDuringLastUpdate<StringAttribute,string>(Config(BasicType::STRING, CollectionType::ARRAY))));
-    TEST_DO((testReaderDuringLastUpdate<StringAttribute,StringAttribute::WeightedString>(Config(BasicType::STRING, CollectionType::WSET))));
+    testReaderDuringLastUpdate<IntegerAttribute,AttributeVector::largeint_t>(Config(BasicType::INT32, CollectionType::SINGLE));
+    testReaderDuringLastUpdate<IntegerAttribute,AttributeVector::largeint_t>(Config(BasicType::INT32, CollectionType::ARRAY));
+    testReaderDuringLastUpdate<IntegerAttribute,AttributeVector::WeightedInt>(Config(BasicType::INT32, CollectionType::WSET));
+    testReaderDuringLastUpdate<FloatingPointAttribute,double>(Config(BasicType::FLOAT, CollectionType::SINGLE));
+    testReaderDuringLastUpdate<FloatingPointAttribute,double>(Config(BasicType::FLOAT, CollectionType::ARRAY));
+    testReaderDuringLastUpdate<FloatingPointAttribute,FloatingPointAttribute::WeightedFloat>(Config(BasicType::FLOAT, CollectionType::WSET));
+    testReaderDuringLastUpdate<StringAttribute,string>(Config(BasicType::STRING, CollectionType::SINGLE));
+    testReaderDuringLastUpdate<StringAttribute,string>(Config(BasicType::STRING, CollectionType::ARRAY));
+    testReaderDuringLastUpdate<StringAttribute,StringAttribute::WeightedString>(Config(BasicType::STRING, CollectionType::WSET));
 }
 
 void
@@ -2233,20 +2263,136 @@ AttributeTest::testPendingCompaction()
     populateSimple(iv, 1, 2);  // should not trigger new compaction
 }
 
+void
+AttributeTest::testConditionalCommit() {
+    Config cfg(BasicType::INT32, CollectionType::SINGLE);
+    cfg.setFastSearch(true);
+    cfg.setMaxUnCommittedMemory(70000);
+    AttributePtr v = createAttribute("sfsint32_cc", cfg);
+    addClearedDocs(v, 1000);
+    auto &iv = static_cast<IntegerAttribute &>(*v.get());
+    EXPECT_EQ(0x8000u, iv.getChangeVectorMemoryUsage().allocatedBytes());
+    EXPECT_EQ(0u, iv.getChangeVectorMemoryUsage().usedBytes());
+    AttributeGuard guard1(v);
+    populateSimpleUncommitted(iv, 1, 3);
+    EXPECT_EQ(0x8000u, iv.getChangeVectorMemoryUsage().allocatedBytes());
+    EXPECT_EQ(128u, iv.getChangeVectorMemoryUsage().usedBytes());
+    populateSimpleUncommitted(iv, 1, 1000);
+    EXPECT_EQ(0x10000u, iv.getChangeVectorMemoryUsage().allocatedBytes());
+    EXPECT_EQ(64064u, iv.getChangeVectorMemoryUsage().usedBytes());
+    EXPECT_FALSE(v->commitIfChangeVectorTooLarge());
+    EXPECT_EQ(0x10000u, iv.getChangeVectorMemoryUsage().allocatedBytes());
+    EXPECT_EQ(64064u, iv.getChangeVectorMemoryUsage().usedBytes());
+    populateSimpleUncommitted(iv, 1, 200);
+    EXPECT_EQ(0x20000u, iv.getChangeVectorMemoryUsage().allocatedBytes());
+    EXPECT_EQ(76800u, iv.getChangeVectorMemoryUsage().usedBytes());
+    EXPECT_TRUE(v->commitIfChangeVectorTooLarge());
+    EXPECT_EQ(0x2000u, iv.getChangeVectorMemoryUsage().allocatedBytes());
+    EXPECT_EQ(0u, iv.getChangeVectorMemoryUsage().usedBytes());
+}
+
+int
+AttributeTest::test_paged_attribute(const vespalib::string& name, const vespalib::string& swapfile, const search::attribute::Config& cfg)
+{
+    int result = 1;
+    size_t rounded_size = vespalib::round_up_to_page_size(1);
+    size_t lid_mapping_size = 1200;
+    size_t sv_maxlid = 1200;
+    if (rounded_size == 64_Ki) {
+        lid_mapping_size = 17000;
+        sv_maxlid = 1500;
+    }
+    if (cfg.basicType() == search::attribute::BasicType::Type::BOOL) {
+        lid_mapping_size = rounded_size * 8 + 100;
+    }
+    LOG(info, "test_paged_attribute '%s'", name.c_str());
+    auto av = createAttribute(name, cfg);
+    auto v = std::dynamic_pointer_cast<IntegerAttribute>(av);
+    bool failed = false;
+    EXPECT_TRUE(v || (!cfg.collectionType().isMultiValue() && !cfg.fastSearch())) << (failed = true, "");
+    if (failed) {
+        return 0;
+    }
+    auto size1 = std::filesystem::file_size(std::filesystem::path(swapfile));
+    // Grow mapping from lid to value or multivalue index
+    addClearedDocs(av, lid_mapping_size);
+    auto size2 = std::filesystem::file_size(std::filesystem::path(swapfile));
+    auto size3 = size2;
+    EXPECT_LT(size1, size2);
+    if (cfg.collectionType().isMultiValue()) {
+        // Grow multi value mapping
+        for (uint32_t lid = 1; lid < 100; ++lid) {
+            av->clearDoc(lid);
+            for (uint32_t i = 0; i < 50; ++i) {
+                EXPECT_TRUE(v->append(lid, 0, 1));
+            }
+            av->commit();
+        }
+        size3 = std::filesystem::file_size(std::filesystem::path(swapfile));
+        EXPECT_LT(size2, size3);
+        result += 2;
+    }
+    if (cfg.fastSearch()) {
+        // Grow enum store
+        uint32_t maxlid = cfg.collectionType().isMultiValue() ? 100 : sv_maxlid;
+        for (uint32_t lid = 1; lid < maxlid; ++lid) {
+            av->clearDoc(lid);
+            if (cfg.collectionType().isMultiValue()) {
+                for (uint32_t i = 0; i < 50; ++i) {
+                    EXPECT_TRUE(v->append(lid, lid * 100 + i, 1));
+                }
+            } else {
+                EXPECT_TRUE(v->update(lid, lid * 100));
+            }
+            av->commit();
+        }
+        auto size4 = std::filesystem::file_size(std::filesystem::path(swapfile));
+        EXPECT_LT(size3, size4);
+        result += 4;
+    }
+    return result;
+}
+
+void
+AttributeTest::test_paged_attributes()
+{
+    vespalib::string basedir("mmap-file-allocator-factory-dir");
+    vespalib::alloc::MmapFileAllocatorFactory::instance().setup(basedir);
+    search::attribute::Config cfg1(BasicType::INT32, CollectionType::SINGLE);
+    cfg1.setPaged(true);
+    EXPECT_EQ(1, test_paged_attribute("std-int-sv-paged", basedir + "/0.std-int-sv-paged/swapfile", cfg1));
+    search::attribute::Config cfg2(BasicType::INT32, CollectionType::ARRAY);
+    cfg2.setPaged(true);
+    EXPECT_EQ(3, test_paged_attribute("std-int-mv-paged", basedir + "/1.std-int-mv-paged/swapfile", cfg2));
+    search::attribute::Config cfg3(BasicType::INT32, CollectionType::SINGLE);
+    cfg3.setPaged(true);
+    cfg3.setFastSearch(true);
+    EXPECT_EQ(5, test_paged_attribute("fs-int-sv-paged", basedir + "/2.fs-int-sv-paged/swapfile", cfg3));
+    search::attribute::Config cfg4(BasicType::INT32, CollectionType::ARRAY);
+    cfg4.setPaged(true);
+    cfg4.setFastSearch(true);
+    EXPECT_EQ(7, test_paged_attribute("fs-int-mv-paged", basedir + "/3.fs-int-mv-paged/swapfile", cfg4));
+    search::attribute::Config cfg5(BasicType::BOOL, CollectionType::SINGLE);
+    cfg5.setPaged(true);
+    EXPECT_EQ(1, test_paged_attribute("std-bool-sv-paged", basedir + "/4.std-bool-sv-paged/swapfile", cfg5));
+    vespalib::alloc::MmapFileAllocatorFactory::instance().setup("");
+    std::filesystem::remove_all(std::filesystem::path(basedir));
+}
+
 void testNamePrefix() {
     Config cfg(BasicType::INT32, CollectionType::SINGLE);
     AttributeVector::SP vFlat = createAttribute("sfsint32_pc", cfg);
     AttributeVector::SP vS1 = createAttribute("sfsint32_pc.abc", cfg);
     AttributeVector::SP vS2 = createAttribute("sfsint32_pc.xyz", cfg);
     AttributeVector::SP vSS1 = createAttribute("sfsint32_pc.xyz.abc", cfg);
-    EXPECT_EQUAL("sfsint32_pc", vFlat->getName());
-    EXPECT_EQUAL("sfsint32_pc", vFlat->getNamePrefix());
-    EXPECT_EQUAL("sfsint32_pc.abc", vS1->getName());
-    EXPECT_EQUAL("sfsint32_pc", vS1->getNamePrefix());
-    EXPECT_EQUAL("sfsint32_pc.xyz", vS2->getName());
-    EXPECT_EQUAL("sfsint32_pc", vS2->getNamePrefix());
-    EXPECT_EQUAL("sfsint32_pc.xyz.abc", vSS1->getName());
-    EXPECT_EQUAL("sfsint32_pc", vSS1->getNamePrefix());
+    EXPECT_EQ("sfsint32_pc", vFlat->getName());
+    EXPECT_EQ("sfsint32_pc", vFlat->getNamePrefix());
+    EXPECT_EQ("sfsint32_pc.abc", vS1->getName());
+    EXPECT_EQ("sfsint32_pc", vS1->getNamePrefix());
+    EXPECT_EQ("sfsint32_pc.xyz", vS2->getName());
+    EXPECT_EQ("sfsint32_pc", vS2->getNamePrefix());
+    EXPECT_EQ("sfsint32_pc.xyz.abc", vSS1->getName());
+    EXPECT_EQ("sfsint32_pc", vSS1->getNamePrefix());
 }
 
 class MyMultiValueAttribute : public ArrayStringAttribute {
@@ -2265,60 +2411,154 @@ test_multi_value_mapping_has_free_lists_enabled()
     EXPECT_TRUE(attr.has_free_lists_enabled());
 }
 
+TEST_F(AttributeTest, base_name)
+{
+    testBaseName();
+}
+
+TEST_F(AttributeTest, reload)
+{
+    testReload();
+}
+
+TEST_F(AttributeTest, has_load_data)
+{
+    testHasLoadData();
+}
+
+TEST_F(AttributeTest, memory_saver)
+{
+    testMemorySaver();
+}
+
+TEST_F(AttributeTest, single_value_attributes)
+{
+    testSingle();
+}
+
+TEST_F(AttributeTest, array_attributes)
+{
+    testArray();
+}
+
+TEST_F(AttributeTest, weighted_set_attributes)
+{
+    testWeightedSet();
+}
+
+TEST_F(AttributeTest, arithmetic_value_update)
+{
+    testArithmeticValueUpdate();
+}
+
+TEST_F(AttributeTest, arithmetic_with_undefined_value)
+{
+    testArithmeticWithUndefinedValue();
+}
+
+TEST_F(AttributeTest, map_value_udpate)
+{
+    testMapValueUpdate();
+}
+
+TEST_F(AttributeTest, status)
+{
+    testStatus();
+}
+
+TEST_F(AttributeTest, null_protection)
+{
+    testNullProtection();
+}
+
+TEST_F(AttributeTest, generation)
+{
+    testGeneration();
+}
+
+TEST_F(AttributeTest, create_serial_num)
+{
+    testCreateSerialNum();
+}
+
+TEST_F(AttributeTest, predicate_header_tags)
+{
+    testPredicateHeaderTags();
+}
+
+TEST_F(AttributeTest, compact_lid_space)
+{
+    testCompactLidSpace();
+}
+
+TEST_F(AttributeTest, default_value_ref_count_is_updated_after_shrink_lid_space)
+{
+    test_default_value_ref_count_is_updated_after_shrink_lid_space();
+}
+
+TEST_F(AttributeTest, address_space_usage_is_reported)
+{
+    requireThatAddressSpaceUsageIsReported();
+}
+
+TEST_F(AttributeTest, reader_during_last_update)
+{
+    testReaderDuringLastUpdate();
+}
+
+TEST_F(AttributeTest, pending_compaction)
+{
+    testPendingCompaction();
+}
+
+TEST_F(AttributeTest, conditional_commit)
+{
+    testConditionalCommit();
+}
+
+TEST_F(AttributeTest, name_prefix)
+{
+    testNamePrefix();
+}
+
+TEST_F(AttributeTest, multi_value_mapping_has_free_lists_enabled)
+{
+    test_multi_value_mapping_has_free_lists_enabled();
+}
+
+TEST_F(AttributeTest, paged_attributes)
+{
+    test_paged_attributes();
+}
+
+}
+
 void
 deleteDataDirs()
 {
-    vespalib::rmdir(tmpDir, true);
-    vespalib::rmdir(clsDir, true);
-    vespalib::rmdir(asuDir, true);
+    std::filesystem::remove_all(std::filesystem::path(tmpDir));
+    std::filesystem::remove_all(std::filesystem::path(clsDir));
+    std::filesystem::remove_all(std::filesystem::path(asuDir));
 }
 
 void
 createDataDirs()
 {
-    vespalib::mkdir(tmpDir, true);
-    vespalib::mkdir(clsDir, true);
-    vespalib::mkdir(asuDir, true);
+    std::filesystem::create_directories(std::filesystem::path(tmpDir));
+    std::filesystem::create_directories(std::filesystem::path(clsDir));
+    std::filesystem::create_directories(std::filesystem::path(asuDir));
 }
 
-int AttributeTest::Main()
+int
+main(int argc, char* argv[])
 {
-    TEST_INIT("attribute_test");
-
-    if (_argc > 0) {
-        DummyFileHeaderContext::setCreator(_argv[0]);
+    if (argc > 0) {
+        DummyFileHeaderContext::setCreator(argv[0]);
     }
+    ::testing::InitGoogleTest(&argc, argv);
     deleteDataDirs();
     createDataDirs();
-
-    testBaseName();
-    testReload();
-    testHasLoadData();
-    testMemorySaver();
-
-    testSingle();
-    testArray();
-    testWeightedSet();
-    testArithmeticValueUpdate();
-    testArithmeticWithUndefinedValue();
-    testMapValueUpdate();
-    testStatus();
-    testNullProtection();
-    testGeneration();
-    testCreateSerialNum();
-    testPredicateHeaderTags();
-    TEST_DO(testCompactLidSpace());
-    TEST_DO(test_default_value_ref_count_is_updated_after_shrink_lid_space());
-    TEST_DO(requireThatAddressSpaceUsageIsReported());
-    testReaderDuringLastUpdate();
-    TEST_DO(testPendingCompaction());
-    TEST_DO(testNamePrefix());
-    test_multi_value_mapping_has_free_lists_enabled();
-
+    auto result = RUN_ALL_TESTS();
     deleteDataDirs();
-    TEST_DONE();
+    return result;
 }
-
-}
-
-TEST_APPHOOK(search::AttributeTest);

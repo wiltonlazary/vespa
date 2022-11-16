@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/vespalib/gtest/gtest.h>
 #include <vespa/searchlib/engine/proto_converter.h>
@@ -26,7 +26,17 @@ using vespalib::slime::BinaryFormat;
 
 //-----------------------------------------------------------------------------
 
-struct SearchRequestTest : ::testing::Test {
+struct ProtoConverterTest : ::testing::Test {
+    static constexpr size_t gid_len = document::GlobalId::LENGTH;
+    char id0[gid_len] = { 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12};
+    char id1[gid_len] = {11,12,13,14,15,16,17,18,19,20,21,22};
+    char id2[gid_len] = {21,22,23,24,25,26,27,28,29,30,31,32};
+    static_assert(gid_len == 12);
+};
+
+//-----------------------------------------------------------------------------
+
+struct SearchRequestTest : ProtoConverterTest {
     Converter::ProtoSearchRequest proto;
     SearchRequest request;
     void convert() { Converter::search_request_from_proto(proto, request); }
@@ -53,7 +63,13 @@ TEST_F(SearchRequestTest, require_that_timeout_is_converted) {
 TEST_F(SearchRequestTest, require_that_trace_level_is_converted) {
     proto.set_trace_level(9);
     convert();
-    EXPECT_EQ(request.getTraceLevel(), 9);
+    EXPECT_EQ(request.trace().getLevel(), 9);
+}
+
+TEST_F(SearchRequestTest, require_that_profile_depth_is_converted) {
+    proto.set_profile_depth(7);
+    convert();
+    EXPECT_EQ(request.trace().getProfileDepth(), 7);
 }
 
 TEST_F(SearchRequestTest, require_that_sorting_is_converted) {
@@ -179,9 +195,36 @@ TEST_F(SearchRequestTest, require_that_query_tree_blob_is_converted) {
 
 //-----------------------------------------------------------------------------
 
-struct SearchReplyTest : ::testing::Test {
+struct SearchReplyTest : ProtoConverterTest {
     SearchReply reply;
     Converter::ProtoSearchReply proto;
+    void fill_hits() {
+        reply.hits.resize(3);
+        reply.hits[0].gid = document::GlobalId(id0);
+        reply.hits[0].metric = 100.0;
+        reply.hits[1].gid = document::GlobalId(id1);
+        reply.hits[1].metric = 50.0;
+        reply.hits[2].gid = document::GlobalId(id2);
+        reply.hits[2].metric = 10.0;
+    }
+    void fill_sort_data() {
+        vespalib::string sort_data("fooxybar");
+        reply.sortData.assign(sort_data.begin(), sort_data.end());
+        reply.sortIndex.push_back(0);
+        reply.sortIndex.push_back(3); // hit1: 'foo'
+        reply.sortIndex.push_back(5); // hit2: 'xy'
+        reply.sortIndex.push_back(8); // hit3: 'bar'
+    }
+    void fill_match_features() {
+        reply.match_features.names = {"my_double", "my_data"};
+        reply.match_features.values.resize(2 * 3);
+        reply.match_features.values[0].set_double(10);
+        reply.match_features.values[1].set_data("data1");
+        reply.match_features.values[2].set_double(20);
+        reply.match_features.values[3].set_data("data2");
+        reply.match_features.values[4].set_double(30);
+        reply.match_features.values[5].set_data("data3");
+    }
     void convert() { Converter::search_reply_to_proto(reply, proto); }
 };
 
@@ -203,10 +246,10 @@ TEST_F(SearchReplyTest, require_that_active_docs_is_converted) {
     EXPECT_EQ(proto.active_docs(), 200000);
 }
 
-TEST_F(SearchReplyTest, require_that_soon_active_docs_is_converted) {
-    reply.coverage.setSoonActive(250000);
+TEST_F(SearchReplyTest, require_that_target_active_docs_is_converted) {
+    reply.coverage.setTargetActive(250000);
     convert();
-    EXPECT_EQ(proto.soon_active_docs(), 250000);
+    EXPECT_EQ(proto.target_active_docs(), 250000);
 }
 
 TEST_F(SearchReplyTest, require_that_degraded_by_match_phase_is_converted) {
@@ -232,61 +275,59 @@ TEST_F(SearchReplyTest, require_that_multiple_degraded_reasons_are_converted) {
 }
 
 TEST_F(SearchReplyTest, require_that_hits_are_converted) {
-    constexpr size_t len = document::GlobalId::LENGTH;
-    ASSERT_EQ(len, 12);
-    char id0[len] = { 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12};
-    char id1[len] = {11,12,13,14,15,16,17,18,19,20,21,22};
-    char id2[len] = {21,22,23,24,25,26,27,28,29,30,31,32};
-    reply.hits.resize(3);
-    reply.hits[0].gid = document::GlobalId(id0);
-    reply.hits[0].metric = 100.0;
-    reply.hits[1].gid = document::GlobalId(id1);
-    reply.hits[1].metric = 50.0;
-    reply.hits[2].gid = document::GlobalId(id2);
-    reply.hits[2].metric = 10.0;
+    fill_hits();
     convert();
     ASSERT_EQ(proto.hits_size(), 3);
-    EXPECT_EQ(proto.hits(0).global_id(), std::string(id0, len));
+    EXPECT_EQ(proto.hits(0).global_id(), std::string(id0, gid_len));
     EXPECT_EQ(proto.hits(0).relevance(), 100.0);
     EXPECT_TRUE(proto.hits(0).sort_data().empty());
-    EXPECT_EQ(proto.hits(1).global_id(), std::string(id1, len));
+    EXPECT_EQ(proto.hits(1).global_id(), std::string(id1, gid_len));
     EXPECT_EQ(proto.hits(1).relevance(), 50.0);
     EXPECT_TRUE(proto.hits(1).sort_data().empty());
-    EXPECT_EQ(proto.hits(2).global_id(), std::string(id2, len));
+    EXPECT_EQ(proto.hits(2).global_id(), std::string(id2, gid_len));
     EXPECT_EQ(proto.hits(2).relevance(), 10.0);
     EXPECT_TRUE(proto.hits(2).sort_data().empty());
 }
 
 TEST_F(SearchReplyTest, require_that_hits_with_sort_data_are_converted) {
-    constexpr size_t len = document::GlobalId::LENGTH;
-    ASSERT_EQ(len, 12);
-    char id0[len] = { 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12};
-    char id1[len] = {11,12,13,14,15,16,17,18,19,20,21,22};
-    char id2[len] = {21,22,23,24,25,26,27,28,29,30,31,32};
-    reply.hits.resize(3);
-    reply.hits[0].gid = document::GlobalId(id0);
-    reply.hits[0].metric = 100.0;
-    reply.hits[1].gid = document::GlobalId(id1);
-    reply.hits[1].metric = 50.0;
-    reply.hits[2].gid = document::GlobalId(id2);
-    reply.hits[2].metric = 10.0;
-    vespalib::string sort_data("fooxybar");
-    reply.sortData.assign(sort_data.begin(), sort_data.end());
-    reply.sortIndex.push_back(0);
-    reply.sortIndex.push_back(3); // hit1: 'foo'
-    reply.sortIndex.push_back(5); // hit2: 'xy'
-    reply.sortIndex.push_back(8); // hit3: 'bar'
+    fill_hits();
+    fill_sort_data();
     convert();
     ASSERT_EQ(proto.hits_size(), 3);
-    EXPECT_EQ(proto.hits(0).global_id(), std::string(id0, len));
+    EXPECT_EQ(proto.hits(0).global_id(), std::string(id0, gid_len));
     EXPECT_EQ(proto.hits(0).relevance(), 100.0);
     EXPECT_EQ(proto.hits(0).sort_data(), "foo");
-    EXPECT_EQ(proto.hits(1).global_id(), std::string(id1, len));
+    EXPECT_EQ(proto.hits(1).global_id(), std::string(id1, gid_len));
     EXPECT_EQ(proto.hits(1).relevance(), 50.0);
     EXPECT_EQ(proto.hits(1).sort_data(), "xy");
-    EXPECT_EQ(proto.hits(2).global_id(), std::string(id2, len));
+    EXPECT_EQ(proto.hits(2).global_id(), std::string(id2, gid_len));
     EXPECT_EQ(proto.hits(2).relevance(), 10.0);
     EXPECT_EQ(proto.hits(2).sort_data(), "bar");
+}
+
+TEST_F(SearchReplyTest, require_that_match_features_are_converted) {
+    fill_hits();
+    fill_match_features();
+    convert();
+    ASSERT_EQ(proto.match_feature_names_size(), 2);
+    EXPECT_EQ(proto.match_feature_names(0), "my_double");
+    EXPECT_EQ(proto.match_feature_names(1), "my_data");
+    ASSERT_EQ(proto.hits_size(), 3);
+    ASSERT_EQ(proto.hits(0).match_features_size(), 2);
+    EXPECT_EQ(proto.hits(0).match_features(0).number(), 10.0);
+    EXPECT_EQ(proto.hits(0).match_features(0).tensor(), "");
+    EXPECT_EQ(proto.hits(0).match_features(1).number(), 0.0);
+    EXPECT_EQ(proto.hits(0).match_features(1).tensor(), "data1");
+    ASSERT_EQ(proto.hits(1).match_features_size(), 2);
+    EXPECT_EQ(proto.hits(1).match_features(0).number(), 20.0);
+    EXPECT_EQ(proto.hits(1).match_features(0).tensor(), "");
+    EXPECT_EQ(proto.hits(1).match_features(1).number(), 0.0);
+    EXPECT_EQ(proto.hits(1).match_features(1).tensor(), "data2");
+    ASSERT_EQ(proto.hits(2).match_features_size(), 2);
+    EXPECT_EQ(proto.hits(2).match_features(0).number(), 30.0);
+    EXPECT_EQ(proto.hits(2).match_features(0).tensor(), "");
+    EXPECT_EQ(proto.hits(2).match_features(1).number(), 0.0);
+    EXPECT_EQ(proto.hits(2).match_features(1).tensor(), "data3");
 }
 
 TEST_F(SearchReplyTest, require_that_grouping_blob_is_converted) {
@@ -318,7 +359,7 @@ TEST_F(SearchReplyTest, require_that_issues_are_converted_to_errors) {
 
 //-----------------------------------------------------------------------------
 
-struct DocsumRequestTest : ::testing::Test {
+struct DocsumRequestTest : ProtoConverterTest {
     Converter::ProtoDocsumRequest proto;
     DocsumRequest request;
     DocsumRequestTest() : proto(), request() {}
@@ -453,6 +494,19 @@ TEST_F(DocsumRequestTest, require_that_geo_location_is_converted) {
     EXPECT_EQ(request.location, "x,y");
 }
 
+TEST_F(DocsumRequestTest, require_that_field_list_is_empty_by_default) {
+    convert();
+    EXPECT_TRUE(request.getFields().empty());
+}
+TEST_F(DocsumRequestTest, require_that_field_list_is_converted) {
+    proto.add_fields("f1");
+    proto.add_fields("f2");
+    convert();
+    EXPECT_EQ(2u, request.getFields().size());
+    EXPECT_EQ("f1", request.getFields()[0]);
+    EXPECT_EQ("f2", request.getFields()[1]);
+}
+
 TEST_F(DocsumRequestTest, require_that_query_tree_blob_is_converted) {
     proto.set_query_tree_blob("query-tree-blob");
     convert();
@@ -460,14 +514,9 @@ TEST_F(DocsumRequestTest, require_that_query_tree_blob_is_converted) {
 }
 
 TEST_F(DocsumRequestTest, require_that_global_ids_are_converted) {
-    constexpr size_t len = document::GlobalId::LENGTH;
-    ASSERT_EQ(len, 12);
-    char id0[len] = { 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12};
-    char id1[len] = {11,12,13,14,15,16,17,18,19,20,21,22};
-    char id2[len] = {21,22,23,24,25,26,27,28,29,30,31,32};
-    proto.add_global_ids(id0, len);
-    proto.add_global_ids(id1, len);
-    proto.add_global_ids(id2, len);
+    proto.add_global_ids(id0, gid_len);
+    proto.add_global_ids(id1, gid_len);
+    proto.add_global_ids(id2, gid_len);
     convert();
     ASSERT_EQ(request.hits.size(), 3);
     EXPECT_EQ(request.hits[0].gid, document::GlobalId(id0));
@@ -477,12 +526,12 @@ TEST_F(DocsumRequestTest, require_that_global_ids_are_converted) {
 
 //-----------------------------------------------------------------------------
 
-struct DocsumReplyTest : ::testing::Test {
+struct DocsumReplyTest : ProtoConverterTest {
     Slime &slime;
     DocsumReply reply;
     Converter::ProtoDocsumReply proto;
     void convert() { Converter::docsum_reply_to_proto(reply, proto); }
-    DocsumReplyTest(std::unique_ptr<Slime> slime_in)
+    explicit DocsumReplyTest(std::unique_ptr<Slime> slime_in)
         : slime(*slime_in), reply(std::move(slime_in))
     {}
     DocsumReplyTest() : DocsumReplyTest(std::make_unique<Slime>()) {}
@@ -522,7 +571,7 @@ TEST_F(DocsumReplyTest, require_that_issues_are_converted_to_errors) {
 
 //-----------------------------------------------------------------------------
 
-struct MonitorReplyTest : ::testing::Test {
+struct MonitorReplyTest : ProtoConverterTest {
     MonitorReply reply;
     Converter::ProtoMonitorReply proto;
     void convert() { Converter::monitor_reply_to_proto(reply, proto); }
@@ -544,6 +593,11 @@ TEST_F(MonitorReplyTest, require_that_active_docs_is_converted) {
     reply.activeDocs = 12345;
     convert();
     EXPECT_EQ(proto.active_docs(), 12345);
+}
+TEST_F(MonitorReplyTest, require_that_target_active_docs_is_converted) {
+    reply.targetActiveDocs = 12345;
+    convert();
+    EXPECT_EQ(proto.target_active_docs(), 12345);
 }
 
 TEST_F(MonitorReplyTest, require_that_distribution_key_is_converted) {

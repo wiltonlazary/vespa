@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/vespalib/util/benchmark_timer.h>
@@ -35,7 +35,7 @@ struct Fixture : FRT_Invokable {
     FRT_Target *connect() {
         return orb.GetTarget(orb.GetListenPort());
     }
-    ~Fixture() = default;
+    ~Fixture();
     void init_rpc() {
         FRT_ReflectionBuilder rb(&orb);
         rb.DefineMethod("inc", "l", "l", FRT_METHOD(Fixture::rpc_inc), this);
@@ -49,6 +49,8 @@ struct Fixture : FRT_Invokable {
         ret.AddInt64(params[0]._intval64 + 1);
     }
 };
+
+Fixture::~Fixture() = default;
 
 struct DurationCmp {
     bool operator()(const TimeTracer::Record &a, const TimeTracer::Record &b) {

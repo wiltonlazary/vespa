@@ -7,6 +7,7 @@
 #include "querynodemixin.h"
 #include "range.h"
 #include "term.h"
+#include "const_bool_nodes.h"
 
 namespace search::query {
 
@@ -112,6 +113,26 @@ public:
         : QueryNodeMixinType(term, view, id, weight)
     {}
     virtual ~RegExpTerm() = 0;
+};
+
+//-----------------------------------------------------------------------------
+
+class FuzzyTerm : public QueryNodeMixin<FuzzyTerm, StringBase> {
+private:
+    uint32_t _maxEditDistance;
+    uint32_t _prefixLength;
+public:
+    FuzzyTerm(const Type &term, vespalib::stringref view,
+               int32_t id, Weight weight, uint32_t maxEditDistance, uint32_t prefixLength)
+            : QueryNodeMixinType(term, view, id, weight),
+              _maxEditDistance(maxEditDistance),
+              _prefixLength(prefixLength)
+    {}
+
+    uint32_t getMaxEditDistance() const { return _maxEditDistance; }
+    uint32_t getPrefixLength() const { return _prefixLength; }
+
+    virtual ~FuzzyTerm() = 0;
 };
 
 /**

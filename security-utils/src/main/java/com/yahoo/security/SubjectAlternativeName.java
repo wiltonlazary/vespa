@@ -2,7 +2,7 @@
 package com.yahoo.security;
 
 import org.bouncycastle.asn1.ASN1Encodable;
-import org.bouncycastle.asn1.DERIA5String;
+import org.bouncycastle.asn1.ASN1IA5String;
 import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.GeneralName;
@@ -60,7 +60,7 @@ public class SubjectAlternativeName {
             case GeneralName.rfc822Name:
             case GeneralName.dNSName:
             case GeneralName.uniformResourceIdentifier:
-                return DERIA5String.getInstance(name).getString();
+                return ASN1IA5String.getInstance(name).getString();
             case GeneralName.directoryName:
                 return X500Name.getInstance(name).toString();
             case GeneralName.iPAddress:
@@ -99,15 +99,15 @@ public class SubjectAlternativeName {
     }
 
     public enum Type {
-        OTHER_NAME(0),
-        RFC822_NAME(1),
-        DNS_NAME(2),
-        X400_ADDRESS(3),
-        DIRECTORY_NAME(4),
-        EDI_PARITY_NAME(5),
-        UNIFORM_RESOURCE_IDENTIFIER(6),
-        IP_ADDRESS(7),
-        REGISTERED_ID(8);
+        OTHER(0),
+        EMAIL(1),
+        DNS(2),
+        X400(3),
+        DIRECTORY(4),
+        EDI_PARITY(5),
+        URI(6),
+        IP(7),
+        REGISTERED(8);
 
         final int tag;
 

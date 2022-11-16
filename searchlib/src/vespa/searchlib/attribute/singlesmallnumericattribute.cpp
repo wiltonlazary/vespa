@@ -1,13 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "attributeiterators.hpp"
+#include "singlesmallnumericattribute.h"
 #include "attributevector.hpp"
 #include "iattributesavetarget.h"
 #include "primitivereader.h"
-#include "singlesmallnumericattribute.h"
+#include "single_small_numeric_search_context.h"
+#include "valuemodifier.h"
 #include <vespa/searchlib/query/query_term_simple.h>
-#include <vespa/searchlib/queryeval/emptysearch.h>
 #include <vespa/searchlib/util/file_settings.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/data/databuffer.h>
 #include <vespa/vespalib/util/size_literals.h>
 
@@ -25,10 +26,7 @@ SingleValueSmallNumericAttribute(const vespalib::string & baseFileName,
       _valueShiftShift(valueShiftShift),
       _valueShiftMask(valueShiftMask),
       _wordShift(wordShift),
-      _wordData(c.getGrowStrategy().getDocsInitialCapacity(),
-                c.getGrowStrategy().getDocsGrowPercent(),
-                c.getGrowStrategy().getDocsGrowDelta(),
-                getGenerationHolder())
+      _wordData(c.getGrowStrategy(), getGenerationHolder())
 {
     assert(_valueMask + 1 == (1u << (1u << valueShiftShift)));
     assert((_valueShiftMask + 1) * (1u << valueShiftShift) == 8 * sizeof(Word));
@@ -38,7 +36,7 @@ SingleValueSmallNumericAttribute(const vespalib::string & baseFileName,
 
 SingleValueSmallNumericAttribute::~SingleValueSmallNumericAttribute()
 {
-    getGenerationHolder().clearHoldLists();
+    getGenerationHolder().reclaim_all();
 }
 
 void
@@ -60,7 +58,7 @@ SingleValueSmallNumericAttribute::onCommit()
                 set(change._doc, change._data);
             } else if (change._type >= ChangeBase::ADD && change._type <= ChangeBase::DIV) {
                 std::atomic_thread_fence(std::memory_order_release);
-                set(change._doc, applyArithmetic(getFast(change._doc), change));
+                set(change._doc, applyArithmetic<T, typename Change::DataType>(getFast(change._doc), change._data.getArithOperand(), change._type));
             } else if (change._type == ChangeBase::CLEARDOC) {
                 std::atomic_thread_fence(std::memory_order_release);
                 set(change._doc, 0u);
@@ -69,7 +67,7 @@ SingleValueSmallNumericAttribute::onCommit()
     }
 
     std::atomic_thread_fence(std::memory_order_release);
-    removeAllOldGenerations();
+    reclaim_unused_memory();
 
     _changes.clear();
 }
@@ -86,7 +84,7 @@ SingleValueSmallNumericAttribute::addDoc(DocId & doc) {
         if (incGen) {
             this->incGeneration();
         } else
-            this->removeAllOldGenerations();
+            this->reclaim_unused_memory();
     } else {
         B::incNumDocs();
         doc = B::getNumDocs() - 1;
@@ -99,7 +97,7 @@ void
 SingleValueSmallNumericAttribute::onUpdateStat()
 {
     vespalib::MemoryUsage usage = _wordData.getMemoryUsage();
-    usage.mergeGenerationHeldBytes(getGenerationHolder().getHeldBytes());
+    usage.mergeGenerationHeldBytes(getGenerationHolder().get_held_bytes());
     uint32_t numDocs = B::getNumDocs();
     updateStatistics(numDocs, numDocs,
                      usage.allocatedBytes(), usage.usedBytes(),
@@ -108,16 +106,16 @@ SingleValueSmallNumericAttribute::onUpdateStat()
 
 
 void
-SingleValueSmallNumericAttribute::removeOldGenerations(generation_t firstUsed)
+SingleValueSmallNumericAttribute::reclaim_memory(generation_t oldest_used_gen)
 {
-    getGenerationHolder().trimHoldLists(firstUsed);
+    getGenerationHolder().reclaim(oldest_used_gen);
 }
 
 
 void
-SingleValueSmallNumericAttribute::onGenerationChange(generation_t generation)
+SingleValueSmallNumericAttribute::before_inc_generation(generation_t current_gen)
 {
-    getGenerationHolder().transferHoldLists(generation - 1);
+    getGenerationHolder().assign_generation(current_gen);
 }
 
 
@@ -129,7 +127,7 @@ SingleValueSmallNumericAttribute::onLoad(vespalib::Executor *)
     if (ok) {
         setCreateSerialNum(attrReader.getCreateSerialNum());
         const size_t sz(attrReader.getDataCount());
-        getGenerationHolder().clearHoldLists();
+        getGenerationHolder().reclaim_all();
         _wordData.reset();
         _wordData.unsafe_reserve(sz - 1);
         Word numDocs = attrReader.getNextData();
@@ -168,15 +166,15 @@ SingleValueSmallNumericAttribute::onSave(IAttributeSaveTarget &saveTarget)
     assert(numDocs == getCommittedDocIdLimit());
 }
 
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 SingleValueSmallNumericAttribute::getSearch(std::unique_ptr<QueryTermSimple> qTerm,
                                             const attribute::SearchContextParams &) const
 {
-    return std::make_unique<SingleSearchContext>(std::move(qTerm), *this);
+    return std::make_unique<attribute::SingleSmallNumericSearchContext>(std::move(qTerm), *this, &_wordData.acquire_elem_ref(0), _valueMask, _valueShiftShift, _valueShiftMask, _wordShift);
 }
 
 void
-SingleValueSmallNumericAttribute::clearDocs(DocId lidLow, DocId lidLimit)
+SingleValueSmallNumericAttribute::clearDocs(DocId lidLow, DocId lidLimit, bool)
 {
     assert(lidLow <= lidLimit);
     assert(lidLimit <= getNumDocs());
@@ -206,40 +204,6 @@ SingleValueSmallNumericAttribute::getEstimatedSaveByteSize() const
     const size_t numDataWords((numDocs + _valueShiftMask) >> _wordShift);
     const size_t sz((numDataWords + 1) * sizeof(Word));
     return headerSize + sz;
-}
-
-bool SingleValueSmallNumericAttribute::SingleSearchContext::valid() const { return this->isValid(); }
-
-
-SingleValueSmallNumericAttribute::SingleSearchContext::SingleSearchContext(std::unique_ptr<QueryTermSimple> qTerm,
-                                                                           const SingleValueSmallNumericAttribute & toBeSearched)
-    : NumericAttribute::Range<T>(*qTerm),
-      SearchContext(toBeSearched), _wordData(&toBeSearched._wordData[0]),
-      _valueMask(toBeSearched._valueMask),
-      _valueShiftShift(toBeSearched._valueShiftShift),
-      _valueShiftMask(toBeSearched._valueShiftMask),
-      _wordShift(toBeSearched._wordShift)
-{ }
-
-Int64Range
-SingleValueSmallNumericAttribute::SingleSearchContext::getAsIntegerTerm() const {
-    return this->getRange();
-}
-
-std::unique_ptr<queryeval::SearchIterator>
-SingleValueSmallNumericAttribute::SingleSearchContext::createFilterIterator(fef::TermFieldMatchData * matchData, bool strict)
-{
-    if (!valid()) {
-        return std::make_unique<queryeval::EmptySearch>();
-    }
-    if (getIsFilter()) {
-        return strict
-                 ? std::make_unique<FilterAttributeIteratorStrict<SingleSearchContext>>(*this, matchData)
-                 : std::make_unique<FilterAttributeIteratorT<SingleSearchContext>>(*this, matchData);
-    }
-    return strict
-             ? std::make_unique<AttributeIteratorStrict<SingleSearchContext>>(*this, matchData)
-             : std::make_unique<AttributeIteratorT<SingleSearchContext>>(*this, matchData);
 }
 
 namespace {

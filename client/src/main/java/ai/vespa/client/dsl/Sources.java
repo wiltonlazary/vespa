@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.client.dsl;
 
 
@@ -11,11 +11,11 @@ import java.util.stream.Stream;
 public class Sources {
 
     final Select select;
-    final List<String> targetDocTypes;
+    private final List<String> targetDocTypes;
 
     Sources(Select select, List<String> searchDefinitions) {
         this.select = select;
-        targetDocTypes = new ArrayList<>(searchDefinitions);
+        this.targetDocTypes = new ArrayList<>(searchDefinitions);
     }
 
     Sources(Select select, String searchDefinition) {
@@ -61,4 +61,5 @@ public class Sources {
         rank.setSources(this);
         return new EndQuery(rank);
     }
+
 }

@@ -5,13 +5,14 @@ import com.yahoo.collections.Comparables;
 import com.yahoo.config.application.api.xml.DeploymentSpecXmlReader;
 import com.yahoo.config.provision.AthenzDomain;
 import com.yahoo.config.provision.AthenzService;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.RegionName;
 
 import java.io.Reader;
 import java.time.Duration;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -39,7 +40,10 @@ public class DeploymentSpec {
                                                                   Optional.empty(),
                                                                   Optional.empty(),
                                                                   Optional.empty(),
-                                                                  "<deployment version='1.0'/>");
+                                                                  Optional.empty(),
+                                                                  List.of(),
+                                                                  "<deployment version='1.0'/>",
+                                                                  List.of());
 
     private final List<Step> steps;
 
@@ -47,6 +51,9 @@ public class DeploymentSpec {
     private final Optional<Integer> majorVersion;
     private final Optional<AthenzDomain> athenzDomain;
     private final Optional<AthenzService> athenzService;
+    private final Optional<CloudAccount> cloudAccount;
+    private final List<Endpoint> endpoints;
+    private final List<DeprecatedElement> deprecatedElements;
 
     private final String xmlForm;
 
@@ -54,23 +61,30 @@ public class DeploymentSpec {
                           Optional<Integer> majorVersion,
                           Optional<AthenzDomain> athenzDomain,
                           Optional<AthenzService> athenzService,
-                          String xmlForm) {
-        this.steps = List.copyOf(steps);
-        this.majorVersion = majorVersion;
-        this.athenzDomain = athenzDomain;
-        this.athenzService = athenzService;
-        this.xmlForm = xmlForm;
+                          Optional<CloudAccount> cloudAccount,
+                          List<Endpoint> endpoints,
+                          String xmlForm,
+                          List<DeprecatedElement> deprecatedElements) {
+        this.steps = List.copyOf(Objects.requireNonNull(steps));
+        this.majorVersion = Objects.requireNonNull(majorVersion);
+        this.athenzDomain = Objects.requireNonNull(athenzDomain);
+        this.athenzService = Objects.requireNonNull(athenzService);
+        this.cloudAccount = Objects.requireNonNull(cloudAccount);
+        this.xmlForm = Objects.requireNonNull(xmlForm);
+        this.endpoints = List.copyOf(Objects.requireNonNull(endpoints));
+        this.deprecatedElements = List.copyOf(Objects.requireNonNull(deprecatedElements));
         validateTotalDelay(steps);
         validateUpgradePoliciesOfIncreasingConservativeness(steps);
         validateAthenz();
+        validateApplicationEndpoints();
     }
 
     /** Throw an IllegalArgumentException if the total delay exceeds 24 hours */
     private void validateTotalDelay(List<Step> steps) {
         long totalDelaySeconds = steps.stream().mapToLong(step -> (step.delay().getSeconds())).sum();
         if (totalDelaySeconds > Duration.ofHours(48).getSeconds())
-            throw new IllegalArgumentException("The total delay specified is " + Duration.ofSeconds(totalDelaySeconds) +
-                                               " but max 48 hours is allowed");
+            illegal("The total delay specified is " + Duration.ofSeconds(totalDelaySeconds) +
+                    " but max 48 hours is allowed");
     }
 
     /** Throws an IllegalArgumentException if any instance has a looser upgrade policy than the previous */
@@ -81,8 +95,8 @@ public class DeploymentSpec {
             List<DeploymentInstanceSpec> specs = instances(List.of(step));
             for (DeploymentInstanceSpec spec : specs) {
                 if (spec.upgradePolicy().compareTo(previous) < 0)
-                    throw new IllegalArgumentException("Instance '" + spec.name() + "' cannot have a looser upgrade " +
-                                                       "policy than the previous of '" + previous + "'");
+                    illegal("Instance '" + spec.name() + "' cannot have a looser upgrade " +
+                            "policy than the previous of '" + previous + "'");
 
                 strictest = Comparables.max(strictest, spec.upgradePolicy());
             }
@@ -101,7 +115,7 @@ public class DeploymentSpec {
             for (DeploymentInstanceSpec instance : instances()) {
                 for (DeploymentSpec.DeclaredZone zone : instance.zones()) {
                     if (zone.athenzService().isPresent()) {
-                        throw new IllegalArgumentException("Athenz service configured for zone: " + zone + ", but Athenz domain is not configured");
+                        illegal("Athenz service configured for zone: " + zone + ", but Athenz domain is not configured");
                     }
                 }
             }
@@ -111,13 +125,29 @@ public class DeploymentSpec {
             for (DeploymentInstanceSpec instance : instances()) {
                 for (DeploymentSpec.DeclaredZone zone : instance.zones()) {
                     if (zone.athenzService().isEmpty()) {
-                        throw new IllegalArgumentException("Athenz domain is configured, but Athenz service not configured for zone: " + zone);
+                        illegal("Athenz domain is configured, but Athenz service not configured for zone: " + zone);
                     }
                 }
             }
         }
     }
 
+    private void validateApplicationEndpoints() {
+        for (var endpoint : endpoints) {
+            if (endpoint.level() != Endpoint.Level.application) illegal("Endpoint '" + endpoint.endpointId() + "' must be an application–level endpoint, got " + endpoint.level());
+            String prefix = "Application-level endpoint '" + endpoint.endpointId() + "': ";
+            for (var target : endpoint.targets()) {
+                Optional<DeploymentInstanceSpec> instance = instance(target.instance());
+                if (instance.isEmpty()) {
+                    illegal(prefix + "targets undeclared instance '" + target.instance() + "'");
+                }
+                if (!instance.get().deploysTo(Environment.prod, target.region())) {
+                    illegal(prefix + "targets undeclared region '" + target.region() +
+                            "' in instance '" + target.instance() + "'");
+                }
+            }
+        }
+    }
 
     /** Returns the major version this application is pinned to, or empty (default) to allow all major versions */
     public Optional<Integer> majorVersion() { return majorVersion; }
@@ -140,7 +170,10 @@ public class DeploymentSpec {
     //    b. for multi-instance specs the root tag may or may not have a service, and unknown instances also lead here; and
     // 3. any tester application deployment is always an unknown instance, and always gets here, but there should not be any reason
     //    to have environment, instance or region variants on those.
-    public Optional<AthenzService> athenzService() { return this.athenzService; }
+    public Optional<AthenzService> athenzService() { return athenzService; }
+
+    /** Cloud account set on the deployment root; see discussion for {@link #athenzService}. */
+    public Optional<CloudAccount> cloudAccount() { return cloudAccount; }
 
     /** Returns the XML form of this spec, or null if it was not created by fromXml, nor is empty */
     public String xmlForm() { return xmlForm; }
@@ -161,19 +194,29 @@ public class DeploymentSpec {
     public DeploymentInstanceSpec requireInstance(InstanceName name) {
         Optional<DeploymentInstanceSpec> instance = instance(name);
         if (instance.isEmpty())
-            throw new IllegalArgumentException("No instance '" + name + "' in deployment.xml'. Instances: " +
+            throw new IllegalArgumentException("No instance '" + name + "' in deployment.xml. Instances: " +
                                                instances().stream().map(spec -> spec.name().toString()).collect(Collectors.joining(",")));
         return instance.get();
     }
 
     /** Returns the instance names declared in this */
     public List<InstanceName> instanceNames() {
-        return instances().stream().map(DeploymentInstanceSpec::name).collect(Collectors.toUnmodifiableList());
+        return instances().stream().map(DeploymentInstanceSpec::name).toList();
     }
 
     /** Returns the step descendants of this which are instances */
     public List<DeploymentInstanceSpec> instances() {
         return instances(steps);
+    }
+
+    /** Returns the application-level endpoints of this, if any */
+    public List<Endpoint> endpoints() {
+        return endpoints;
+    }
+
+    /** Returns the deprecated elements used when creating this */
+    public List<DeprecatedElement> deprecatedElements() {
+        return deprecatedElements;
     }
 
     private static List<DeploymentInstanceSpec> instances(List<DeploymentSpec.Step> steps) {
@@ -185,6 +228,11 @@ public class DeploymentSpec {
     private static Stream<DeploymentInstanceSpec> flatten(Step step) {
         if (step instanceof DeploymentInstanceSpec) return Stream.of((DeploymentInstanceSpec) step);
         return step.steps().stream().flatMap(DeploymentSpec::flatten);
+    }
+
+
+    private static void illegal(String message) {
+        throw new IllegalArgumentException(message);
     }
 
     /**
@@ -244,6 +292,20 @@ public class DeploymentSpec {
     @Override
     public int hashCode() {
         return Objects.hash(majorVersion, steps, xmlForm);
+    }
+
+    /** Computes a hash of all fields that influence what is deployed with this spec, i.e., not orchestration. */
+    public int deployableHashCode() {
+        Object[] toHash = new Object[instances().size() + 4];
+        int i = 0;
+        toHash[i++] = majorVersion;
+        toHash[i++] = athenzDomain;
+        toHash[i++] = athenzService;
+        toHash[i++] = endpoints;
+        for (DeploymentInstanceSpec instance : instances())
+            toHash[i++] = instance.deployableHashCode();
+
+        return Arrays.hashCode(toHash);
     }
 
     /** A deployment step */
@@ -309,22 +371,25 @@ public class DeploymentSpec {
         private final boolean active;
         private final Optional<AthenzService> athenzService;
         private final Optional<String> testerFlavor;
+        private final Optional<CloudAccount> cloudAccount;
 
         public DeclaredZone(Environment environment) {
-            this(environment, Optional.empty(), false, Optional.empty(), Optional.empty());
+            this(environment, Optional.empty(), false, Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         public DeclaredZone(Environment environment, Optional<RegionName> region, boolean active,
-                            Optional<AthenzService> athenzService, Optional<String> testerFlavor) {
+                            Optional<AthenzService> athenzService, Optional<String> testerFlavor,
+                            Optional<CloudAccount> cloudAccount) {
             if (environment != Environment.prod && region.isPresent())
-                throw new IllegalArgumentException("Non-prod environments cannot specify a region");
+                illegal("Non-prod environments cannot specify a region");
             if (environment == Environment.prod && region.isEmpty())
-                throw new IllegalArgumentException("Prod environments must be specified with a region");
-            this.environment = environment;
-            this.region = region;
+                illegal("Prod environments must be specified with a region");
+            this.environment = Objects.requireNonNull(environment);
+            this.region = Objects.requireNonNull(region);
             this.active = active;
-            this.athenzService = athenzService;
-            this.testerFlavor = testerFlavor;
+            this.athenzService = Objects.requireNonNull(athenzService);
+            this.testerFlavor = Objects.requireNonNull(testerFlavor);
+            this.cloudAccount = Objects.requireNonNull(cloudAccount);
         }
 
         public Environment environment() { return environment; }
@@ -339,8 +404,12 @@ public class DeploymentSpec {
 
         public Optional<AthenzService> athenzService() { return athenzService; }
 
+        public Optional<CloudAccount> cloudAccount() {
+            return cloudAccount;
+        }
+
         @Override
-        public List<DeclaredZone> zones() { return Collections.singletonList(this); }
+        public List<DeclaredZone> zones() { return List.of(this); }
 
         @Override
         public boolean concerns(Environment environment, Optional<RegionName> region) {
@@ -356,7 +425,7 @@ public class DeploymentSpec {
         public int hashCode() {
             return Objects.hash(environment, region);
         }
-        
+
         @Override
         public boolean equals(Object o) {
             if (o == this) return true;
@@ -366,7 +435,7 @@ public class DeploymentSpec {
             if ( ! this.region.equals(other.region())) return false;
             return true;
         }
-        
+
         @Override
         public String toString() {
             return environment + (region.map(regionName -> "." + regionName).orElse(""));
@@ -429,7 +498,7 @@ public class DeploymentSpec {
         public List<DeclaredZone> zones() {
             return steps.stream()
                         .flatMap(step -> step.zones().stream())
-                        .collect(Collectors.toUnmodifiableList());
+                        .toList();
         }
 
         @Override
@@ -511,16 +580,35 @@ public class DeploymentSpec {
     }
 
 
+    /** Determines what application changes to deploy to the instance. */
+    public enum RevisionTarget {
+        /** Next: Application changes are rolled through this instance in the same manner as they become ready, optionally adjusted further by min and max risk settings. */
+        next,
+        /** Latest: Application changes are always merged, so the latest available is always chosen for roll-out. */
+        latest
+    }
+
+
+    /** Determines when application changes deploy. */
+    public enum RevisionChange {
+        /** Exclusive: Application changes always wait for already rolling application changes to complete. */
+        whenClear,
+        /** Separate: Application changes wait for already rolling application changes to complete, unless they fail. */
+        whenFailing,
+        /** Latest: Application changes immediately supersede previous application changes, unless currently blocked. */
+        always
+    }
+
+
     /** Determines when application changes deploy, when there is already an ongoing platform upgrade. */
     public enum UpgradeRollout {
         /** Separate: Application changes wait for upgrade to complete, unless upgrade fails. */
         separate,
         /** Leading: Application changes are allowed to start and catch up to the platform upgrade. */
-        leading
+        leading,
         // /** Simultaneous: Application changes deploy independently of platform upgrades. */
-        // simultaneous
+        simultaneous
     }
-
 
     /** A blocking of changes in a given time window */
     public static class ChangeBlocker {
@@ -546,5 +634,45 @@ public class DeploymentSpec {
         
     }
 
+    /**
+     * Represents a deprecated XML element in {@link com.yahoo.config.application.api.DeploymentSpec}, or the deprecated
+     * attribute(s) of an element.
+     */
+    public static class DeprecatedElement {
+
+        private final String tagName;
+        private final List<String> attributes;
+        private final String message;
+        private final int majorVersion;
+
+        public DeprecatedElement(int majorVersion, String tagName, List<String> attributes, String message) {
+            this.tagName = Objects.requireNonNull(tagName);
+            this.attributes = Objects.requireNonNull(attributes);
+            this.message = Objects.requireNonNull(message);
+            this.majorVersion = majorVersion;
+            if (message.isBlank()) throw new IllegalArgumentException("message must be non-empty");
+        }
+
+        /** Returns the major version that deprecated this element */
+        public int majorVersion() {
+            return majorVersion;
+        }
+
+        public String humanReadableString() {
+            String deprecationDescription = "deprecated since major version " + majorVersion;
+            if (attributes.isEmpty()) {
+                return "Element '" + tagName + "' is " + deprecationDescription + ". " + message;
+            }
+            return "Element '" + tagName + "' contains attribute" + (attributes.size() > 1 ? "s " : " ") +
+                   attributes.stream().map(attr -> "'" + attr + "'").collect(Collectors.joining(", ")) +
+                   " " + deprecationDescription + ". " + message;
+        }
+
+        @Override
+        public String toString() {
+            return humanReadableString();
+        }
+
+    }
 
 }

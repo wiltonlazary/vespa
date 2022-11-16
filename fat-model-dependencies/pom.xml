@@ -5,12 +5,12 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>fat-model-dependencies</artifactId>
   <packaging>pom</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <dependencies>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -71,6 +71,11 @@
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
+      <artifactId>model-integration</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.yahoo.vespa</groupId>
       <artifactId>metrics</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -87,11 +92,6 @@
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>vespajlib</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>com.yahoo.vespa</groupId>
-      <artifactId>yolean</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
@@ -127,11 +127,6 @@
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>vespalog</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>com.yahoo.vespa</groupId>
-      <artifactId>statistics</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>

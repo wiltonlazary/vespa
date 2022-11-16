@@ -3,9 +3,9 @@
 #include "result_processor.h"
 #include "partial_result.h"
 #include "sessionmanager.h"
+#include <vespa/searchcore/proton/documentmetastore/documentmetastoreattribute.h>
 #include <vespa/searchcore/grouping/groupingmanager.h>
 #include <vespa/searchcore/grouping/groupingcontext.h>
-#include <vespa/searchlib/common/docstamp.h>
 #include <vespa/searchlib/uca/ucaconverter.h>
 #include <vespa/searchlib/engine/searchreply.h>
 
@@ -29,7 +29,7 @@ ResultProcessor::Result::~Result() = default;
 ResultProcessor::Sort::Sort(uint32_t partitionId, const vespalib::Doom & doom, IAttributeContext &ac, const vespalib::string &ss)
     : sorter(FastS_DefaultResultSorter::instance()),
       _ucaFactory(std::make_unique<search::uca::UcaConverterFactory>()),
-      sortSpec(partitionId, doom, *_ucaFactory)
+      sortSpec(DocumentMetaStoreAttribute::getFixedName(), partitionId, doom, *_ucaFactory)
 {
     if (!ss.empty() && sortSpec.Init(ss.c_str(), ac)) {
         sorter = &sortSpec;
@@ -47,9 +47,9 @@ ResultProcessor::Context::~Context() = default;
 
 void
 ResultProcessor::GroupingSource::merge(Source &s) {
-    GroupingSource &rhs = static_cast<GroupingSource&>(s);
-    assert((ctx == 0) == (rhs.ctx == 0));
-    if (ctx != 0) {
+    auto &rhs = dynamic_cast<GroupingSource&>(s);
+    assert((ctx == nullptr) == (rhs.ctx == nullptr));
+    if (ctx != nullptr) {
         search::grouping::GroupingManager man(*ctx);
         man.merge(*rhs.ctx);
     }
@@ -102,6 +102,19 @@ ResultProcessor::createThreadContext(const vespalib::Doom & hardDoom, size_t thr
     return std::make_unique<Context>(std::move(sort), std::move(result), std::move(groupingContext));
 }
 
+std::vector<std::pair<uint32_t,uint32_t>>
+ResultProcessor::extract_docid_ordering(const PartialResult &result) const
+{
+    size_t est_size = result.size() - std::min(result.size(), _offset);
+    std::vector<std::pair<uint32_t,uint32_t>> list;
+    list.reserve(est_size);
+    for (size_t i = _offset; i < result.size(); ++i) {
+        list.emplace_back(result.hit(i).getDocId(), list.size());
+    }
+    std::sort(list.begin(), list.end(), [](const auto &a, const auto &b){ return (a.first < b.first); });
+    return list;
+}
+
 ResultProcessor::Result::UP
 ResultProcessor::makeReply(PartialResultUP full_result)
 {
@@ -130,11 +143,11 @@ ResultProcessor::makeReply(PartialResultUP full_result)
     for (size_t i = 0; i < hitcnt; ++i) {
         search::engine::SearchReply::Hit &dst = r.hits[i];
         const search::RankedHit &src = result.hit(hitOffset + i);
-        uint32_t docId = src._docId;
+        uint32_t docId = src.getDocId();
         if (metaStore.getGidEvenIfMoved(docId, gid)) {
             dst.gid = gid;
         }
-        dst.metric = src._rankValue;
+        dst.metric = src.getRank();
         LOG(debug, "convertLidToGid: hit[%zu]: lid(%u) -> gid(%s)", i, docId, dst.gid.toString().c_str());
     }
     if (result.hasSortData() && (hitcnt > 0)) {

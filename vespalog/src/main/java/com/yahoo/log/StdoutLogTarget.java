@@ -6,8 +6,9 @@ import java.io.OutputStream;
 /**
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
-public class StdoutLogTarget implements LogTarget {
+class StdoutLogTarget implements LogTarget {
 
     @Override
     public OutputStream open() {

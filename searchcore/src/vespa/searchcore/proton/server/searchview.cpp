@@ -10,9 +10,6 @@
 LOG_SETUP(".proton.server.searchview");
 
 using proton::matching::MatchContext;
-using search::AttributeGuard;
-using search::AttributeVector;
-using search::attribute::IAttributeContext;
 using search::docsummary::IDocsumStore;
 using search::docsummary::ResultConfig;
 using search::engine::DocsumReply;
@@ -105,7 +102,7 @@ DocsumReply::UP
 SearchView::getDocsums(const DocsumRequest & req)
 {
     LOG(spam, "getDocsums(): resultClass(%s), numHits(%zu)", req.resultClassName.c_str(), req.hits.size());
-    if (_summarySetup->getResultConfig().  LookupResultClassId(req.resultClassName.c_str()) == ResultConfig::NoClassID()) {
+    if (_summarySetup->getResultConfig().lookupResultClassId(req.resultClassName.c_str()) == ResultConfig::noClassID()) {
         Issue::report("There is no summary class with name '%s' in the summary config. Returning empty document summary for %zu hit(s)",
                      req.resultClassName.c_str(), req.hits.size());
         return createEmptyReply(req);
@@ -127,7 +124,7 @@ SearchView::getDocsumsInternal(const DocsumRequest & req)
     uint64_t startGeneration = readGuard->get().getCurrentGeneration();
 
     convertGidsToLids(req, metaStore, _matchView->getDocIdLimit().get());
-    IDocsumStore::UP store(_summarySetup->createDocsumStore(req.resultClassName));
+    IDocsumStore::UP store(_summarySetup->createDocsumStore());
     MatchContext::UP mctx = _matchView->createContext();
     auto ctx = std::make_unique<DocsumContext>(req, _summarySetup->getDocsumWriter(), *store, _matchView->getMatcher(req.ranking),
                                                mctx->getSearchContext(), mctx->getAttributeContext(),

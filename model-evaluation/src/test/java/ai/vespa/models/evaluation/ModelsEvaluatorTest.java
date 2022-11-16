@@ -2,7 +2,6 @@
 package ai.vespa.models.evaluation;
 
 import com.yahoo.config.subscription.ConfigGetter;
-import com.yahoo.config.subscription.FileSource;
 import com.yahoo.filedistribution.fileacquirer.MockFileAcquirer;
 import com.yahoo.path.Path;
 import com.yahoo.searchlib.rankingexpression.ExpressionFunction;
@@ -15,7 +14,6 @@ import com.yahoo.vespa.config.search.core.RankingConstantsConfig;
 import com.yahoo.vespa.config.search.core.RankingExpressionsConfig;
 import com.yahoo.yolean.Exceptions;
 import org.junit.Test;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,10 +26,11 @@ import static org.junit.Assert.assertTrue;
 public class ModelsEvaluatorTest {
 
     private static final double delta = 0.00000000001;
+    private static final String CONFIG_DIR = "src/test/resources/config/rankexpression/";
 
     @Test
     public void testEvaluationDependingFunctionTakingArguments() {
-        ModelsEvaluator models = createModels("src/test/resources/config/rankexpression/");
+        ModelsEvaluator models = createModels();
         FunctionEvaluator function = models.evaluatorOf("macros", "secondphase");
         function.bind("match", 3);
         function.bind("rankBoost", 5);
@@ -41,7 +40,7 @@ public class ModelsEvaluatorTest {
     /** Tests a function defined as 4 * (var1 + var2) */
     @Test
     public void testSettingMissingValue() {
-        ModelsEvaluator models = createModels("src/test/resources/config/rankexpression/");
+        ModelsEvaluator models = createModels();
 
         {
             FunctionEvaluator function = models.evaluatorOf("macros", "secondphase");
@@ -127,18 +126,19 @@ public class ModelsEvaluatorTest {
     // TODO: Test argument-less function
     // TODO: Test with nested functions
 
-    private ModelsEvaluator createModels(String path) {
-        Path configDir = Path.fromString(path);
-        RankProfilesConfig config = new ConfigGetter<>(new FileSource(configDir.append("rank-profiles.cfg").toFile()),
-                                                       RankProfilesConfig.class).getConfig("");
-        RankingConstantsConfig constantsConfig = new ConfigGetter<>(new FileSource(configDir.append("ranking-constants.cfg").toFile()),
-                                                                    RankingConstantsConfig.class).getConfig("");
-        RankingExpressionsConfig expressionsConfig = new ConfigGetter<>(new FileSource(configDir.append("ranking-expressions.cfg").toFile()),
-                                                                        RankingExpressionsConfig.class).getConfig("");
-        OnnxModelsConfig onnxModelsConfig = new ConfigGetter<>(new FileSource(configDir.append("onnx-models.cfg").toFile()),
-                                                               OnnxModelsConfig.class).getConfig("");
-        return new ModelsEvaluator(new RankProfilesConfigImporterWithMockedConstants(Path.fromString(path).append("constants"), MockFileAcquirer.returnFile(null)),
+    @SuppressWarnings("deprecation")
+    private ModelsEvaluator createModels() {
+        RankProfilesConfig config = ConfigGetter.getConfig(RankProfilesConfig.class, fileConfigId("rank-profiles.cfg"));
+        RankingConstantsConfig constantsConfig = ConfigGetter.getConfig(RankingConstantsConfig.class, fileConfigId("ranking-constants.cfg"));
+        RankingExpressionsConfig expressionsConfig = ConfigGetter.getConfig(RankingExpressionsConfig.class, fileConfigId("ranking-expressions.cfg"));
+        OnnxModelsConfig onnxModelsConfig = ConfigGetter.getConfig(OnnxModelsConfig.class, fileConfigId("onnx-models.cfg"));
+
+        return new ModelsEvaluator(new RankProfilesConfigImporterWithMockedConstants(Path.fromString(CONFIG_DIR).append("constants"), MockFileAcquirer.returnFile(null)),
                 config, constantsConfig, expressionsConfig, onnxModelsConfig);
+    }
+
+    private static String fileConfigId(String filename) {
+        return "file:" + CONFIG_DIR + filename;
     }
 
 }

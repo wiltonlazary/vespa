@@ -2,21 +2,20 @@
   "tenant": "my-tenant",
   "type": "CLOUD",
   "creator": "administrator@tenant",
-  "pemDeveloperKeys": [],
-  "secretStores": [],
+  "pemDeveloperKeys": [ ],
+  "secretStores": [ ],
   "integrations": {
     "aws": {
       "tenantRole": "my-tenant-tenant-role",
-      "accounts": []
+      "accounts": [ ]
     }
   },
   "quota": {
-    "budget": null,
-    "budgetUsed": 0.0,
-    "clusterSize": 5
+    "budgetUsed": 0.0
   },
-  "applications": [],
-  "metaData":{
-    "createdAtMillis": "(ignore)"
+  "archiveAccess": { },
+  "applications": [ ],
+  "metaData": {
+    "createdAtMillis": 1600000000000
   }
 }

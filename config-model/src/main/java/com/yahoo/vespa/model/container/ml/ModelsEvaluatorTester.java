@@ -18,7 +18,7 @@ import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.filedistribution.fileacquirer.FileAcquirer;
 import com.yahoo.filedistribution.fileacquirer.MockFileAcquirer;
 import com.yahoo.io.IOUtils;
-import com.yahoo.searchdefinition.derived.RankProfileList;
+import com.yahoo.schema.derived.RankProfileList;
 import com.yahoo.vespa.config.search.RankProfilesConfig;
 import com.yahoo.vespa.config.search.core.OnnxModelsConfig;
 import com.yahoo.vespa.config.search.core.RankingConstantsConfig;
@@ -84,7 +84,7 @@ public class ModelsEvaluatorTester {
             return new ModelsEvaluator(rankProfilesConfig, rankingConstantsConfig, rankingExpressionsConfig, onnxModelsConfig, files);
 
         } catch (IOException | SAXException e) {
-            throw new RuntimeException(e);
+            throw new IllegalArgumentException(e);
         } finally {
             if (temporaryApplicationDir != null) {
                 IOUtils.recursiveDeleteDir(temporaryApplicationDir);

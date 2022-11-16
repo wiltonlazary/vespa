@@ -2,13 +2,9 @@
 package com.yahoo.config.subscription;
 
 import com.yahoo.foo.AppConfig;
-
 import org.junit.Test;
 
-import java.io.File;
-
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -16,8 +12,9 @@ import static org.junit.Assert.assertTrue;
  *
  * @author gjoranv
  */
+@SuppressWarnings("deprecation")
 public class ConfigGetterTest {
-    private ConfigSourceSet sourceSet = new ConfigSourceSet("config-getter-test");
+    private final ConfigSourceSet sourceSet = new ConfigSourceSet("config-getter-test");
 
     @Test
     public void testGetConfig() {
@@ -28,46 +25,32 @@ public class ConfigGetterTest {
 
         ConfigGetter<AppConfig> getter = new ConfigGetter<>(AppConfig.class);
         AppConfig config = getter.getConfig(configId);
-        assertThat(config.times(), is(times));
-        assertThat(config.message(), is(message));
-        assertThat(config.a().size(), is(1));
-        assertThat(config.a(0).name(), is(a0));
+        assertEquals(times, config.times());
+        assertEquals(message, config.message());
+        assertEquals(1, config.a().size());
+        assertEquals(a0, config.a(0).name());
 
         AppService service = new AppService(configId, sourceSet);
         AppConfig serviceConfig = service.getConfig();
         assertTrue(service.isConfigured());
-        assertThat(config, is(serviceConfig));
+        assertEquals(config, serviceConfig);
 
         service.cancelSubscription();
-    }
-
-    @Test
-    public void testGetFromRawSource() {
-        ConfigGetter<AppConfig> getter = new ConfigGetter<>(new RawSource("message \"one\""), AppConfig.class);
-        AppConfig config = getter.getConfig("test");
-        assertThat(config.message(), is("one"));
     }
 
     @Test
     public void testGetTwice() {
         ConfigGetter<AppConfig> getter = new ConfigGetter<>(AppConfig.class);
         AppConfig config = getter.getConfig("raw:message \"one\"");
-        assertThat(config.message(), is("one"));
+        assertEquals("one", config.message());
         config = getter.getConfig("raw:message \"two\"");
-        assertThat(config.message(), is("two"));
+        assertEquals("two", config.message());
     }
 
     @Test
     public void testGetFromFile() {
         ConfigGetter<AppConfig> getter = new ConfigGetter<>(AppConfig.class);
         AppConfig config = getter.getConfig("file:src/test/resources/configs/foo/app.cfg");
-        verifyFooValues(config);
-    }
-
-     @Test
-    public void testGetFromFileSource() {
-        ConfigGetter<AppConfig> getter = new ConfigGetter<>(new FileSource(new File("src/test/resources/configs/foo/app.cfg")), AppConfig.class);
-        AppConfig config = getter.getConfig("test");
         verifyFooValues(config);
     }
 
@@ -78,18 +61,12 @@ public class ConfigGetterTest {
         verifyFooValues(config);
     }
 
-    @Test
-    public void testGetFromDirSource() {
-        AppConfig config = ConfigGetter.getConfig(AppConfig.class, "test", new DirSource(new File("src/test/resources/configs/foo/")));
-        verifyFooValues(config);
-    }
-
     private void verifyFooValues(AppConfig config) {
-        assertThat(config.message(), is("msg1"));
-        assertThat(config.times(), is(3));
-        assertThat(config.a(0).name(), is("a0"));
-        assertThat(config.a(1).name(), is("a1"));
-        assertThat(config.a(2).name(), is("a2"));
+        assertEquals("msg1", config.message());
+        assertEquals(3, config.times());
+        assertEquals("a0", config.a(0).name());
+        assertEquals("a1", config.a(1).name());
+        assertEquals("a2", config.a(2).name());
     }
 
     @Test
@@ -100,15 +77,15 @@ public class ConfigGetterTest {
         String configId = "raw:times " + times + "\nmessage " + message + "\na[1]\na[0].name " + a0;
 
         AppConfig config = ConfigGetter.getConfig(AppConfig.class, configId);
-        assertThat(config.times(), is(times));
-        assertThat(config.message(), is(message));
-        assertThat(config.a().size(), is(1));
-        assertThat(config.a(0).name(), is(a0));
+        assertEquals(times, config.times());
+        assertEquals(message, config.message());
+        assertEquals(1, config.a().size());
+        assertEquals(a0, config.a(0).name());
 
         AppService service = new AppService(configId, sourceSet);
         AppConfig serviceConfig = service.getConfig();
         assertTrue(service.isConfigured());
-        assertThat(config, is(serviceConfig));
+        assertEquals(config, serviceConfig);
 
         service.cancelSubscription();
     }

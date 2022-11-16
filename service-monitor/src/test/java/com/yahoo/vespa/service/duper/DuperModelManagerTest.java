@@ -7,8 +7,6 @@ import com.yahoo.config.model.api.SuperModelListener;
 import com.yahoo.config.model.api.SuperModelProvider;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.HostName;
-import com.yahoo.config.provision.SystemName;
-import com.yahoo.vespa.flags.InMemoryFlagSource;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -33,13 +31,12 @@ public class DuperModelManagerTest {
     private final SuperModelProvider superModelProvider = mock(SuperModelProvider.class);
     private final SuperModel superModel = mock(SuperModel.class);
     private final DuperModel duperModel = mock(DuperModel.class);
-    private final InMemoryFlagSource flagSource = new InMemoryFlagSource();
 
     private DuperModelManager manager;
     private SuperModelListener superModelListener;
 
     private void makeManager(boolean isController) {
-        manager = new DuperModelManager(true, isController, superModelProvider, duperModel, flagSource, SystemName.cd);
+        manager = new DuperModelManager(true, isController, superModelProvider, duperModel);
 
         when(superModelProvider.getSuperModel()).thenReturn(superModel);
         verify(duperModel, times(0)).add(any());
@@ -67,7 +64,7 @@ public class DuperModelManagerTest {
         makeManager(false);
 
         ApplicationId id = proxyHostApplication.getApplicationId();
-        List<HostName> proxyHostHosts = Stream.of("proxyhost1", "proxyhost2").map(HostName::from).collect(Collectors.toList());
+        List<HostName> proxyHostHosts = Stream.of("proxyhost1", "proxyhost2").map(HostName::of).collect(Collectors.toList());
         verify(duperModel, times(0)).add(any());
         manager.infraApplicationActivated(id, proxyHostHosts);
         verify(duperModel, times(1)).add(any());
@@ -94,12 +91,12 @@ public class DuperModelManagerTest {
     }
 
     private void testEnabledConfigServerLikeInfraApplication(ApplicationId firstId, ApplicationId secondId) {
-        List<HostName> hostnames1 = Stream.of("node11", "node12").map(HostName::from).collect(Collectors.toList());
+        List<HostName> hostnames1 = Stream.of("node11", "node12").map(HostName::of).collect(Collectors.toList());
         manager.infraApplicationActivated(firstId, hostnames1);
         verify(duperModel, times(1)).add(any());
 
         // Adding the second config server like application will be ignored
-        List<HostName> hostnames2 = Stream.of("node21", "node22").map(HostName::from).collect(Collectors.toList());
+        List<HostName> hostnames2 = Stream.of("node21", "node22").map(HostName::of).collect(Collectors.toList());
         assertThrows(IllegalArgumentException.class, () -> manager.infraApplicationActivated(secondId, hostnames2));
         verify(duperModel, times(1)).add(any());
 

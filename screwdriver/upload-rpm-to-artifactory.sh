@@ -5,7 +5,7 @@ set -euo pipefail
 
 RPM=$1
 OS_DISTRO=centos
-RELEASEVER=7
+RELEASEVER=8
 MATURITY=release
 BASEARCH=x86_64
 
@@ -16,12 +16,12 @@ main() {
       exit 1
   fi
 
-  curl -vL -H "Authorization: Bearer $JFROG_API_TOKEN" \
-           -H "X-Checksum-Sha1: $(sha1sum $RPM | awk '{print $1}')" \
-           -H "X-Checksum-Sha256: $(sha256sum $RPM | awk '{print $1}')" \
-           -H "X-Checksum-MD5: $(md5sum $RPM | awk '{print $1}')" \
-           -X PUT "https://artifactory.verizonmedia.com/artifactory/vespa/$OS_DISTRO/$RELEASEVER/$MATURITY/$BASEARCH/Packages/$RPM" \
-           -T $RPM
+  curl -vLf -H "Authorization: Bearer $JFROG_API_TOKEN" \
+            -H "X-Checksum-Sha1: $(sha1sum $RPM | awk '{print $1}')" \
+            -H "X-Checksum-Sha256: $(sha256sum $RPM | awk '{print $1}')" \
+            -H "X-Checksum-MD5: $(md5sum $RPM | awk '{print $1}')" \
+            -X PUT "https://artifactory.yahooinc.com/artifactory/vespa/$OS_DISTRO/$RELEASEVER/$MATURITY/$BASEARCH/Packages/$RPM" \
+            -T $RPM
 }
 
 main "$@"

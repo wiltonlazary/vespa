@@ -5,6 +5,7 @@
 #include <vespa/document/base/testdocrepo.h>
 #include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/document/repo/documenttyperepo.h>
+#include <vespa/document/fieldvalue/intfieldvalue.h>
 #include <vespa/document/test/make_document_bucket.h>
 #include <vespa/document/update/arithmeticvalueupdate.h>
 #include <vespa/storage/distributor/top_level_distributor.h>
@@ -19,7 +20,6 @@ namespace storage::distributor {
 
 using document::test::makeDocumentBucket;
 using config::ConfigGetter;
-using document::DocumenttypesConfig;
 using namespace document;
 using namespace storage;
 using namespace storage::distributor;
@@ -47,6 +47,10 @@ struct TwoPhaseUpdateOperationTest : Test, DistributorStripeTestUtil {
         createLinks();
         setTypeRepo(_repo);
         getClock().setAbsoluteTimeInSeconds(200);
+        // TODO, rewrite test to handle enable_metadata_only_fetch_phase_for_inconsistent_updates=true as default
+        auto cfg = make_config();
+        cfg->set_enable_metadata_only_fetch_phase_for_inconsistent_updates(false);
+        configure_stripe(cfg);
     }
 
     void TearDown() override {
@@ -295,9 +299,7 @@ TwoPhaseUpdateOperationTest::sendUpdate(const std::string& bucketState,
         update = std::make_shared<document::DocumentUpdate>(
                 *_repo, *_doc_type,
                 document::DocumentId("id:ns:" + _doc_type->getName() + "::1"));
-        document::FieldUpdate fup(_doc_type->getField("headerval"));
-        fup.addUpdate(ArithmeticValueUpdate(ArithmeticValueUpdate::Add, 10));
-        update->addUpdate(fup);
+        update->addUpdate(FieldUpdate(_doc_type->getField("headerval")).addUpdate(std::make_unique<ArithmeticValueUpdate>(ArithmeticValueUpdate::Add, 10)));
     } else {
         // Create an update to a different doctype than the one returned as
         // part of the Get. Just a sneaky way to force an eval error.
@@ -305,9 +307,7 @@ TwoPhaseUpdateOperationTest::sendUpdate(const std::string& bucketState,
         update = std::make_shared<document::DocumentUpdate>(
                 *_repo, *badDocType,
                 document::DocumentId("id:ns:" + _doc_type->getName() + "::1"));
-        document::FieldUpdate fup(badDocType->getField("onlyinchild"));
-        fup.addUpdate(ArithmeticValueUpdate(ArithmeticValueUpdate::Add, 10));
-        update->addUpdate(fup);
+        update->addUpdate(FieldUpdate(badDocType->getField("onlyinchild")).addUpdate(std::make_unique<ArithmeticValueUpdate>(ArithmeticValueUpdate::Add, 10)));
     }
     update->setCreateIfNonExistent(options._createIfNonExistent);
 
@@ -351,6 +351,9 @@ TEST_F(TwoPhaseUpdateOperationTest, simple) {
     EXPECT_EQ("UpdateReply(id:ns:testdoctype1::1, BucketId(0x0000000000000000), "
               "timestamp 0, timestamp of updated doc: 90) ReturnCode(NONE)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.failures.notfound.getValue(), 0);
+    EXPECT_EQ(metrics().updates.failures.test_and_set_failed.getValue(), 0);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, non_existing) {
@@ -361,6 +364,8 @@ TEST_F(TwoPhaseUpdateOperationTest, non_existing) {
     EXPECT_EQ("UpdateReply(id:ns:testdoctype1::1, BucketId(0x0000000000000000), "
               "timestamp 0, timestamp of updated doc: 0) ReturnCode(NONE)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.failures.notfound.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, update_failed) {
@@ -627,6 +632,8 @@ TEST_F(TwoPhaseUpdateOperationTest, safe_path_updates_newest_received_document) 
               "timestamp 0, timestamp of updated doc: 70) "
               "ReturnCode(NONE)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.ok.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, create_if_non_existent_creates_document_if_all_empty_gets) {
@@ -656,6 +663,8 @@ TEST_F(TwoPhaseUpdateOperationTest, create_if_non_existent_creates_document_if_a
               "timestamp 0, timestamp of updated doc: 200000000) "
               "ReturnCode(NONE)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.ok.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, update_fails_if_safe_path_has_failed_put) {
@@ -680,6 +689,9 @@ TEST_F(TwoPhaseUpdateOperationTest, update_fails_if_safe_path_has_failed_put) {
               "timestamp 0, timestamp of updated doc: 200000000) "
               "ReturnCode(IO_FAILURE)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.ok.getValue(), 0);
+    EXPECT_EQ(metrics().updates.failures.storagefailure.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, update_fails_if_safe_path_gets_fail) {
@@ -696,6 +708,9 @@ TEST_F(TwoPhaseUpdateOperationTest, update_fails_if_safe_path_gets_fail) {
               "timestamp 0, timestamp of updated doc: 0) "
               "ReturnCode(IO_FAILURE)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.ok.getValue(), 0);
+    EXPECT_EQ(metrics().updates.failures.storagefailure.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, update_fails_if_apply_throws_exception) {
@@ -741,6 +756,10 @@ TEST_F(TwoPhaseUpdateOperationTest, non_existing_with_auto_create) {
               "timestamp 0, timestamp of updated doc: 200000000) "
               "ReturnCode(NONE)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.ok.getValue(), 1);
+    // "Not found" failure not counted when create: true is set, since the update itself isn't failed.
+    EXPECT_EQ(metrics().updates.failures.notfound.getValue(), 0);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, safe_path_fails_update_when_mismatching_timestamp_constraint) {
@@ -759,6 +778,9 @@ TEST_F(TwoPhaseUpdateOperationTest, safe_path_fails_update_when_mismatching_time
               "ReturnCode(NONE, No document with requested "
                          "timestamp found)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.ok.getValue(), 0);
+    EXPECT_EQ(metrics().updates.failures.notfound.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, safe_path_update_propagates_message_settings_to_gets_and_puts) {
@@ -863,6 +885,9 @@ TEST_F(TwoPhaseUpdateOperationTest, safe_path_condition_mismatch_fails_with_tas_
               "ReturnCode(TEST_AND_SET_CONDITION_FAILED, "
                          "Condition did not match document)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.failures.notfound.getValue(), 0);
+    EXPECT_EQ(metrics().updates.failures.test_and_set_failed.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, safe_path_condition_match_sends_puts_with_updated_doc) {
@@ -928,6 +953,9 @@ TEST_F(TwoPhaseUpdateOperationTest, safe_path_condition_with_missing_doc_and_no_
                           "ReturnCode(TEST_AND_SET_CONDITION_FAILED, "
                                      "Document did not exist)",
               _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.failures.notfound.getValue(), 0); // Not counted as "not found" failure when TaS is present
+    EXPECT_EQ(metrics().updates.failures.test_and_set_failed.getValue(), 1);
 }
 
 TEST_F(TwoPhaseUpdateOperationTest, safe_path_condition_with_missing_doc_and_auto_create_sends_puts) {
@@ -937,9 +965,22 @@ TEST_F(TwoPhaseUpdateOperationTest, safe_path_condition_with_missing_doc_and_aut
                     .createIfNonExistent(true));
 
     cb->start(_sender, framework::MilliSecTime(0));
-    replyToGet(*cb, _sender, 0, 100, false);
-    replyToGet(*cb, _sender, 1, 110, false);
+    replyToGet(*cb, _sender, 0, 0, false);
+    replyToGet(*cb, _sender, 1, 0, false);
     ASSERT_EQ("Put => 1,Put => 0", _sender.getCommands(true, false, 2));
+
+    replyToPut(*cb, _sender, 2);
+    replyToPut(*cb, _sender, 3);
+
+    EXPECT_EQ("UpdateReply(id:ns:testdoctype1::1, "
+                          "BucketId(0x0000000000000000), "
+                          "timestamp 0, timestamp of updated doc: 200000000) "
+                          "ReturnCode(NONE)",
+              _sender.getLastReply(true));
+
+    EXPECT_EQ(metrics().updates.failures.notfound.getValue(), 0); // Not counted as "not found" failure when we auto create
+    EXPECT_EQ(metrics().updates.failures.test_and_set_failed.getValue(), 0);
+    EXPECT_EQ(metrics().updates.ok.getValue(), 1);
 }
 
 void

@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.curator.mock;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.path.Path;
 import com.yahoo.vespa.curator.Curator;
 import org.apache.curator.framework.recipes.atomic.DistributedAtomicLong;
@@ -36,7 +36,7 @@ public class MockCurator extends Curator {
     /**
      * Creates a mock curator
      *
-     * @param stableOrdering if true children of a node are returned in the same order each time they are queries.
+     * @param stableOrdering if true children of a node are returned in the same order each time they are queried.
      *                       This is not what ZooKeeper does.
      */
     public MockCurator(boolean stableOrdering) {

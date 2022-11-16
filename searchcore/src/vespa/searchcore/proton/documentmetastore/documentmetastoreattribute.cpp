@@ -1,19 +1,20 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "documentmetastoreattribute.h"
+#include <vespa/searchcommon/attribute/config.h>
 
 namespace proton {
 
 namespace {
 
-const vespalib::string _G_documentMetaStoreName("[documentmetastore]");
+const vespalib::string documentMetaStoreName("[documentmetastore]");
 
 }
 
 const vespalib::string &
 DocumentMetaStoreAttribute::getFixedName()
 {
-    return _G_documentMetaStoreName;
+    return documentMetaStoreName;
 }
 
 DocumentMetaStoreAttribute::DocumentMetaStoreAttribute(const vespalib::string &name)

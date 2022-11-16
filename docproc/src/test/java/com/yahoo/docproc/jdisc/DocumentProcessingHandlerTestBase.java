@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.docproc.jdisc;
 
-import com.yahoo.cloud.config.SlobroksConfig;
 import com.yahoo.collections.Pair;
 import com.yahoo.component.ComponentId;
 import com.yahoo.component.provider.ComponentRegistry;
@@ -11,16 +10,13 @@ import com.yahoo.container.jdisc.messagebus.MbusServerProvider;
 import com.yahoo.container.jdisc.messagebus.NetworkMultiplexerProvider;
 import com.yahoo.container.jdisc.messagebus.SessionCache;
 import com.yahoo.docproc.CallStack;
-import com.yahoo.docproc.DocprocService;
+import com.yahoo.docproc.impl.DocprocService;
 import com.yahoo.docproc.jdisc.messagebus.MbusRequestContext;
 
 import com.yahoo.document.DocumentType;
 import com.yahoo.document.DocumentTypeManager;
-import com.yahoo.document.config.DocumentmanagerConfig;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadType;
 import com.yahoo.documentapi.messagebus.protocol.DocumentMessage;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
-import com.yahoo.documentapi.messagebus.protocol.DocumentProtocolPoliciesConfig;
 import com.yahoo.jdisc.AbstractResource;
 import com.yahoo.jdisc.ReferencedResource;
 import com.yahoo.jdisc.application.ContainerBuilder;
@@ -34,8 +30,6 @@ import com.yahoo.messagebus.network.NetworkMultiplexer;
 import com.yahoo.messagebus.network.rpc.RPCNetwork;
 import com.yahoo.messagebus.routing.Route;
 import com.yahoo.messagebus.shared.SharedSourceSession;
-import com.yahoo.vespa.config.content.DistributionConfig;
-import com.yahoo.vespa.config.content.LoadTypeConfig;
 import org.junit.After;
 import org.junit.Before;
 
@@ -135,8 +129,6 @@ public abstract class DocumentProcessingHandlerTestBase {
 
     public boolean sendMessage(String destinationChainName, DocumentMessage msg) {
         msg.setRoute(Route.parse("test/chain." + destinationChainName + " " + remoteServer.connectionSpec()));
-        msg.setPriority(DocumentProtocol.Priority.HIGH_1);
-        msg.setLoadType(LoadType.DEFAULT);
         msg.getTrace().setLevel(9);
         msg.setTimeRemaining(60 * 1000);
         return driver.client().sendMessage(msg).isAccepted();

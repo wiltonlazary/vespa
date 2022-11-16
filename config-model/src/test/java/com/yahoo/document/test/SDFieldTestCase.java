@@ -2,26 +2,26 @@
 package com.yahoo.document.test;
 
 import com.yahoo.document.DataType;
-import com.yahoo.searchdefinition.SchemaTestCase;
-import com.yahoo.searchdefinition.document.SDDocumentType;
-import org.junit.Test;
+import com.yahoo.schema.AbstractSchemaTestCase;
+import com.yahoo.schema.document.SDDocumentType;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author Thomas Gundersen
  */
-public class SDFieldTestCase extends SchemaTestCase {
+public class SDFieldTestCase extends AbstractSchemaTestCase {
 
     @Test
-    public void testIdSettingConflict() {
+    void testIdSettingConflict() {
         SDDocumentType doc = new SDDocumentType("testdoc");
-        doc.addField("one", DataType.STRING, false, 60);
+        doc.addField("one", DataType.STRING, 60);
 
-        doc.addField("two", DataType.STRING, false, 61);
+        doc.addField("two", DataType.STRING, 61);
 
         try {
-            doc.addField("three", DataType.STRING, false, 60);
+            doc.addField("three", DataType.STRING, 60);
             fail("Allowed to set duplicate id");
         }
         catch (IllegalArgumentException e) {
@@ -30,10 +30,10 @@ public class SDFieldTestCase extends SchemaTestCase {
     }
 
     @Test
-    public void testSettingReservedId() {
+    void testSettingReservedId() {
         SDDocumentType doc = new SDDocumentType("testdoc");
         try {
-            doc.addField("one", DataType.STRING, false, 127);
+            doc.addField("one", DataType.STRING, 127);
             fail("Allowed to set reserved id");
         }
         catch (IllegalArgumentException e) {
@@ -41,7 +41,7 @@ public class SDFieldTestCase extends SchemaTestCase {
         }
 
         try {
-            doc.addField("one", DataType.STRING, false, 100);
+            doc.addField("one", DataType.STRING, 100);
             fail("Allowed to set reserved id");
         }
         catch (IllegalArgumentException e) {
@@ -49,7 +49,7 @@ public class SDFieldTestCase extends SchemaTestCase {
         }
 
         try {
-            doc.addField("one", DataType.STRING, false, -1);
+            doc.addField("one", DataType.STRING, -1);
             fail("Allowed to set reserved id");
         }
         catch (IllegalArgumentException e) {

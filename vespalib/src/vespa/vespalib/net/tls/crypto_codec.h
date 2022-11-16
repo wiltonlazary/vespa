@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
+#include "capability_set.h"
 #include <vespa/vespalib/net/socket_address.h>
 #include <memory>
 
@@ -53,6 +54,7 @@ struct DecodeResult {
 };
 
 struct TlsContext;
+struct PeerCredentials;
 
 // TODO move to different namespace, not dependent on TLS?
 
@@ -174,6 +176,18 @@ public:
      *               possible to encode at least 1 frame.
      */
     virtual EncodeResult half_close(char* ciphertext, size_t ciphertext_size) noexcept = 0;
+
+    /**
+     * Credentials of the _remote peer_ as observed during certificate exchange. E.g.
+     * if this is a client codec, peer_credentials() returns the _server_ credentials
+     * and vice versa.
+     */
+    [[nodiscard]] virtual const PeerCredentials& peer_credentials() const noexcept = 0;
+
+    /**
+     * Union set of all granted capabilities in the peer policy rules that fully matched the peer's credentials.
+     */
+    [[nodiscard]] virtual CapabilitySet granted_capabilities() const noexcept = 0;
 
     /*
      * Creates an implementation defined CryptoCodec that provides at least TLSv1.2

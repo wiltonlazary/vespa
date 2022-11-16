@@ -1,8 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.application.pkg;
 
+import com.google.common.hash.Funnel;
+import com.google.common.hash.Hasher;
 import com.google.common.hash.Hashing;
 import com.yahoo.component.Version;
+import com.yahoo.compress.ArchiveStreamReader;
+import com.yahoo.compress.ArchiveStreamReader.ArchiveFile;
+import com.yahoo.compress.ArchiveStreamReader.Options;
 import com.yahoo.config.application.FileSystemWrapper;
 import com.yahoo.config.application.FileSystemWrapper.FileWrapper;
 import com.yahoo.config.application.XmlPreProcessor;
@@ -12,16 +17,19 @@ import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.RegionName;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.security.X509CertificateUtils;
 import com.yahoo.slime.Inspector;
 import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
+import com.yahoo.vespa.hosted.controller.Application;
 import com.yahoo.vespa.hosted.controller.deployment.ZipBuilder;
 import com.yahoo.yolean.Exceptions;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -37,37 +45,43 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
+import static com.yahoo.slime.Type.NIX;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.toMap;
 
 /**
  * A representation of the content of an application package.
- * Only the deployment.xml content can be accessed as anything other than compressed data.
+ * Only meta-data content can be accessed as anything other than compressed data.
  * A package is identified by a hash of the content.
- * 
- * This is immutable.
- * 
+ *
  * @author bratseth
  * @author jonmv
  */
 public class ApplicationPackage {
 
-    private static final String trustedCertificatesFile = "security/clients.pem";
-    private static final String buildMetaFile = "build-meta.json";
-    private static final String deploymentFile = "deployment.xml";
-    private static final String validationOverridesFile = "validation-overrides.xml";
-    private static final String servicesFile = "services.xml";
+    static final String trustedCertificatesFile = "security/clients.pem";
+    static final String buildMetaFile = "build-meta.json";
+    static final String deploymentFile = "deployment.xml";
+    static final String validationOverridesFile = "validation-overrides.xml";
+    static final String servicesFile = "services.xml";
+    static final Set<String> prePopulated = Set.of(deploymentFile, validationOverridesFile, servicesFile, buildMetaFile, trustedCertificatesFile);
 
-    private final String contentHash;
+    private static Hasher hasher() { return Hashing.murmur3_128().newHasher(); }
+
+    private final String bundleHash;
     private final byte[] zippedContent;
     private final DeploymentSpec deploymentSpec;
     private final ValidationOverrides validationOverrides;
     private final ZipArchiveCache files;
     private final Optional<Version> compileVersion;
     private final Optional<Instant> buildTime;
+    private final Optional<Version> parentVersion;
     private final List<X509Certificate> trustedCertificates;
 
     /**
@@ -87,8 +101,7 @@ public class ApplicationPackage {
      */
     public ApplicationPackage(byte[] zippedContent, boolean requireFiles) {
         this.zippedContent = Objects.requireNonNull(zippedContent, "The application package content cannot be null");
-        this.contentHash = Hashing.sha1().hashBytes(zippedContent).toString();
-        this.files = new ZipArchiveCache(zippedContent, Set.of(deploymentFile, validationOverridesFile, servicesFile, buildMetaFile, trustedCertificatesFile));
+        this.files = new ZipArchiveCache(zippedContent, prePopulated);
 
         Optional<DeploymentSpec> deploymentSpec = files.get(deploymentFile).map(bytes -> new String(bytes, UTF_8)).map(DeploymentSpec::fromXml);
         if (requireFiles && deploymentSpec.isEmpty())
@@ -98,34 +111,29 @@ public class ApplicationPackage {
         this.validationOverrides = files.get(validationOverridesFile).map(bytes -> new String(bytes, UTF_8)).map(ValidationOverrides::fromXml).orElse(ValidationOverrides.empty);
 
         Optional<Inspector> buildMetaObject = files.get(buildMetaFile).map(SlimeUtils::jsonToSlime).map(Slime::get);
-        if (requireFiles && buildMetaObject.isEmpty())
-            throw new IllegalArgumentException("Missing required file '" + buildMetaFile + "'");
         this.compileVersion = buildMetaObject.flatMap(object -> parse(object, "compileVersion", field -> Version.fromString(field.asString())));
         this.buildTime = buildMetaObject.flatMap(object -> parse(object, "buildTime", field -> Instant.ofEpochMilli(field.asLong())));
+        this.parentVersion = buildMetaObject.flatMap(object -> parse(object, "parentVersion", field -> Version.fromString(field.asString())));
 
         this.trustedCertificates = files.get(trustedCertificatesFile).map(bytes -> X509CertificateUtils.certificateListFromPem(new String(bytes, UTF_8))).orElse(List.of());
+
+        this.bundleHash = calculateBundleHash(zippedContent);
+
+        preProcessAndPopulateCache();
     }
 
-    /** Returns a copy of this with the given certificate appended. */
-    public ApplicationPackage withTrustedCertificate(X509Certificate certificate) {
-        List<X509Certificate> trustedCertificates = new ArrayList<>(this.trustedCertificates);
-        trustedCertificates.add(certificate);
-        byte[] certificatesBytes = X509CertificateUtils.toPem(trustedCertificates).getBytes(UTF_8);
-
-        ByteArrayOutputStream modified = new ByteArrayOutputStream(zippedContent.length + certificatesBytes.length);
-        ZipStreamReader.transferAndWrite(modified, new ByteArrayInputStream(zippedContent), trustedCertificatesFile, certificatesBytes);
-        return new ApplicationPackage(modified.toByteArray());
+    /** Hash of all files and settings that influence what is deployed to config servers. */
+    public String bundleHash() {
+        return bundleHash;
     }
-
-    /** Returns a hash of the content of this package */
-    public String hash() { return contentHash; }
     
     /** Returns the content of this package. The content <b>must not</b> be modified. */
     public byte[] zippedContent() { return zippedContent; }
 
     /** 
-     * Returns the deployment spec from the deployment.xml file of the package content.
-     * This is the DeploymentSpec.empty instance if this package does not contain a deployment.xml file.
+     * Returns the deployment spec from the deployment.xml file of the package content.<br>
+     * This is the DeploymentSpec.empty instance if this package does not contain a deployment.xml file.<br>
+     * <em>NB: <strong>Always</strong> read deployment spec from the {@link Application}, for deployment orchestration.</em>
      */
     public DeploymentSpec deploymentSpec() { return deploymentSpec; }
 
@@ -141,14 +149,18 @@ public class ApplicationPackage {
     /** Returns the time this package was built, if known. */
     public Optional<Instant> buildTime() { return buildTime; }
 
+    /** Returns the parent version used to compile the package, if known. */
+    public Optional<Version> parentVersion() { return parentVersion; }
+
     /** Returns the list of certificates trusted by this application, or an empty list if no trust configured. */
     public List<X509Certificate> trustedCertificates() {
         return trustedCertificates;
     }
 
     private static <Type> Optional<Type> parse(Inspector buildMetaObject, String fieldName, Function<Inspector, Type> mapper) {
-        if ( ! buildMetaObject.field(fieldName).valid())
-            throw new IllegalArgumentException("Missing value '" + fieldName + "' in '" + buildMetaFile + "'");
+        Inspector field = buildMetaObject.field(fieldName);
+        if ( ! field.valid() || field.type() == NIX)
+            return Optional.empty();
         try {
             return Optional.of(mapper.apply(buildMetaObject.field(fieldName)));
         }
@@ -165,7 +177,6 @@ public class ApplicationPackage {
 
     /** Returns a zip containing meta data about deployments of this package by the given job. */
     public byte[] metaDataZip() {
-        preProcessAndPopulateCache();
         return cacheZip();
     }
 
@@ -177,11 +188,15 @@ public class ApplicationPackage {
                                     new InputStreamReader(new ByteArrayInputStream(servicesXml.content()), UTF_8),
                                     InstanceName.defaultName(),
                                     Environment.prod,
-                                    RegionName.defaultName())
+                                    RegionName.defaultName(),
+                                    Tags.empty())
                         .run(); // Populates the zip archive cache with files that would be included.
             }
+            catch (IllegalArgumentException e) {
+                throw e;
+            }
             catch (Exception e) {
-                throw new RuntimeException(e);
+                throw new IllegalArgumentException(e);
             }
     }
 
@@ -192,7 +207,7 @@ public class ApplicationPackage {
                                                   entry -> entry.getValue().get())));
     }
 
-    static byte[] filesZip(Map<String, byte[]> files) {
+    public static byte[] filesZip(Map<String, byte[]> files) {
         try (ZipBuilder zipBuilder = new ZipBuilder(files.values().stream().mapToInt(bytes -> bytes.length).sum() + 512)) {
             files.forEach(zipBuilder::add);
             zipBuilder.close();
@@ -211,20 +226,38 @@ public class ApplicationPackage {
         return ValidationOverrides.fromXml(validationOverridesContents.toString());
     }
 
+    // Hashes all files and settings that require a deployment to be forwarded to configservers
+    private String calculateBundleHash(byte[] zippedContent) {
+        Predicate<String> entryMatcher = name -> ! name.endsWith(deploymentFile) && ! name.endsWith(buildMetaFile);
+        SortedMap<String, Long> crcByEntry = new TreeMap<>();
+        Options options = Options.standard().pathPredicate(entryMatcher);
+        ArchiveFile file;
+        try (ArchiveStreamReader reader = ArchiveStreamReader.ofZip(new ByteArrayInputStream(zippedContent), options)) {
+            OutputStream discard = OutputStream.nullOutputStream();
+            while ((file = reader.readNextTo(discard)) != null) {
+                crcByEntry.put(file.path().toString(), file.crc32().orElse(-1));
+            }
+        }
+        Funnel<SortedMap<String, Long>> funnel = (from, into) -> from.forEach((key, value) -> {
+            into.putBytes(key.getBytes());
+            into.putLong(value);
+        });
+        return hasher().putObject(crcByEntry, funnel)
+                       .putInt(deploymentSpec.deployableHashCode())
+                       .hash().toString();
+    }
+
+    public static String calculateHash(byte[] bytes) {
+        return hasher().putBytes(bytes)
+                       .hash().toString();
+    }
+
 
     /** Maps normalized paths to cached content read from a zip archive. */
     private static class ZipArchiveCache {
 
         /** Max size of each extracted file */
         private static final int maxSize = 10 << 20; // 10 Mb
-
-        // TODO: Vespa 8: Remove application/ directory support
-        private static final String applicationDir = "application/";
-
-        private static String withoutLegacyDir(String name) {
-            if (name.startsWith(applicationDir)) return name.substring(applicationDir.length());
-            return name;
-        }
 
         private final byte[] zip;
         private final Map<Path, Optional<byte[]>> cache;
@@ -244,18 +277,19 @@ public class ApplicationPackage {
         }
 
         public FileSystemWrapper wrapper() {
-            return FileSystemWrapper.ofFiles(path -> get(path).isPresent(), // Assume content asked for will also be read ...
+            return FileSystemWrapper.ofFiles(Path.of("./"), // zip archive root
+                                             path -> get(path).isPresent(), // Assume content asked for will also be read ...
                                              path -> get(path).orElseThrow(() -> new NoSuchFileException(path.toString())));
         }
 
         private Map<Path, Optional<byte[]>> read(Collection<String> names) {
-            var entries = new ZipStreamReader(new ByteArrayInputStream(zip),
-                                              name -> names.contains(withoutLegacyDir(name)),
-                                              maxSize,
-                                              true)
-                    .entries().stream()
-                    .collect(toMap(entry -> Paths.get(withoutLegacyDir(entry.zipEntry().getName())).normalize(),
-                             ZipStreamReader.ZipEntryWithContent::content));
+            var entries = ZipEntries.from(zip,
+                                          names::contains,
+                                          maxSize,
+                                          true)
+                                    .asList().stream()
+                                    .collect(toMap(entry -> Paths.get(entry.name()).normalize(),
+                                                   ZipEntries.ZipEntryWithContent::content));
             names.stream().map(Paths::get).forEach(path -> entries.putIfAbsent(path.normalize(), Optional.empty()));
             return entries;
         }

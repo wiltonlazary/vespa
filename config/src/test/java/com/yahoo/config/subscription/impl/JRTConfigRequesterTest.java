@@ -2,9 +2,9 @@
 package com.yahoo.config.subscription.impl;
 
 import com.yahoo.config.subscription.ConfigSourceSet;
-import com.yahoo.config.subscription.ConfigSubscriber;
 import com.yahoo.foo.SimpletypesConfig;
 import com.yahoo.jrt.Request;
+import com.yahoo.jrt.RequestWaiter;
 import com.yahoo.vespa.config.ConfigKey;
 import com.yahoo.vespa.config.ConnectionPool;
 import com.yahoo.vespa.config.ErrorCode;
@@ -51,12 +51,11 @@ public class JRTConfigRequesterTest {
 
     @Test
     public void testFirstRequestAfterSubscribing() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
-        final TimingValues timingValues = getTestTimingValues();
-        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(subscriber, timingValues);
-
-        final MockConnection connection = new MockConnection();
+        TimingValues timingValues = getTestTimingValues();
+        MockConnection connection = new MockConnection();
         JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
+        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(requester, timingValues);
+
         assertEquals(requester.getConnectionPool(), connection);
         requester.request(sub);
         final Request request = connection.getRequest();
@@ -70,25 +69,24 @@ public class JRTConfigRequesterTest {
 
     @Test
     public void testFatalError() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
         final TimingValues timingValues = getTestTimingValues();
 
         final MockConnection connection = new MockConnection(new ErrorResponseHandler());
         JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
-        requester.request(createSubscription(subscriber, timingValues));
+        requester.request(createSubscription(requester, timingValues));
         waitUntilResponse(connection);
         assertEquals(1, requester.getFailures());
     }
 
     @Test
     public void testFatalErrorSubscribed() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
-        final TimingValues timingValues = getTestTimingValues();
-        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(subscriber, timingValues);
+        TimingValues timingValues = getTestTimingValues();
+        MockConnection connection = new MockConnection(new ErrorResponseHandler());
+        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
+
+        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(requester, timingValues);
         sub.setConfig(1L, false, config(), PayloadChecksums.empty());
 
-        final MockConnection connection = new MockConnection(new ErrorResponseHandler());
-        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
         requester.request(sub);
         waitUntilResponse(connection);
         assertEquals(1, requester.getFailures());
@@ -96,25 +94,23 @@ public class JRTConfigRequesterTest {
 
     @Test
     public void testTransientError() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
-        final TimingValues timingValues = getTestTimingValues();
+        TimingValues timingValues = getTestTimingValues();
 
-        final MockConnection connection = new MockConnection(new ErrorResponseHandler(com.yahoo.jrt.ErrorCode.TIMEOUT));
+        MockConnection connection = new MockConnection(new ErrorResponseHandler(com.yahoo.jrt.ErrorCode.TIMEOUT));
         JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
-        requester.request(createSubscription(subscriber, timingValues));
+        requester.request(createSubscription(requester, timingValues));
         waitUntilResponse(connection);
         assertEquals(1, requester.getFailures());
     }
 
     @Test
     public void testTransientErrorSubscribed() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
-        final TimingValues timingValues = getTestTimingValues();
-        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(subscriber, timingValues);
+        TimingValues timingValues = getTestTimingValues();
+        MockConnection connection = new MockConnection(new ErrorResponseHandler(com.yahoo.jrt.ErrorCode.TIMEOUT));
+        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
+        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(requester, timingValues);
         sub.setConfig(1L, false, config(), PayloadChecksums.empty());
 
-        final MockConnection connection = new MockConnection(new ErrorResponseHandler(com.yahoo.jrt.ErrorCode.TIMEOUT));
-        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
         requester.request(sub);
         waitUntilResponse(connection);
         assertEquals(1, requester.getFailures());
@@ -122,13 +118,12 @@ public class JRTConfigRequesterTest {
 
     @Test
     public void testUnknownConfigDefinitionError() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
-        final TimingValues timingValues = getTestTimingValues();
-        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(subscriber, timingValues);
+        TimingValues timingValues = getTestTimingValues();
+        MockConnection connection = new MockConnection(new ErrorResponseHandler(ErrorCode.UNKNOWN_DEFINITION));
+        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
+        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(requester, timingValues);
         sub.setConfig(1L, false, config(), PayloadChecksums.empty());
 
-        final MockConnection connection = new MockConnection(new ErrorResponseHandler(ErrorCode.UNKNOWN_DEFINITION));
-        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
         assertEquals(requester.getConnectionPool(), connection);
         requester.request(sub);
         waitUntilResponse(connection);
@@ -137,13 +132,12 @@ public class JRTConfigRequesterTest {
 
     @Test
     public void testClosedSubscription() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
-        final TimingValues timingValues = getTestTimingValues();
-        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(subscriber, timingValues);
+        TimingValues timingValues = getTestTimingValues();
+        MockConnection connection = new MockConnection(new MockConnection.OKResponseHandler());
+        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
+        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(requester, timingValues);
         sub.close();
 
-        final MockConnection connection = new MockConnection(new MockConnection.OKResponseHandler());
-        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
         requester.request(sub);
         assertEquals(1, connection.getNumberOfRequests());
         // Check that no further request was sent?
@@ -157,16 +151,14 @@ public class JRTConfigRequesterTest {
 
     @Test
     public void testTimeout() {
-        ConfigSubscriber subscriber = new ConfigSubscriber();
-        final TimingValues timingValues = getTestTimingValues();
-        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(subscriber, timingValues);
+        TimingValues timingValues = getTestTimingValues();
+        MockConnection connection = new MockConnection(new DelayedResponseHandler(timingValues.getSubscribeTimeout()),
+                                                       2); // fake that we have more than one source
+        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
+        JRTConfigSubscription<SimpletypesConfig> sub = createSubscription(requester, timingValues);
         sub.close();
 
-        final MockConnection connection = new MockConnection(
-                new DelayedResponseHandler(timingValues.getSubscribeTimeout()),
-                2); // fake that we have more than one source
-        JRTConfigRequester requester = new JRTConfigRequester(connection, timingValues);
-        requester.request(createSubscription(subscriber, timingValues));
+        requester.request(createSubscription(requester, timingValues));
         // Check that no further request was sent?
         try {
             Thread.sleep(timingValues.getFixedDelay()*2);
@@ -175,9 +167,10 @@ public class JRTConfigRequesterTest {
         }
     }
 
-    private JRTConfigSubscription<SimpletypesConfig> createSubscription(ConfigSubscriber subscriber, TimingValues timingValues) {
-        return new JRTConfigSubscription<>(
-                new ConfigKey<>(SimpletypesConfig.class, "testid"), subscriber, null, timingValues);
+    private JRTConfigSubscription<SimpletypesConfig> createSubscription(JRTConfigRequester requester, TimingValues timingValues) {
+        return new JRTConfigSubscription<>(new ConfigKey<>(SimpletypesConfig.class, "testid"),
+                                           requester,
+                                           timingValues);
     }
 
     private SimpletypesConfig config() {
@@ -217,10 +210,10 @@ public class JRTConfigRequesterTest {
         }
 
         @Override
-        public void run() {
+        public void handle(Request request, RequestWaiter requestWaiter) {
             System.out.println("Running error response handler");
-            request().setError(errorCode, "error");
-            requestWaiter().handleRequestDone(request());
+            request.setError(errorCode, "error");
+            requestWaiter.handleRequestDone(request);
         }
     }
 
@@ -232,16 +225,15 @@ public class JRTConfigRequesterTest {
         }
 
         @Override
-        public void run() {
-            System.out.println("Running delayed response handler (waiting " + waitTimeMilliSeconds +
-            ") before responding");
+        public void handle(Request request, RequestWaiter requestWaiter) {
+            System.out.println("Running delayed response handler (waiting " + waitTimeMilliSeconds + ") before responding");
             try {
                 Thread.sleep(waitTimeMilliSeconds);
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
-            request().setError(com.yahoo.jrt.ErrorCode.TIMEOUT, "error");
-            requestWaiter().handleRequestDone(request());
+            request.setError(com.yahoo.jrt.ErrorCode.TIMEOUT, "error");
+            requestWaiter.handleRequestDone(request);
         }
     }
 

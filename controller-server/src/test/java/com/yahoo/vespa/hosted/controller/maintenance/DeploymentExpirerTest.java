@@ -5,20 +5,20 @@ import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.vespa.hosted.controller.Instance;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
-import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.application.Deployment;
+import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.deployment.ApplicationPackageBuilder;
+import com.yahoo.vespa.hosted.controller.deployment.DeploymentContext;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentTester;
 import com.yahoo.vespa.hosted.controller.deployment.Run;
 import com.yahoo.vespa.hosted.controller.deployment.RunStatus;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.Optional;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * @author bratseth
@@ -28,7 +28,7 @@ public class DeploymentExpirerTest {
     private final DeploymentTester tester = new DeploymentTester();
 
     @Test
-    public void testDeploymentExpiry() {
+    void testDeploymentExpiry() {
         ZoneId devZone = ZoneId.from(Environment.dev, RegionName.from("us-east-1"));
         tester.controllerTester().zoneRegistry().setDeploymentTimeToLive(devZone, Duration.ofDays(14));
         DeploymentExpirer expirer = new DeploymentExpirer(tester.controller(), Duration.ofDays(1));
@@ -40,7 +40,7 @@ public class DeploymentExpirerTest {
                 .build();
 
         // Deploy dev
-        devApp.runJob(JobType.devUsEast1, appPackage);
+        devApp.runJob(DeploymentContext.devUsEast1, appPackage);
 
         // Deploy prod
         prodApp.submit(appPackage).deploy();
@@ -55,13 +55,14 @@ public class DeploymentExpirerTest {
         // Deploy dev unsuccessfully a few days before expiry
         tester.clock().advance(Duration.ofDays(12));
         tester.configServer().throwOnNextPrepare(new RuntimeException(getClass().getSimpleName()));
-        tester.jobs().deploy(devApp.instanceId(), JobType.devUsEast1, Optional.empty(), appPackage);
-        Run lastRun = tester.jobs().last(devApp.instanceId(), JobType.devUsEast1).get();
+        tester.jobs().deploy(devApp.instanceId(), DeploymentContext.devUsEast1, Optional.empty(), appPackage);
+        Run lastRun = tester.jobs().last(devApp.instanceId(), DeploymentContext.devUsEast1).get();
         assertSame(RunStatus.error, lastRun.status());
         Deployment deployment = tester.applications().requireInstance(devApp.instanceId())
-                                      .deployments().get(devZone);
-        assertEquals("Time of last run is after time of deployment", Duration.ofDays(12),
-                     Duration.between(deployment.at(), lastRun.end().get()));
+                .deployments().get(devZone);
+        assertEquals(Duration.ofDays(12),
+                Duration.between(deployment.at(), lastRun.end().get()),
+                "Time of last run is after time of deployment");
 
         // Dev application does not expire based on time of successful deployment
         tester.clock().advance(Duration.ofDays(2));
@@ -72,7 +73,7 @@ public class DeploymentExpirerTest {
         // Dev application expires when enough time has passed since most recent attempt
         // Redeployments done by DeploymentUpgrader do not affect this
         tester.clock().advance(Duration.ofDays(12).plus(Duration.ofSeconds(1)));
-        tester.jobs().start(devApp.instanceId(), JobType.devUsEast1, lastRun.versions(), true);
+        tester.jobs().start(devApp.instanceId(), DeploymentContext.devUsEast1, lastRun.versions(), true, Optional.of("upgrade"));
         expirer.maintain();
         assertEquals(0, permanentDeployments(devApp.instance()));
         assertEquals(1, permanentDeployments(prodApp.instance()));

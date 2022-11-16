@@ -201,7 +201,7 @@ private:
                    PostingListNodeAllocator &postingsAlloc);
 
     void
-    removeOldGenerations(Tree &tree,
+    reclaim_memory(Tree &tree,
                          ValueHandle &valueHandle,
                          PostingList &postings,
                          PostingListNodeAllocator &postingsAlloc);
@@ -259,12 +259,12 @@ AttributePostingListTest::freeTree(bool verbose)
         static_cast<uint64_t>(_intNodeAlloc->getMemoryUsage().allocatedBytesOnHold()));
     _intNodeAlloc->freeze();
     _intPostings->freeze();
-    _intNodeAlloc->transferHoldLists(_handler.getCurrentGeneration());
+    _intNodeAlloc->assign_generation(_handler.getCurrentGeneration());
     _intPostings->clearBuilder();
-    _intPostings->transferHoldLists(_handler.getCurrentGeneration());
+    _intPostings->assign_generation(_handler.getCurrentGeneration());
     _handler.incGeneration();
-    _intNodeAlloc->trimHoldLists(_handler.getFirstUsedGeneration());
-    _intPostings->trimHoldLists(_handler.getFirstUsedGeneration());
+    _intNodeAlloc->reclaim_memory(_handler.get_oldest_used_generation());
+    _intPostings->reclaim_memory(_handler.get_oldest_used_generation());
     LOG(info,
         "freeTree after unhold: %" PRIu64 " (%" PRIu64 " held)",
         static_cast<uint64_t>(_intNodeAlloc->getMemoryUsage().allocatedBytes()),
@@ -379,8 +379,8 @@ insertRandomValues(Tree &tree,
         std::vector<AttributePosting> additions;
         std::vector<uint32_t> removals;
         additions.push_back(newPosting);
-        postings.apply(newIdx, &additions[0], &additions[0] + additions.size(),
-                               &removals[0], &removals[0] + removals.size());
+        postings.apply(newIdx, additions.data(), additions.data() + additions.size(),
+                       removals.data(), removals.data() + removals.size());
         std::atomic_thread_fence(std::memory_order_release);
         itr.writeData(newIdx);
 
@@ -461,8 +461,8 @@ removeRandomValues(Tree &tree,
             std::vector<AttributePosting> additions;
             std::vector<uint32_t> removals;
             removals.push_back(i->_docId);
-            postings.apply(newIdx, &additions[0], &additions[0]+additions.size(),
-                                   &removals[0], &removals[0] + removals.size());
+            postings.apply(newIdx, additions.data(), additions.data() + additions.size(),
+                           removals.data(), removals.data() + removals.size());
             if (newIdx != oldIdx) {
                 std::atomic_thread_fence(std::memory_order_release);
                 itr.writeData(newIdx);
@@ -613,9 +613,9 @@ AttributePostingListTest::doCompactEnumStore(Tree &tree,
         valueHandle.holdBuffer(*it);
     }
     generation_t generation = _handler.getCurrentGeneration();
-    valueHandle.transferHoldLists(generation);
+    valueHandle.assign_generation(generation);
     _handler.incGeneration();
-    valueHandle.trimHoldLists(_handler.getFirstUsedGeneration());
+    valueHandle.reclaim_memory(_handler.get_oldest_used_generation());
 
     LOG(info,
         "doCompactEnumStore done");
@@ -658,22 +658,22 @@ bumpGeneration(Tree &tree,
     (void) tree;
     (void) valueHandle;
     postingsAlloc.freeze();
-    postingsAlloc.transferHoldLists(_handler.getCurrentGeneration());
-    postings.transferHoldLists(_handler.getCurrentGeneration());
+    postingsAlloc.assign_generation(_handler.getCurrentGeneration());
+    postings.assign_generation(_handler.getCurrentGeneration());
     _handler.incGeneration();
 }
 
 void
 AttributePostingListTest::
-removeOldGenerations(Tree &tree,
+reclaim_memory(Tree &tree,
                      ValueHandle &valueHandle,
                      PostingList &postings,
                      PostingListNodeAllocator &postingsAlloc)
 {
     (void) tree;
     (void) valueHandle;
-    postingsAlloc.trimHoldLists(_handler.getFirstUsedGeneration());
-    postings.trimHoldLists(_handler.getFirstUsedGeneration());
+    postingsAlloc.reclaim_memory(_handler.get_oldest_used_generation());
+    postings.reclaim_memory(_handler.get_oldest_used_generation());
 }
 
 int
@@ -689,7 +689,7 @@ AttributePostingListTest::Main()
     lookupRandomValues(*_intTree, *_intNodeAlloc, *_intKeyStore, *_intPostings,
                        _stlTree, _randomValues);
     _intNodeAlloc->freeze();
-    _intNodeAlloc->transferHoldLists(_handler.getCurrentGeneration());
+    _intNodeAlloc->assign_generation(_handler.getCurrentGeneration());
     doCompactEnumStore(*_intTree, *_intNodeAlloc, *_intKeyStore);
     removeRandomValues(*_intTree, *_intNodeAlloc, *_intKeyStore, *_intPostings,
                        _stlTree, _randomValues);

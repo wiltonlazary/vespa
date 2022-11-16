@@ -2,137 +2,106 @@
 package com.yahoo.vespa.model.search;
 
 import com.yahoo.config.model.deploy.DeployState;
-import com.yahoo.searchdefinition.derived.RawRankProfile;
-import com.yahoo.searchdefinition.derived.SummaryMap;
-import com.yahoo.vespa.config.search.RankProfilesConfig;
-import com.yahoo.vespa.config.search.SummaryConfig;
-import com.yahoo.prelude.fastsearch.DocumentdbInfoConfig;
-import com.yahoo.vespa.config.search.SummarymapConfig;
-import com.yahoo.search.config.IndexInfoConfig;
+import com.yahoo.search.config.SchemaInfoConfig;
+import com.yahoo.schema.derived.SchemaInfo;
 import com.yahoo.vespa.config.search.AttributesConfig;
+import com.yahoo.vespa.config.search.RankProfilesConfig;
+import com.yahoo.prelude.fastsearch.DocumentdbInfoConfig;
+import com.yahoo.search.config.IndexInfoConfig;
 import com.yahoo.vespa.configdefinition.IlscriptsConfig;
-import com.yahoo.searchdefinition.derived.DerivedConfiguration;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 
-import java.io.File;
-import java.io.IOException;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Represents a search cluster.
  *
  * @author arnej27959
  */
-public abstract class SearchCluster extends AbstractSearchCluster
+public abstract class SearchCluster extends AbstractConfigProducer<SearchCluster>
         implements
         DocumentdbInfoConfig.Producer,
         IndexInfoConfig.Producer,
-        IlscriptsConfig.Producer {
+        IlscriptsConfig.Producer,
+        SchemaInfoConfig.Producer {
 
-    protected SearchCluster(AbstractConfigProducer<SearchCluster> parent, String clusterName, int index) {
-        super(parent, clusterName, index);
+    private final String clusterName;
+    private int index;
+    private Double queryTimeout;
+    private Double visibilityDelay = 0.0;
+    private final Map<String, SchemaInfo> schemas = new LinkedHashMap<>();
+
+    public SearchCluster(AbstractConfigProducer<?> parent, String clusterName, int index) {
+        super(parent, "cluster." + clusterName);
+        this.clusterName = clusterName;
+        this.index = index;
     }
 
-   /**
-     * Must be called after cluster is built, to derive SD configs
-     * Derives the search definitions from the application package..
-     * Also stores the document names contained in the search
-     * definitions.
-     */
-    public void deriveSchemas(DeployState deployState) {
-        deriveAllSchemas(getLocalSDS(), deployState);
+    public void add(SchemaInfo schema) {
+        schemas.put(schema.name(), schema);
     }
 
-    @Override
-    public void getConfig(IndexInfoConfig.Builder builder) {
-        if (getSdConfig()!=null) getSdConfig().getIndexInfo().getConfig(builder);
-    }
-
-    @Override
-    public void getConfig(IlscriptsConfig.Builder builder) {
-        if (getSdConfig()!=null) getSdConfig().getIndexingScript().getConfig(builder);
-    }
-
-    @Override
-    public void getConfig(AttributesConfig.Builder builder) {
-        if (getSdConfig()!=null) getSdConfig().getAttributeFields().getConfig(builder);
-    }
-
-    @Override
-    public void getConfig(RankProfilesConfig.Builder builder) {
-        if (getSdConfig()!=null) getSdConfig().getRankProfileList().getConfig(builder);
-    }
+    /** Returns the schemas that should be active in this cluster. Note: These are added during processing. */
+    public Map<String, SchemaInfo> schemas() { return Collections.unmodifiableMap(schemas); }
 
     /**
-     * Converts summary and summary map config to the appropriate information in documentdb
-     *
-     * @param summaryConfigProducer the summary config
-     * @param summarymapConfigProducer the summary map config, or null if none is available
-     * @param docDb the target document dm config
+     * Must be called after cluster is built, to derive schema configs.
+     * Derives the schemas from the application package.
+     * Also stores the document names contained in the schemas.
      */
-    protected void convertSummaryConfig(SummaryConfig.Producer summaryConfigProducer,
-                                        SummarymapConfig.Producer summarymapConfigProducer,
-                                        DocumentdbInfoConfig.Documentdb.Builder docDb) {
+    public abstract void deriveFromSchemas(DeployState deployState);
 
-        SummaryConfig.Builder summaryConfigBuilder = new SummaryConfig.Builder();
-        summaryConfigProducer.getConfig(summaryConfigBuilder);
-        SummaryConfig summaryConfig = summaryConfigBuilder.build();
-
-        SummarymapConfig summarymapConfig = null;
-        if (summarymapConfigProducer != null) {
-            SummarymapConfig.Builder summarymapConfigBuilder = new SummarymapConfig.Builder();
-            summarymapConfigProducer.getConfig(summarymapConfigBuilder);
-            summarymapConfig = summarymapConfigBuilder.build();
-        }
-
-        for (SummaryConfig.Classes sclass : summaryConfig.classes()) {
-            DocumentdbInfoConfig.Documentdb.Summaryclass.Builder sumClassBuilder = new DocumentdbInfoConfig.Documentdb.Summaryclass.Builder();
-            sumClassBuilder.
-                id(sclass.id()).
-                name(sclass.name());
-            for (SummaryConfig.Classes.Fields field : sclass.fields()) {
-                DocumentdbInfoConfig.Documentdb.Summaryclass.Fields.Builder fieldsBuilder = new DocumentdbInfoConfig.Documentdb.Summaryclass.Fields.Builder();
-                fieldsBuilder.name(field.name())
-                             .type(field.type())
-                             .dynamic(isDynamic(field.name(), summarymapConfig));
-                sumClassBuilder.fields(fieldsBuilder);
-            }
-            docDb.summaryclass(sumClassBuilder);
-        }
+    /** Returns a list of the document type names used in this search cluster */
+    public List<String> getDocumentNames() {
+        return schemas.values()
+                      .stream()
+                      .map(schema -> schema.fullSchema().getDocument().getDocumentName().getName())
+                      .collect(Collectors.toList());
     }
 
-    /** Returns true if this is a dynamic summary field */
-    private boolean isDynamic(String fieldName, SummarymapConfig summarymapConfig) {
-        if (summarymapConfig == null) return false; // not know for streaming, but also not used
+    public String getClusterName()              { return clusterName; }
+    public final String getIndexingModeName()   { return getIndexingMode().getName(); }
+    public final boolean isStreaming()          { return getIndexingMode() == IndexingMode.STREAMING; }
 
-        for (SummarymapConfig.Override override : summarymapConfig.override()) {
-            if ( ! fieldName.equals(override.field())) continue;
-            if (SummaryMap.isDynamicCommand(override.command())) return true;
-        }
-        return false;
-    }
+    public final void setQueryTimeout(Double to) { this.queryTimeout = to; }
+    public final void setVisibilityDelay(double delay) { this.visibilityDelay = delay; }
 
-    protected void addRankProfilesConfig(DocumentdbInfoConfig.Documentdb.Builder docDbBuilder, RankProfilesConfig rankProfilesCfg) {
-        for (RankProfilesConfig.Rankprofile rankProfile : rankProfilesCfg.rankprofile()) {
-            DocumentdbInfoConfig.Documentdb.Rankprofile.Builder rpB = new DocumentdbInfoConfig.Documentdb.Rankprofile.Builder();
-            rpB.name(rankProfile.name());
-            rpB.hasSummaryFeatures(containsPropertiesWithPrefix(RawRankProfile.summaryFeatureFefPropertyPrefix, rankProfile.fef()));
-            rpB.hasRankFeatures(containsPropertiesWithPrefix(RawRankProfile.rankFeatureFefPropertyPrefix, rankProfile.fef()));
-            docDbBuilder.rankprofile(rpB);
-        }
-    }
-
-    private boolean containsPropertiesWithPrefix(String prefix, RankProfilesConfig.Rankprofile.Fef fef) {
-        for (RankProfilesConfig.Rankprofile.Fef.Property p : fef.property()) {
-            if (p.name().startsWith(prefix))
-                return true;
-        }
-        return false;
-    }
-
-    protected abstract void deriveAllSchemas(List<SchemaSpec> localSearches, DeployState deployState);
+    protected abstract IndexingMode getIndexingMode();
+    public final Double getVisibilityDelay() { return visibilityDelay; }
+    public final Double getQueryTimeout() { return queryTimeout; }
+    public abstract int getRowBits();
+    public final void setClusterIndex(int index) { this.index = index; }
+    public final int getClusterIndex() { return index; }
 
     public abstract void defaultDocumentsConfig();
-    public abstract DerivedConfiguration getSdConfig();
+
+    public abstract void getConfig(AttributesConfig.Builder builder);
+
+    public abstract void getConfig(RankProfilesConfig.Builder builder);
+
+    @Override
+    public String toString() { return "search-capable cluster '" + clusterName + "'"; }
+
+    public static final class IndexingMode {
+
+        public static final IndexingMode REALTIME  = new IndexingMode("REALTIME");
+        public static final IndexingMode STREAMING = new IndexingMode("STREAMING");
+
+        private final String name;
+
+        private IndexingMode(String name) {
+            this.name = name;
+        }
+
+        public String getName() { return name; }
+
+        public String toString() {
+            return "indexingmode: " + name;
+        }
+    }
 
 }

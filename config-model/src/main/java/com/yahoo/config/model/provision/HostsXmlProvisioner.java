@@ -27,7 +27,7 @@ public class HostsXmlProvisioner implements HostProvisioner {
 
     @Override
     public HostSpec allocateHost(String alias) {
-        // Some special rules to allow no admin elements as well as jdisc element without nodes.
+        // Some special rules to allow no admin elements as well as container element without nodes.
         if (alias.equals(IMPLICIT_ADMIN_HOSTALIAS)) {
             if (hosts.asCollection().size() > 1) {
                 throw new IllegalArgumentException("More than 1 host specified (" + hosts.asCollection().size() + ") and <admin> not specified");
@@ -45,9 +45,12 @@ public class HostsXmlProvisioner implements HostProvisioner {
         throw new IllegalArgumentException("Unable to find host for alias '" + alias + "'");
     }
 
+    /** Called when provisioning nodes using &lt;nodes count="..." */
     @Override
     public List<HostSpec> prepare(ClusterSpec cluster, Capacity quantity, ProvisionLogger logger) {
-        throw new UnsupportedOperationException("Prepare on an XML host provisioner is not supported");
+        throw new UnsupportedOperationException("Using <nodes count=\"...\"> is not supported when there is a " +
+                                                "hosts.xml file. Remove hosts.xml to make this deployable on " +
+                                                "Vespa Cloud and single-node self-hosted instances.");
     }
 
     private HostSpec host2HostSpec(Host host) {

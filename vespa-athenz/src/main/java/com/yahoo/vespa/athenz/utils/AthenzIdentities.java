@@ -19,6 +19,7 @@ public class AthenzIdentities {
 
     public static final AthenzDomain USER_PRINCIPAL_DOMAIN = new AthenzDomain("user");
     public static final AthenzService ZMS_ATHENZ_SERVICE = new AthenzService("sys.auth", "zms");
+    public static final AthenzService ZTS_ATHENZ_SERVICE = new AthenzService("sys.auth", "zts");
 
     public static AthenzIdentity from(AthenzDomain domain, String identityName) {
         if (domain.equals(USER_PRINCIPAL_DOMAIN)) {
@@ -36,7 +37,7 @@ public class AthenzIdentities {
             throw new IllegalArgumentException("Invalid Athenz identity: " + fullName);
         }
         AthenzDomain domain = new AthenzDomain(fullName.substring(0, domainIdentityNameSeparatorIndex));
-        String identityName = fullName.substring(domainIdentityNameSeparatorIndex + 1, fullName.length());
+        String identityName = fullName.substring(domainIdentityNameSeparatorIndex + 1);
         return from(domain, identityName);
     }
 

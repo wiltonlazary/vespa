@@ -1,11 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.http.v2;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.config.application.api.ApplicationFile;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
+import ai.vespa.http.HttpURL.Path;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.http.ContentRequest;
 import com.yahoo.vespa.config.server.http.ContentHandler;
@@ -24,8 +25,7 @@ public class SessionContentHandler extends SessionHandler {
     private final ContentHandler contentHandler = new ContentHandler();
 
     @Inject
-    public SessionContentHandler(Context ctx,
-                                 ApplicationRepository applicationRepository) {
+    public SessionContentHandler(Context ctx, ApplicationRepository applicationRepository) {
         super(ctx, applicationRepository);
     }
 
@@ -52,7 +52,7 @@ public class SessionContentHandler extends SessionHandler {
         TenantName tenantName = Utils.getTenantNameFromSessionRequest(request);
         validateRequest(tenantName);
         long sessionId = getSessionIdV2(request);
-        String contentPath = SessionContentRequestV2.getContentPath(request);
+        Path contentPath = SessionContentRequestV2.getContentPath(request);
         ApplicationFile applicationFile =
                 applicationRepository.getApplicationFileFromSession(tenantName,
                                                                     sessionId,

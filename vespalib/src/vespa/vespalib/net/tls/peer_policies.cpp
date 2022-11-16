@@ -22,23 +22,29 @@ bool is_regex_special_char(char c) noexcept {
     case '\\':
     case '+':
     case '.':
+    case '?':
+    case '*':
         return true;
     default:
         return false;
     }
 }
 
-std::string dot_separated_glob_to_regex(vespalib::stringref glob) {
+// Important: `delimiter` MUST NOT be a character that needs escaping within a regex [charset]
+template <bool SupportSingleCharMatch>
+std::string char_delimited_glob_to_regex(vespalib::stringref glob, char delimiter) {
     std::string ret = "^";
     ret.reserve(glob.size() + 2);
+    // Note: we explicitly stop matching at a delimiter boundary.
+    // This is to make path fragment matching less vulnerable to dirty tricks.
+    const std::string wildcard_pattern    = std::string("[^") + delimiter + "]*";
+    // Same applies for single chars; they should only match _within_ a delimited boundary.
+    const std::string single_char_pattern = std::string("[^") + delimiter + "]";
     for (auto c : glob) {
         if (c == '*') {
-            // Note: we explicitly stop matching at a dot separator boundary.
-            // This is to make host name matching less vulnerable to dirty tricks.
-            ret += "[^.]*";
-        } else if (c == '?') {
-            // Same applies for single chars; they should only match _within_ a dot boundary.
-            ret += "[^.]";
+            ret += wildcard_pattern;
+        } else if (c == '?' && SupportSingleCharMatch) {
+            ret += single_char_pattern;
         } else {
             if (is_regex_special_char(c)) {
                 ret += '\\';
@@ -52,14 +58,25 @@ std::string dot_separated_glob_to_regex(vespalib::stringref glob) {
 
 class RegexHostMatchPattern : public CredentialMatchPattern {
     Regex _pattern_as_regex;
-public:
-    explicit RegexHostMatchPattern(vespalib::stringref glob_pattern)
-        : _pattern_as_regex(Regex::from_pattern(dot_separated_glob_to_regex(glob_pattern)))
+    explicit RegexHostMatchPattern(std::string_view glob_pattern)
+        : _pattern_as_regex(Regex::from_pattern(glob_pattern))
     {
     }
+public:
+    RegexHostMatchPattern(RegexHostMatchPattern&&) noexcept = default;
     ~RegexHostMatchPattern() override = default;
 
-    [[nodiscard]] bool matches(vespalib::stringref str) const override {
+    RegexHostMatchPattern& operator=(RegexHostMatchPattern&&) noexcept = default;
+
+    [[nodiscard]] static RegexHostMatchPattern from_dns_glob_pattern(vespalib::stringref glob_pattern) {
+        return RegexHostMatchPattern(char_delimited_glob_to_regex<true>(glob_pattern, '.'));
+    }
+
+    [[nodiscard]] static RegexHostMatchPattern from_uri_glob_pattern(vespalib::stringref glob_pattern) {
+        return RegexHostMatchPattern(char_delimited_glob_to_regex<false>(glob_pattern, '/'));
+    }
+
+    [[nodiscard]] bool matches(vespalib::stringref str) const noexcept override {
         return _pattern_as_regex.full_match(std::string_view(str.data(), str.size()));
     }
 };
@@ -73,15 +90,19 @@ public:
     }
     ~ExactMatchPattern() override = default;
 
-    [[nodiscard]] bool matches(vespalib::stringref str) const override {
+    [[nodiscard]] bool matches(vespalib::stringref str) const noexcept override {
         return (str == _must_match_exactly);
     }
 };
 
 } // anon ns
 
-std::shared_ptr<const CredentialMatchPattern> CredentialMatchPattern::create_from_glob(vespalib::stringref glob_pattern) {
-    return std::make_shared<const RegexHostMatchPattern>(glob_pattern);
+std::shared_ptr<const CredentialMatchPattern> CredentialMatchPattern::create_from_dns_glob(vespalib::stringref glob_pattern) {
+    return std::make_shared<const RegexHostMatchPattern>(RegexHostMatchPattern::from_dns_glob_pattern(glob_pattern));
+}
+
+std::shared_ptr<const CredentialMatchPattern> CredentialMatchPattern::create_from_uri_glob(vespalib::stringref glob_pattern) {
+    return std::make_shared<const RegexHostMatchPattern>(RegexHostMatchPattern::from_uri_glob_pattern(glob_pattern));
 }
 
 std::shared_ptr<const CredentialMatchPattern> CredentialMatchPattern::create_exact_match(vespalib::stringref str) {
@@ -91,13 +112,28 @@ std::shared_ptr<const CredentialMatchPattern> CredentialMatchPattern::create_exa
 RequiredPeerCredential::RequiredPeerCredential(Field field, vespalib::string must_match_pattern)
     : _field(field),
       _original_pattern(std::move(must_match_pattern)),
-      // FIXME it's not RFC 2459-compliant to use exact-matching for URIs, but that's all we currently need.
-      _match_pattern(field == Field::SAN_URI ? CredentialMatchPattern::create_exact_match(_original_pattern)
-                                             : CredentialMatchPattern::create_from_glob(_original_pattern))
+      _match_pattern(field == Field::SAN_URI ? CredentialMatchPattern::create_from_uri_glob(_original_pattern)
+                                             : CredentialMatchPattern::create_from_dns_glob(_original_pattern))
 {
 }
 
 RequiredPeerCredential::~RequiredPeerCredential() = default;
+
+PeerPolicy::PeerPolicy() = default;
+
+PeerPolicy::PeerPolicy(std::vector<RequiredPeerCredential> required_peer_credentials)
+    : _required_peer_credentials(std::move(required_peer_credentials)),
+      _granted_capabilities(CapabilitySet::make_with_all_capabilities())
+{
+}
+
+PeerPolicy::PeerPolicy(std::vector<RequiredPeerCredential> required_peer_credentials,
+                       CapabilitySet granted_capabilities)
+    : _required_peer_credentials(std::move(required_peer_credentials)),
+      _granted_capabilities(granted_capabilities)
+{}
+
+PeerPolicy::~PeerPolicy() = default;
 
 namespace {
 template <typename Collection>
@@ -111,11 +147,21 @@ void print_joined(std::ostream& os, const Collection& coll, const char* sep) {
         os << e;
     }
 }
+
+constexpr const char* to_string(RequiredPeerCredential::Field field) noexcept {
+    switch (field) {
+    case RequiredPeerCredential::Field::CN:      return "CN";
+    case RequiredPeerCredential::Field::SAN_DNS: return "SAN_DNS";
+    case RequiredPeerCredential::Field::SAN_URI: return "SAN_URI";
+    }
+    abort();
+}
+
 }
 
 std::ostream& operator<<(std::ostream& os, const RequiredPeerCredential& cred) {
     os << "RequiredPeerCredential("
-       << (cred.field() == RequiredPeerCredential::Field::CN ? "CN" : "SAN_DNS")
+       << to_string(cred.field())
        << " matches '"
        << cred.original_pattern()
        << "')";
@@ -125,7 +171,7 @@ std::ostream& operator<<(std::ostream& os, const RequiredPeerCredential& cred) {
 std::ostream& operator<<(std::ostream& os, const PeerPolicy& policy) {
     os << "PeerPolicy(";
     print_joined(os, policy.required_peer_credentials(), ", ");
-    os << ")";
+    os << ", " << policy.granted_capabilities().to_string() << ")";
     return os;
 }
 

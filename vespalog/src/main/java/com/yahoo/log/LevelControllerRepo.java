@@ -7,8 +7,9 @@ package com.yahoo.log;
  *
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
-public interface LevelControllerRepo {
+interface LevelControllerRepo {
     /**
      * Return the level controller for a given component.
      * @param component The component name string.

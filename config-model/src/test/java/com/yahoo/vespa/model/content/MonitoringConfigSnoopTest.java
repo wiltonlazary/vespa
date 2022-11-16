@@ -4,10 +4,10 @@ package com.yahoo.vespa.model.content;
 import com.yahoo.config.model.test.TestDriver;
 import com.yahoo.config.model.test.TestRoot;
 import com.yahoo.metrics.MetricsmanagerConfig;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 
 /**
@@ -45,28 +45,30 @@ public class MonitoringConfigSnoopTest {
     }
 
     @Test
-    public void correct_config_is_snooped() throws Exception {
+    void correct_config_is_snooped() {
         initRoot(60);
-        assertThat(getConfig().snapshot().periods().size(), is(2));
-        assertThat(getConfig().snapshot().periods(0), is(60));
-        assertThat(getConfig().snapshot().periods(1), is(300));
+        assertEquals(2, getConfig().snapshot().periods().size());
+        assertEquals(60, getConfig().snapshot().periods(0));
+        assertEquals(300, getConfig().snapshot().periods(1));
     }
 
     @Test
-    public void correct_config_is_snooped_default_interval() {
+    void correct_config_is_snooped_default_interval() {
         String getAdminXmlIntervalNotSpecified = "<admin version='2.0'>"
                 + "  <adminserver hostalias='mockhost' />"
                 + "</admin>";
 
         TestDriver tester = new TestDriver();
         root = tester.buildModel(getAdminXmlIntervalNotSpecified + getContent());
-        assertThat(getConfig().snapshot().periods().size(), is(2));
-        assertThat(getConfig().snapshot().periods(0), is(60));
-        assertThat(getConfig().snapshot().periods(1), is(300));
+        assertEquals(2, getConfig().snapshot().periods().size());
+        assertEquals(60, getConfig().snapshot().periods(0));
+        assertEquals(300, getConfig().snapshot().periods(1));
     }
 
-    @Test(expected = Exception.class)
-    public void invalid_model_1() throws Exception {
-        initRoot(120);
+    @Test
+    void invalid_model_1() {
+        assertThrows(Exception.class, () -> {
+            initRoot(120);
+        });
     }
 }

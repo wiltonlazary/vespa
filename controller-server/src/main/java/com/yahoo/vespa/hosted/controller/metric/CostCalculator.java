@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.metric;
 
 import com.yahoo.config.provision.CloudName;
@@ -30,7 +30,6 @@ import static com.yahoo.yolean.Exceptions.uncheck;
 public class CostCalculator {
 
     private static final double SELF_HOSTED_DISCOUNT = .5;
-    private static final CloudName cloudName = CloudName.from("yahoo");
 
     public static String resourceShareByPropertyToCsv(NodeRepository nodeRepository,
                                                       Controller controller,
@@ -48,7 +47,7 @@ public class CostCalculator {
         // Sum up allocations
         Map<Property, ResourceAllocation> allocationByProperty = new HashMap<>();
         var nodes = controller.zoneRegistry().zones()
-                              .reachable().in(Environment.prod).ofCloud(cloudName).zones().stream()
+                              .reachable().in(Environment.prod).in(CloudName.YAHOO).zones().stream()
                               .flatMap(zone -> uncheck(() -> nodeRepository.list(zone.getId(), NodeFilter.all()).stream()))
                               .filter(node -> node.owner().isPresent() && !node.owner().get().tenant().equals(SystemApplication.TENANT))
                               .collect(Collectors.toList());
@@ -57,7 +56,7 @@ public class CostCalculator {
             Property property = propertyByTenantName.get(node.owner().get().tenant());
             if (property == null) continue;
             var allocation = allocationByProperty.getOrDefault(property, ResourceAllocation.ZERO);
-            var nodeAllocation = new ResourceAllocation(node.resources().vcpu(), node.resources().memoryGb(), node.resources().diskGb());
+            var nodeAllocation = new ResourceAllocation(node.resources().vcpu(), node.resources().memoryGb(), node.resources().diskGb(), node.resources().architecture());
             allocationByProperty.put(property, allocation.plus(nodeAllocation));
             totalAllocation = totalAllocation.plus(nodeAllocation);
         }

@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "proto_converter.h"
 #include <vespa/searchlib/common/mapnames.h>
@@ -47,6 +47,17 @@ void add_multi_props(fef::Properties &dst, const T &src) {
     }
 }
 
+DocsumRequest::FieldList
+convertFields(const searchlib::searchprotocol::protobuf::DocsumRequest &proto) {
+    DocsumRequest::FieldList fields;
+    fields.reserve(proto.fields_size());
+    for (int i = 0; i < proto.fields_size(); ++i) {
+        fields.emplace_back(proto.fields(i));
+
+    }
+    return fields;
+}
+
 }
 
 //-----------------------------------------------------------------------------
@@ -57,7 +68,8 @@ ProtoConverter::search_request_from_proto(const ProtoSearchRequest &proto, Searc
     request.offset = proto.offset();
     request.maxhits = proto.hits();
     request.setTimeout(1ms * proto.timeout());
-    request.setTraceLevel(proto.trace_level());
+    request.trace().setLevel(proto.trace_level());
+    request.trace().setProfileDepth(proto.profile_depth());
     request.sortSpec = make_sort_spec(proto.sorting());
     request.sessionId.assign(proto.session_key().begin(), proto.session_key().end());
     request.propertiesMap.lookupCreate(MapNames::MATCH).add("documentdb.searchdoctype", proto.document_type());
@@ -89,10 +101,10 @@ ProtoConverter::search_reply_to_proto(const SearchReply &reply, ProtoSearchReply
     proto.set_total_hit_count(reply.totalHitCount);
     proto.set_coverage_docs(reply.coverage.getCovered());
     proto.set_active_docs(reply.coverage.getActive());
-    proto.set_soon_active_docs(reply.coverage.getSoonActive());
+    proto.set_target_active_docs(reply.coverage.getTargetActive());
     proto.set_degraded_by_match_phase(reply.coverage.wasDegradedByMatchPhase());
     proto.set_degraded_by_soft_timeout(reply.coverage.wasDegradedByTimeout());
-    bool has_sort_data = (reply.sortIndex.size() > 0);
+    bool has_sort_data = ! reply.sortIndex.empty();
     assert(!has_sort_data || (reply.sortIndex.size() == (reply.hits.size() + 1)));
     if (reply.request) {
         uint32_t asked_offset = reply.request->offset;
@@ -114,7 +126,28 @@ ProtoConverter::search_reply_to_proto(const SearchReply &reply, ProtoSearchReply
             hit->set_sort_data(&reply.sortData[sort_data_offset], sort_data_size);
         }
     }
-    proto.set_grouping_blob(&reply.groupResult[0], reply.groupResult.size());
+    if ( ! reply.match_features.values.empty()) {
+        size_t num_match_features = reply.match_features.names.size();
+        assert(num_match_features * reply.hits.size() == reply.match_features.values.size());
+        for (const auto & name : reply.match_features.names) {
+            proto.add_match_feature_names()->assign(name.data(), name.size());
+        }
+        auto mfv_iter = reply.match_features.values.begin();
+        for (size_t i = 0; i < reply.hits.size(); ++i) {
+            auto *hit = proto.mutable_hits(i);
+            for (size_t j = 0; j < num_match_features; ++j) {
+                auto * obj = hit->add_match_features();
+                const auto & feature_value = *mfv_iter++;
+                if (feature_value.is_data()) {
+                    auto mem = feature_value.as_data();
+                    obj->set_tensor(mem.data, mem.size);
+                } else if (feature_value.is_double()) {
+                    obj->set_number(feature_value.as_double());
+                }
+            }
+        }
+    }
+    proto.set_grouping_blob(reply.groupResult.data(), reply.groupResult.size());
     const auto &slime_trace = reply.propertiesMap.trace().lookup("slime");
     proto.set_slime_trace(slime_trace.get().data(), slime_trace.get().size());
     if (reply.my_issues) {
@@ -163,6 +196,7 @@ ProtoConverter::docsum_request_from_proto(const ProtoDocsumRequest &proto, Docsu
             request.hits[i].gid = document::GlobalId(gid.data());
         }
     }
+    request.setFields(convertFields(proto));
 }
 
 void
@@ -194,6 +228,7 @@ ProtoConverter::monitor_reply_to_proto(const MonitorReply &reply, ProtoMonitorRe
 {
     proto.set_online(reply.timestamp != 0);
     proto.set_active_docs(reply.activeDocs);
+    proto.set_target_active_docs(reply.targetActiveDocs);
     proto.set_distribution_key(reply.distribution_key);
     proto.set_is_blocking_writes(reply.is_blocking_writes);
 }

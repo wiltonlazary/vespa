@@ -3,17 +3,18 @@
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/searchlib/docstore/documentstore.h>
 #include <vespa/searchlib/docstore/logdocumentstore.h>
-#include <vespa/searchlib/docstore/cachestats.h>
+#include <vespa/vespalib/stllike/cache_stats.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
-#include <vespa/searchlib/common/bitvector.h>
+#include <vespa/searchlib/common/allocatedbitvector.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/fieldvalue/document.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP("document_store_visitor_test");
@@ -26,6 +27,7 @@ using document::Document;
 using document::DocumentId;
 using document::DocumentType;
 using document::DocumentTypeRepo;
+using document::StringFieldValue;
 using vespalib::compression::CompressionConfig;
 using vespalib::asciistream;
 using index::DummyFileHeaderContext;
@@ -36,7 +38,7 @@ const string doc_type_name = "test";
 const string header_name = doc_type_name + ".header";
 const string body_name = doc_type_name + ".body";
 
-document::DocumenttypesConfig
+document::config::DocumenttypesConfig
 makeDocTypeRepoConfig()
 {
     const int32_t doc_type_id = 787121340;
@@ -66,9 +68,9 @@ makeDoc(const DocumentTypeRepo &repo, uint32_t i, bool before)
         mainstr << (j + i * 1000) << " ";
     }
     mainstr << " and end field";
-    doc->set("main", mainstr.c_str());
+    doc->setValue("main", StringFieldValue::make(mainstr.str()));
     if (!before) {
-        doc->set("extra", "foo");
+        doc->setValue("extra", StringFieldValue::make("foo"));
     }
     
     return doc;
@@ -93,7 +95,7 @@ public:
     uint32_t _visitCount;
     uint32_t _visitRmCount;
     uint32_t _docIdLimit;
-    BitVector::UP _valid;
+    std::unique_ptr<AllocatedBitVector> _valid;
     bool _before;
 
     MyVisitorBase(DocumentTypeRepo &repo, uint32_t docIdLimit, bool before);
@@ -104,7 +106,7 @@ MyVisitorBase::MyVisitorBase(DocumentTypeRepo &repo, uint32_t docIdLimit, bool b
       _visitCount(0u),
       _visitRmCount(0u),
       _docIdLimit(docIdLimit),
-      _valid(BitVector::create(docIdLimit)),
+      _valid(std::make_unique<AllocatedBitVector>(docIdLimit)),
       _before(before)
 {
 }
@@ -160,7 +162,7 @@ MyRewriteVisitor::visit(uint32_t lid, const std::shared_ptr<Document> &doc)
     Document::UP expDoc(makeDoc(_repo, lid, _before));
     EXPECT_TRUE(*expDoc == *doc);
     _valid->setBitAndMaintainCount(lid);
-    doc->set("extra", "foo");
+    doc->setValue("extra", StringFieldValue::make("foo"));
 }
 
 
@@ -214,7 +216,7 @@ struct Fixture
     std::unique_ptr<LogDocumentStore> _store;
     uint64_t _syncToken;
     uint32_t _docIdLimit;
-    BitVector::UP _valid;
+    std::unique_ptr<AllocatedBitVector> _valid;
 
     Fixture();
     ~Fixture();
@@ -244,7 +246,7 @@ Fixture::Fixture()
       _store(),
       _syncToken(0u),
       _docIdLimit(0u),
-      _valid(BitVector::create(0u))
+      _valid(std::make_unique<AllocatedBitVector>(0u))
 {
     rmdir();
     mkdir();
@@ -275,13 +277,13 @@ Fixture::resetDocStore()
 void
 Fixture::rmdir()
 {
-    vespalib::rmdir(_baseDir, true);
+    std::filesystem::remove_all(std::filesystem::path(_baseDir));
 }
 
 void
 Fixture::mkdir()
 {
-    vespalib::mkdir(_baseDir, false);
+    std::filesystem::create_directory(std::filesystem::path(_baseDir));
 }
 
 

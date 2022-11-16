@@ -1,15 +1,24 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include <vespa/searchlib/diskindex/fusion.h>
+#include <vespa/document/fieldvalue/arrayfieldvalue.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/weightedsetfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
 #include <vespa/searchlib/common/flush_token.h>
 #include <vespa/searchlib/diskindex/diskindex.h>
-#include <vespa/searchlib/diskindex/fusion.h>
 #include <vespa/searchlib/diskindex/indexbuilder.h>
 #include <vespa/searchlib/diskindex/zcposoccrandread.h>
 #include <vespa/searchlib/fef/fieldpositionsiterator.h>
 #include <vespa/searchlib/fef/termfieldmatchdata.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchlib/test/string_field_builder.h>
+#include <vespa/searchlib/index/schemautil.h>
 #include <vespa/searchlib/memoryindex/document_inverter.h>
+#include <vespa/searchlib/memoryindex/document_inverter_context.h>
 #include <vespa/searchlib/memoryindex/field_index_collection.h>
 #include <vespa/searchlib/memoryindex/posting_iterator.h>
 #include <vespa/searchlib/test/index/mock_field_length_inspector.h>
@@ -17,27 +26,36 @@
 #include <vespa/vespalib/btree/btreenode.hpp>
 #include <vespa/vespalib/btree/btreenodeallocator.hpp>
 #include <vespa/vespalib/btree/btreeroot.hpp>
-#include <vespa/vespalib/io/fileutil.h>
+#include <vespa/vespalib/util/gate.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
-#include <gtest/gtest.h>
+#include <vespa/vespalib/gtest/gtest.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP("fusion_test");
 
 namespace search {
 
+using document::ArrayFieldValue;
+using document::DataType;
 using document::Document;
+using document::StringFieldValue;
+using document::WeightedSetFieldValue;
 using fef::FieldPositionsIterator;
 using fef::TermFieldMatchData;
 using fef::TermFieldMatchDataArray;
 using memoryindex::DocumentInverter;
+using memoryindex::DocumentInverterContext;
 using memoryindex::FieldIndexCollection;
 using queryeval::SearchIterator;
 using search::common::FileHeaderContext;
 using search::index::schema::CollectionType;
-using search::index::schema::DataType;
 using search::index::test::MockFieldLengthInspector;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
+using search::test::StringFieldBuilder;
 using vespalib::SequencedTaskExecutor;
 
 using namespace index;
@@ -58,12 +76,14 @@ class FusionTest : public ::testing::Test
 {
 protected:
     Schema _schema;
+    bool   _force_small_merge_chunk;
     const Schema & getSchema() const { return _schema; }
 
-    void requireThatFusionIsWorking(const vespalib::string &prefix, bool directio, bool readmmap);
+    void requireThatFusionIsWorking(const vespalib::string &prefix, bool directio, bool readmmap, bool force_short_merge_chunk);
     void make_simple_index(const vespalib::string &dump_dir, const IFieldLengthInspector &field_length_inspector);
     bool try_merge_simple_indexes(const vespalib::string &dump_dir, const std::vector<vespalib::string> &sources, std::shared_ptr<IFlushToken> flush_token);
     void merge_simple_indexes(const vespalib::string &dump_dir, const std::vector<vespalib::string> &sources);
+    void reconstruct_interleaved_features();
 public:
     FusionTest();
 };
@@ -73,7 +93,9 @@ namespace {
 void
 myPushDocument(DocumentInverter &inv)
 {
-    inv.pushDocuments(std::shared_ptr<vespalib::IDestructorCallback>());
+    vespalib::Gate gate;
+    inv.pushDocuments(std::make_shared<vespalib::GateCallback>(gate));
+    gate.await();
 }
 
 }
@@ -103,43 +125,36 @@ toString(FieldPositionsIterator posItr, bool hasElements = false, bool hasWeight
 std::unique_ptr<Document>
 make_doc10(DocBuilder &b)
 {
-    b.startDocument("id:ns:searchdocument::10");
-    b.startIndexField("f0").
-        addStr("a").addStr("b").addStr("c").addStr("d").
-        addStr("e").addStr("f").addStr("z").
-        endField();
-    b.startIndexField("f1").
-        addStr("w").addStr("x").
-        addStr("y").addStr("z").
-        endField();
-    b.startIndexField("f2").
-        startElement(4).addStr("ax").addStr("ay").addStr("z").endElement().
-        startElement(5).addStr("ax").endElement().
-        endField();
-    b.startIndexField("f3").
-        startElement(4).addStr("wx").addStr("z").endElement().
-        endField();
-
-    return b.endDocument();
+    auto doc = b.make_document("id:ns:searchdocument::10");
+    StringFieldBuilder sfb(b);
+    doc->setValue("f0", sfb.tokenize("a b c d e f z").build());
+    doc->setValue("f1", sfb.tokenize("w x y z").build());
+    auto string_array = b.make_array("f2");
+    string_array.add(sfb.tokenize("ax ay z").build());
+    string_array.add(sfb.tokenize("ax").build());
+    doc->setValue("f2", string_array);
+    auto string_wset = b.make_wset("f3");
+    string_wset.add(sfb.tokenize("wx z").build(), 4);
+    doc->setValue("f3", string_wset);
+    return doc;
 }
 
-Schema::IndexField
-make_index_field(vespalib::stringref name, CollectionType collection_type, bool interleaved_features)
+DocBuilder::AddFieldsType
+make_add_fields()
 {
-    Schema::IndexField index_field(name, DataType::STRING, collection_type);
-    index_field.set_interleaved_features(interleaved_features);
-    return index_field;
+    return [](auto& header) { using namespace document::config_builder;
+        header.addField("f0", DataType::T_STRING)
+            .addField("f1", DataType::T_STRING)
+            .addField("f2", Array(DataType::T_STRING))
+            .addField("f3", Wset(DataType::T_STRING));
+            };
 }
 
 Schema
 make_schema(bool interleaved_features)
 {
-    Schema schema;
-    schema.addIndexField(make_index_field("f0", CollectionType::SINGLE, interleaved_features));
-    schema.addIndexField(make_index_field("f1", CollectionType::SINGLE, interleaved_features));
-    schema.addIndexField(make_index_field("f2", CollectionType::ARRAY, interleaved_features));
-    schema.addIndexField(make_index_field("f3", CollectionType::WEIGHTEDSET, interleaved_features));
-    return schema;
+    DocBuilder db(make_add_fields());
+    return SchemaBuilder(db).add_all_indexes(interleaved_features).build();
 }
 
 void
@@ -285,7 +300,7 @@ VESPA_THREAD_STACK_TAG(invert_executor)
 VESPA_THREAD_STACK_TAG(push_executor)
 
 void
-FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool directio, bool readmmap)
+FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool directio, bool readmmap, bool force_small_merge_chunk)
 {
     Schema schema;
     Schema schema2;
@@ -308,7 +323,7 @@ FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool dire
                                       iField.getDataType(),
                                       CollectionType::SINGLE));
     }
-    schema3.addIndexField(Schema::IndexField("f4", DataType::STRING));
+    schema3.addIndexField(Schema::IndexField("f4", search::index::schema::DataType::STRING));
     schema.addFieldSet(Schema::FieldSet("nc0").
                               addField("f0").addField("f1"));
     schema2.addFieldSet(Schema::FieldSet("nc0").
@@ -318,44 +333,41 @@ FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool dire
                                addField("f2").addField("f3").
                                addField("f4"));
     FieldIndexCollection fic(schema, MockFieldLengthInspector());
-    DocBuilder b(schema);
+    DocBuilder b(make_add_fields());
+    StringFieldBuilder sfb(b);
     auto invertThreads = SequencedTaskExecutor::create(invert_executor, 2);
     auto pushThreads = SequencedTaskExecutor::create(push_executor, 2);
-    DocumentInverter inv(schema, *invertThreads, *pushThreads, fic);
+    DocumentInverterContext inv_context(schema, *invertThreads, *pushThreads, fic);
+    DocumentInverter inv(inv_context);
     Document::UP doc;
 
     doc = make_doc10(b);
-    inv.invertDocument(10, *doc);
-    invertThreads->sync();
+    inv.invertDocument(10, *doc, {});
     myPushDocument(inv);
-    pushThreads->sync();
 
-    b.startDocument("id:ns:searchdocument::11").
-        startIndexField("f3").
-        startElement(-27).addStr("zz").endElement().
-        endField();
-    doc = b.endDocument();
-    inv.invertDocument(11, *doc);
-    invertThreads->sync();
+    doc = b.make_document("id:ns:searchdocument::11");
+    {
+        auto string_wset = b.make_wset("f3");
+        string_wset.add(sfb.word("zz").build(), -27);
+        doc->setValue("f3", string_wset);
+    }
+    inv.invertDocument(11, *doc, {});
     myPushDocument(inv);
-    pushThreads->sync();
 
-    b.startDocument("id:ns:searchdocument::12").
-        startIndexField("f3").
-        startElement(0).addStr("zz0").endElement().
-        endField();
-    doc = b.endDocument();
-    inv.invertDocument(12, *doc);
-    invertThreads->sync();
+    doc = b.make_document("id:ns:searchdocument::12");
+    {
+        auto string_wset = b.make_wset("f3");
+        string_wset.add(sfb.word("zz0").build(), 0);
+        doc->setValue("f3", string_wset);
+    }
+    inv.invertDocument(12, *doc, {});
     myPushDocument(inv);
-    pushThreads->sync();
 
     IndexBuilder ib(schema);
     vespalib::string dump2dir = prefix + "dump2";
     ib.setPrefix(dump2dir);
     uint32_t numDocs = 12 + 1;
     uint32_t numWords = fic.getNumUniqueWords();
-    bool dynamicKPosOcc = false;
     MockFieldLengthInspector mock_field_length_inspector;
     TuneFileIndexing tuneFileIndexing;
     TuneFileSearch tuneFileSearch;
@@ -390,9 +402,10 @@ FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool dire
         std::vector<vespalib::string> sources;
         SelectorArray selector(numDocs, 0);
         sources.push_back(prefix + "dump2");
-        ASSERT_TRUE(Fusion::merge(schema, prefix + "dump3", sources, selector,
-                                  dynamicKPosOcc,
-                                  tuneFileIndexing,fileHeaderContext, executor, std::make_shared<FlushToken>()));
+        Fusion fusion(schema, prefix + "dump3", sources, selector,
+                      tuneFileIndexing,fileHeaderContext);
+        fusion.set_force_small_merge_chunk(force_small_merge_chunk);
+        ASSERT_TRUE(fusion.merge(executor, std::make_shared<FlushToken>()));
     } while (0);
     do {
         DiskIndex dw3(prefix + "dump3");
@@ -403,9 +416,10 @@ FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool dire
         std::vector<vespalib::string> sources;
         SelectorArray selector(numDocs, 0);
         sources.push_back(prefix + "dump3");
-        ASSERT_TRUE(Fusion::merge(schema2, prefix + "dump4", sources, selector,
-                                  dynamicKPosOcc,
-                                  tuneFileIndexing, fileHeaderContext, executor, std::make_shared<FlushToken>()));
+        Fusion fusion(schema2, prefix + "dump4", sources, selector,
+                      tuneFileIndexing, fileHeaderContext);
+        fusion.set_force_small_merge_chunk(force_small_merge_chunk);
+        ASSERT_TRUE(fusion.merge(executor, std::make_shared<FlushToken>()));
     } while (0);
     do {
         DiskIndex dw4(prefix + "dump4");
@@ -416,9 +430,10 @@ FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool dire
         std::vector<vespalib::string> sources;
         SelectorArray selector(numDocs, 0);
         sources.push_back(prefix + "dump3");
-        ASSERT_TRUE(Fusion::merge(schema3, prefix + "dump5", sources, selector,
-                                  dynamicKPosOcc,
-                                  tuneFileIndexing, fileHeaderContext, executor, std::make_shared<FlushToken>()));
+        Fusion fusion(schema3, prefix + "dump5", sources, selector,
+                      tuneFileIndexing, fileHeaderContext);
+        fusion.set_force_small_merge_chunk(force_small_merge_chunk);
+        ASSERT_TRUE(fusion.merge(executor, std::make_shared<FlushToken>()));
     } while (0);
     do {
         DiskIndex dw5(prefix + "dump5");
@@ -429,9 +444,11 @@ FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool dire
         std::vector<vespalib::string> sources;
         SelectorArray selector(numDocs, 0);
         sources.push_back(prefix + "dump3");
-        ASSERT_TRUE(Fusion::merge(schema, prefix + "dump6", sources, selector,
-                                  !dynamicKPosOcc,
-                                  tuneFileIndexing, fileHeaderContext, executor, std::make_shared<FlushToken>()));
+        Fusion fusion(schema, prefix + "dump6", sources, selector,
+                      tuneFileIndexing, fileHeaderContext);
+        fusion.set_dynamic_k_pos_index_format(true);
+        fusion.set_force_small_merge_chunk(force_small_merge_chunk);
+        ASSERT_TRUE(fusion.merge(executor, std::make_shared<FlushToken>()));
     } while (0);
     do {
         DiskIndex dw6(prefix + "dump6");
@@ -442,9 +459,10 @@ FusionTest::requireThatFusionIsWorking(const vespalib::string &prefix, bool dire
         std::vector<vespalib::string> sources;
         SelectorArray selector(numDocs, 0);
         sources.push_back(prefix + "dump2");
-        ASSERT_TRUE(Fusion::merge(schema, prefix + "dump3", sources, selector,
-                                  dynamicKPosOcc,
-                                  tuneFileIndexing, fileHeaderContext, executor, std::make_shared<FlushToken>()));
+        Fusion fusion(schema, prefix + "dump3", sources, selector,
+                      tuneFileIndexing, fileHeaderContext);
+        fusion.set_force_small_merge_chunk(force_small_merge_chunk);
+        ASSERT_TRUE(fusion.merge(executor, std::make_shared<FlushToken>()));
     } while (0);
     do {
         DiskIndex dw3(prefix + "dump3");
@@ -459,15 +477,15 @@ FusionTest::make_simple_index(const vespalib::string &dump_dir, const IFieldLeng
     FieldIndexCollection fic(_schema, field_length_inspector);
     uint32_t numDocs = 20;
     uint32_t numWords = 1000;
-    DocBuilder b(_schema);
+    DocBuilder b(make_add_fields());
     auto invertThreads = SequencedTaskExecutor::create(invert_executor, 2);
     auto pushThreads = SequencedTaskExecutor::create(push_executor, 2);
-    DocumentInverter inv(_schema, *invertThreads, *pushThreads, fic);
+    DocumentInverterContext inv_context(_schema, *invertThreads, *pushThreads, fic);
+    DocumentInverter inv(inv_context);
 
-    inv.invertDocument(10, *make_doc10(b));
-    invertThreads->sync();
+    auto doc10 = make_doc10(b);
+    inv.invertDocument(10, *doc10, {});
     myPushDocument(inv);
-    pushThreads->sync();
 
     IndexBuilder ib(_schema);
     TuneFileIndexing tuneFileIndexing;
@@ -485,9 +503,10 @@ FusionTest::try_merge_simple_indexes(const vespalib::string &dump_dir, const std
     TuneFileIndexing tuneFileIndexing;
     DummyFileHeaderContext fileHeaderContext;
     SelectorArray selector(20, 0);
-    return Fusion::merge(_schema, dump_dir, sources, selector,
-                         false,
-                         tuneFileIndexing, fileHeaderContext, executor, flush_token);
+    Fusion fusion(_schema, dump_dir, sources, selector,
+                  tuneFileIndexing, fileHeaderContext);
+    fusion.set_force_small_merge_chunk(_force_small_merge_chunk);
+    return fusion.merge(executor, flush_token);
 }
 
 void
@@ -498,37 +517,43 @@ FusionTest::merge_simple_indexes(const vespalib::string &dump_dir, const std::ve
 
 FusionTest::FusionTest()
     : ::testing::Test(),
-      _schema(make_schema(false))
+      _schema(make_schema(false)),
+      _force_small_merge_chunk(false)
 {
 }
 
 TEST_F(FusionTest, require_that_normal_fusion_is_working)
 {
-    requireThatFusionIsWorking("", false, false);
+    requireThatFusionIsWorking("", false, false, false);
 }
 
 TEST_F(FusionTest, require_that_directio_fusion_is_working)
 {
-    requireThatFusionIsWorking("d", true, false);
+    requireThatFusionIsWorking("d", true, false, false);
 }
 
 TEST_F(FusionTest, require_that_mmap_fusion_is_working)
 {
-    requireThatFusionIsWorking("m", false, true);
+    requireThatFusionIsWorking("m", false, true, false);
 }
 
 TEST_F(FusionTest, require_that_directiommap_fusion_is_working)
 {
-    requireThatFusionIsWorking("dm", true, true);
+    requireThatFusionIsWorking("dm", true, true, false);
+}
+
+TEST_F(FusionTest, require_that_small_merge_chunk_fusion_is_working)
+{
+    requireThatFusionIsWorking("s", false, false, true);
 }
 
 namespace {
 
 void clean_field_length_testdirs()
 {
-    vespalib::rmdir("fldump2", true);
-    vespalib::rmdir("fldump3", true);
-    vespalib::rmdir("fldump4", true);
+    std::filesystem::remove_all(std::filesystem::path("fldump2"));
+    std::filesystem::remove_all(std::filesystem::path("fldump3"));
+    std::filesystem::remove_all(std::filesystem::path("fldump4"));
 }
 
 }
@@ -545,7 +570,8 @@ TEST_F(FusionTest, require_that_average_field_length_is_preserved)
     clean_field_length_testdirs();
 }
 
-TEST_F(FusionTest, require_that_interleaved_features_can_be_reconstructed)
+void
+FusionTest::reconstruct_interleaved_features()
 {
     clean_field_length_testdirs();
     make_simple_index("fldump2", MockFieldLengthInspector());
@@ -561,12 +587,23 @@ TEST_F(FusionTest, require_that_interleaved_features_can_be_reconstructed)
     clean_field_length_testdirs();
 }
 
+TEST_F(FusionTest, require_that_interleaved_features_can_be_reconstructed)
+{
+    reconstruct_interleaved_features();
+}
+
+TEST_F(FusionTest, require_that_interleaved_features_can_be_reconstructed_with_small_merge_chunk)
+{
+    _force_small_merge_chunk = true;
+    reconstruct_interleaved_features();
+}
+
 namespace {
 
 void clean_stopped_fusion_testdirs()
 {
-    vespalib::rmdir("stopdump2", true);
-    vespalib::rmdir("stopdump3", true);
+    std::filesystem::remove_all(std::filesystem::path("stopdump2"));
+    std::filesystem::remove_all(std::filesystem::path("stopdump3"));
 }
 
 class MyFlushToken : public FlushToken
@@ -603,14 +640,14 @@ TEST_F(FusionTest, require_that_fusion_can_be_stopped)
     make_simple_index("stopdump2", MockFieldLengthInspector());
     ASSERT_TRUE(try_merge_simple_indexes("stopdump3", {"stopdump2"}, flush_token));
     EXPECT_EQ(48, flush_token->get_checks());
-    vespalib::rmdir("stopdump3", true);
+    std::filesystem::remove_all(std::filesystem::path("stopdump3"));
     flush_token = std::make_shared<MyFlushToken>(1);
     ASSERT_FALSE(try_merge_simple_indexes("stopdump3", {"stopdump2"}, flush_token));
-    EXPECT_EQ(12, flush_token->get_checks());
-    vespalib::rmdir("stopdump3", true);
+    EXPECT_EQ(8, flush_token->get_checks());
+    std::filesystem::remove_all(std::filesystem::path("stopdump3"));
     flush_token = std::make_shared<MyFlushToken>(47);
     ASSERT_FALSE(try_merge_simple_indexes("stopdump3", {"stopdump2"}, flush_token));
-    EXPECT_EQ(49, flush_token->get_checks());
+    EXPECT_LE(48, flush_token->get_checks());
     clean_stopped_fusion_testdirs();
 }
 

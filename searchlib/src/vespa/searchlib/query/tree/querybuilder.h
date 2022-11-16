@@ -21,6 +21,7 @@
 
 #include "predicate_query_term.h"
 #include "node.h"
+#include "const_bool_nodes.h"
 #include <vespa/searchlib/query/weight.h>
 #include <stack>
 
@@ -97,6 +98,12 @@ public:
 // These template functions create nodes based on a traits class.
 // You may specialize these functions for your own traits class to have full
 // control of the query node instantiation.
+
+template <class NodeTypes>
+typename NodeTypes::TrueQueryNode *create_true() { return new typename NodeTypes::TrueQueryNode; }
+
+template <class NodeTypes>
+typename NodeTypes::FalseQueryNode *create_false() { return new typename NodeTypes::FalseQueryNode; }
 
 // Intermediate nodes
 template <class NodeTypes>
@@ -213,6 +220,13 @@ create_nearest_neighbor_term(vespalib::stringref query_tensor_name, vespalib::st
                                                        target_num_hits, allow_approximate, explore_additional_hits,
                                                        distance_threshold);
 }
+template <class NodeTypes>
+typename NodeTypes::FuzzyTerm *
+createFuzzyTerm(vespalib::stringref term, vespalib::stringref view, int32_t id, Weight weight,
+                uint32_t maxEditDistance, uint32_t prefixLength) {
+    return new typename NodeTypes::FuzzyTerm(term, view, id, weight, maxEditDistance, prefixLength);
+}
+
 
 template <class NodeTypes>
 class QueryBuilder : public QueryBuilderBase {
@@ -320,6 +334,11 @@ public:
         adjustWeight(weight);
         return addTerm(createRegExpTerm<NodeTypes>(term, view, id, weight));
     }
+    typename NodeTypes::FuzzyTerm &addFuzzyTerm(stringref term, stringref view, int32_t id, Weight weight,
+                                                uint32_t maxEditDistance, uint32_t prefixLength) {
+        adjustWeight(weight);
+        return addTerm(createFuzzyTerm<NodeTypes>(term, view, id, weight, maxEditDistance, prefixLength));
+    }
     typename NodeTypes::NearestNeighborTerm &add_nearest_neighbor_term(stringref query_tensor_name, stringref field_name,
                                                                        int32_t id, Weight weight, uint32_t target_num_hits,
                                                                        bool allow_approximate, uint32_t explore_additional_hits,
@@ -327,6 +346,12 @@ public:
     {
         adjustWeight(weight);
         return addTerm(create_nearest_neighbor_term<NodeTypes>(query_tensor_name, field_name, id, weight, target_num_hits, allow_approximate, explore_additional_hits, distance_threshold));
+    }
+    typename NodeTypes::TrueQueryNode &add_true_node() {
+        return addTerm(create_true<NodeTypes>());
+    }
+    typename NodeTypes::FalseQueryNode &add_false_node() {
+        return addTerm(create_false<NodeTypes>());
     }
 };
 

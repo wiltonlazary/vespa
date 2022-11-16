@@ -1,8 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "resultconfig.h"
-#include <vespa/vespalib/util/exceptions.h>
+#include "docsum_field_writer.h"
+#include "docsum_field_writer_factory.h"
+#include "resultclass.h"
+#include <vespa/config-summary.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
+#include <vespa/vespalib/util/exceptions.h>
+#include <atomic>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.docsummary.resultconfig");
@@ -17,18 +22,11 @@ ResultConfig::Clean()
 }
 
 
-void
-ResultConfig::Init()
-{
-}
-
-
 ResultConfig::ResultConfig()
     : _defaultSummaryId(-1),
       _classLookup(),
       _nameLookup()
 {
-    Init();
 }
 
 
@@ -38,94 +36,76 @@ ResultConfig::~ResultConfig()
 }
 
 
-const char *
-ResultConfig::GetResTypeName(ResType type)
-{
-    switch (type) {
-    case RES_INT:         return "integer";
-    case RES_SHORT:       return "short";
-    case RES_BYTE:        return "byte";
-    case RES_BOOL:        return "bool";
-    case RES_FLOAT:       return "float";
-    case RES_DOUBLE:      return "double";
-    case RES_INT64:       return "int64";
-    case RES_STRING:      return "string";
-    case RES_DATA:        return "data";
-    case RES_LONG_STRING: return "longstring";
-    case RES_LONG_DATA:   return "longdata";
-    case RES_XMLSTRING:   return "xmlstring";
-    case RES_JSONSTRING:  return "jsonstring";
-    case RES_TENSOR:  return "tensor";
-    case RES_FEATUREDATA: return "featuredata";
-    }
-    return "unknown-type";
-}
-
 void
-ResultConfig::Reset()
+ResultConfig::reset()
 {
-    if (! _classLookup.empty() || _fieldEnum.GetNumEntries() > 0) {
+    if (! _classLookup.empty()) {
         Clean();
-        Init();
     }
 }
 
 
 ResultClass *
-ResultConfig::AddResultClass(const char *name, uint32_t id)
+ResultConfig::addResultClass(const char *name, uint32_t classID)
 {
     ResultClass *ret = nullptr;
 
-    if (id != NoClassID() && (_classLookup.find(id) == _classLookup.end())) {
-        ResultClass::UP rc(new ResultClass(name, id, _fieldEnum));
+    if (classID != noClassID() && (_classLookup.find(classID) == _classLookup.end())) {
+        auto rc = std::make_unique<ResultClass>(name);
         ret = rc.get();
-        _classLookup[id] = std::move(rc);
+        _classLookup[classID] = std::move(rc);
         if (_nameLookup.find(name) != _nameLookup.end()) {
-            LOG(warning, "Duplicate result class name: %s (now maps to class id %u)", name, id);
+            LOG(warning, "Duplicate result class name: %s (now maps to class id %u)", name, classID);
         }
-        _nameLookup[name] = id;
+        _nameLookup[name] = classID;
     }
     return ret;
 }
 
+void
+ResultConfig::set_default_result_class_id(uint32_t id)
+{
+    _defaultSummaryId = id;
+}
 
 const ResultClass*
-ResultConfig::LookupResultClass(uint32_t id) const
+ResultConfig::lookupResultClass(uint32_t classID) const
 {
-    IdMap::const_iterator it(_classLookup.find(id));
+    auto it = _classLookup.find(classID);
     return (it != _classLookup.end()) ? it->second.get() : nullptr;
 }
 
 uint32_t
-ResultConfig::LookupResultClassId(const vespalib::string &name, uint32_t def) const
+ResultConfig::lookupResultClassId(const vespalib::string &name) const
 {
-    NameMap::const_iterator found(_nameLookup.find(name));
-    return (found != _nameLookup.end()) ? found->second : def;
+    auto found = _nameLookup.find(name);
+    return (found != _nameLookup.end()) ? found->second : ((name.empty() || (name == "default")) ? _defaultSummaryId : noClassID());
 }
 
-uint32_t
-ResultConfig::LookupResultClassId(const vespalib::string &name) const
-{
-    return LookupResultClassId(name, (name.empty() || (name == "default")) ? _defaultSummaryId : NoClassID());
+
+namespace {
+std::atomic<bool> global_useV8geoPositions = false;
 }
 
+bool ResultConfig::wantedV8geoPositions() {
+    return global_useV8geoPositions;
+}
 
 void
-ResultConfig::CreateEnumMaps()
+ResultConfig::set_wanted_v8_geo_positions(bool value)
 {
-    for (auto & entry : _classLookup) {
-       entry.second->CreateEnumMap();
-    }
+    global_useV8geoPositions = value;
 }
 
-
 bool
-ResultConfig::ReadConfig(const vespa::config::search::SummaryConfig &cfg, const char *configId)
+ResultConfig::readConfig(const SummaryConfig &cfg, const char *configId, IDocsumFieldWriterFactory& docsum_field_writer_factory)
 {
     bool rc = true;
-    Reset();
+    reset();
     int    maxclassID = 0x7fffffff; // avoid negative classids
     _defaultSummaryId = cfg.defaultsummaryid;
+    global_useV8geoPositions = cfg.usev8geopositions;
+
     for (uint32_t i = 0; rc && i < cfg.classes.size(); i++) {
         const auto& cfg_class = cfg.classes[i];
         if (cfg_class.name.empty()) {
@@ -137,80 +117,41 @@ ResultConfig::ReadConfig(const vespa::config::search::SummaryConfig &cfg, const 
             rc = false;
             break;
         }
-        ResultClass *resClass = AddResultClass(cfg_class.name.c_str(), classID);
+        ResultClass *resClass = addResultClass(cfg_class.name.c_str(), classID);
         if (resClass == nullptr) {
             LOG(error,"%s: unable to add classes[%d] name %s", configId, i, cfg_class.name.c_str());
             rc = false;
             break;
         }
         resClass->set_omit_summary_features(cfg_class.omitsummaryfeatures);
-        for (unsigned int j = 0; rc && (j < cfg_class.fields.size()); j++) {
-            const char *fieldtype = cfg_class.fields[j].type.c_str();
-            const char *fieldname = cfg_class.fields[j].name.c_str();
-            LOG(debug, "Reconfiguring class '%s' field '%s' of type '%s'", cfg_class.name.c_str(), fieldname, fieldtype);
-            if (strcmp(fieldtype, "integer") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_INT);
-            } else if (strcmp(fieldtype, "short") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_SHORT);
-            } else if (strcmp(fieldtype, "bool") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_BOOL);
-            } else if (strcmp(fieldtype, "byte") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_BYTE);
-            } else if (strcmp(fieldtype, "float") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_FLOAT);
-            } else if (strcmp(fieldtype, "double") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_DOUBLE);
-            } else if (strcmp(fieldtype, "int64") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_INT64);
-            } else if (strcmp(fieldtype, "string") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_STRING);
-            } else if (strcmp(fieldtype, "data") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_DATA);
-            } else if (strcmp(fieldtype, "raw") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_DATA);
-            } else if (strcmp(fieldtype, "longstring") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_LONG_STRING);
-            } else if (strcmp(fieldtype, "longdata") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_LONG_DATA);
-            } else if (strcmp(fieldtype, "xmlstring") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_XMLSTRING);
-            } else if (strcmp(fieldtype, "jsonstring") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_JSONSTRING);
-            } else if (strcmp(fieldtype, "tensor") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_TENSOR);
-            } else if (strcmp(fieldtype, "featuredata") == 0) {
-                rc = resClass->AddConfigEntry(fieldname, RES_FEATUREDATA);
-            } else {
-                LOG(error, "%s %s.fields[%d]: unknown type '%s'", configId, cfg_class.name.c_str(), j, fieldtype);
-                rc = false;
-                break;
+        for (const auto & field : cfg_class.fields) {
+            const char *fieldname = field.name.c_str();
+            vespalib::string command = field.command;
+            vespalib::string source_name = field.source;
+            LOG(debug, "Reconfiguring class '%s' field '%s'", cfg_class.name.c_str(), fieldname);
+            std::unique_ptr<DocsumFieldWriter> docsum_field_writer;
+            if (!command.empty()) {
+                try {
+                    docsum_field_writer = docsum_field_writer_factory.create_docsum_field_writer(fieldname,
+                                                                                                 command,
+                                                                                                 source_name);
+                } catch (const vespalib::IllegalArgumentException& ex) {
+                    LOG(error, "Exception during setup of summary result class '%s': field='%s', command='%s', source='%s': %s",
+                        cfg_class.name.c_str(), fieldname, command.c_str(), source_name.c_str(), ex.getMessage().c_str());
+                    break;
+                }
             }
+            rc = resClass->addConfigEntry(fieldname, std::move(docsum_field_writer));
             if (!rc) {
-                LOG(error, "%s %s.fields[%d]: duplicate name '%s'", configId, cfg_class.name.c_str(), j, fieldname);
+                LOG(error, "%s %s.fields: duplicate name '%s'", configId, cfg_class.name.c_str(), fieldname);
                 break;
             }
         }
     }
-    if (rc) {
-        CreateEnumMaps(); // create mappings needed by TVM
-    } else {
-        Reset();          // FAIL, discard all config
+    if (!rc) {
+        reset();          // FAIL, discard all config
     }
     return rc;
 }
-
-uint32_t
-ResultConfig::GetClassID(const char *buf, uint32_t buflen)
-{
-    uint32_t ret = NoClassID();
-    uint32_t tmp32;
-
-    if (buflen >= sizeof(tmp32)) {
-        memcpy(&tmp32, buf, sizeof(tmp32));
-        ret = tmp32;
-    }
-    return ret;
-}
-
 
 }

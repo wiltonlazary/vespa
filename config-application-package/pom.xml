@@ -6,12 +6,12 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../parent/pom.xml</relativePath>
     </parent>
     <artifactId>config-application-package</artifactId>
     <packaging>container-plugin</packaging>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <dependencies>
         <dependency>
           <groupId>com.yahoo.vespa</groupId>
@@ -25,6 +25,12 @@
           <artifactId>config-model-api</artifactId>
           <version>${project.version}</version>
           <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.yahoo.vespa</groupId>
+            <artifactId>annotations</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
@@ -127,10 +133,6 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
                     <skip>false</skip>
-                    <compilerArgs>
-                        <arg>-Xlint:all</arg>
-                        <arg>-Werror</arg>
-                    </compilerArgs>
                 </configuration>
             </plugin>
             <plugin>

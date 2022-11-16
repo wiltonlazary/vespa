@@ -1,13 +1,14 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
-import com.google.inject.Inject;
 import com.yahoo.component.AbstractComponent;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.concurrent.maintenance.Maintainer;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.zone.ZoneApi;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.vespa.hosted.controller.Controller;
+import com.yahoo.vespa.hosted.controller.api.integration.athenz.AthenzClientFactory;
 import com.yahoo.vespa.hosted.controller.api.integration.user.UserManagement;
 
 import java.time.Duration;
@@ -32,19 +33,22 @@ import static java.time.temporal.ChronoUnit.SECONDS;
 public class ControllerMaintenance extends AbstractComponent {
 
     private final Upgrader upgrader;
+    private final OsUpgradeScheduler osUpgradeScheduler;
     private final List<Maintainer> maintainers = new CopyOnWriteArrayList<>();
 
     @Inject
     @SuppressWarnings("unused") // instantiated by Dependency Injection
-    public ControllerMaintenance(Controller controller, Metric metric, UserManagement userManagement) {
+    public ControllerMaintenance(Controller controller, Metric metric, UserManagement userManagement, AthenzClientFactory athenzClientFactory) {
         Intervals intervals = new Intervals(controller.system());
         upgrader = new Upgrader(controller, intervals.defaultInterval);
+        osUpgradeScheduler = new OsUpgradeScheduler(controller, intervals.osUpgradeScheduler);
         maintainers.add(upgrader);
+        maintainers.add(osUpgradeScheduler);
         maintainers.addAll(osUpgraders(controller, intervals.osUpgrader));
         maintainers.add(new DeploymentExpirer(controller, intervals.defaultInterval));
         maintainers.add(new DeploymentUpgrader(controller, intervals.defaultInterval));
         maintainers.add(new DeploymentIssueReporter(controller, controller.serviceRegistry().deploymentIssues(), intervals.defaultInterval));
-        maintainers.add(new MetricsReporter(controller, metric));
+        maintainers.add(new MetricsReporter(controller, metric, athenzClientFactory.createZmsClient()));
         maintainers.add(new OutstandingChangeDeployer(controller, intervals.outstandingChangeDeployer));
         maintainers.add(new VersionStatusUpdater(controller, intervals.versionStatusUpdater));
         maintainers.add(new ReadyJobsTrigger(controller, intervals.readyJobsTrigger));
@@ -53,16 +57,13 @@ public class ControllerMaintenance extends AbstractComponent {
         maintainers.add(new SystemUpgrader(controller, intervals.systemUpgrader));
         maintainers.add(new JobRunner(controller, intervals.jobRunner));
         maintainers.add(new OsVersionStatusUpdater(controller, intervals.osVersionStatusUpdater));
-        maintainers.add(new OsUpgradeScheduler(controller, intervals.osUpgradeScheduler));
         maintainers.add(new ContactInformationMaintainer(controller, intervals.contactInformationMaintainer));
         maintainers.add(new NameServiceDispatcher(controller, intervals.nameServiceDispatcher));
         maintainers.add(new CostReportMaintainer(controller, intervals.costReportMaintainer, controller.serviceRegistry().costReportConsumer()));
-        maintainers.add(new ResourceMeterMaintainer(controller, intervals.resourceMeterMaintainer, metric, controller.serviceRegistry().meteringService()));
-        maintainers.add(new CloudEventTracker(controller, intervals.cloudEventReporter));
+        maintainers.add(new ResourceMeterMaintainer(controller, intervals.resourceMeterMaintainer, metric, controller.serviceRegistry().resourceDatabase()));
         maintainers.add(new ResourceTagMaintainer(controller, intervals.resourceTagMaintainer, controller.serviceRegistry().resourceTagger()));
-        maintainers.add(new SystemRoutingPolicyMaintainer(controller, intervals.systemRoutingPolicyMaintainer));
         maintainers.add(new ApplicationMetaDataGarbageCollector(controller, intervals.applicationMetaDataGarbageCollector));
-        maintainers.add(new ContainerImageExpirer(controller, intervals.containerImageExpirer));
+        maintainers.add(new ArtifactExpirer(controller, intervals.containerImageExpirer));
         maintainers.add(new HostInfoUpdater(controller, intervals.hostInfoUpdater));
         maintainers.add(new ReindexingTriggerer(controller, intervals.reindexingTriggerer));
         maintainers.add(new EndpointCertificateMaintainer(controller, intervals.endpointCertificateMaintainer));
@@ -71,13 +72,17 @@ public class ControllerMaintenance extends AbstractComponent {
         maintainers.add(new ArchiveAccessMaintainer(controller, metric, intervals.archiveAccessMaintainer));
         maintainers.add(new TenantRoleMaintainer(controller, intervals.tenantRoleMaintainer));
         maintainers.add(new ChangeRequestMaintainer(controller, intervals.changeRequestMaintainer));
-        maintainers.add(new VcmrMaintainer(controller, intervals.vcmrMaintainer));
+        maintainers.add(new VcmrMaintainer(controller, intervals.vcmrMaintainer, metric));
         maintainers.add(new CloudTrialExpirer(controller, intervals.defaultInterval));
         maintainers.add(new RetriggerMaintainer(controller, intervals.retriggerMaintainer));
-        maintainers.add(new UserManagementMaintainer(controller, intervals.userManagementMaintainer, userManagement));
+        maintainers.add(new UserManagementMaintainer(controller, intervals.userManagementMaintainer, controller.serviceRegistry().roleMaintainer()));
+        maintainers.add(new BillingDatabaseMaintainer(controller, intervals.billingDatabaseMaintainer));
+        maintainers.add(new MeteringMonitorMaintainer(controller, intervals.meteringMonitorMaintainer, controller.serviceRegistry().resourceDatabase(), metric));
     }
 
     public Upgrader upgrader() { return upgrader; }
+
+    public OsUpgradeScheduler osUpgradeScheduler() { return osUpgradeScheduler; }
 
     @Override
     public void deconstruct() {
@@ -116,9 +121,7 @@ public class ControllerMaintenance extends AbstractComponent {
         private final Duration nameServiceDispatcher;
         private final Duration costReportMaintainer;
         private final Duration resourceMeterMaintainer;
-        private final Duration cloudEventReporter;
         private final Duration resourceTagMaintainer;
-        private final Duration systemRoutingPolicyMaintainer;
         private final Duration applicationMetaDataGarbageCollector;
         private final Duration containerImageExpirer;
         private final Duration hostInfoUpdater;
@@ -132,32 +135,32 @@ public class ControllerMaintenance extends AbstractComponent {
         private final Duration vcmrMaintainer;
         private final Duration retriggerMaintainer;
         private final Duration userManagementMaintainer;
+        private final Duration billingDatabaseMaintainer;
+        private final Duration meteringMonitorMaintainer;
 
         public Intervals(SystemName system) {
             this.system = Objects.requireNonNull(system);
-            this.defaultInterval = duration(system.isCd() || system == SystemName.dev ? 1 : 5, MINUTES);
+            this.defaultInterval = duration(system.isCd() ? 1 : 5, MINUTES);
             this.outstandingChangeDeployer = duration(3, MINUTES);
             this.versionStatusUpdater = duration(3, MINUTES);
             this.readyJobsTrigger = duration(1, MINUTES);
             this.deploymentMetricsMaintainer = duration(10, MINUTES);
-            this.applicationOwnershipConfirmer = duration(12, HOURS);
+            this.applicationOwnershipConfirmer = duration(3, HOURS);
             this.systemUpgrader = duration(2, MINUTES);
             this.jobRunner = duration(system.isCd() ? 45 : 90, SECONDS);
             this.osVersionStatusUpdater = duration(2, MINUTES);
             this.osUpgrader = duration(1, MINUTES);
-            this.osUpgradeScheduler = duration(3, HOURS);
+            this.osUpgradeScheduler = duration(15, MINUTES);
             this.contactInformationMaintainer = duration(12, HOURS);
             this.nameServiceDispatcher = duration(10, SECONDS);
             this.costReportMaintainer = duration(2, HOURS);
             this.resourceMeterMaintainer = duration(3, MINUTES);
-            this.cloudEventReporter = duration(30, MINUTES);
             this.resourceTagMaintainer = duration(30, MINUTES);
-            this.systemRoutingPolicyMaintainer = duration(10, MINUTES);
             this.applicationMetaDataGarbageCollector = duration(12, HOURS);
             this.containerImageExpirer = duration(12, HOURS);
             this.hostInfoUpdater = duration(12, HOURS);
             this.reindexingTriggerer = duration(1, HOURS);
-            this.endpointCertificateMaintainer = duration(12, HOURS);
+            this.endpointCertificateMaintainer = duration(1, HOURS);
             this.trafficFractionUpdater = duration(5, MINUTES);
             this.archiveUriUpdater = duration(5, MINUTES);
             this.archiveAccessMaintainer = duration(10, MINUTES);
@@ -166,6 +169,8 @@ public class ControllerMaintenance extends AbstractComponent {
             this.vcmrMaintainer = duration(1, HOURS);
             this.retriggerMaintainer = duration(1, MINUTES);
             this.userManagementMaintainer = duration(12, HOURS);
+            this.billingDatabaseMaintainer = duration(5, MINUTES);
+            this.meteringMonitorMaintainer = duration(30, MINUTES);
         }
 
         private Duration duration(long amount, TemporalUnit unit) {

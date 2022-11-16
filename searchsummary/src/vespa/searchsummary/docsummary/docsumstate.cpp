@@ -1,8 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "docsumstate.h"
+#include "docsum_field_writer_state.h"
 #include <vespa/juniper/rpinterface.h>
 #include <vespa/document/datatype/positiondatatype.h>
+#include <vespa/juniper/queryhandle.h>
 #include <vespa/searchcommon/attribute/iattributecontext.h>
 #include <vespa/searchlib/common/geo_location.h>
 #include <vespa/searchlib/common/geo_location_parser.h>
@@ -11,10 +13,6 @@
 #include <vespa/searchlib/parsequery/parse.h>
 #include <vespa/searchlib/parsequery/stackdumpiterator.h>
 #include <vespa/vespalib/util/issue.h>
-#include "docsum_field_writer_state.h"
-
-#include <vespa/log/log.h>
-LOG_SETUP(".searchsummary.docsummary.docsumstate");
 
 using search::common::GeoLocationParser;
 using search::common::GeoLocationSpec;
@@ -24,45 +22,25 @@ namespace search::docsummary {
 
 GetDocsumsState::GetDocsumsState(GetDocsumsStateCallback &callback)
     : _args(),
-      _docsumbuf(nullptr),
-      _docsumcnt(0),
+      _docsumbuf(),
       _kwExtractor(nullptr),
-      _keywords(nullptr),
       _callback(callback),
       _dynteaser(),
-      _docSumFieldSpaceStore(),
-      _docSumFieldSpace(_docSumFieldSpaceStore, sizeof(_docSumFieldSpaceStore)), // only alloc buffer if needed
       _attrCtx(),
       _attributes(),
+      _stash(),
       _fieldWriterStates(),
       _parsedLocations(),
       _summaryFeatures(nullptr),
       _summaryFeaturesCached(false),
       _omit_summary_features(false),
       _rankFeatures(nullptr),
-      _matching_elements(),
-      _jsonStringer()
+      _matching_elements()
 {
-    _dynteaser._docid    = static_cast<uint32_t>(-1);
-    _dynteaser._input    = static_cast<uint32_t>(-1);
-    _dynteaser._lang     = static_cast<uint32_t>(-1);
-    _dynteaser._config   = nullptr;
-    _dynteaser._query    = nullptr;
-    _dynteaser._result   = nullptr;
 }
 
 
-GetDocsumsState::~GetDocsumsState()
-{
-    free(_docsumbuf);
-    free(_keywords);
-    if (_dynteaser._result != nullptr) {
-        juniper::ReleaseResult(_dynteaser._result);
-    }
-    if (_dynteaser._query != nullptr) {
-        juniper::ReleaseQueryHandle(_dynteaser._query);
-    }
-}
+GetDocsumsState::~GetDocsumsState() = default;
 
 const MatchingElements &
 GetDocsumsState::get_matching_elements(const MatchingElementsFields &matching_elems_fields)
@@ -71,14 +49,6 @@ GetDocsumsState::get_matching_elements(const MatchingElementsFields &matching_el
         _matching_elements = _callback.fill_matching_elements(matching_elems_fields);
     }
     return *_matching_elements;
-}
-
-vespalib::JSONStringer &
-GetDocsumsState::jsonStringer() {
-    if (!_jsonStringer) {
-        _jsonStringer = std::make_unique<vespalib::JSONStringer>();
-    }
-    return *_jsonStringer;
 }
 
 void

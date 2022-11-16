@@ -14,7 +14,7 @@ namespace search::attribute { class IAttributeFunctor; }
 
 namespace vespalib {
     class ISequencedTaskExecutor;
-    class ThreadExecutor;
+    class Executor;
     class IDestructorCallback;
 }
 
@@ -31,7 +31,7 @@ class ImportedAttributesRepo;
 struct IAttributeManager : public search::IAttributeManager
 {
     using SP = std::shared_ptr<IAttributeManager>;
-    using OnWriteDoneType = const std::shared_ptr<vespalib::IDestructorCallback> &;
+    using OnDone = std::shared_ptr<vespalib::IDestructorCallback>;
     using IAttributeFunctor = search::attribute::IAttributeFunctor;
     using IConstAttributeFunctor = search::attribute::IConstAttributeFunctor;
 
@@ -39,7 +39,7 @@ struct IAttributeManager : public search::IAttributeManager
      * Create a new attribute manager based on the content of the current one and
      * the given attribute collection spec.
      */
-    virtual IAttributeManager::SP create(const AttributeCollectionSpec &spec) const = 0;
+    virtual IAttributeManager::SP create(AttributeCollectionSpec && spec) const = 0;
 
     /**
      * Return the list of flush targets for this attribute manager.
@@ -76,7 +76,7 @@ struct IAttributeManager : public search::IAttributeManager
 
     virtual vespalib::ISequencedTaskExecutor &getAttributeFieldWriter() const = 0;
 
-    virtual vespalib::ThreadExecutor& get_shared_executor() const = 0;
+    virtual vespalib::Executor& get_shared_executor() const = 0;
 
     /*
      * Get pointer to named writable attribute.  If attribute isn't
@@ -98,6 +98,7 @@ struct IAttributeManager : public search::IAttributeManager
     virtual const std::vector<search::AttributeVector *> &getWritableAttributes() const = 0;
 
     virtual void asyncForEachAttribute(std::shared_ptr<IConstAttributeFunctor> func) const = 0;
+    virtual void asyncForEachAttribute(std::shared_ptr<IAttributeFunctor> func, OnDone onDone) const = 0;
 
     virtual ExclusiveAttributeReadAccessor::UP getExclusiveReadAccessor(const vespalib::string &name) const = 0;
 

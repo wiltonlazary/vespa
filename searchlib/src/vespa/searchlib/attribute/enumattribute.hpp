@@ -2,10 +2,11 @@
 
 #pragma once
 
+#include "enumattribute.h"
 #include "address_space_components.h"
+#include "enumstore.hpp"
 #include <vespa/vespalib/util/hdr_abort.h>
-#include <vespa/searchlib/attribute/enumattribute.h>
-#include <vespa/searchlib/attribute/enumstore.hpp>
+#include <vespa/searchcommon/attribute/config.h>
 
 namespace search {
 
@@ -14,7 +15,7 @@ EnumAttribute<B>::
 EnumAttribute(const vespalib::string &baseFileName,
               const AttributeVector::Config &cfg)
     : B(baseFileName, cfg),
-      _enumStore(cfg.fastSearch(), cfg.get_dictionary_config())
+      _enumStore(cfg.fastSearch(), cfg.get_dictionary_config(), this->get_memory_allocator())
 {
     this->setEnum(true);
 }
@@ -81,7 +82,16 @@ void
 EnumAttribute<B>::populate_address_space_usage(AddressSpaceUsage& usage) const
 {
     B::populate_address_space_usage(usage);
-    usage.set(AddressSpaceComponents::enum_store, _enumStore.get_address_space_usage());
+    usage.set(AddressSpaceComponents::enum_store, _enumStore.get_values_address_space_usage());
+}
+
+template <typename B>
+void
+EnumAttribute<B>::cache_change_data_entry_ref(const Change& c) const
+{
+    EnumIndex new_idx;
+    _enumStore.find_index(c._data.raw(), new_idx);
+    c.set_entry_ref(new_idx.ref());
 }
 
 } // namespace search

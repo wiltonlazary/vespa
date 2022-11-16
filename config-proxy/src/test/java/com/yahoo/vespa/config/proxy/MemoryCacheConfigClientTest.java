@@ -1,13 +1,12 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.proxy;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
+import java.util.List;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author hmusum
@@ -15,15 +14,14 @@ import static org.junit.Assert.assertThat;
 public class MemoryCacheConfigClientTest {
 
     @Test
-    public void basic() {
-        MemoryCache cache = new MemoryCache();
-        cache.update(ConfigTester.fooConfig);
-        MemoryCacheConfigClient client = new MemoryCacheConfigClient(cache);
-        assertThat(client.getConfig(ConfigTester.fooConfig, null), is(ConfigTester.fooConfig));
-        assertNull(client.getConfig(ConfigTester.barConfig, null));
+    void basic() {
+        MemoryCacheConfigClient client = new MemoryCacheConfigClient(new MemoryCache());
+        client.memoryCache().update(ConfigTester.fooConfig);
+        assertEquals(ConfigTester.fooConfig, client.getConfig(ConfigTester.fooConfig, null).orElseThrow());
+        assertTrue(client.getConfig(ConfigTester.barConfig, null).isEmpty());
 
-        assertThat(client.getActiveSourceConnection(), is("N/A"));
-        assertThat(client.getSourceConnections(), is(Collections.singletonList("N/A")));
+        assertEquals("N/A", client.getActiveSourceConnection());
+        assertEquals(List.of("N/A"), client.getSourceConnections());
     }
 
 }

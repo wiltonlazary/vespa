@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.rpc.security;// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 import com.yahoo.cloud.config.LbServicesConfig;
@@ -11,7 +11,6 @@ import com.yahoo.config.provision.security.NodeIdentifier;
 import com.yahoo.config.provision.security.NodeIdentifierException;
 import com.yahoo.config.provision.security.NodeIdentity;
 import com.yahoo.jrt.Request;
-import com.yahoo.jrt.SecurityContext;
 import com.yahoo.jrt.StringValue;
 import com.yahoo.jrt.Target;
 import com.yahoo.jrt.Values;
@@ -19,6 +18,9 @@ import com.yahoo.security.KeyAlgorithm;
 import com.yahoo.security.KeyUtils;
 import com.yahoo.security.SignatureAlgorithm;
 import com.yahoo.security.X509CertificateBuilder;
+import com.yahoo.security.tls.CapabilityMode;
+import com.yahoo.security.tls.CapabilitySet;
+import com.yahoo.security.tls.ConnectionAuthContext;
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.JsonFormat;
 import com.yahoo.slime.Slime;
@@ -56,9 +58,10 @@ public class MultiTenantRpcAuthorizerTest {
     private static final List<X509Certificate> PEER_CERTIFICATE_CHAIN = List.of(createDummyCertificate());
     private static final ApplicationId APPLICATION_ID = ApplicationId.from("mytenant", "myapplication", "default");
     private static final ApplicationId EVIL_APP_ID = ApplicationId.from("malice", "malice-app", "default");
-    private static final HostName HOSTNAME = HostName.from("myhostname");
+    private static final HostName HOSTNAME = HostName.of("myhostname");
     private static final FileReference FILE_REFERENCE = new FileReference("myfilereference");
 
+    @SuppressWarnings("deprecation")
     @Rule
     public ExpectedException exceptionRule = ExpectedException.none();
 
@@ -115,7 +118,7 @@ public class MultiTenantRpcAuthorizerTest {
                 new ConfigKey<>(LbServicesConfig.CONFIG_DEF_NAME, "*", LbServicesConfig.CONFIG_DEF_NAMESPACE),
                 HOSTNAME);
 
-        exceptionRule.expectMessage("Node with type 'tenant' is not allowed to access global config [name=lb-services,namespace=cloud.config,configId=*]");
+        exceptionRule.expectMessage("Node with type 'tenant' is not allowed to access global config [name=cloud.config.lb-services,configId=*]");
         exceptionRule.expectCause(instanceOf(AuthorizationException.class));
 
         authorizer.authorizeConfigRequest(configRequest)
@@ -247,10 +250,10 @@ public class MultiTenantRpcAuthorizerTest {
     }
 
     private static Request mockJrtRpcRequest(String payload) {
-        SecurityContext securityContext = mock(SecurityContext.class);
-        when(securityContext.peerCertificateChain()).thenReturn(PEER_CERTIFICATE_CHAIN);
+        ConnectionAuthContext authContext =
+                new ConnectionAuthContext(PEER_CERTIFICATE_CHAIN, CapabilitySet.all(), Set.of(), CapabilityMode.ENFORCE);
         Target target = mock(Target.class);
-        when(target.getSecurityContext()).thenReturn(Optional.of(securityContext));
+        when(target.connectionAuthContext()).thenReturn(authContext);
         Request request = mock(Request.class);
         when(request.target()).thenReturn(target);
         Values values = new Values();
@@ -269,7 +272,7 @@ public class MultiTenantRpcAuthorizerTest {
         request.setString("clientHostname", hostname);
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             new JsonFormat(false).encode(out, data);
-            return new String(out.toByteArray());
+            return out.toString();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

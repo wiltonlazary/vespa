@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.service.duper;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.config.model.api.ApplicationInfo;
 import com.yahoo.config.model.api.SuperModel;
@@ -9,8 +9,6 @@ import com.yahoo.config.model.api.SuperModelListener;
 import com.yahoo.config.model.api.SuperModelProvider;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.HostName;
-import com.yahoo.config.provision.SystemName;
-import com.yahoo.vespa.flags.FlagSource;
 import com.yahoo.vespa.service.monitor.CriticalRegion;
 import com.yahoo.vespa.service.monitor.DuperModelInfraApi;
 import com.yahoo.vespa.service.monitor.DuperModelListener;
@@ -45,11 +43,10 @@ public class DuperModelManager implements DuperModelProvider, DuperModelInfraApi
     static final ConfigServerApplication configServerApplication = new ConfigServerApplication();
     static final ProxyHostApplication proxyHostApplication = new ProxyHostApplication();
     static final TenantHostApplication tenantHostApplication = new TenantHostApplication();
-    static final DevHostApplication devHostApplicaton = new DevHostApplication();
 
     private final Map<ApplicationId, InfraApplication> supportedInfraApplications;
 
-    private static CriticalRegionChecker disallowedDuperModeLockAcquisitionRegions =
+    private static final CriticalRegionChecker disallowedDuperModeLockAcquisitionRegions =
             new CriticalRegionChecker("duper model deadlock detection");
 
     private final ReentrantLock lock = new ReentrantLock(true);
@@ -61,22 +58,18 @@ public class DuperModelManager implements DuperModelProvider, DuperModelInfraApi
     private boolean infraApplicationsIsComplete = false;
 
     @Inject
-    public DuperModelManager(ConfigserverConfig configServerConfig, FlagSource flagSource, SuperModelProvider superModelProvider) {
+    public DuperModelManager(ConfigserverConfig configServerConfig, SuperModelProvider superModelProvider) {
         this(configServerConfig.multitenant(),
                 configServerConfig.serverNodeType() == ConfigserverConfig.ServerNodeType.Enum.controller,
-             superModelProvider, new DuperModel(), flagSource, SystemName.from(configServerConfig.system()));
+             superModelProvider, new DuperModel());
     }
 
     /** Non-private for testing */
-    public DuperModelManager(boolean multitenant, boolean isController, SuperModelProvider superModelProvider, DuperModel duperModel, FlagSource flagSource, SystemName system) {
+    public DuperModelManager(boolean multitenant, boolean isController, SuperModelProvider superModelProvider,
+                             DuperModel duperModel) {
         this.duperModel = duperModel;
 
-        if (system == SystemName.dev) {
-            // TODO (mortent): Support controllerApplication in dev system
-            supportedInfraApplications =
-                    Stream.of(devHostApplicaton, configServerApplication)
-                    .collect(Collectors.toUnmodifiableMap(InfraApplication::getApplicationId, Function.identity()));
-        } else if (multitenant) {
+        if (multitenant) {
             supportedInfraApplications =
                     (isController ?
                             Stream.of(controllerHostApplication, controllerApplication) :
@@ -102,7 +95,7 @@ public class DuperModelManager implements DuperModelProvider, DuperModelInfraApi
                 lockedRunnable(() -> {
                     if (!superModelIsComplete) {
                         superModelIsComplete = true;
-                        logger.log(Level.INFO, "All bootstrap tenant applications have been activated");
+                        logger.log(Level.FINE, "All bootstrap tenant applications have been activated");
                         maybeSetDuperModelAsComplete();
                     }
                 });
@@ -129,9 +122,7 @@ public class DuperModelManager implements DuperModelProvider, DuperModelInfraApi
         return Optional.ofNullable(supportedInfraApplications.get(applicationId));
     }
 
-    /**
-     * Returns true if application is considered an infrastructure application by the DuperModel.
-     */
+    /** Returns true if application is considered an infrastructure application by the DuperModel. */
     public boolean isSupportedInfraApplication(ApplicationId applicationId) {
         return supportedInfraApplications.containsKey(applicationId);
     }
@@ -234,4 +225,5 @@ public class DuperModelManager implements DuperModelProvider, DuperModelInfraApi
             lock.unlock();
         }
     }
+
 }

@@ -6,9 +6,10 @@ import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.Path;
+import com.yahoo.restapi.RestApiException;
 import com.yahoo.restapi.SlimeJsonResponse;
 import com.yahoo.slime.ArrayTraverser;
 import com.yahoo.slime.Cursor;
@@ -22,14 +23,13 @@ import com.yahoo.vespa.hosted.controller.api.integration.vcmr.VespaChangeRequest
 import com.yahoo.vespa.hosted.controller.auditlog.AuditLoggingRequestHandler;
 import com.yahoo.vespa.hosted.controller.maintenance.ChangeManagementAssessor;
 import com.yahoo.vespa.hosted.controller.persistence.ChangeRequestSerializer;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 import com.yahoo.yolean.Exceptions;
 
-import javax.ws.rs.BadRequestException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class ChangeManagementApiHandler extends AuditLoggingRequestHandler {
@@ -37,7 +37,7 @@ public class ChangeManagementApiHandler extends AuditLoggingRequestHandler {
     private final ChangeManagementAssessor assessor;
     private final Controller controller;
 
-    public ChangeManagementApiHandler(LoggingRequestHandler.Context ctx, Controller controller) {
+    public ChangeManagementApiHandler(ThreadedHttpRequestHandler.Context ctx, Controller controller) {
         super(ctx, controller.auditLogger());
         this.assessor = new ChangeManagementAssessor(controller.serviceRegistry().configServer().nodeRepository());
         this.controller = controller;
@@ -61,8 +61,7 @@ public class ChangeManagementApiHandler extends AuditLoggingRequestHandler {
         } catch (IllegalArgumentException e) {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
         } catch (RuntimeException e) {
-            log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
-            return ErrorResponse.internalServerError(Exceptions.toMessageString(e));
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
 
@@ -96,13 +95,13 @@ public class ChangeManagementApiHandler extends AuditLoggingRequestHandler {
         try {
             return SlimeUtils.jsonToSlime(request.getData().readAllBytes()).get();
         } catch (IOException e) {
-            throw new BadRequestException("Failed to parse request body");
+            throw new RestApiException.BadRequest("Failed to parse request body");
         }
     }
 
     private static Inspector getInspectorFieldOrThrow(Inspector inspector, String field) {
         if (!inspector.field(field).valid())
-            throw new BadRequestException("Field " + field + " cannot be null");
+            throw new RestApiException.BadRequest("Field " + field + " cannot be null");
         return inspector.field(field);
     }
 
@@ -280,7 +279,7 @@ public class ChangeManagementApiHandler extends AuditLoggingRequestHandler {
 
     private Optional<ZoneId> affectedZone(List<String> hosts) {
         NodeFilter affectedHosts = NodeFilter.all().hostnames(hosts.stream()
-                                                                   .map(HostName::from)
+                                                                   .map(HostName::of)
                                                                    .collect(Collectors.toSet()));
         for (var zone : getProdZones()) {
             var affectedHostsInZone = controller.serviceRegistry().configServer().nodeRepository().list(zone, affectedHosts);

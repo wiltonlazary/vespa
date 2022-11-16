@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.persistence;
 
 import com.yahoo.config.provision.zone.ZoneId;
@@ -37,7 +37,7 @@ public class ZoneRoutingPolicySerializer {
     public Slime toSlime(ZoneRoutingPolicy policy) {
         var slime = new Slime();
         var root = slime.setObject();
-        routingPolicySerializer.globalRoutingToSlime(policy.globalRouting(), root.setObject(GLOBAL_ROUTING_FIELD));
+        routingPolicySerializer.globalRoutingToSlime(policy.routingStatus(), root.setObject(GLOBAL_ROUTING_FIELD));
         return slime;
     }
 

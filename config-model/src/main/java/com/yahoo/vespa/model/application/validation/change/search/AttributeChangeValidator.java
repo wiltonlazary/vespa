@@ -1,17 +1,20 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.application.validation.change.search;
 
+import com.yahoo.config.application.api.ValidationId;
+import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.documentmodel.NewDocumentType;
-import com.yahoo.searchdefinition.derived.AttributeFields;
-import com.yahoo.searchdefinition.derived.IndexSchema;
-import com.yahoo.searchdefinition.document.Attribute;
-import com.yahoo.searchdefinition.document.Case;
-import com.yahoo.searchdefinition.document.Dictionary;
-import com.yahoo.searchdefinition.document.HnswIndexParams;
+import com.yahoo.schema.derived.AttributeFields;
+import com.yahoo.schema.derived.IndexSchema;
+import com.yahoo.schema.document.Attribute;
+import com.yahoo.schema.document.Case;
+import com.yahoo.schema.document.Dictionary;
+import com.yahoo.schema.document.HnswIndexParams;
 import com.yahoo.vespa.model.application.validation.change.VespaConfigChangeAction;
 import com.yahoo.vespa.model.application.validation.change.VespaRestartAction;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -33,6 +36,8 @@ public class AttributeChangeValidator {
     private final AttributeFields nextFields;
     private final IndexSchema nextIndexSchema;
     private final NewDocumentType nextDocType;
+    private final ValidationOverrides overrides;
+    private final Instant now;
 
     public AttributeChangeValidator(ClusterSpec.Id id,
                                     AttributeFields currentFields,
@@ -40,7 +45,9 @@ public class AttributeChangeValidator {
                                     NewDocumentType currentDocType,
                                     AttributeFields nextFields,
                                     IndexSchema nextIndexSchema,
-                                    NewDocumentType nextDocType) {
+                                    NewDocumentType nextDocType,
+                                    ValidationOverrides overrides,
+                                    Instant now) {
         this.id = id;
         this.currentFields = currentFields;
         this.currentIndexSchema = currentIndexSchema;
@@ -48,6 +55,8 @@ public class AttributeChangeValidator {
         this.nextFields = nextFields;
         this.nextIndexSchema = nextIndexSchema;
         this.nextDocType = nextDocType;
+        this.overrides = overrides;
+        this.now = now;
     }
 
     public List<VespaConfigChangeAction> validate() {
@@ -97,33 +106,33 @@ public class AttributeChangeValidator {
 
     private List<VespaConfigChangeAction> validateAttributeSettings() {
         List<VespaConfigChangeAction> result = new ArrayList<>();
-        for (Attribute nextAttr : nextFields.attributes()) {
-            Attribute currAttr = currentFields.getAttribute(nextAttr.getName());
-            if (currAttr != null) {
-                validateAttributeSetting(id, currAttr, nextAttr, Attribute::isFastSearch, "fast-search", result);
-                validateAttributeSetting(id, currAttr, nextAttr, Attribute::isFastAccess, "fast-access", result);
-                validateAttributeSetting(id, currAttr, nextAttr, AttributeChangeValidator::extractDictionaryType, "dictionary: btree/hash", result);
-                validateAttributeSetting(id, currAttr, nextAttr, AttributeChangeValidator::extractDictionaryCase, "dictionary: cased/uncased", result);
-                validateAttributeSetting(id, currAttr, nextAttr, Attribute::isHuge, "huge", result);
-                validateAttributeSetting(id, currAttr, nextAttr, Attribute::isPaged, "paged", result);
-                validateAttributeSetting(id, currAttr, nextAttr, Attribute::densePostingListThreshold, "dense-posting-list-threshold", result);
-                validateAttributeSetting(id, currAttr, nextAttr, Attribute::isEnabledOnlyBitVector, "rank: filter", result);
-                validateAttributeSetting(id, currAttr, nextAttr, Attribute::distanceMetric, "distance-metric", result);
-
-                validateAttributeSetting(id, currAttr, nextAttr, AttributeChangeValidator::hasHnswIndex, "indexing: index", result);
-                if (hasHnswIndex(currAttr) && hasHnswIndex(nextAttr)) {
-                    validateAttributeHnswIndexSetting(id, currAttr, nextAttr, HnswIndexParams::maxLinksPerNode, "max-links-per-node", result);
-                    validateAttributeHnswIndexSetting(id, currAttr, nextAttr, HnswIndexParams::neighborsToExploreAtInsert, "neighbors-to-explore-at-insert", result);
+        for (Attribute next : nextFields.attributes()) {
+            Attribute current = currentFields.getAttribute(next.getName());
+            if (current != null) {
+                validateAttributePredicate(id, current, next, Attribute::isFastSearch, "fast-search", result);
+                validateAttributePredicate(id, current, next, Attribute::isFastRank, "fast-rank", result);
+                validateAttributePredicate(id, current, next, Attribute::isFastAccess, "fast-access", result);
+                validateAttributeProperty(id, current, next, AttributeChangeValidator::extractDictionaryType, "dictionary: btree/hash", result);
+                validateAttributeProperty(id, current, next, AttributeChangeValidator::extractDictionaryCase, "dictionary: cased/uncased", result);
+                validateAttributePredicate(id, current, next, Attribute::isPaged, "paged", result);
+                validatePagedAttributeRemoval(current, next);
+                validateAttributeProperty(id, current, next, Attribute::densePostingListThreshold, "dense-posting-list-threshold", result);
+                validateAttributePredicate(id, current, next, Attribute::isEnabledOnlyBitVector, "rank: filter", result);
+                validateAttributeProperty(id, current, next, Attribute::distanceMetric, "distance-metric", result);
+                validateAttributePredicate(id, current, next, AttributeChangeValidator::hasHnswIndex, "indexing: index", result);
+                if (hasHnswIndex(current) && hasHnswIndex(next)) {
+                    validateAttributeHnswIndexSetting(id, current, next, HnswIndexParams::maxLinksPerNode, "max-links-per-node", result);
+                    validateAttributeHnswIndexSetting(id, current, next, HnswIndexParams::neighborsToExploreAtInsert, "neighbors-to-explore-at-insert", result);
                 }
             }
         }
         return result;
     }
 
-    private static void validateAttributeSetting(ClusterSpec.Id id,
-                                                 Attribute currentAttr, Attribute nextAttr,
-                                                 Predicate<Attribute> predicate, String setting,
-                                                 List<VespaConfigChangeAction> result) {
+    private static void validateAttributePredicate(ClusterSpec.Id id,
+                                                   Attribute currentAttr, Attribute nextAttr,
+                                                   Predicate<Attribute> predicate, String setting,
+                                                   List<VespaConfigChangeAction> result) {
         boolean nextValue = predicate.test(nextAttr);
         if (predicate.test(currentAttr) != nextValue) {
             String change = nextValue ? "add" : "remove";
@@ -131,15 +140,15 @@ public class AttributeChangeValidator {
         }
     }
 
-    private static <T> void validateAttributeSetting(ClusterSpec.Id id,
-                                                     Attribute currentAttr, Attribute nextAttr,
-                                                     Function<Attribute, T> settingValueProvider, String setting,
-                                                     List<VespaConfigChangeAction> result) {
-        T currentValue = settingValueProvider.apply(currentAttr);
-        T nextValue = settingValueProvider.apply(nextAttr);
+    private static <T> void validateAttributeProperty(ClusterSpec.Id id,
+                                                      Attribute current, Attribute next,
+                                                      Function<Attribute, T> settingValueProvider, String setting,
+                                                      List<VespaConfigChangeAction> result) {
+        T currentValue = settingValueProvider.apply(current);
+        T nextValue = settingValueProvider.apply(next);
         if ( ! Objects.equals(currentValue, nextValue)) {
             String message = String.format("change property '%s' from '%s' to '%s'", setting, currentValue, nextValue);
-            result.add(new VespaRestartAction(id, new ChangeMessageBuilder(nextAttr.getName()).addChange(message).build()));
+            result.add(new VespaRestartAction(id, new ChangeMessageBuilder(next.getName()).addChange(message).build()));
         }
     }
 
@@ -153,6 +162,15 @@ public class AttributeChangeValidator {
         if (!Objects.equals(currentValue, nextValue)) {
             String message = String.format("change hnsw index property '%s' from '%s' to '%s'", setting, currentValue, nextValue);
             result.add(new VespaRestartAction(id, new ChangeMessageBuilder(nextAttr.getName()).addChange(message).build()));
+        }
+    }
+
+    private void validatePagedAttributeRemoval(Attribute current, Attribute next) {
+        if (current.isPaged() && !next.isPaged()) {
+            overrides.invalid(ValidationId.pagedSettingRemoval,
+                              current + "' has setting 'paged' removed. " +
+                              "This may cause content nodes to run out of memory as the entire attribute is loaded into memory",
+                              now);
         }
     }
 

@@ -1,15 +1,18 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author Ulf Lilleengen
  */
 public class EnumNodeTest {
+
     private static class MyNode extends EnumNode<MyNode.Enum> {
         public enum Enum { ONE, TWO }
         public final static Enum ONE = Enum.ONE;
@@ -28,13 +31,14 @@ public class EnumNodeTest {
     }
 
     @Test
-    public void testEnumNode() {
+    void testEnumNode() {
         MyNode n = new MyNode();
         assertNull(n.getValue());
-        assertThat(n.toString(), is("(null)"));
+        assertEquals("(null)", n.toString());
         assertTrue(n.doSetValue("ONE"));
-        assertThat(n.getValue(), is("ONE"));
-        assertThat(n.toString(), is("ONE"));
+        assertEquals("ONE", n.getValue());
+        assertEquals("ONE", n.toString());
         assertFalse(n.doSetValue("THREE"));
     }
+
 }

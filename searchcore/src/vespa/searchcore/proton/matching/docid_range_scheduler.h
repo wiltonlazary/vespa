@@ -3,7 +3,7 @@
 #pragma once
 
 #include <vespa/searchlib/queryeval/begin_and_end_id.h>
-#include <vespa/fastos/dynamiclibrary.h>
+#include <vespa/fastos/types.h>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
@@ -174,7 +174,7 @@ private:
         std::condition_variable condition;
         bool                    is_idle;
         DocidRange              next_range;
-        Worker() : condition(), is_idle(false), next_range() {}
+        Worker() noexcept : condition(), is_idle(false), next_range() {}
     };
     DocidRangeSplitter  _splitter;
     uint32_t            _min_task;

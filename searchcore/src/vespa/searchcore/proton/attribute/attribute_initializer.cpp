@@ -9,6 +9,7 @@
 #include <vespa/vespalib/data/fileheader.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/searchcommon/attribute/persistent_predicate_params.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/searchlib/util/fileutil.h>
 #include <vespa/searchlib/attribute/attribute_header.h>
 #include <vespa/searchlib/attribute/attributevector.h>
@@ -119,7 +120,7 @@ extractHeader(const vespalib::string &attrFileName)
     auto df = search::FileUtil::openFile(attrFileName + ".dat");
     vespalib::FileHeader datHeader;
     datHeader.readFile(*df);
-    return AttributeHeader::extractTags(datHeader);
+    return AttributeHeader::extractTags(datHeader, attrFileName);
 }
 
 void
@@ -193,7 +194,7 @@ AttributeInitializer::loadAttribute(const AttributeVectorSP &attr,
     assert(attr->hasLoadData());
     vespalib::Timer timer;
     EventLogger::loadAttributeStart(_documentSubDbName, attr->getName());
-    if (!attr->load(&_executor)) {
+    if (!attr->load(&_shared_executor)) {
         LOG(warning, "Could not load attribute vector '%s' from disk. Returning empty attribute vector",
             attr->getBaseFileName().c_str());
         return false;
@@ -232,16 +233,16 @@ AttributeInitializer::createAndSetupEmptyAttribute() const
 
 AttributeInitializer::AttributeInitializer(const std::shared_ptr<AttributeDirectory> &attrDir,
                                            const vespalib::string &documentSubDbName,
-                                           const AttributeSpec &spec,
+                                           AttributeSpec && spec,
                                            uint64_t currentSerialNum,
                                            const IAttributeFactory &factory,
-                                           vespalib::Executor & executor)
+                                           vespalib::Executor& shared_executor)
     : _attrDir(attrDir),
       _documentSubDbName(documentSubDbName),
-      _spec(spec),
+      _spec(std::move(spec)),
       _currentSerialNum(currentSerialNum),
       _factory(factory),
-      _executor(executor),
+      _shared_executor(shared_executor),
       _header(),
       _header_ok(false)
 {

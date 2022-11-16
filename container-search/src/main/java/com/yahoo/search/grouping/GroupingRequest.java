@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.grouping;
 
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.net.URI;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
@@ -13,6 +14,9 @@ import com.yahoo.search.result.Hit;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.TimeZone;
 
 /**
@@ -30,6 +34,10 @@ public class GroupingRequest {
     private final List<Continuation> continuations = new ArrayList<>();
     private GroupingOperation root;
     private TimeZone timeZone;
+    private Integer defaultMaxHits;
+    private Integer defaultMaxGroups;
+    private Long globalMaxGroups;
+    private Double defaultPrecisionFactor;
 
     private GroupingRequest(Select parent) {
         this.parent = parent;
@@ -38,16 +46,25 @@ public class GroupingRequest {
     private GroupingRequest(Select parent,
                             List<Continuation> continuations,
                             GroupingOperation root,
-                            TimeZone timeZone) {
+                            TimeZone timeZone,
+                            Integer defaultMaxHits,
+                            Integer defaultMaxGroups,
+                            Long globalMaxGroups,
+                            Double defaultPrecisionFactor) {
         this.parent = parent;
         continuations.forEach(item -> this.continuations.add(item.copy()));
         this.root = root != null ? root.copy(null) : null;
         this.timeZone = timeZone;
+        this.defaultMaxHits = defaultMaxHits;
+        this.defaultMaxGroups = defaultMaxGroups;
+        this.globalMaxGroups = globalMaxGroups;
+        this.defaultPrecisionFactor = defaultPrecisionFactor;
     }
 
     /** Returns a deep copy of this */
     public GroupingRequest copy(Select parentOfCopy) {
-        return new GroupingRequest(parentOfCopy, continuations, root, timeZone);
+        return new GroupingRequest(parentOfCopy, continuations, root, timeZone, defaultMaxHits, defaultMaxGroups,
+                globalMaxGroups, defaultPrecisionFactor);
     }
 
     /**
@@ -130,6 +147,34 @@ public class GroupingRequest {
     public List<Continuation> continuations() {
         return continuations;
     }
+
+    @Beta
+    public OptionalInt defaultMaxHits() {
+        return defaultMaxHits != null ? OptionalInt.of(defaultMaxHits) : OptionalInt.empty();
+    }
+
+    @Beta public void setDefaultMaxHits(int v) { this.defaultMaxHits = v; }
+
+    @Beta
+    public OptionalInt defaultMaxGroups() {
+        return defaultMaxGroups != null ? OptionalInt.of(defaultMaxGroups) : OptionalInt.empty();
+    }
+
+    @Beta public void setDefaultMaxGroups(int v) { this.defaultMaxGroups = v; }
+
+    @Beta
+    public OptionalLong globalMaxGroups() {
+        return globalMaxGroups != null ? OptionalLong.of(globalMaxGroups) : OptionalLong.empty();
+    }
+
+    @Beta public void setGlobalMaxGroups(long v) { this.globalMaxGroups = v; }
+
+    @Beta
+    public OptionalDouble defaultPrecisionFactor() {
+        return defaultPrecisionFactor != null ? OptionalDouble.of(defaultPrecisionFactor) : OptionalDouble.empty();
+    }
+
+    @Beta void setDefaultPrecisionFactor(double v) { this.defaultPrecisionFactor = v; }
 
     /**
      * Creates a new grouping request and adds it to the query.getSelect().getGrouping() list

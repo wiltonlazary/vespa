@@ -3,6 +3,7 @@ package com.yahoo.vespa.hosted.node.admin.container;
 
 import com.yahoo.config.provision.DockerImage;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -19,10 +20,10 @@ public class Container extends PartialContainer {
     private final int conmonPid;
     private final List<Network> networks;
 
-    public Container(ContainerId id, ContainerName name, State state, String imageId, DockerImage image,
+    public Container(ContainerId id, ContainerName name, Instant createdAt, State state, String imageId, DockerImage image,
                      Map<String, String> labels, int pid, int conmonPid, String hostname,
                      ContainerResources resources, List<Network> networks, boolean managed) {
-        super(id, name, state, imageId, image, labels, pid, managed);
+        super(id, name, createdAt, state, imageId, image, labels, pid, managed);
         this.hostname = Objects.requireNonNull(hostname);
         this.resources = Objects.requireNonNull(resources);
         this.conmonPid = conmonPid;
@@ -64,37 +65,11 @@ public class Container extends PartialContainer {
     }
 
     /** The network of a container */
-    public static class Network {
-
-        private final String name;
-        private final String ipv4Address;
-
-        public Network(String name, String ipv4Address) {
-            this.name = Objects.requireNonNull(name);
-            this.ipv4Address = Objects.requireNonNull(ipv4Address);
+    public record Network(String name, String ipv4Address) {
+        public Network {
+            Objects.requireNonNull(name);
+            Objects.requireNonNull(ipv4Address);
         }
-
-        public String name() {
-            return name;
-        }
-
-        public String ipv4Address() {
-            return ipv4Address;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            Network network = (Network) o;
-            return name.equals(network.name) && ipv4Address.equals(network.ipv4Address);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(name, ipv4Address);
-        }
-
     }
 
 }

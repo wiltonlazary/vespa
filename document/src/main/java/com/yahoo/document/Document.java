@@ -96,14 +96,6 @@ public class Document extends StructuredFieldValue {
         docId = id;
     }
 
-    /** @deprecated do not use: Use getField(), getFieldValue() or iterator() instead */
-    @Deprecated // TODO: Remove on Vespa 8
-    public Struct getHeader() { return header; }
-
-    /** @deprecated do not use: Use getField(), getFieldValue() or iterator() instead */
-    @Deprecated // TODO: Remove on Vespa 8
-    public Struct getBody() { return null; }
-
     @Override
     public void assign(Object o) {
         throw new IllegalArgumentException("Assign not implemented for " + getClass() + " objects");
@@ -250,8 +242,7 @@ public class Document extends StructuredFieldValue {
     @Override
     public boolean equals(Object o) {
         if (o == this) return true;
-        if (!(o instanceof Document)) return false;
-        Document other = (Document) o;
+        if (!(o instanceof Document other)) return false;
         return (super.equals(o) && docId.equals(other.docId) &&
                 header.equals(other.header));
     }

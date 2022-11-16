@@ -40,10 +40,6 @@ private:
     using PostingMap = typename PostingParent::PostingMap;
     using QueryTermSimpleUP = AttributeVector::QueryTermSimpleUP;
     using SelfType = SingleValueStringPostingAttributeT<B>;
-    using StringSingleImplSearchContext = typename SingleValueStringAttributeT<B>::StringSingleImplSearchContext;
-    using StringSinglePostingSearchContext = attribute::StringPostingSearchContext<StringSingleImplSearchContext,
-                                                                                   SelfType,
-                                                                                   vespalib::btree::BTreeNoLeafData>;
     using ValueModifier = typename SingleValueStringAttributeT<B>::ValueModifier;
     using generation_t = typename SingleValueStringAttributeT<B>::generation_t;
 
@@ -71,14 +67,14 @@ private:
 
     void applyValueChanges(EnumStoreBatchUpdater& updater) override;
 public:
-    SingleValueStringPostingAttributeT(const vespalib::string & name, const AttributeVector::Config & c =
-                                       AttributeVector::Config(AttributeVector::BasicType::STRING));
+    SingleValueStringPostingAttributeT(const vespalib::string & name, const AttributeVector::Config & c);
+    SingleValueStringPostingAttributeT(const vespalib::string & name);
     ~SingleValueStringPostingAttributeT();
 
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
 
-    AttributeVector::SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams & params) const override;
 
     bool onAddDoc(DocId doc) override {

@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.messagebus.network.rpc;
 
-
 import com.yahoo.concurrent.SystemTimer;
 import com.yahoo.jrt.ListenFailedException;
 import com.yahoo.jrt.slobrok.server.Slobrok;
@@ -13,17 +12,14 @@ import com.yahoo.messagebus.test.Receptor;
 import com.yahoo.messagebus.test.SimpleMessage;
 import com.yahoo.messagebus.test.SimpleProtocol;
 import com.yahoo.messagebus.test.SimpleReply;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import java.net.UnknownHostException;
 import java.util.Arrays;
+import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author havardpe
@@ -35,11 +31,11 @@ public class BasicNetworkTestCase {
     TestServer  pxy;
     TestServer  dst;
 
-    @Before
+    @BeforeEach
     public void setUp() throws ListenFailedException {
         RoutingTableSpec table = new RoutingTableSpec(SimpleProtocol.NAME);
-        table.addHop("pxy", "test/pxy/session", Arrays.asList("test/pxy/session"));
-        table.addHop("dst", "test/dst/session", Arrays.asList("test/dst/session"));
+        table.addHop("pxy", "test/pxy/session", List.of("test/pxy/session"));
+        table.addHop("dst", "test/dst/session", List.of("test/dst/session"));
         table.addRoute("test", Arrays.asList("pxy", "dst"));
         slobrok = new Slobrok();
         src = new TestServer("test/src", table, slobrok, null);
@@ -47,7 +43,7 @@ public class BasicNetworkTestCase {
         dst = new TestServer("test/dst", table, slobrok, null);
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         dst.destroy();
         pxy.destroy();
@@ -56,7 +52,7 @@ public class BasicNetworkTestCase {
     }
 
     @Test
-    public void testNetwork() {
+    void testNetwork() {
         // set up receptors
         Receptor src_rr = new Receptor();
         Receptor pxy_mr = new Receptor();
@@ -81,7 +77,7 @@ public class BasicNetworkTestCase {
 
         // check message on proxy
         Message msg = pxy_mr.getMessage(60);
-        assertTrue(msg != null);
+        assertNotNull(msg);
         assertEquals(SimpleProtocol.MESSAGE, msg.getType());
         SimpleMessage sm = (SimpleMessage) msg;
         assertEquals("test message", sm.getValue());
@@ -92,7 +88,7 @@ public class BasicNetworkTestCase {
 
         // check message on server
         msg = dst_mr.getMessage(60);
-        assertTrue(msg != null);
+        assertNotNull(msg);
         assertEquals(SimpleProtocol.MESSAGE, msg.getType());
         sm = (SimpleMessage) msg;
         assertEquals("test message pxy", sm.getValue());
@@ -104,7 +100,7 @@ public class BasicNetworkTestCase {
 
         // check reply on proxy
         Reply reply = pxy_rr.getReply(60);
-        assertTrue(reply != null);
+        assertNotNull(reply);
         assertEquals(SimpleProtocol.REPLY, reply.getType());
         sr = (SimpleReply) reply;
         assertEquals("test reply", sr.getValue());
@@ -115,7 +111,7 @@ public class BasicNetworkTestCase {
 
         // check reply on client
         reply = src_rr.getReply(60);
-        assertTrue(reply != null);
+        assertNotNull(reply);
         assertEquals(SimpleProtocol.REPLY, reply.getType());
         sr = (SimpleReply) reply;
         assertEquals("test reply pxy", sr.getValue());
@@ -126,7 +122,7 @@ public class BasicNetworkTestCase {
     }
 
     @Test
-    public void testTimeoutsFollowMessage() {
+    void testTimeoutsFollowMessage() {
         SourceSessionParams params = new SourceSessionParams().setTimeout(600.0);
         SourceSession ss = src.mb.createSourceSession(new Receptor(), params);
         DestinationSession ds = dst.mb.createDestinationSession("session", true, new Receptor());
@@ -138,24 +134,24 @@ public class BasicNetworkTestCase {
         long now = SystemTimer.INSTANCE.milliTime();
         assertTrue(ss.send(msg, Route.parse("dst")).isAccepted());
 
-        assertNotNull(msg = ((Receptor)ds.getMessageHandler()).getMessage(60));
+        assertNotNull(msg = ((Receptor) ds.getMessageHandler()).getMessage(60));
         assertTrue(msg.getTimeReceived() >= now);
         assertTrue(params.getTimeout() * 1000 >= msg.getTimeRemaining());
         ds.acknowledge(msg);
 
-        assertNotNull(((Receptor)ss.getReplyHandler()).getReply(60));
+        assertNotNull(((Receptor) ss.getReplyHandler()).getReply(60));
 
         // Test default timeouts being overwritten.
         msg = new SimpleMessage("msg");
         msg.getTrace().setLevel(9);
-        msg.setTimeRemaining(2 * (long)(params.getTimeout() * 1000));
+        msg.setTimeRemaining(2 * (long) (params.getTimeout() * 1000));
         assertTrue(ss.send(msg, Route.parse("dst")).isAccepted());
 
-        assertNotNull(msg = ((Receptor)ds.getMessageHandler()).getMessage(60));
+        assertNotNull(msg = ((Receptor) ds.getMessageHandler()).getMessage(60));
         assertTrue(params.getTimeout() * 1000 < msg.getTimeRemaining());
         ds.acknowledge(msg);
 
-        assertNotNull(((Receptor)ss.getReplyHandler()).getReply(60));
+        assertNotNull(((Receptor) ss.getReplyHandler()).getReply(60));
 
         ss.destroy();
         ds.destroy();

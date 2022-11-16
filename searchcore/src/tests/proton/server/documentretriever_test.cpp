@@ -1,6 +1,21 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 // Unit tests for documentretriever.
 
+#include <vespa/searchcore/proton/documentmetastore/documentmetastorecontext.h>
+#include <vespa/searchcore/proton/server/documentretriever.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
+#include <vespa/searchcore/proton/test/dummy_document_store.h>
+#include <vespa/searchlib/attribute/attributefactory.h>
+#include <vespa/searchlib/attribute/attributeguard.h>
+#include <vespa/searchlib/attribute/attributemanager.h>
+#include <vespa/searchlib/attribute/floatbase.h>
+#include <vespa/searchlib/attribute/integerbase.h>
+#include <vespa/searchlib/attribute/predicate_attribute.h>
+#include <vespa/searchlib/attribute/stringbase.h>
+#include <vespa/searchlib/predicate/predicate_index.h>
+#include <vespa/searchlib/tensor/tensor_attribute.h>
+#include <vespa/searchcommon/attribute/config.h>
+#include <vespa/searchcommon/common/schema.h>
 #include <vespa/document/base/documentid.h>
 #include <vespa/document/bucket/bucketid.h>
 #include <vespa/document/datatype/datatype.h>
@@ -20,29 +35,16 @@
 #include <vespa/document/fieldset/fieldsets.h>
 #include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/documenttyperepo.h>
+#include <vespa/document/test/fieldvalue_helpers.h>
+#include <vespa/vespalib/geo/zcurve.h>
+#include <vespa/vespalib/testkit/testapp.h>
+#include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/eval/eval/simple_value.h>
 #include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/value.h>
 #include <vespa/eval/eval/test/value_compare.h>
 #include <vespa/persistence/spi/bucket.h>
 #include <vespa/persistence/spi/test.h>
-#include <vespa/searchcommon/common/schema.h>
-#include <vespa/searchcore/proton/documentmetastore/documentmetastorecontext.h>
-#include <vespa/searchcore/proton/server/documentretriever.h>
-#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
-#include <vespa/searchcore/proton/test/dummy_document_store.h>
-#include <vespa/searchlib/attribute/attributefactory.h>
-#include <vespa/searchlib/attribute/attributeguard.h>
-#include <vespa/searchlib/attribute/attributemanager.h>
-#include <vespa/searchlib/attribute/floatbase.h>
-#include <vespa/searchlib/attribute/integerbase.h>
-#include <vespa/searchlib/attribute/predicate_attribute.h>
-#include <vespa/searchlib/attribute/stringbase.h>
-#include <vespa/searchlib/predicate/predicate_index.h>
-#include <vespa/searchlib/tensor/tensor_attribute.h>
-#include <vespa/vespalib/geo/zcurve.h>
-#include <vespa/vespalib/testkit/testapp.h>
-#include <vespa/vespalib/util/stringfmt.h>
 
 
 #include <vespa/log/log.h>
@@ -66,10 +68,10 @@ using document::StructFieldValue;
 using document::TensorDataType;
 using document::TensorFieldValue;
 using document::WeightedSetFieldValue;
+using document::WSetHelper;
 using search::AttributeFactory;
 using search::AttributeGuard;
 using search::AttributeVector;
-using search::CacheStats;
 using search::DocumentIdT;
 using search::DocumentMetaData;
 using search::FloatingPointAttribute;
@@ -87,6 +89,7 @@ using search::tensor::TensorAttribute;
 using storage::spi::Bucket;
 using storage::spi::Timestamp;
 using storage::spi::test::makeSpiBucket;
+using vespalib::CacheStats;
 using vespalib::make_string;
 using vespalib::string;
 using vespalib::eval::SimpleValue;
@@ -160,12 +163,12 @@ struct MyDocumentStore : proton::test::DummyDocumentStore {
         const DocumentType *doc_type = r.getDocumentType(doc_type_name);
         auto doc = std::make_unique<Document>(*doc_type, doc_id);
         ASSERT_TRUE(doc);
-        doc->set(static_field, static_value);
-        doc->set(dyn_field_i, static_value);
-        doc->set(dyn_field_s, static_value_s);
-        doc->set(dyn_field_nai, static_value);
-        doc->set(dyn_field_nas, static_value_s);
-        doc->set(zcurve_field, static_zcurve_value);
+        doc->setValue(static_field, IntFieldValue::make(static_value));
+        doc->setValue(dyn_field_i, IntFieldValue::make(static_value));
+        doc->setValue(dyn_field_s, StringFieldValue::make(static_value_s));
+        doc->setValue(dyn_field_nai, IntFieldValue::make(static_value));
+        doc->setValue(dyn_field_nas, StringFieldValue::make(static_value_s));
+        doc->setValue(zcurve_field, LongFieldValue::make(static_zcurve_value));
         doc->setValue(dyn_field_p, static_value_p);
         TensorFieldValue tensorFieldValue(tensorDataType);
         tensorFieldValue = SimpleValue::from_value(*static_tensor);
@@ -173,8 +176,8 @@ struct MyDocumentStore : proton::test::DummyDocumentStore {
         if (_set_position_struct_field) {
             FieldValue::UP fv = PositionDataType::getInstance().createFieldValue();
             auto &pos = dynamic_cast<StructFieldValue &>(*fv);
-            pos.set(PositionDataType::FIELD_X, 42);
-            pos.set(PositionDataType::FIELD_Y, 21);
+            pos.setValue(PositionDataType::FIELD_X, IntFieldValue::make(42));
+            pos.setValue(PositionDataType::FIELD_Y, IntFieldValue::make(21));
             doc->setValue(doc->getField(position_field), *fv);
         }
 
@@ -190,7 +193,7 @@ struct MyDocumentStore : proton::test::DummyDocumentStore {
 
 MyDocumentStore::~MyDocumentStore() = default;
 
-document::DocumenttypesConfig getRepoConfig() {
+DocumenttypesConfig getRepoConfig() {
     const int32_t doc_type_id = 787121340;
 
     DocumenttypesConfigBuilderHelper builder;
@@ -343,6 +346,7 @@ struct Fixture {
         Result inspect = meta_store.get().inspect(gid, 0u);
         uint32_t docSize = 1;
         Result putRes(meta_store.get().put(gid, bucket_id, timestamp, docSize, inspect.getLid(), 0u));
+        meta_store.get().commit(search::CommitParam(0));
         lid = putRes.getLid();
         ASSERT_TRUE(putRes.ok());
         schema::CollectionType ct = schema::CollectionType::SINGLE;
@@ -429,10 +433,11 @@ template <typename T>
 void checkWset(FieldValue::UP wset, T v) {
     ASSERT_TRUE(wset);
     auto *wset_val = dynamic_cast<WeightedSetFieldValue *>(wset.get());
+    WSetHelper val(*wset_val);
     ASSERT_TRUE(wset_val);
     ASSERT_EQUAL(2u, wset_val->size());
-    EXPECT_EQUAL(dyn_weight, wset_val->get(v));
-    EXPECT_EQUAL(dyn_weight, wset_val->get(v + 1));
+    EXPECT_EQUAL(dyn_weight, val.get(v));
+    EXPECT_EQUAL(dyn_weight, val.get(v + 1));
 }
 
 TEST_F("require that attributes are patched into stored document", Fixture) {

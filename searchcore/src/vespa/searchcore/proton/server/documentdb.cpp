@@ -1,25 +1,26 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "documentdb.h"
 #include "bootstrapconfig.h"
 #include "combiningfeedview.h"
 #include "document_meta_store_read_guards.h"
 #include "document_subdb_collection_explorer.h"
-#include "documentdb.h"
 #include "documentdbconfigscout.h"
 #include "feedhandler.h"
+#include "i_shared_threading_service.h"
 #include "idocumentdbowner.h"
 #include "idocumentsubdb.h"
 #include "maintenance_jobs_injector.h"
 #include "reconfig_params.h"
+#include "replay_throttling_policy.h"
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/metrics/updatehook.h>
-#include <vespa/searchcore/proton/attribute/attribute_config_inspector.h>
 #include <vespa/searchcore/proton/attribute/attribute_writer.h>
 #include <vespa/searchcore/proton/attribute/i_attribute_usage_listener.h>
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
 #include <vespa/searchcore/proton/common/eventlogger.h>
+#include <vespa/searchcore/proton/common/i_transient_resource_usage_provider.h>
 #include <vespa/searchcore/proton/common/statusreport.h>
-#include <vespa/searchcore/proton/common/transient_resource_usage_provider.h>
 #include <vespa/searchcore/proton/docsummary/isummarymanager.h>
 #include <vespa/searchcore/proton/feedoperation/noopoperation.h>
 #include <vespa/searchcore/proton/index/index_writer.h>
@@ -29,7 +30,7 @@
 #include <vespa/searchcore/proton/persistenceengine/commit_and_wait_document_retriever.h>
 #include <vespa/searchcore/proton/reference/document_db_reference_resolver.h>
 #include <vespa/searchcore/proton/reference/i_document_db_reference_registry.h>
-#include <vespa/searchlib/attribute/attributefactory.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchlib/attribute/configconverter.h>
 #include <vespa/searchlib/engine/docsumreply.h>
 #include <vespa/searchlib/engine/searchreply.h>
@@ -62,6 +63,8 @@ using storage::spi::Timestamp;
 using search::common::FileHeaderContext;
 using proton::initializer::InitializerTask;
 using proton::initializer::TaskRunner;
+using vespalib::GateCallback;
+using vespalib::IDestructorCallback;
 using vespalib::makeLambdaTask;
 using searchcorespi::IFlushTarget;
 
@@ -72,13 +75,25 @@ constexpr uint32_t indexing_thread_stack_size = 128_Ki;
 
 index::IndexConfig
 makeIndexConfig(const ProtonConfig::Index & cfg) {
-    return index::IndexConfig(WarmupConfig(vespalib::from_s(cfg.warmup.time), cfg.warmup.unpack), cfg.maxflushed, cfg.cache.size);
+    return {WarmupConfig(vespalib::from_s(cfg.warmup.time), cfg.warmup.unpack), size_t(cfg.maxflushed), size_t(cfg.cache.size)};
+}
+
+ReplayThrottlingPolicy
+make_replay_throttling_policy(const ProtonConfig::ReplayThrottlingPolicy& cfg) {
+    if (cfg.type == ProtonConfig::ReplayThrottlingPolicy::Type::UNLIMITED) {
+        return ReplayThrottlingPolicy({});
+    }
+    vespalib::SharedOperationThrottler::DynamicThrottleParams params;
+    params.min_window_size = cfg.minWindowSize;
+    params.max_window_size = cfg.maxWindowSize;
+    params.window_size_increment = cfg.windowSizeIncrement;
+    return ReplayThrottlingPolicy(params);
 }
 
 class MetricsUpdateHook : public metrics::UpdateHook {
     DocumentDB &_db;
 public:
-    MetricsUpdateHook(DocumentDB &s)
+    explicit MetricsUpdateHook(DocumentDB &s)
         : metrics::UpdateHook("documentdb-hook"),
           _db(s)
     {}
@@ -87,20 +102,31 @@ public:
     }
 };
 
-class DocumentDBResourceUsageProvider : public TransientResourceUsageProvider {
+class DocumentDBResourceUsageProvider : public ITransientResourceUsageProvider {
 private:
     const DocumentDB& _doc_db;
 
 public:
-    DocumentDBResourceUsageProvider(const DocumentDB& doc_db)
+    explicit DocumentDBResourceUsageProvider(const DocumentDB& doc_db) noexcept
         : _doc_db(doc_db)
     {}
-    size_t get_transient_disk_usage() const override {
-        // We estimate the transient disk usage for the next disk index fusion
-        // as the size of the largest disk index.
-        return _doc_db.getReadySubDB()->getSearchableStats().max_component_size_on_disk();
+    TransientResourceUsage get_transient_resource_usage() const override {
+        // Transient disk usage is measured as the total disk usage of all current fusion indexes.
+        // Transient memory usage is measured as the total memory usage of all memory indexes.
+        auto stats = _doc_db.getReadySubDB()->getSearchableStats();
+        return {stats.fusion_size_on_disk(), stats.memoryUsage().allocatedBytes()};
     }
 };
+
+template<typename T>
+void
+forceCommitAndWait(IFeedView & feedView, SerialNum serialNum, T keepAlive) {
+    vespalib::Gate gate;
+    using Keep = vespalib::KeepAlive<std::pair<T, std::shared_ptr<IDestructorCallback>>>;
+    feedView.forceCommit(CommitParam(serialNum),
+                          std::make_shared<Keep>(std::make_pair(std::move(keepAlive), std::make_shared<GateCallback>(gate))));
+    gate.await();
+}
 
 }
 
@@ -115,41 +141,38 @@ DocumentDB::create(const vespalib::string &baseDir,
                    DocumentDBConfig::SP currentSnapshot,
                    const vespalib::string &tlsSpec,
                    matching::QueryLimiter &queryLimiter,
-                   const vespalib::Clock &clock,
                    const DocTypeName &docTypeName,
                    document::BucketSpace bucketSpace,
                    const ProtonConfig &protonCfg,
                    IDocumentDBOwner &owner,
-                   vespalib::SyncableThreadExecutor &warmupExecutor,
-                   vespalib::ThreadExecutor &sharedExecutor,
-                   storage::spi::BucketExecutor &bucketExecutor,
+                   ISharedThreadingService& shared_service,
                    const search::transactionlog::WriterFactory &tlsWriterFactory,
                    MetricsWireService &metricsWireService,
                    const search::common::FileHeaderContext &fileHeaderContext,
+                   std::shared_ptr<search::attribute::Interlock> attribute_interlock,
                    ConfigStore::UP config_store,
                    InitializeThreads initializeThreads,
                    const HwInfo &hwInfo)
 {
     return DocumentDB::SP(
-            new DocumentDB(baseDir, std::move(currentSnapshot), tlsSpec, queryLimiter, clock, docTypeName, bucketSpace,
-                           protonCfg, owner, warmupExecutor, sharedExecutor, bucketExecutor, tlsWriterFactory,
-                           metricsWireService, fileHeaderContext, std::move(config_store), initializeThreads, hwInfo));
+            new DocumentDB(baseDir, std::move(currentSnapshot), tlsSpec, queryLimiter, docTypeName, bucketSpace,
+                           protonCfg, owner, shared_service, tlsWriterFactory,
+                           metricsWireService, fileHeaderContext, std::move(attribute_interlock),
+                           std::move(config_store), std::move(initializeThreads), hwInfo));
 }
 DocumentDB::DocumentDB(const vespalib::string &baseDir,
                        DocumentDBConfig::SP configSnapshot,
                        const vespalib::string &tlsSpec,
                        matching::QueryLimiter &queryLimiter,
-                       const vespalib::Clock &clock,
                        const DocTypeName &docTypeName,
                        document::BucketSpace bucketSpace,
                        const ProtonConfig &protonCfg,
                        IDocumentDBOwner &owner,
-                       vespalib::SyncableThreadExecutor &warmupExecutor,
-                       vespalib::ThreadExecutor &sharedExecutor,
-                       storage::spi::BucketExecutor & bucketExecutor,
+                       ISharedThreadingService& shared_service,
                        const search::transactionlog::WriterFactory &tlsWriterFactory,
                        MetricsWireService &metricsWireService,
                        const FileHeaderContext &fileHeaderContext,
+                       std::shared_ptr<search::attribute::Interlock> attribute_interlock,
                        ConfigStore::UP config_store,
                        InitializeThreads initializeThreads,
                        const HwInfo &hwInfo)
@@ -165,7 +188,8 @@ DocumentDB::DocumentDB(const vespalib::string &baseDir,
       _baseDir(baseDir + "/" + _docTypeName.toString()),
       // Only one thread per executor, or performDropFeedView() will fail.
       _writeServiceConfig(configSnapshot->get_threading_service_config()),
-      _writeService(sharedExecutor, _writeServiceConfig, indexing_thread_stack_size),
+      _writeService(shared_service.shared(), shared_service.transport(), shared_service.clock(), shared_service.field_writer(),
+                    &shared_service.invokeService(), _writeServiceConfig, indexing_thread_stack_size),
       _initializeThreads(std::move(initializeThreads)),
       _initConfigSnapshot(),
       _initConfigSerialNum(0u),
@@ -179,6 +203,7 @@ DocumentDB::DocumentDB(const vespalib::string &baseDir,
       _clusterStateHandler(_writeService.master()),
       _bucketHandler(_writeService.master()),
       _indexCfg(makeIndexConfig(protonCfg.index)),
+      _replay_throttling_policy(std::make_unique<ReplayThrottlingPolicy>(make_replay_throttling_policy(protonCfg.replayThrottlingPolicy))),
       _config_store(std::move(config_store)),
       _sessionManager(std::make_shared<matching::SessionManager>(protonCfg.grouping.sessionmanager.maxentries)),
       _metricsWireService(metricsWireService),
@@ -186,22 +211,21 @@ DocumentDB::DocumentDB(const vespalib::string &baseDir,
       _metricsHook(std::make_unique<MetricsUpdateHook>(*this)),
       _feedView(),
       _refCount(),
-      _syncFeedViewEnabled(false),
       _owner(owner),
-      _bucketExecutor(bucketExecutor),
+      _bucketExecutor(shared_service.bucket_executor()),
       _state(),
       _dmUsageForwarder(_writeService.master()),
       _writeFilter(),
       _transient_usage_provider(std::make_shared<DocumentDBResourceUsageProvider>(*this)),
       _feedHandler(std::make_unique<FeedHandler>(_writeService, tlsSpec, docTypeName, *this, _writeFilter, *this, tlsWriterFactory)),
-      _subDBs(*this, *this, *_feedHandler, _docTypeName, _writeService, warmupExecutor, fileHeaderContext,
-              metricsWireService, getMetrics(), queryLimiter, clock, _configMutex, _baseDir,
-              DocumentSubDBCollection::Config(protonCfg.numsearcherthreads),
-              hwInfo),
-      _maintenanceController(_writeService.master(), sharedExecutor, _refCount, _docTypeName),
+      _subDBs(*this, *this, *_feedHandler, _docTypeName,
+              _writeService, shared_service.warmup(), fileHeaderContext, std::move(attribute_interlock),
+              metricsWireService, getMetrics(), queryLimiter, shared_service.clock(),
+              _configMutex, _baseDir, hwInfo),
+      _maintenanceController(shared_service.transport(), _writeService.master(), shared_service.shared(), _refCount, _docTypeName),
       _jobTrackers(),
       _calc(),
-      _metricsUpdater(_subDBs, _writeService, _jobTrackers, *_sessionManager, _writeFilter)
+      _metricsUpdater(_subDBs, _writeService, _jobTrackers, *_sessionManager, _writeFilter, *_feedHandler)
 {
     assert(configSnapshot);
 
@@ -209,7 +233,7 @@ DocumentDB::DocumentDB(const vespalib::string &baseDir,
 
     _feedHandler->init(_config_store->getOldestSerialNum());
     _feedHandler->setBucketDBHandler(&_subDBs.getBucketDBHandler());
-    saveInitialConfig(*configSnapshot);
+    saveInitialConfig(configSnapshot);
     resumeSaveConfig();
     SerialNum configSerial = _config_store->getPrevValidSerial(_feedHandler->getPrunedSerialNum() + 1);
     assert(configSerial > 0);
@@ -245,11 +269,11 @@ DocumentDB::registerReference()
 }
 
 void
-DocumentDB::setActiveConfig(const DocumentDBConfig::SP &config, int64_t generation) {
+DocumentDB::setActiveConfig(DocumentDBConfig::SP config, int64_t generation) {
     lock_guard guard(_configMutex);
     registerReference();
-    _activeConfigSnapshot = config;
     assert(generation >= config->getGeneration());
+    _activeConfigSnapshot = std::move(config);
     if (_activeConfigSnapshotGeneration < generation) {
         _activeConfigSnapshotGeneration = generation;
     }
@@ -313,13 +337,14 @@ void
 DocumentDB::initFinish(DocumentDBConfig::SP configSnapshot)
 {
     // Called by executor thread
+    assert(_writeService.master().isCurrentThread());
     _bucketHandler.setReadyBucketHandler(_subDBs.getReadySubDB()->getDocumentMetaStoreContext().get());
     _subDBs.initViews(*configSnapshot, _sessionManager);
-    _syncFeedViewEnabled = true;
     syncFeedView();
     // Check that feed view has been activated.
     assert(_feedView.get());
-    setActiveConfig(configSnapshot, configSnapshot->getGeneration());
+    int64_t generation = configSnapshot->getGeneration();
+    setActiveConfig(std::move(configSnapshot), generation);
     startTransactionLogReplay();
 }
 
@@ -328,7 +353,7 @@ void
 DocumentDB::newConfigSnapshot(DocumentDBConfig::SP snapshot)
 {
     // Called by executor thread
-    _pendingConfigSnapshot.set(snapshot);
+    _pendingConfigSnapshot.set(std::move(snapshot));
     {
         lock_guard guard(_configMutex);
         if ( ! _activeConfigSnapshot) {
@@ -376,9 +401,9 @@ void
 DocumentDB::enterOnlineState()
 {
     // Called by executor thread
+    assert(_writeService.master().isCurrentThread());
     // Ensure that all replayed operations are committed to memory structures
-    _feedView.get()->forceCommit(CommitParam(_feedHandler->getSerialNum()));
-    _writeService.sync();
+    _feedView.get()->forceCommitAndWait(CommitParam(_feedHandler->getSerialNum()));
 
     (void) _state.enterOnlineState();
     // Consider delayed pruning of transaction log and config history
@@ -405,7 +430,7 @@ DocumentDB::applySubDBConfig(const DocumentDBConfig &newConfigSnapshot,
     auto oldRepo = _activeConfigSnapshot->getDocumentTypeRepoSP();
     auto oldDocType = oldRepo->getDocumentType(_docTypeName.getName());
     assert(oldDocType != nullptr);
-    auto newRepo = newConfigSnapshot.getDocumentTypeRepoSP();
+    const auto & newRepo = newConfigSnapshot.getDocumentTypeRepoSP();
     auto newDocType = newRepo->getDocumentType(_docTypeName.getName());
     assert(newDocType != nullptr);
     DocumentDBReferenceResolver resolver(*registry, *newDocType, newConfigSnapshot.getImportedFieldsConfig(), *oldDocType,
@@ -426,7 +451,7 @@ DocumentDB::applyConfig(DocumentDBConfig::SP configSnapshot, SerialNum serialNum
         return;
     }
 
-    ConfigComparisonResult cmpres;
+    DocumentDBConfig::ComparisonResult cmpres;
     Schema::SP oldSchema;
     int64_t generation = configSnapshot->getGeneration();
     {
@@ -448,15 +473,17 @@ DocumentDB::applyConfig(DocumentDBConfig::SP configSnapshot, SerialNum serialNum
     const ReconfigParams params(cmpres);
 
     // Save config via config manager if replay is done.
+    auto replay_config = DocumentDBConfig::makeReplayConfig(configSnapshot);
     bool equalReplayConfig =
-        *DocumentDBConfig::makeReplayConfig(configSnapshot) ==
+        *replay_config ==
         *DocumentDBConfig::makeReplayConfig(_activeConfigSnapshot);
     bool tlsReplayDone = _feedHandler->getTransactionLogReplayDone();
     FeedHandler::CommitResult commit_result;
     if (!equalReplayConfig && tlsReplayDone) {
         sync(_feedHandler->getSerialNum());
         serialNum = _feedHandler->inc_serial_num();
-        _config_store->saveConfig(*configSnapshot, serialNum);
+        _config_store->saveConfig(*replay_config, serialNum);
+        replay_config.reset();
         // save entry in transaction log
         NewConfigOperation op(serialNum, *_config_store);
         commit_result = _feedHandler->storeOperationSync(op);
@@ -464,10 +491,7 @@ DocumentDB::applyConfig(DocumentDBConfig::SP configSnapshot, SerialNum serialNum
     }
     {
         bool elidedConfigSave = equalReplayConfig && tlsReplayDone;
-        // Flush changes to attributes and memory index, cf. visibilityDelay
-        _feedView.get()->forceCommit(CommitParam(elidedConfigSave ? serialNum : serialNum - 1),
-                                     std::make_shared<vespalib::KeepAlive<FeedHandler::CommitResult>>(std::move(commit_result)));
-        _writeService.sync();
+        forceCommitAndWait(*_feedView.get(), elidedConfigSave ? serialNum : serialNum - 1, std::move(commit_result));
     }
     if (params.shouldMaintenanceControllerChange()) {
         _maintenanceController.killJobs();
@@ -476,10 +500,12 @@ DocumentDB::applyConfig(DocumentDBConfig::SP configSnapshot, SerialNum serialNum
     if (_state.getState() >= DDBState::State::APPLY_LIVE_CONFIG) {
         _writeServiceConfig.update(configSnapshot->get_threading_service_config());
     }
-    _writeService.setTaskLimit(_writeServiceConfig.defaultTaskLimit(), _writeServiceConfig.defaultTaskLimit());
+    _writeService.set_task_limits(_writeServiceConfig.master_task_limit(),
+                                  _writeServiceConfig.defaultTaskLimit(),
+                                  _writeServiceConfig.defaultTaskLimit());
     if (params.shouldSubDbsChange()) {
         applySubDBConfig(*configSnapshot, serialNum, params);
-        if (serialNum < _feedHandler->getSerialNum()) {
+        if (serialNum < _feedHandler->get_replay_end_serial_num()) {
             // Not last entry in tls.  Reprocessing should already be done.
             _subDBs.getReprocessingRunner().reset();
         }
@@ -509,39 +535,6 @@ DocumentDB::applyConfig(DocumentDBConfig::SP configSnapshot, SerialNum serialNum
     }
 }
 
-
-namespace {
-void
-doNothing(IFeedView::SP)
-{
-    // Called by index executor, delays when feed view is dropped.
-}
-}  // namespace
-
-void
-DocumentDB::performDropFeedView(IFeedView::SP feedView)
-{
-    // Called by executor task, delays when feed view is dropped.
-    // Also called by DocumentDB::receive() method to keep feed view alive
-
-    _writeService.attributeFieldWriter().sync();
-    _writeService.summary().sync();
-
-    // Feed view is kept alive in the closure's shared ptr.
-    _writeService.index().execute(makeLambdaTask([this, feedView] () { performDropFeedView2(feedView); }));
-}
-
-
-void
-DocumentDB::performDropFeedView2(IFeedView::SP feedView) {
-    // Called by executor task, delays when feed view is dropped.
-    // Also called by DocumentDB::receive() method to keep feed view alive
-    _writeService.indexFieldInverter().sync();
-    _writeService.indexFieldWriter().sync();
-    masterExecute([feedView]() { doNothing(feedView); });
-}
-
-
 void
 DocumentDB::tearDownReferences()
 {
@@ -568,22 +561,28 @@ DocumentDB::close()
     }
     // Abort any ongoing maintenance
     stopMaintenance();
-    _writeService.master().sync(); // Complete all tasks that didn't observe shutdown
-    masterExecute([this]() { tearDownReferences(); });
+    masterExecute([this]() {
+        _feedView.get()->forceCommitAndWait(search::CommitParam(getCurrentSerialNumber()));
+        tearDownReferences();
+    });
     _writeService.master().sync();
     // Wait until inflight feed operations to this document db has left.
     // Caller should have removed document DB from feed router.
     _refCount.waitForZeroRefCount();
 
-    _writeService.sync();
+    masterExecute([this] () {
+        _feedView.get()->forceCommitAndWait(search::CommitParam(getCurrentSerialNumber()));
+    });
+    _writeService.master().sync();
 
     // The attributes in the ready sub db is also the total set of attributes.
     DocumentDBTaggedMetrics &metrics = getMetrics();
     _metricsWireService.cleanAttributes(metrics.ready.attributes);
     _metricsWireService.cleanAttributes(metrics.notReady.attributes);
-    _writeService.sync();
-    masterExecute([this] () { closeSubDBs(); } );
-    _writeService.sync();
+
+    masterExecute([this] () {
+        closeSubDBs();
+    });
     // What about queued tasks ?
     _writeService.shutdown();
     _maintenanceController.kill();
@@ -617,17 +616,25 @@ DocumentDB::closeSubDBs()
 size_t
 DocumentDB::getNumDocs() const
 {
-    return _subDBs.getReadySubDB()->getNumDocs();
+    if (_state.get_load_done()) {
+        return _subDBs.getReadySubDB()->getNumDocs();
+    } else {
+        return 0u;
+    }
 }
 
-size_t
+ActiveDocs
 DocumentDB::getNumActiveDocs() const
 {
-    return _subDBs.getReadySubDB()->getNumActiveDocs();
+    if (_state.get_load_done()) {
+        return { _subDBs.getReadySubDB()->getNumActiveDocs(), _subDBs.getBucketDB().getNumActiveDocs() };
+    } else {
+        return {0u, 0u};
+    }
 }
 
 void
-DocumentDB::saveInitialConfig(const DocumentDBConfig &configSnapshot)
+DocumentDB::saveInitialConfig(std::shared_ptr<DocumentDBConfig> configSnapshot)
 {
     // Only called from ctor
 
@@ -652,7 +659,8 @@ DocumentDB::saveInitialConfig(const DocumentDBConfig &configSnapshot)
         LOG(warning, "DocumentDB(%s): saveInitialConfig() failed pruning due to '%s'",
             _docTypeName.toString().c_str(), e.what());
     }
-    _config_store->saveConfig(configSnapshot, confSerial);
+    auto replay_config = DocumentDBConfig::makeReplayConfig(configSnapshot);
+    _config_store->saveConfig(*replay_config, confSerial);
 }
 
 void
@@ -740,7 +748,8 @@ DocumentDB::startTransactionLogReplay()
                                       getBackingStore().lastSyncToken(),
                                       oldestFlushedSerial,
                                       newestFlushedSerial,
-                                      *_config_store);
+                                      *_config_store,
+                                      *_replay_throttling_policy);
     _initGate.countDown();
 
     LOG(debug, "DocumentDB(%s): Database started.", _docTypeName.toString().c_str());
@@ -767,7 +776,6 @@ DocumentDB::getNewestFlushedSerial()
 std::unique_ptr<SearchReply>
 DocumentDB::match(const SearchRequest &req, vespalib::ThreadBundle &threadBundle) const
 {
-    // Ignore input searchhandler. Use readysubdb's searchhandler instead.
     ISearchHandler::SP view(_subDBs.getReadySubDB()->getSearchView());
     return view->match(req, threadBundle);
 }
@@ -802,9 +810,9 @@ DocumentDB::setIndexSchema(const DocumentDBConfig &configSnapshot, SerialNum ser
 }
 
 void
-DocumentDB::reconfigure(const DocumentDBConfig::SP & snapshot)
+DocumentDB::reconfigure(DocumentDBConfig::SP snapshot)
 {
-    masterExecute([this, snapshot]() { newConfigSnapshot(snapshot); });
+    masterExecute([this, snapshot]() mutable { newConfigSnapshot(std::move(snapshot)); });
     // Wait for config to be applied, or for document db close
     std::unique_lock<std::mutex> guard(_configMutex);
     while ((_activeConfigSnapshotGeneration < snapshot->getGeneration()) && !_state.getClosed()) {
@@ -912,24 +920,15 @@ DocumentDB::getActiveGeneration() const {
 void
 DocumentDB::syncFeedView()
 {
-    // Called by executor or while in rendezvous with executor
-
-    if (!_syncFeedViewEnabled)
-        return;
-    IFeedView::SP oldFeedView(_feedView.get());
+    assert(_writeService.master().isCurrentThread());
     IFeedView::SP newFeedView(_subDBs.getFeedView());
 
     _maintenanceController.killJobs();
-    _writeService.sync();
 
     _feedView.set(newFeedView);
     _feedHandler->setActiveFeedView(newFeedView.get());
     _subDBs.createRetrievers();
     _subDBs.maintenanceSync(_maintenanceController);
-
-    // Ensure that old feed view is referenced until all index executor tasks
-    // depending on it has completed.
-    performDropFeedView(oldFeedView);
 }
 
 bool
@@ -939,7 +938,7 @@ DocumentDB::hasDocument(const document::DocumentId &id)
 }
 
 void
-DocumentDB::injectMaintenanceJobs(const DocumentDBMaintenanceConfig &config, std::unique_ptr<const AttributeConfigInspector> attribute_config_inspector)
+DocumentDB::injectMaintenanceJobs(const DocumentDBMaintenanceConfig &config)
 {
     // Called by executor thread
     _maintenanceController.killJobs();
@@ -961,8 +960,6 @@ DocumentDB::injectMaintenanceJobs(const DocumentDBMaintenanceConfig &config, std
             _jobTrackers,
             _subDBs.getReadySubDB()->getAttributeManager(),
             _subDBs.getNotReadySubDB()->getAttributeManager(),
-            std::move(attribute_config_inspector),
-            _transient_usage_provider,
             _writeFilter);
 }
 
@@ -984,9 +981,7 @@ DocumentDB::performStartMaintenance()
         return;
     }
     auto maintenanceConfig = activeConfig->getMaintenanceConfigSP();
-    const auto &attributes_config = activeConfig->getAttributesConfig();
-    auto attribute_config_inspector = std::make_unique<AttributeConfigInspector>(attributes_config);
-    injectMaintenanceJobs(*maintenanceConfig, std::move(attribute_config_inspector));
+    injectMaintenanceJobs(*maintenanceConfig);
     _maintenanceController.start(maintenanceConfig);
 }
 
@@ -994,7 +989,6 @@ void
 DocumentDB::stopMaintenance()
 {
     _maintenanceController.stop();
-    _writeService.sync();
 }
 
 void
@@ -1004,11 +998,9 @@ DocumentDB::forwardMaintenanceConfig()
     DocumentDBConfig::SP activeConfig = getActiveConfig();
     assert(activeConfig);
     auto maintenanceConfig(activeConfig->getMaintenanceConfigSP());
-    const auto &attributes_config = activeConfig->getAttributesConfig();
-    auto attribute_config_inspector = std::make_unique<AttributeConfigInspector>(attributes_config);
     if (!_state.getClosed()) {
         if (_maintenanceController.getPaused()) {
-            injectMaintenanceJobs(*maintenanceConfig, std::move(attribute_config_inspector));
+            injectMaintenanceJobs(*maintenanceConfig);
         }
         _maintenanceController.newConfig(maintenanceConfig);
     }
@@ -1023,11 +1015,11 @@ DocumentDB::notifyClusterStateChanged(const std::shared_ptr<IBucketStateCalculat
     IFeedView::SP feedView(_feedView.get());
     if (feedView) {
         // Try downcast to avoid polluting API
-        CombiningFeedView *cfv = dynamic_cast<CombiningFeedView *>(feedView.get());
+        auto *cfv = dynamic_cast<CombiningFeedView *>(feedView.get());
         if (cfv != nullptr)
             cfv->setCalculator(newCalc);
     }
-    _subDBs.setBucketStateCalculator(newCalc);
+    _subDBs.setBucketStateCalculator(newCalc, std::shared_ptr<vespalib::IDestructorCallback>());
 }
 
 
@@ -1038,11 +1030,12 @@ notifyBucketsChanged(const documentmetastore::IBucketHandler &metaStore,
                      IBucketModifiedHandler &handler,
                      const vespalib::string &name)
 {
-    bucketdb::Guard buckets = metaStore.getBucketDB().takeGuard();
-    for (const auto &kv : *buckets) {
-        handler.notifyBucketModified(kv.first);
+    bucketdb::Guard guard = metaStore.getBucketDB().takeGuard();
+    document::BucketId::List buckets = guard->getBuckets();
+    for (document::BucketId bucketId : buckets) {
+        handler.notifyBucketModified(bucketId);
     }
-    LOG(debug, "notifyBucketsChanged(%s, %zu)", name.c_str(), buckets->size());
+    LOG(debug, "notifyBucketsChanged(%s, %zu)", name.c_str(), buckets.size());
 }
 
 }

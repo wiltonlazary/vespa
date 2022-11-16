@@ -2,17 +2,19 @@
 
 #pragma once
 
-#include "attributevector.h"
 #include "bitvector_search_cache.h"
+#include "posting_list_merger.h"
+#include <vespa/searchcommon/attribute/search_context_params.h>
 #include <vespa/searchcommon/attribute/i_search_context.h>
-#include <vespa/searchlib/attribute/posting_list_merger.h>
 #include <vespa/searchlib/common/i_document_meta_store_context.h>
+#include <vespa/vespalib/datastore/atomic_value_wrapper.h>
 #include <vespa/vespalib/util/arrayref.h>
 
 namespace search::fef { class TermFieldMatchData; }
-
+namespace search { class QueryTermSimple; }
 namespace search::attribute {
 
+class IAttributeVector;
 class ReferenceAttribute;
 class ImportedAttributeVector;
 class SearchContextParams;
@@ -26,7 +28,8 @@ class SearchContextParams;
  * considered a match.
  */
 class ImportedSearchContext : public ISearchContext {
-    using TargetLids = vespalib::ConstArrayRef<uint32_t>;
+    using AtomicTargetLid = vespalib::datastore::AtomicValueWrapper<uint32_t>;
+    using TargetLids = vespalib::ConstArrayRef<AtomicTargetLid>;
     const ImportedAttributeVector&                  _imported_attribute;
     vespalib::string                                _queryTerm;
     bool                                            _useSearchCache;
@@ -38,14 +41,19 @@ class ImportedSearchContext : public ISearchContext {
     TargetLids                                      _targetLids;
     PostingListMerger<int32_t>                      _merger;
     SearchContextParams                             _params;
+    mutable std::atomic<bool>                       _zero_hits;
+
+    static constexpr uint32_t MIN_TARGET_HITS_FOR_APPROXIMATION = 50;
 
     uint32_t getTargetLid(uint32_t lid) const {
         // Check range to avoid reading memory beyond end of mapping array
-        return lid < _targetLids.size() ? _targetLids[lid] : 0u;
+        return lid < _targetLids.size() ? _targetLids[lid].load_acquire() : 0u;
     }
 
     void makeMergedPostings(bool isFilter);
     void considerAddSearchCacheEntry();
+    uint32_t calc_approx_hits(uint32_t target_approx_hits) const;
+    uint32_t calc_exact_hits() const;
 public:
     ImportedSearchContext(std::unique_ptr<QueryTermSimple> term,
                           const SearchContextParams& params,
@@ -60,10 +68,11 @@ public:
     void fetchPostings(const queryeval::ExecuteInfo &execInfo) override;
     bool valid() const override;
     Int64Range getAsIntegerTerm() const override;
+    DoubleRange getAsDoubleTerm() const override;
     const QueryTermUCS4 * queryTerm() const override;
     const vespalib::string& attributeName() const override;
 
-    using DocId = IAttributeVector::DocId;
+    using DocId = uint32_t;
 
     int32_t find(DocId docId, int32_t elemId, int32_t& weight) const {
         return _target_search_context->find(getTargetLid(docId), elemId, weight);

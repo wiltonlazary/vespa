@@ -1,4 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+#include <vespa/vespalib/datastore/compaction_spec.h>
+#include <vespa/vespalib/datastore/compaction_strategy.h>
 #include <vespa/vespalib/datastore/unique_store.hpp>
 #include <vespa/vespalib/datastore/unique_store_remapper.h>
 #include <vespa/vespalib/datastore/unique_store_string_allocator.hpp>
@@ -7,6 +9,7 @@
 #include <vespa/vespalib/gtest/gtest.h>
 #include <vespa/vespalib/test/datastore/buffer_stats.h>
 #include <vespa/vespalib/test/insertion_operators.h>
+#include <vespa/vespalib/test/memory_allocator_observer.h>
 #include <vespa/vespalib/util/traits.h>
 #include <vector>
 
@@ -18,7 +21,10 @@ enum class DictionaryType { BTREE, HASH, BTREE_AND_HASH };
 using namespace vespalib::datastore;
 using vespalib::ArrayRef;
 using generation_t = vespalib::GenerationHandler::generation_t;
-using vespalib::datastore::test::BufferStats;
+using vespalib::alloc::MemoryAllocator;
+using vespalib::alloc::test::MemoryAllocatorObserver;
+using AllocStats = MemoryAllocatorObserver::Stats;
+using TestBufferStats = vespalib::datastore::test::BufferStats;
 
 template <typename UniqueStoreT>
 struct TestBaseValues {
@@ -37,6 +43,7 @@ struct TestBase : public ::testing::Test {
     using ReferenceStoreValueType = std::conditional_t<std::is_same_v<ValueType, const char *>, std::string, ValueType>;
     using ReferenceStore = std::map<EntryRef, std::pair<ReferenceStoreValueType,uint32_t>>;
 
+    AllocStats stats;
     UniqueStoreType store;
     ReferenceStore refStore;
     generation_t generation;
@@ -87,10 +94,10 @@ struct TestBase : public ::testing::Test {
     uint32_t getBufferId(EntryRef ref) const {
         return EntryRefType(ref).bufferId();
     }
-    void assertBufferState(EntryRef ref, const BufferStats expStats) const {
+    void assertBufferState(EntryRef ref, const TestBufferStats expStats) const {
         EXPECT_EQ(expStats._used, store.bufferState(ref).size());
-        EXPECT_EQ(expStats._hold, store.bufferState(ref).getHoldElems());
-        EXPECT_EQ(expStats._dead, store.bufferState(ref).getDeadElems());
+        EXPECT_EQ(expStats._hold, store.bufferState(ref).stats().hold_elems());
+        EXPECT_EQ(expStats._dead, store.bufferState(ref).stats().dead_elems());
     }
     void assertStoreContent() const {
         for (const auto &elem : refStore) {
@@ -105,29 +112,34 @@ struct TestBase : public ::testing::Test {
         }
         return EntryRef();
     }
-    void trimHoldLists() {
+    void reclaim_memory() {
         store.freeze();
-        store.transferHoldLists(generation++);
-        store.trimHoldLists(generation);
+        store.assign_generation(generation++);
+        store.reclaim_memory(generation);
     }
     void compactWorst() {
-        auto remapper = store.compact_worst(true, true);
-        std::vector<EntryRef> refs;
+        CompactionSpec compaction_spec(true, true);
+        // Use a compaction strategy that will compact all active buffers
+        auto compaction_strategy = CompactionStrategy::make_compact_all_active_buffers_strategy();
+        auto remapper = store.compact_worst(compaction_spec, compaction_strategy);
+        std::vector<AtomicEntryRef> refs;
         for (const auto &elem : refStore) {
-            refs.push_back(elem.first);
+            refs.push_back(AtomicEntryRef(elem.first));
         }
-        refs.push_back(EntryRef());
-        std::vector<EntryRef> compactedRefs = refs;
-        remapper->remap(ArrayRef<EntryRef>(compactedRefs));
+        refs.push_back(AtomicEntryRef());
+        std::vector<AtomicEntryRef> compactedRefs = refs;
+        remapper->remap(ArrayRef<AtomicEntryRef>(compactedRefs));
         remapper->done();
         remapper.reset();
-        ASSERT_FALSE(refs.back().valid());
+        ASSERT_FALSE(refs.back().load_relaxed().valid());
         refs.pop_back();
+        ASSERT_FALSE(compactedRefs.back().load_relaxed().valid());
+        compactedRefs.pop_back();
         ReferenceStore compactedRefStore;
         for (size_t i = 0; i < refs.size(); ++i) {
-            ASSERT_EQ(0u, compactedRefStore.count(compactedRefs[i]));
-            ASSERT_EQ(1u, refStore.count(refs[i]));
-            compactedRefStore.insert(std::make_pair(compactedRefs[i], refStore[refs[i]]));
+            ASSERT_EQ(0u, compactedRefStore.count(compactedRefs[i].load_relaxed()));
+            ASSERT_EQ(1u, refStore.count(refs[i].load_relaxed()));
+            compactedRefStore.insert(std::make_pair(compactedRefs[i].load_relaxed(), refStore[refs[i].load_relaxed()]));
         }
         refStore = compactedRefStore;
     }
@@ -144,7 +156,8 @@ struct TestBase : public ::testing::Test {
 
 template <typename UniqueStoreTypeAndDictionaryType>
 TestBase<UniqueStoreTypeAndDictionaryType>::TestBase()
-    : store(),
+    : stats(),
+      store(std::make_unique<MemoryAllocatorObserver>(stats)),
       refStore(),
       generation(1)
 {
@@ -291,8 +304,8 @@ using SmallOffsetNumberTest = TestBase<BTreeSmallOffsetNumberUniqueStore>;
 
 TEST(UniqueStoreTest, trivial_and_non_trivial_types_are_tested)
 {
-    EXPECT_TRUE(vespalib::can_skip_destruction<NumberTest::ValueType>::value);
-    EXPECT_FALSE(vespalib::can_skip_destruction<StringTest::ValueType>::value);
+    EXPECT_TRUE(vespalib::can_skip_destruction<NumberTest::ValueType>);
+    EXPECT_FALSE(vespalib::can_skip_destruction<StringTest::ValueType>);
 }
 
 TYPED_TEST(TestBase, can_add_and_get_values)
@@ -307,9 +320,9 @@ TYPED_TEST(TestBase, elements_are_put_on_hold_when_value_is_removed)
     EntryRef ref = this->add(this->values()[0]);
     size_t reserved = this->get_reserved(ref);
     size_t array_size = this->get_array_size(ref);
-    this->assertBufferState(ref, BufferStats().used(array_size + reserved).hold(0).dead(reserved));
+    this->assertBufferState(ref, TestBufferStats().used(array_size + reserved).hold(0).dead(reserved));
     this->store.remove(ref);
-    this->assertBufferState(ref, BufferStats().used(array_size + reserved).hold(array_size).dead(reserved));
+    this->assertBufferState(ref, TestBufferStats().used(array_size + reserved).hold(array_size).dead(reserved));
 }
 
 TYPED_TEST(TestBase, elements_are_reference_counted)
@@ -320,11 +333,11 @@ TYPED_TEST(TestBase, elements_are_reference_counted)
     // Note: The first buffer have the first element reserved -> we expect 2 elements used here.
     size_t reserved = this->get_reserved(ref);
     size_t array_size = this->get_array_size(ref);
-    this->assertBufferState(ref, BufferStats().used(array_size + reserved).hold(0).dead(reserved));
+    this->assertBufferState(ref, TestBufferStats().used(array_size + reserved).hold(0).dead(reserved));
     this->store.remove(ref);
-    this->assertBufferState(ref, BufferStats().used(array_size + reserved).hold(0).dead(reserved));
+    this->assertBufferState(ref, TestBufferStats().used(array_size + reserved).hold(0).dead(reserved));
     this->store.remove(ref);
-    this->assertBufferState(ref, BufferStats().used(array_size + reserved).hold(array_size).dead(reserved));
+    this->assertBufferState(ref, TestBufferStats().used(array_size + reserved).hold(array_size).dead(reserved));
 }
 
 TEST_F(SmallOffsetNumberTest, new_underlying_buffer_is_allocated_when_current_is_full)
@@ -351,10 +364,10 @@ TYPED_TEST(TestBase, store_can_be_compacted)
     EntryRef val0Ref = this->add(this->values()[0]);
     EntryRef val1Ref = this->add(this->values()[1]);
     this->remove(this->add(this->values()[2]));
-    this->trimHoldLists();
+    this->reclaim_memory();
     size_t reserved = this->get_reserved(val0Ref);
     size_t array_size = this->get_array_size(val0Ref);
-    this->assertBufferState(val0Ref, BufferStats().used(reserved + 3 * array_size).dead(reserved + array_size));
+    this->assertBufferState(val0Ref, TestBufferStats().used(reserved + 3 * array_size).dead(reserved + array_size));
     uint32_t val1BufferId = this->getBufferId(val0Ref);
 
     EXPECT_EQ(2u, this->refStore.size());
@@ -368,7 +381,7 @@ TYPED_TEST(TestBase, store_can_be_compacted)
     this->assertGet(val0Ref, this->values()[0]);
     this->assertGet(val1Ref, this->values()[1]);
     EXPECT_TRUE(this->store.bufferState(val0Ref).isOnHold());
-    this->trimHoldLists();
+    this->reclaim_memory();
     EXPECT_TRUE(this->store.bufferState(val0Ref).isFree());
     this->assertStoreContent();
 }
@@ -383,7 +396,7 @@ TYPED_TEST(TestBase, store_can_be_instantiated_with_builder)
     EntryRef val1Ref = builder.mapEnumValueToEntryRef(2);
     size_t reserved = this->get_reserved(val0Ref);
     size_t array_size = this->get_array_size(val0Ref);
-    this->assertBufferState(val0Ref, BufferStats().used(2 * array_size + reserved).dead(reserved)); // Note: First element is reserved
+    this->assertBufferState(val0Ref, TestBufferStats().used(2 * array_size + reserved).dead(reserved)); // Note: First element is reserved
     EXPECT_TRUE(val0Ref.valid());
     EXPECT_TRUE(val1Ref.valid());
     EXPECT_NE(val0Ref.ref(), val1Ref.ref());
@@ -402,11 +415,11 @@ TYPED_TEST(TestBase, store_can_be_enumerated)
     EntryRef val0Ref = this->add(this->values()[0]);
     EntryRef val1Ref = this->add(this->values()[1]);
     this->remove(this->add(this->values()[2]));
-    this->trimHoldLists();
+    this->reclaim_memory();
 
     auto enumerator = this->getEnumerator(true);
     std::vector<uint32_t> refs;
-    enumerator.foreach_key([&](EntryRef ref) { refs.push_back(ref.ref()); });
+    enumerator.foreach_key([&](const AtomicEntryRef& ref) { refs.push_back(ref.load_relaxed().ref()); });
     std::vector<uint32_t> expRefs;
     expRefs.push_back(val0Ref.ref());
     expRefs.push_back(val1Ref.ref());
@@ -418,6 +431,15 @@ TYPED_TEST(TestBase, store_can_be_enumerated)
     EXPECT_EQ(0u, invalidEnum);
     EXPECT_EQ(1u, enumValue1);
     EXPECT_EQ(2u, enumValue2);
+}
+
+TYPED_TEST(TestBase, provided_memory_allocator_is_used)
+{
+    if constexpr (std::is_same_v<const char *, typename TestFixture::ValueType>) {
+        EXPECT_EQ(AllocStats(18, 0), this->stats);
+    } else {
+        EXPECT_EQ(AllocStats(1, 0), this->stats);
+    }
 }
 
 #pragma GCC diagnostic pop
@@ -438,7 +460,7 @@ TEST_F(DoubleTest, nan_is_handled)
     for (auto &value : myvalues) {
         refs.emplace_back(add(value));
     }
-    trimHoldLists();
+    reclaim_memory();
     EXPECT_TRUE(std::isnan(store.get(refs[1])));
     EXPECT_TRUE(std::signbit(store.get(refs[1])));
     EXPECT_TRUE(std::isinf(store.get(refs[2])));

@@ -50,6 +50,9 @@ DistributorConfiguration::DistributorConfiguration(StorageComponent& component)
       _prioritize_global_bucket_merges(true),
       _enable_revert(true),
       _implicitly_clear_priority_on_schedule(false),
+      _use_unordered_merge_chaining(false),
+      _inhibit_default_merges_when_global_merges_pending(false),
+      _enable_two_phase_garbage_collection(false),
       _minimumReplicaCountingMode(ReplicaCountingMode::TRUSTED)
 {
 }
@@ -171,6 +174,9 @@ DistributorConfiguration::configure(const vespa::config::content::core::StorDist
     _max_activation_inhibited_out_of_sync_groups = config.maxActivationInhibitedOutOfSyncGroups;
     _enable_revert = config.enableRevert;
     _implicitly_clear_priority_on_schedule = config.implicitlyClearBucketPriorityOnSchedule;
+    _use_unordered_merge_chaining = config.useUnorderedMergeChaining;
+    _inhibit_default_merges_when_global_merges_pending = config.inhibitDefaultMergesWhenGlobalMergesPending;
+    _enable_two_phase_garbage_collection = config.enableTwoPhaseGarbageCollection;
 
     _minimumReplicaCountingMode = config.minimumReplicaCountingMode;
 

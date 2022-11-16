@@ -9,21 +9,36 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 // Returns true if the given path exists
 func PathExists(path string) bool {
-	_, err := os.Stat(path)
-	return !errors.Is(err, os.ErrNotExist)
+	info, err := os.Stat(path)
+	return !errors.Is(err, os.ErrNotExist) && info != nil
 }
 
-// Returns true is the given path points to an existing directory
+// Returns true if the given path points to an existing directory
 func IsDirectory(path string) bool {
 	info, err := os.Stat(path)
-	return !errors.Is(err, os.ErrNotExist) && info.IsDir()
+	return !errors.Is(err, os.ErrNotExist) && info != nil && info.IsDir()
+}
+
+// Returns true if the given path points to an existing file
+func IsRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return !errors.Is(err, os.ErrNotExist) && info != nil && info.Mode().IsRegular()
+}
+
+// Returns true if the given path points to an executable
+func IsExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	return !errors.Is(err, os.ErrNotExist) &&
+		info != nil &&
+		info.Mode().IsRegular() &&
+		((int(info.Mode()) & 0111) == 0111)
 }
 
 // Returns the content of a reader as a string
@@ -42,7 +57,7 @@ func ReaderToBytes(reader io.Reader) []byte {
 
 // Returns the contents of reader as indented JSON
 func ReaderToJSON(reader io.Reader) string {
-	bodyBytes, _ := ioutil.ReadAll(reader)
+	bodyBytes, _ := io.ReadAll(reader)
 	var prettyJSON bytes.Buffer
 	parseError := json.Indent(&prettyJSON, bodyBytes, "", "    ")
 	if parseError != nil { // Not JSON: Print plainly
@@ -53,7 +68,8 @@ func ReaderToJSON(reader io.Reader) string {
 
 // AtomicWriteFile atomically writes data to filename.
 func AtomicWriteFile(filename string, data []byte) error {
-	tmpFile, err := ioutil.TempFile("", "vespa")
+	dir := filepath.Dir(filename)
+	tmpFile, err := os.CreateTemp(dir, "vespa")
 	if err != nil {
 		return err
 	}

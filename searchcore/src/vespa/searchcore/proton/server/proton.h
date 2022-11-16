@@ -12,38 +12,44 @@
 #include "proton_config_fetcher.h"
 #include "proton_configurer.h"
 #include "rpc_hooks.h"
+#include "shared_threading_service.h"
+#include <vespa/eval/eval/llvm/compile_cache.h>
 #include <vespa/searchcore/proton/matching/querylimiter.h>
-#include <vespa/searchcore/proton/metrics/metrics_engine.h>
 #include <vespa/searchcore/proton/persistenceengine/i_resource_write_filter.h>
 #include <vespa/searchcore/proton/persistenceengine/ipersistenceengineowner.h>
 #include <vespa/searchlib/common/fileheadercontext.h>
 #include <vespa/searchlib/engine/monitorapi.h>
-#include <vespa/vespalib/net/component_config_producer.h>
-#include <vespa/vespalib/net/generic_state_handler.h>
-#include <vespa/vespalib/net/json_get_handler.h>
-#include <vespa/vespalib/net/json_handler_repo.h>
-#include <vespa/vespalib/net/state_explorer.h>
-#include <vespa/vespalib/util/varholder.h>
-#include <vespa/eval/eval/llvm/compile_cache.h>
+#include <vespa/vespalib/net/http/component_config_producer.h>
+#include <vespa/vespalib/net/http/generic_state_handler.h>
+#include <vespa/vespalib/net/http/json_get_handler.h>
+#include <vespa/vespalib/net/http/json_handler_repo.h>
+#include <vespa/vespalib/net/http/state_explorer.h>
+#include <vespa/vespalib/util/cpu_usage.h>
 #include <mutex>
 #include <shared_mutex>
 
 namespace vespalib { class StateServer; }
-namespace search::transactionlog { class TransLogServerApp; }
-namespace metrics { class MetricLockGuard; }
+namespace search {
+    namespace attribute { class Interlock; }
+    namespace transactionlog { class TransLogServerApp; }
+}
+namespace metrics {
+    class MetricLockGuard;
+    class MetricManager;
+}
 namespace storage::spi { struct PersistenceProvider; }
 
 namespace proton {
 
 class DiskMemUsageSampler;
+class FlushEngine;
 class IDocumentDBReferenceRegistry;
 class IProtonDiskLayout;
+class MatchEngine;
+class MetricsEngine;
+class PersistenceEngine;
 class PrepareRestartHandler;
 class SummaryEngine;
-class DocsumBySlime;
-class FlushEngine;
-class MatchEngine;
-class PersistenceEngine;
 
 class Proton : public IProtonConfigurerOwner,
                public search::engine::MonitorServer,
@@ -59,8 +65,7 @@ private:
     using MonitorReply = search::engine::MonitorReply;
     using MonitorClient = search::engine::MonitorClient;
     using DocumentDBMap = std::map<DocTypeName, DocumentDB::SP>;
-    using ProtonConfigSP = BootstrapConfig::ProtonConfigSP;
-    using InitializeThreads = std::shared_ptr<vespalib::SyncableThreadExecutor>;
+    using InitializeThreads = std::shared_ptr<vespalib::ThreadExecutor>;
     using BucketSpace = document::BucketSpace;
 
     class ProtonFileHeaderContext : public search::common::FileHeaderContext
@@ -71,25 +76,29 @@ private:
         pid_t _pid;
 
     public:
-        ProtonFileHeaderContext(const vespalib::string &creator);
+        explicit ProtonFileHeaderContext(const vespalib::string &creator);
         ~ProtonFileHeaderContext() override;
 
         void addTags(vespalib::GenericHeader &header, const vespalib::string &name) const override;
         void setClusterName(const vespalib::string &clusterName, const vespalib::string &baseDir);
     };
 
+    vespalib::CpuUtil                      _cpu_util;
+    HwInfo                                 _hw_info;
+    FastOS_ThreadPool                    & _threadPool;
+    FNET_Transport                       & _transport;
     const config::ConfigUri                _configUri;
     mutable std::shared_mutex              _mutex;
     std::unique_ptr<metrics::UpdateHook>   _metricsHook;
     std::unique_ptr<MetricsEngine>         _metricsEngine;
     ProtonFileHeaderContext                _fileHeaderContext;
+    std::shared_ptr<search::attribute::Interlock> _attribute_interlock;
     std::unique_ptr<TLS>                   _tls;
     std::unique_ptr<DiskMemUsageSampler>   _diskMemUsageSampler;
     std::unique_ptr<PersistenceEngine>     _persistenceEngine;
     DocumentDBMap                          _documentDBMap;
     std::unique_ptr<MatchEngine>           _matchEngine;
     std::unique_ptr<SummaryEngine>         _summaryEngine;
-    std::unique_ptr<DocsumBySlime>         _docsumBySlime;
     MemoryFlushConfigUpdater::UP           _memoryFlushConfigUpdater;
     std::unique_ptr<FlushEngine>           _flushEngine;
     std::unique_ptr<PrepareRestartHandler> _prepareRestartHandler;
@@ -103,12 +112,9 @@ private:
     std::unique_ptr<IProtonDiskLayout>     _protonDiskLayout;
     ProtonConfigurer                       _protonConfigurer;
     ProtonConfigFetcher                    _protonConfigFetcher;
-    std::unique_ptr<vespalib::ThreadStackExecutorBase> _warmupExecutor;
-    std::shared_ptr<vespalib::ThreadStackExecutorBase> _sharedExecutor;
+    std::unique_ptr<SharedThreadingService> _shared_service;
     vespalib::eval::CompileCache::ExecutorBinding::UP _compile_cache_executor_binding;
     matching::QueryLimiter          _queryLimiter;
-    vespalib::Clock                 _clock;
-    FastOS_ThreadPool               _threadPool;
     uint32_t                        _distributionKey;
     bool                            _isInitializing;
     bool                            _abortInit;
@@ -135,15 +141,15 @@ private:
     uint32_t getDistributionKey() const override { return _distributionKey; }
     BootstrapConfig::SP getActiveConfigSnapshot() const;
     std::shared_ptr<IDocumentDBReferenceRegistry> getDocumentDBReferenceRegistry() const override;
+    // Returns true if the node is up in _any_ bucket space
     bool updateNodeUp(BucketSpace bucketSpace, bool nodeUpInBucketSpace);
     void closeDocumentDBs(vespalib::ThreadStackExecutorBase & executor);
 public:
     typedef std::unique_ptr<Proton> UP;
     typedef std::shared_ptr<Proton> SP;
 
-    Proton(const config::ConfigUri & configUri,
-           const vespalib::string &progName,
-           std::chrono::milliseconds subscribeTimeout);
+    Proton(FastOS_ThreadPool & threadPool, FNET_Transport & transport, const config::ConfigUri & configUri,
+           const vespalib::string &progName, vespalib::duration subscribeTimeout);
     ~Proton() override;
 
     /**
@@ -178,7 +184,7 @@ public:
     addDocumentDB(const document::DocumentType &docType, BucketSpace bucketSpace, const BootstrapConfig::SP &configSnapshot,
                   const std::shared_ptr<DocumentDBConfig> &documentDBConfig, InitializeThreads initializeThreads);
 
-    metrics::MetricManager & getMetricManager() { return _metricsEngine->getManager(); }
+    metrics::MetricManager & getMetricManager();
     FastOS_ThreadPool & getThreadPool() { return _threadPool; }
 
     bool triggerFlush();
@@ -191,8 +197,8 @@ public:
     int64_t getConfigGeneration();
 
     size_t getNumDocs() const;
-    size_t getNumActiveDocs() const;
-    DocsumBySlime & getDocsumBySlime() { return *_docsumBySlime; }
+    // Active (searchable), and targetActive that will be searchable when idealstate is reached
+    ActiveDocs getNumActiveDocs() const;
 
     search::engine::SearchServer &get_search_server();
     search::engine::DocsumServer &get_docsum_server();

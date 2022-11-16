@@ -1,5 +1,4 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-
 package com.yahoo.vespa.filedistribution;
 
 import com.yahoo.config.FileReference;
@@ -10,7 +9,6 @@ import com.yahoo.jrt.Request;
 import com.yahoo.jrt.Supervisor;
 import net.jpountz.xxhash.StreamingXXHash64;
 import net.jpountz.xxhash.XXHashFactory;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileAlreadyExistsException;
@@ -23,6 +21,9 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import static com.yahoo.vespa.filedistribution.FileReferenceData.Type;
+import static com.yahoo.vespa.filedistribution.FileReferenceData.CompressionType;
 
 /**
  * When asking for a file reference, this handles RPC callbacks from config server with file data and metadata.
@@ -48,7 +49,8 @@ public class FileReceiver {
         private final StreamingXXHash64 hasher;
         private final int sessionId;
         private final FileReference reference;
-        private final FileReferenceData.Type fileType;
+        private final Type fileType;
+        private final CompressionType compressionType;
         private final String fileName;
         private final long fileSize;
         private long currentFileSize;
@@ -58,13 +60,18 @@ public class FileReceiver {
         private final File tmpDir;
         private final File inprogressFile;
 
-        Session(File downloadDirectory, int sessionId, FileReference reference,
-                FileReferenceData.Type fileType, String fileName, long fileSize)
-        {
+        Session(File downloadDirectory,
+                int sessionId,
+                FileReference reference,
+                Type fileType,
+                FileReferenceData.CompressionType compressionType,
+                String fileName,
+                long fileSize) {
             this.hasher = XXHashFactory.fastestInstance().newStreamingHash64(0);
             this.sessionId = sessionId;
             this.reference = reference;
             this.fileType = fileType;
+            this.compressionType = compressionType;
             this.fileName = fileName;
             this.fileSize = fileSize;
             currentFileSize = 0;
@@ -106,17 +113,12 @@ public class FileReceiver {
         }
 
         File close(long hash) {
-            if (hasher.getValue() != hash) {
-                throw new RuntimeException("xxhash from content (" + currentHash + ") is not equal to xxhash in request (" + hash + ")");
-            }
+            verifyHash(hash);
+
             File file = new File(fileReferenceDir, fileName);
+            File decompressedDir = null;
             try {
-                // Unpack if necessary
-                if (fileType == FileReferenceData.Type.compressed) {
-                    File decompressedDir = Files.createTempDirectory(tmpDir.toPath(), "archive").toFile();
-                    CompressedFileReference.decompress(inprogressFile, decompressedDir);
-                    moveFileToDestination(decompressedDir, fileReferenceDir);
-                } else {
+                if (fileType == Type.file) {
                     try {
                         Files.createDirectories(fileReferenceDir.toPath());
                     } catch (IOException e) {
@@ -125,18 +127,18 @@ public class FileReceiver {
                     }
                     log.log(Level.FINE, () -> "Uncompressed file, moving to " + file.getAbsolutePath());
                     moveFileToDestination(inprogressFile, file);
+                } else {
+                    decompressedDir = Files.createTempDirectory(tmpDir.toPath(), "archive").toFile();
+                    log.log(Level.FINE, () -> "compression type to use=" + compressionType);
+                    new FileReferenceCompressor(fileType, compressionType).decompress(inprogressFile, decompressedDir);
+                    moveFileToDestination(decompressedDir, fileReferenceDir);
                 }
             } catch (IOException e) {
                 log.log(Level.SEVERE, "Failed writing file: " + e.getMessage(), e);
                 throw new RuntimeException("Failed writing file: ", e);
             } finally {
-                try {
-                    if (inprogressFile.exists()) {
-                        Files.delete(inprogressFile.toPath());
-                    }
-                } catch (IOException e) {
-                    log.log(Level.SEVERE, "Failed deleting " + inprogressFile.getAbsolutePath() + ": " + e.getMessage(), e);
-                }
+                deletePath(inprogressFile);
+                deletePath(decompressedDir);
             }
             return file;
         }
@@ -144,6 +146,12 @@ public class FileReceiver {
         double percentageReceived() {
             return (double)currentFileSize/(double)fileSize;
         }
+
+        void verifyHash(long hash) {
+            if (hasher.getValue() != hash)
+                throw new RuntimeException("xxhash from content (" + currentHash + ") is not equal to xxhash in request (" + hash + ")");
+        }
+
     }
 
     FileReceiver(Supervisor supervisor, Downloads downloads, File downloadDirectory) {
@@ -161,11 +169,12 @@ public class FileReceiver {
     // receiveFile after getting a serveFile method call). handler needs to implement receiveFile* methods
     private List<Method> receiveFileMethod() {
         List<Method> methods = new ArrayList<>();
-        methods.add(new Method(RECEIVE_META_METHOD, "sssl", "ii", this::receiveFileMeta)
+        methods.add(new Method(RECEIVE_META_METHOD, "sssl*", "ii", this::receiveFileMeta)
                 .paramDesc(0, "filereference", "file reference to download")
                 .paramDesc(1, "filename", "filename")
                 .paramDesc(2, "type", "'file' or 'compressed'")
                 .paramDesc(3, "filelength", "length in bytes of file")
+                .paramDesc(3, "compressionType", "compression type: gzip, lz4, zstd")
                 .returnDesc(0, "ret", "0 if success, 1 otherwise")
                 .returnDesc(1, "session-id", "Session id to be used for this transfer"));
         methods.add(new Method(RECEIVE_PART_METHOD, "siix", "i", this::receiveFilePart)
@@ -187,22 +196,25 @@ public class FileReceiver {
     private static void moveFileToDestination(File tempFile, File destination) {
         try {
             Files.move(tempFile.toPath(), destination.toPath());
-            log.log(Level.FINE, () -> "File moved from " + tempFile.getAbsolutePath()+ " to " + destination.getAbsolutePath());
+            log.log(Level.FINEST, () -> "File moved from " + tempFile.getAbsolutePath()+ " to " + destination.getAbsolutePath());
         } catch (FileAlreadyExistsException e) {
             // Don't fail if it already exists (we might get the file from several config servers when retrying, servers are down etc.
             // so it might be written already). Delete temp file/dir in that case, to avoid filling the disk.
-            log.log(Level.FINE, () -> "Failed moving file '" + tempFile.getAbsolutePath() + "' to '" + destination.getAbsolutePath() +
-                    "', '" + destination.getAbsolutePath() + "' already exists");
-            deleteFileOrDirectory(tempFile);
+            log.log(Level.FINE, () -> "Failed moving file '" + tempFile.getAbsolutePath() + "' to '" +
+                    destination.getAbsolutePath() + "', it already exists");
         } catch (IOException e) {
             String message = "Failed moving file '" + tempFile.getAbsolutePath() + "' to '" + destination.getAbsolutePath() + "'";
             log.log(Level.SEVERE, message, e);
             throw new RuntimeException(message, e);
+        } finally {
+            deletePath(tempFile);
         }
     }
 
-    private static void deleteFileOrDirectory(File path) {
+    private static void deletePath(File path) {
+        if (path == null) return;
         if ( ! path.exists()) return;
+
         try {
             if (path.isDirectory())
                 IOUtils.recursiveDeleteDir(path);
@@ -217,8 +229,11 @@ public class FileReceiver {
         log.log(Level.FINE, () -> "Received method call '" + req.methodName() + "' with parameters : " + req.parameters());
         FileReference reference = new FileReference(req.parameters().get(0).asString());
         String fileName = req.parameters().get(1).asString();
-        String type = req.parameters().get(2).asString();
+        Type type = FileReferenceData.Type.valueOf(req.parameters().get(2).asString());
         long fileSize = req.parameters().get(3).asInt64();
+        CompressionType compressionType = (req.parameters().size() > 4)
+                ? CompressionType.valueOf(req.parameters().get(4).asString())
+                : CompressionType.gzip; // fallback/legacy compression type
         int sessionId = nextSessionId.getAndIncrement();
         int retval = 0;
         synchronized (sessions) {
@@ -228,7 +243,7 @@ public class FileReceiver {
             } else {
                 try {
                     sessions.put(sessionId, new Session(downloadDirectory, sessionId, reference,
-                                                        FileReferenceData.Type.valueOf(type),fileName, fileSize));
+                                                        type, compressionType, fileName, fileSize));
                 } catch (Exception e) {
                     retval = 1;
                 }
@@ -239,7 +254,7 @@ public class FileReceiver {
     }
 
     private void receiveFilePart(Request req) {
-        log.log(Level.FINE, () -> "Received method call '" + req.methodName() + "' with parameters : " + req.parameters());
+        log.log(Level.FINEST, () -> "Received method call '" + req.methodName() + "' with parameters : " + req.parameters());
 
         FileReference reference = new FileReference(req.parameters().get(0).asString());
         int sessionId = req.parameters().get(1).asInt32();
@@ -293,4 +308,5 @@ public class FileReceiver {
         }
         return 0;
     }
+
 }

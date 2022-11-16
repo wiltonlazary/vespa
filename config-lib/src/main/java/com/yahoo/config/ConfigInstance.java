@@ -36,8 +36,6 @@ public abstract class ConfigInstance extends InnerNode {
 
     public interface Producer {}
 
-    private String configMd5 = "";
-
     @SuppressWarnings("unused") // Used by reflection from ConfigInstanceUtil
     String configId;
 
@@ -108,15 +106,6 @@ public abstract class ConfigInstance extends InnerNode {
                 ((LeafNode) child).serialize(arraySerializer);
             }
         }
-    }
-
-
-    public String getConfigMd5() {
-        return configMd5;
-    }
-
-    public void setConfigMd5(String configMd5) {
-        this.configMd5 = configMd5;
     }
 
     private static String getStaticStringField(Class<?> type, String fieldName) {

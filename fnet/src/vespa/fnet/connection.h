@@ -18,6 +18,8 @@ class FNET_IPacketStreamer;
 class FNET_IServerAdapter;
 class FNET_IPacketHandler;
 
+namespace vespalib::net { class ConnectionAuthContext; }
+
 /**
  * Interface implemented by objects that want to perform connection
  * cleanup. Use the SetCleanupHandler method to register with a
@@ -53,7 +55,7 @@ public:
 class FNET_Connection : public FNET_IOComponent
 {
 public:
-    enum State {
+    enum State : uint8_t {
         FNET_CONNECTING,
         FNET_CONNECTED,
         FNET_CLOSING,
@@ -96,11 +98,10 @@ private:
     using ResolveHandlerSP = std::shared_ptr<ResolveHandler>;
     FNET_IPacketStreamer    *_streamer;        // custom packet streamer
     FNET_IServerAdapter     *_serverAdapter;   // only on server side
-    FNET_Channel            *_adminChannel;    // only on client side
-    vespalib::CryptoSocket::UP _socket;          // socket for this conn
+    vespalib::CryptoSocket::UP _socket;        // socket for this conn
     ResolveHandlerSP         _resolve_handler; // async resolve callback
     FNET_Context             _context;         // connection context
-    State                    _state;           // connection state
+    std::atomic<State>       _state;           // connection state. May be polled outside lock
     Flags                    _flags;           // Packed flags.
     uint32_t                 _packetLength;    // packet length
     uint32_t                 _packetCode;      // packet code
@@ -116,10 +117,9 @@ private:
 
     FNET_IConnectionCleanupHandler *_cleanup;  // cleanup handler
 
-    static std::atomic<uint64_t> _num_connections; // total number of connections
+    std::unique_ptr<vespalib::net::ConnectionAuthContext> _auth_context;
 
-    FNET_Connection(const FNET_Connection &);
-    FNET_Connection &operator=(const FNET_Connection &);
+    static std::atomic<uint64_t> _num_connections; // total number of connections
 
 
     /**
@@ -240,11 +240,9 @@ private:
 
     bool writePendingAfterConnect();
 
-    /**
-     * @return address spec of socket peer. Only makes sense to call on non-listening sockets.
-     */
-    vespalib::string GetPeerSpec() const;
 public:
+    FNET_Connection(const FNET_Connection &) = delete;
+    FNET_Connection &operator=(const FNET_Connection &) = delete;
 
     /**
      * Construct a connection in server aspect.
@@ -267,23 +265,19 @@ public:
      * @param owner the TransportThread object serving this connection
      * @param streamer custom packet streamer
      * @param serverAdapter object for custom channel creation
-     * @param adminHandler packet handler for admin channel
-     * @param adminContext context for admin channel
      * @param context initial context for this connection
      * @param spec connect spec
      **/
     FNET_Connection(FNET_TransportThread *owner,
                     FNET_IPacketStreamer *streamer,
                     FNET_IServerAdapter *serverAdapter,
-                    FNET_IPacketHandler *adminHandler,
-                    FNET_Context adminContext,
                     FNET_Context context,
                     const char *spec);
 
     /**
      * Destructor.
      **/
-    ~FNET_Connection();
+    ~FNET_Connection() override;
 
 
     /**
@@ -311,6 +305,10 @@ public:
         return ((_currentID & 0x01) != (chid & 0x01));
     }
 
+    /**
+     * @return address spec of socket peer. Only makes sense to call on non-listening sockets.
+     */
+    vespalib::string GetPeerSpec() const;
 
     /**
      * Does this connection have the ability to accept incoming channels ?
@@ -340,9 +338,9 @@ public:
 
 
     /**
-     * @return current connection state.
+     * @return current connection state. May be stale if read outside lock.
      **/
-    State GetState() { return _state; }
+    State GetState() const noexcept { return _state.load(std::memory_order_relaxed); }
 
 
     /**
@@ -353,6 +351,8 @@ public:
      * @return success(true)/failure(false)
      **/
     bool Init();
+
+    FNET_IServerAdapter *server_adapter() override;
 
     /**
      * Called by the transport thread as the initial part of adding
@@ -446,23 +446,6 @@ public:
 
 
     /**
-     * Close the admin channel on a client connection. Invoking this
-     * method on connections in the server aspect will have no effect.
-     *
-     * This method is needed because on the client side the application
-     * does not own the actual admin channel object. The admin channel
-     * on server-side connections are handled as normal channels.
-     *
-     * After this method returns, no more packets will be delivered to
-     * the admin packet handler. In other words: this method is used to
-     * make the connection loose the reference to the admin packet
-     * handler in a thread-safe way, enabling the admin packet handler
-     * to be deleted or the like.
-     **/
-    void CloseAdminChannel();
-
-
-    /**
      * Post a packet on the output queue. Note that the packet will not
      * be sent if the connection is in CLOSING or CLOSED state. NOTE:
      * packet handover (caller TO invoked object).
@@ -523,6 +506,12 @@ public:
      * @return Returns the size of this connection's input buffer.
      */
     uint32_t getInputBufferSize() const { return _input.GetBufSize(); }
+
+    /**
+     * Returns the connection's auth context. Must only be called _after_ the
+     * handshake phase has completed.
+     */
+    const vespalib::net::ConnectionAuthContext& auth_context() const noexcept;
 
     /**
      * @return the total number of connection objects

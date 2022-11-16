@@ -1,11 +1,15 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
+#include <vespa/document/update/documentupdate.h>
 #include <vespa/searchcore/proton/attribute/i_attribute_writer.h>
 #include <vespa/searchcore/proton/attribute/ifieldupdatecallback.h>
 #include <vespa/searchcore/proton/test/bucketfactory.h>
 #include <vespa/searchcore/proton/common/feedtoken.h>
 #include <vespa/searchcore/proton/index/i_index_writer.h>
-#include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcore/proton/server/isummaryadapter.h>
 #include <vespa/searchcore/proton/server/matchview.h>
 #include <vespa/searchcore/proton/server/searchable_feed_view.h>
@@ -20,32 +24,39 @@
 #include <vespa/searchcore/proton/test/mock_summary_adapter.h>
 #include <vespa/searchcore/proton/test/thread_utils.h>
 #include <vespa/searchcore/proton/test/threading_service_observer.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/searchlib/attribute/attributefactory.h>
-#include <vespa/document/update/documentupdate.h>
-#include <vespa/searchlib/index/docbuilder.h>
-#include <vespa/vespalib/util/time.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchcommon/attribute/config.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
+#include <vespa/vespalib/stllike/asciistream.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("feedview_test");
 
 using document::BucketId;
+using document::DataType;
 using document::Document;
 using document::DocumentId;
 using document::DocumentUpdate;
+using document::StringFieldValue;
 using proton::matching::SessionManager;
 using proton::test::MockGidToLidChangeHandler;
 using search::AttributeVector;
-using search::CacheStats;
 using search::DocumentMetaData;
 using vespalib::IDestructorCallback;
+using vespalib::Gate;
+using vespalib::GateCallback;
 using search::SearchableStats;
-using search::index::schema::CollectionType;
-using search::index::schema::DataType;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
 using searchcorespi::IndexSearchable;
 using storage::spi::BucketChecksum;
 using storage::spi::BucketInfo;
 using storage::spi::Timestamp;
 using storage::spi::UpdateResult;
+using vespalib::CacheStats;
 using vespalib::eval::ValueType;
 
 using namespace proton;
@@ -138,21 +149,23 @@ struct MyIndexWriter : public test::MockIndexWriter
     uint32_t _wantedLidLimit;
     MyTracer &_tracer;
     MyIndexWriter(MyTracer &tracer)
-        : test::MockIndexWriter(IIndexManager::SP(new test::MockIndexManager())),
+        : test::MockIndexWriter(std::make_shared<test::MockIndexManager>()),
           _removes(),
           _heartBeatCount(0),
           _commitCount(0),
           _wantedLidLimit(0),
           _tracer(tracer)
     {}
-    void put(SerialNum serialNum, const document::Document &doc, const DocumentIdT lid) override {
+    void put(SerialNum serialNum, const document::Document &doc, const DocumentIdT lid, OnWriteDoneType) override {
         (void) doc;
         _tracer.tracePut(indexAdapterTypeName, serialNum, lid);
     }
-    void remove(SerialNum serialNum, const search::DocumentIdT lid) override {
-        LOG(info, "MyIndexAdapter::remove(): serialNum(%" PRIu64 "), docId(%u)", serialNum, lid);
-        _removes.push_back(lid);
-        _tracer.traceRemove(indexAdapterTypeName, serialNum, lid);
+    void removeDocs(SerialNum serialNum,  LidVector lids) override {
+        for (search::DocumentIdT lid : lids) {
+            LOG(info, "MyIndexAdapter::remove(): serialNum(%" PRIu64 "), docId(%u)", serialNum, lid);
+            _removes.push_back(lid);
+            _tracer.traceRemove(indexAdapterTypeName, serialNum, lid);
+        }
     }
     void commit(SerialNum serialNum, OnWriteDoneType) override {
         ++_commitCount;
@@ -187,11 +200,13 @@ public:
         ++_changes;
     }
 
-    void notifyRemove(IDestructorCallbackSP, document::GlobalId gid, SerialNum) override {
-        _changeGid = gid;
-        _changeLid = 0;
-        _gidToLid[gid] = 0;
-        ++_changes;
+    void notifyRemoves(IDestructorCallbackSP, const std::vector<document::GlobalId> & gids, SerialNum) override {
+        for (const auto & gid : gids) {
+            _changeGid = gid;
+            _changeLid = 0;
+            _gidToLid[gid] = 0;
+            ++_changes;
+        }
     }
 
     void assertChanges(document::GlobalId expGid, uint32_t expLid, uint32_t expChanges) {
@@ -215,7 +230,7 @@ struct MyDocumentStore : public test::DummyDocumentStore
     DocMap           _docs;
     uint64_t         _lastSyncToken;
     uint32_t         _compactLidSpaceLidLimit;
-    MyDocumentStore(const document::DocumentTypeRepo & repo)
+    MyDocumentStore(const document::DocumentTypeRepo & repo) noexcept
         : test::DummyDocumentStore("."),
           _repo(repo),
           _docs(),
@@ -257,9 +272,12 @@ MyDocumentStore::~MyDocumentStore() = default;
 struct MySummaryManager : public test::DummySummaryManager
 {
     MyDocumentStore _store;
-    MySummaryManager(const document::DocumentTypeRepo & repo) : _store(repo) {}
-    virtual search::IDocumentStore &getBackingStore() override { return _store; }
+    MySummaryManager(const document::DocumentTypeRepo & repo) noexcept : _store(repo) {}
+    ~MySummaryManager() override;
+    search::IDocumentStore &getBackingStore() override { return _store; }
 };
+
+MySummaryManager::~MySummaryManager() = default;
 
 struct MySummaryAdapter : public test::MockSummaryAdapter
 {
@@ -267,32 +285,34 @@ struct MySummaryAdapter : public test::MockSummaryAdapter
     MyDocumentStore    &_store;
     MyLidVector         _removes;
 
-    MySummaryAdapter(const document::DocumentTypeRepo & repo)
-        : _sumMgr(new MySummaryManager(repo)),
+    MySummaryAdapter(const document::DocumentTypeRepo & repo) noexcept
+        : _sumMgr(std::make_shared<MySummaryManager>(repo)),
           _store(static_cast<MyDocumentStore &>(_sumMgr->getBackingStore())),
           _removes()
     {}
-    virtual void put(SerialNum serialNum, DocumentIdT lid, const Document &doc) override {
+    ~MySummaryAdapter() override;
+    void put(SerialNum serialNum, DocumentIdT lid, const Document &doc) override {
         _store.write(serialNum, lid, doc);
     }
-    virtual void put(SerialNum serialNum, DocumentIdT lid, const vespalib::nbostream & os) override {
+    void put(SerialNum serialNum, DocumentIdT lid, const vespalib::nbostream & os) override {
         _store.write(serialNum, lid, os);
     }
-    virtual void remove(SerialNum serialNum, const DocumentIdT lid) override {
+    void remove(SerialNum serialNum, const DocumentIdT lid) override {
         LOG(info, "MySummaryAdapter::remove(): serialNum(%" PRIu64 "), docId(%u)", serialNum, lid);
         _store.remove(serialNum, lid);
         _removes.push_back(lid);
     }
-    virtual const search::IDocumentStore &getDocumentStore() const override {
+    const search::IDocumentStore &getDocumentStore() const override {
         return _store;
     }
-    virtual std::unique_ptr<Document> get(const DocumentIdT lid, const DocumentTypeRepo &repo) override {
+    std::unique_ptr<Document> get(const DocumentIdT lid, const DocumentTypeRepo &repo) override {
         return _store.read(lid, repo);
     }
-    virtual void compactLidSpace(uint32_t wantedDocIdLimit) override {
+    void compactLidSpace(uint32_t wantedDocIdLimit) override {
         _store.compactLidSpace(wantedDocIdLimit);
     }
 };
+MySummaryAdapter::~MySummaryAdapter() = default;
 
 struct MyAttributeWriter : public IAttributeWriter
 {
@@ -353,7 +373,7 @@ struct MyAttributeWriter : public IAttributeWriter
         _updateLid = lid;
         for (const auto & fieldUpdate : upd.getUpdates()) {
             search::AttributeVector * attr = getWritableAttribute(fieldUpdate.getField().getName());
-            onUpdate.onUpdateField(fieldUpdate.getField().getName(), attr);
+            onUpdate.onUpdateField(fieldUpdate.getField(), attr);
         }
     }
     void update(SerialNum serialNum, const document::Document &doc, DocumentIdT lid, OnWriteDoneType) override {
@@ -361,7 +381,7 @@ struct MyAttributeWriter : public IAttributeWriter
         (void) doc;
         (void) lid;
     }
-    void heartBeat(SerialNum) override { ++_heartBeatCount; }
+    void heartBeat(SerialNum, OnWriteDoneType) override { ++_heartBeatCount; }
     void compactLidSpace(uint32_t wantedLidLimit, SerialNum ) override {
         _wantedLidLimit = wantedLidLimit;
     }
@@ -371,6 +391,9 @@ struct MyAttributeWriter : public IAttributeWriter
     void forceCommit(const CommitParam & param, OnWriteDoneType) override {
         ++_commitCount;
         _tracer.traceCommit(attributeAdapterTypeName, param.lastSerialNum());
+    }
+    void drain(OnWriteDoneType onDone) override {
+        (void) onDone;
     }
 
     void onReplayDone(uint32_t ) override { }
@@ -397,7 +420,7 @@ MyAttributeWriter::~MyAttributeWriter() = default;
 struct MyTransport : public feedtoken::ITransport
 {
     ResultUP lastResult;
-    vespalib::Gate _gate;
+    Gate _gate;
     MyTracer &_tracer;
     MyTransport(MyTracer &tracer);
     ~MyTransport();
@@ -412,38 +435,26 @@ struct MyTransport : public feedtoken::ITransport
 MyTransport::MyTransport(MyTracer &tracer) : lastResult(), _gate(), _tracer(tracer) {}
 MyTransport::~MyTransport() = default;
 
-struct MyResultHandler : public IGenericResultHandler
-{
-    vespalib::Gate _gate;
-    MyResultHandler() : _gate() {}
-    void handle(const storage::spi::Result &) override {
-        _gate.countDown();
-    }
-    void await() { _gate.await(); }
-};
-
 struct SchemaContext
 {
-    Schema::SP                _schema;
-    std::unique_ptr<DocBuilder> _builder;
+    DocBuilder  _builder;
+    Schema::SP  _schema;
     SchemaContext();
     ~SchemaContext();
-    const std::shared_ptr<const document::DocumentTypeRepo> &getRepo() const { return _builder->getDocumentTypeRepo(); }
+    std::shared_ptr<const document::DocumentTypeRepo> getRepo() const { return _builder.get_repo_sp(); }
 };
 
 SchemaContext::SchemaContext() :
-    _schema(new Schema()),
-    _builder()
+    _builder([](auto &header) { header.addField("i1", DataType::T_STRING)
+                                       .addField("a1", DataType::T_STRING)
+                                       .addField("a2", DataType::T_PREDICATE)
+                                       .addTensorField("a3", "")
+                                       .addField("s1", DataType::T_STRING); }),
+    _schema(std::make_shared<Schema>(SchemaBuilder(_builder).add_indexes({"i1"}).add_attributes({"a1", "a2", "a3"}).build()))
 {
-    _schema->addIndexField(Schema::IndexField("i1", DataType::STRING, CollectionType::SINGLE));
-    _schema->addAttributeField(Schema::AttributeField("a1", DataType::STRING, CollectionType::SINGLE));
-    _schema->addAttributeField(Schema::AttributeField("a2", DataType::BOOLEANTREE, CollectionType::SINGLE));
-    _schema->addAttributeField(Schema::AttributeField("a3", DataType::TENSOR, CollectionType::SINGLE));
-    _schema->addSummaryField(Schema::SummaryField("s1", DataType::STRING, CollectionType::SINGLE));
-    _builder.reset(new DocBuilder(*_schema));
 }
-SchemaContext::~SchemaContext() = default;
 
+SchemaContext::~SchemaContext() = default;
 
 struct DocumentContext
 {
@@ -455,18 +466,22 @@ struct DocumentContext
     DocumentContext(const vespalib::string &docId, uint64_t timestamp, DocBuilder &builder);
     ~DocumentContext();
     void addFieldUpdate(DocBuilder &builder, const vespalib::string &fieldName) {
-        const document::Field &field = builder.getDocumentType().getField(fieldName);
+        const document::Field &field = builder.get_document_type().getField(fieldName);
         upd->addUpdate(document::FieldUpdate(field));
     }
     document::GlobalId gid() const { return doc->getId().getGlobalId(); }
 };
 
-DocumentContext::DocumentContext(const vespalib::string &docId, uint64_t timestamp, DocBuilder &builder)
-    : doc(builder.startDocument(docId).startSummaryField("s1").addStr(docId).endField().endDocument().release()),
-      upd(new DocumentUpdate(*builder.getDocumentTypeRepo(), builder.getDocumentType(), doc->getId())),
+DocumentContext::DocumentContext(const vespalib::string &docId, uint64_t timestamp, DocBuilder& builder)
+    : doc(builder.make_document(docId)),
+      upd(std::make_shared<DocumentUpdate>(builder.get_repo(), builder.get_document_type(), doc->getId())),
       bid(BucketFactory::getNumBucketBits(), doc->getId().getGlobalId().convertToBucketId().getRawId()),
       ts(timestamp)
-{}
+{
+    doc->setValue("s1", StringFieldValue(docId));
+}
+
+
 DocumentContext::~DocumentContext() = default;
 
 struct FeedTokenContext
@@ -499,26 +514,13 @@ struct FixtureBase
     DocumentMetaStoreContext::SP _dmscReal;
     test::DocumentMetaStoreContextObserver::SP _dmsc;
     ParamsContext         pc;
-    vespalib::ThreadStackExecutor _sharedExecutor;
-    ExecutorThreadingService _writeServiceReal;
+    TransportAndExecutorService    _service;
     test::ThreadingServiceObserver _writeService;
     SerialNum             serial;
     std::shared_ptr<MyGidToLidChangeHandler> _gidToLidChangeHandler;
     FixtureBase();
 
     virtual ~FixtureBase();
-
-    void syncMaster() {
-        _writeService.master().sync();
-    }
-
-    void syncIndex() {
-        _writeService.sync();
-    }
-
-    void sync() {
-        _writeServiceReal.sync();
-    }
 
     const test::DocumentMetaStoreObserver &metaStoreObserver() {
         return _dmsc->getObserver();
@@ -550,7 +552,7 @@ struct FixtureBase
         return getMetaStore().getMetaData(doc_.doc->getId().getGlobalId());
     }
 
-    DocBuilder &getBuilder() { return *sc._builder; }
+    DocBuilder &getBuilder() { return sc._builder; }
 
     DocumentContext doc(const vespalib::string &docId, uint64_t timestamp) {
         return DocumentContext(docId, timestamp, getBuilder());
@@ -575,7 +577,7 @@ struct FixtureBase
     void putAndWait(const DocumentContext &docCtx) {
         FeedTokenContext token(_tracer);
         PutOperation op(docCtx.bid, docCtx.ts, docCtx.doc);
-        runInMaster([this, ft=std::move(token.ft), &op] () mutable { performPut(std::move(ft), op); });
+        runInMaster([this, ft = std::move(token.ft), &op]() mutable { performPut(std::move(ft), op); });
         token.mt.await();
     }
 
@@ -588,7 +590,7 @@ struct FixtureBase
     void updateAndWait(const DocumentContext &docCtx) {
         FeedTokenContext token(_tracer);
         UpdateOperation op(docCtx.bid, docCtx.ts, docCtx.upd);
-        runInMaster([this, ft=std::move(token.ft), &op] () mutable { performUpdate(std::move(ft), op); });
+        runInMaster([this, ft = std::move(token.ft), &op]() mutable { performUpdate(std::move(ft), op); });
         token.mt.await();
     }
 
@@ -603,7 +605,7 @@ struct FixtureBase
     void removeAndWait(const DocumentContext &docCtx) {
         FeedTokenContext token(_tracer);
         RemoveOperationWithDocId op(docCtx.bid, docCtx.ts, docCtx.doc->getId());
-        runInMaster([this, ft=std::move(token.ft), &op] () mutable { performRemove(std::move(ft), op); });
+        runInMaster([this, ft = std::move(token.ft), &op]() mutable { performRemove(std::move(ft), op); });
         token.mt.await();
     }
 
@@ -613,26 +615,35 @@ struct FixtureBase
         }
     }
 
-    void performMove(MoveOperation &op) {
+    void performMove(MoveOperation &op, IDestructorCallback::SP onDone) {
         op.setSerialNum(++serial);
-        getFeedView().handleMove(op, IDestructorCallback::SP());
+        getFeedView().handleMove(op, std::move(onDone));
     }
 
     void moveAndWait(const DocumentContext &docCtx, uint32_t fromLid, uint32_t toLid) {
         MoveOperation op(docCtx.bid, docCtx.ts, docCtx.doc, DbDocumentId(pc._params._subDbId, fromLid), pc._params._subDbId);
         op.setTargetLid(toLid);
-        runInMaster([&]() { performMove(op); });
+        Gate gate;
+        runInMaster([&, onDone=std::make_shared<GateCallback>(gate)]() { performMove(op, std::move(onDone)); });
+        gate.await();
     }
 
-    void performDeleteBucket(DeleteBucketOperation &op) {
+    void performDeleteBucket(DeleteBucketOperation &op, IDestructorCallback::SP onDone) {
         getFeedView().prepareDeleteBucket(op);
         op.setSerialNum(++serial);
-        getFeedView().handleDeleteBucket(op);
+        getFeedView().handleDeleteBucket(op, onDone);
     }
 
-    void performForceCommit() { getFeedView().forceCommit(serial); }
+    void performForceCommit(IDestructorCallback::SP onDone) {
+        getFeedView().forceCommit(serial, std::move(onDone));
+    }
     void forceCommitAndWait() {
-        runInMaster([&]() { performForceCommit(); });
+        Gate gate;
+        runInMaster([this, onDone=std::make_shared<GateCallback>(gate)]() {
+            performForceCommit(std::move(onDone));
+        });
+        gate.await();
+        _writeService.master().sync();
     }
 
     bool assertTrace(const vespalib::string &exp) {
@@ -652,14 +663,19 @@ struct FixtureBase
         return docs;
     }
 
-    void performCompactLidSpace(uint32_t wantedLidLimit) {
+    void performCompactLidSpace(uint32_t wantedLidLimit, IDestructorCallback::SP onDone) {
         auto &fv = getFeedView();
         CompactLidSpaceOperation op(0, wantedLidLimit);
         op.setSerialNum(++serial);
-        fv.handleCompactLidSpace(op);
+        fv.handleCompactLidSpace(op, onDone);
     }
     void compactLidSpaceAndWait(uint32_t wantedLidLimit) {
-        runInMaster([&] () { performCompactLidSpace(wantedLidLimit); });
+        Gate gate;
+        runInMaster([&]() {
+            performCompactLidSpace(wantedLidLimit, std::make_shared<GateCallback>(gate));
+        });
+        gate.await();
+        _writeService.master().sync();
     }
     void assertChangeHandler(document::GlobalId expGid, uint32_t expLid, uint32_t expChanges) {
         _gidToLidChangeHandler->assertChanges(expGid, expLid, expChanges);
@@ -671,6 +687,8 @@ struct FixtureBase
         _gidToLidChangeHandler->assertLid(gid, expLid);
     }
     void populateBeforeCompactLidSpace();
+
+    void dms_commit() { _dmsc->get().commit(search::CommitParam(serial)); }
 };
 
 
@@ -679,7 +697,7 @@ FixtureBase::FixtureBase()
       _pendingLidsForCommit(std::make_shared<PendingLidTracker>()),
       sc(),
       iw(std::make_shared<MyIndexWriter>(_tracer)),
-      sa(std::make_shared<MySummaryAdapter>(*sc._builder->getDocumentTypeRepo())),
+      sa(std::make_shared<MySummaryAdapter>(sc._builder.get_repo())),
       aw(std::make_shared<MyAttributeWriter>(_tracer)),
       miw(static_cast<MyIndexWriter&>(*iw)),
       msa(static_cast<MySummaryAdapter&>(*sa)),
@@ -687,10 +705,9 @@ FixtureBase::FixtureBase()
       _docIdLimit(0u),
       _dmscReal(std::make_shared<DocumentMetaStoreContext>(std::make_shared<bucketdb::BucketDBOwner>())),
       _dmsc(std::make_shared<test::DocumentMetaStoreContextObserver>(*_dmscReal)),
-      pc(sc._builder->getDocumentType().getName(), "fileconfig_test"),
-      _sharedExecutor(1, 0x10000),
-      _writeServiceReal(_sharedExecutor),
-      _writeService(_writeServiceReal),
+      pc(sc._builder.get_document_type().getName(), "fileconfig_test"),
+      _service(1),
+      _writeService(_service.write()),
       serial(0),
       _gidToLidChangeHandler(std::make_shared<MyGidToLidChangeHandler>())
 {
@@ -698,7 +715,7 @@ FixtureBase::FixtureBase()
 }
 
 FixtureBase::~FixtureBase() {
-    _writeServiceReal.sync();
+    _service.shutdown();
 }
 
 void
@@ -722,8 +739,7 @@ struct SearchableFeedViewFixture : public FixtureBase
            SearchableFeedView::Context(iw))
     {
     }
-    ~SearchableFeedViewFixture() override
-    {
+    ~SearchableFeedViewFixture() override {
         forceCommitAndWait();
     }
     IFeedView &getFeedView() override { return fv; }
@@ -740,8 +756,7 @@ struct FastAccessFeedViewFixture : public FixtureBase
            FastAccessFeedView::Context(aw, _docIdLimit))
     {
     }
-    ~FastAccessFeedViewFixture() override
-    {
+    ~FastAccessFeedViewFixture() override {
         forceCommitAndWait();
     }
     IFeedView &getFeedView() override { return fv; }
@@ -786,6 +801,7 @@ TEST_F("require that put() updates document meta store with bucket info",
 {
     DocumentContext dc = f.doc1();
     f.putAndWait(dc);
+    f.dms_commit();
 
     assertBucketInfo(dc.bid, dc.ts, 1, f.getMetaStore());
     // TODO: rewrite to use getBucketInfo() when available
@@ -825,6 +841,7 @@ TEST_F("require that update() updates document meta store with bucket info",
     f.putAndWait(dc1);
     BucketChecksum bcs = f.getBucketDB()->get(dc1.bid).getChecksum();
     f.updateAndWait(dc2);
+    f.dms_commit();
 
     assertBucketInfo(dc1.bid, Timestamp(20), 1, f.getMetaStore());
     // TODO: rewrite to use getBucketInfo() when available
@@ -854,6 +871,7 @@ TEST_F("require that remove() updates document meta store with bucket info",
     f.putAndWait(dc2);
     BucketChecksum bcs2 = f.getBucketDB()->get(dc2.bid).getChecksum();
     f.removeAndWait(DocumentContext("id:test:searchdocument:n=1:2", 20, f.getBuilder()));
+    f.dms_commit();
 
     assertBucketInfo(dc1.bid, Timestamp(10), 1, f.getMetaStore());
     EXPECT_FALSE(f.getMetaStore().validLid(2)); // don't remember remove
@@ -897,7 +915,7 @@ assertThreadObserver(uint32_t masterExecuteCnt,
     return true;
 }
 
-TEST_F("require that remove() calls removeComplete() via delayed thread service",
+TEST_F("require that remove() calls removes_complete() via delayed thread service",
         SearchableFeedViewFixture)
 {
     EXPECT_TRUE(assertThreadObserver(0, 0, 0, f.writeServiceObserver()));
@@ -910,8 +928,9 @@ TEST_F("require that remove() calls removeComplete() via delayed thread service"
     // remove index fields handled in index thread
     // delayed remove complete handled in same index thread, then master thread
     EXPECT_TRUE(assertThreadObserver(5, 4, 4, f.writeServiceObserver()));
-    EXPECT_EQUAL(1u, f.metaStoreObserver()._removeCompleteCnt);
-    EXPECT_EQUAL(1u, f.metaStoreObserver()._removeCompleteLid);
+    EXPECT_EQUAL(1u, f.metaStoreObserver()._removes_complete_cnt);
+    ASSERT_FALSE(f.metaStoreObserver()._removes_complete_lids.empty());
+    EXPECT_EQUAL(1u, f.metaStoreObserver()._removes_complete_lids.back());
 }
 
 TEST_F("require that handleDeleteBucket() removes documents", SearchableFeedViewFixture)
@@ -930,6 +949,7 @@ TEST_F("require that handleDeleteBucket() removes documents", SearchableFeedView
     TEST_DO(f.assertChangeNotified(docs[2].gid(), 3));
     TEST_DO(f.assertChangeNotified(docs[3].gid(), 4));
     TEST_DO(f.assertChangeNotified(docs[4].gid(), 5));
+    f.dms_commit();
 
     DocumentIdT lid;
     EXPECT_TRUE(f.getMetaStore().getLid(docs[0].doc->getId().getGlobalId(), lid));
@@ -941,7 +961,12 @@ TEST_F("require that handleDeleteBucket() removes documents", SearchableFeedView
 
     // delete bucket for user 1
     DeleteBucketOperation op(docs[0].bid);
-    f.runInMaster([&] () { f.performDeleteBucket(op); });
+    vespalib::Gate gate;
+    f.runInMaster([&, onDone=std::make_shared<GateCallback>(gate)]() {
+        f.performDeleteBucket(op, std::move(onDone));
+    });
+    gate.await();
+    f.dms_commit();
 
     EXPECT_EQUAL(0u, f.getBucketDB()->get(docs[0].bid).getDocumentCount());
     EXPECT_EQUAL(2u, f.getBucketDB()->get(docs[3].bid).getDocumentCount());
@@ -1043,7 +1068,11 @@ TEST_F("require that removes are not remembered", SearchableFeedViewFixture)
 TEST_F("require that heartbeat propagates to index- and attributeadapter",
        SearchableFeedViewFixture)
 {
-    f.runInMaster([&] () { f.fv.heartBeat(2); });
+    vespalib::Gate gate;
+    f.runInMaster([&, onDone = std::make_shared<vespalib::GateCallback>(gate)]() {
+        f.fv.heartBeat(2, std::move(onDone));
+    });
+    gate.await();
     EXPECT_EQUAL(1, f.miw._heartBeatCount);
     EXPECT_EQUAL(1, f.maw._heartBeatCount);
 }
@@ -1139,7 +1168,7 @@ TEST_F("require that compactLidSpace() propagates to document meta store and doc
     f.compactLidSpaceAndWait(2);
     // performIndexForceCommit in index thread, then completion callback
     // in master thread.
-    EXPECT_TRUE(assertThreadObserver(7, 6, 6, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(7, 7, 7, f.writeServiceObserver()));
     EXPECT_EQUAL(2u, f.metaStoreObserver()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(2u, f.getDocumentStore()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(1u, f.metaStoreObserver()._holdUnblockShrinkLidSpaceCnt);
@@ -1155,32 +1184,34 @@ TEST_F("require that compactLidSpace() doesn't propagate to "
     EXPECT_TRUE(assertThreadObserver(5, 4, 4, f.writeServiceObserver()));
     CompactLidSpaceOperation op(0, 2);
     op.setSerialNum(0);
-    f.runInMaster([&] () { f.fv.handleCompactLidSpace(op); });
+    Gate gate;
+    f.runInMaster([&, onDone=std::make_shared<GateCallback>(gate)]() {
+        f.fv.handleCompactLidSpace(op, std::move(onDone));
+    });
+    gate.await();
+    f._writeService.master().sync();
     // Delayed holdUnblockShrinkLidSpace() in index thread, then master thread
-    EXPECT_TRUE(assertThreadObserver(6, 5, 4, f.writeServiceObserver()));
+    EXPECT_TRUE(assertThreadObserver(6, 6, 5, f.writeServiceObserver()));
     EXPECT_EQUAL(0u, f.metaStoreObserver()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(0u, f.getDocumentStore()._compactLidSpaceLidLimit);
     EXPECT_EQUAL(0u, f.metaStoreObserver()._holdUnblockShrinkLidSpaceCnt);
 }
 
-TEST_F("require that compactLidSpace() propagates to attributeadapter",
-       FastAccessFeedViewFixture)
+TEST_F("require that compactLidSpace() propagates to attributeadapter", FastAccessFeedViewFixture)
 {
     f.populateBeforeCompactLidSpace();
     f.compactLidSpaceAndWait(2);
     EXPECT_EQUAL(2u, f.maw._wantedLidLimit);
 }
 
-TEST_F("require that compactLidSpace() propagates to index writer",
-       SearchableFeedViewFixture)
+TEST_F("require that compactLidSpace() propagates to index writer", SearchableFeedViewFixture)
 {
     f.populateBeforeCompactLidSpace();
     f.compactLidSpaceAndWait(2);
     EXPECT_EQUAL(2u, f.miw._wantedLidLimit);
 }
 
-TEST_F("require that commit is not implicitly called",
-       SearchableFeedViewFixture)
+TEST_F("require that commit is not implicitly called", SearchableFeedViewFixture)
 {
     DocumentContext dc = f.doc1();
     f.putAndWait(dc);
@@ -1200,8 +1231,7 @@ TEST_F("require that commit is not implicitly called",
     f.forceCommitAndWait();
 }
 
-TEST_F("require that forceCommit updates docid limit",
-       SearchableFeedViewFixture)
+TEST_F("require that forceCommit updates docid limit", SearchableFeedViewFixture)
 {
     DocumentContext dc = f.doc1();
     f.putAndWait(dc);

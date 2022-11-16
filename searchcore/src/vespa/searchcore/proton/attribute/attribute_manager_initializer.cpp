@@ -7,10 +7,10 @@
 #include <future>
 
 using search::AttributeVector;
-using search::CompactionStrategy;
 using search::GrowStrategy;
 using search::SerialNum;
 using vespa::config::search::AttributesConfig;
+using vespalib::datastore::CompactionStrategy;
 
 namespace proton {
 
@@ -30,7 +30,7 @@ public:
                              DocumentMetaStore::SP documentMetaStore,
                              InitializedAttributesResult &result)
         : _initializer(std::move(initializer)),
-          _documentMetaStore(documentMetaStore),
+          _documentMetaStore(std::move(documentMetaStore)),
           _result(result)
     {}
 
@@ -74,8 +74,8 @@ AttributeManagerInitializerTask::AttributeManagerInitializerTask(std::promise<vo
                                                                  InitializedAttributesResult &attributesResult)
     : _promise(std::move(promise)),
       _configSerialNum(configSerialNum),
-      _documentMetaStore(documentMetaStore),
-      _attrMgr(attrMgr),
+      _documentMetaStore(std::move(documentMetaStore)),
+      _attrMgr(std::move(attrMgr)),
       _attributesResult(attributesResult)
 {
 }
@@ -104,7 +104,7 @@ public:
                                      InitializerTask::SP documentMetaStoreInitTask,
                                      DocumentMetaStore::SP documentMetaStore,
                                      InitializedAttributesResult &attributesResult);
-    ~AttributeInitializerTasksBuilder();
+    ~AttributeInitializerTasksBuilder() override;
     void add(AttributeInitializer::UP initializer) override;
 };
 
@@ -113,8 +113,8 @@ AttributeInitializerTasksBuilder::AttributeInitializerTasksBuilder(InitializerTa
                                                                    DocumentMetaStore::SP documentMetaStore,
                                                                    InitializedAttributesResult &attributesResult)
     : _attrMgrInitTask(attrMgrInitTask),
-      _documentMetaStoreInitTask(documentMetaStoreInitTask),
-      _documentMetaStore(documentMetaStore),
+      _documentMetaStoreInitTask(std::move(documentMetaStoreInitTask)),
+      _documentMetaStore(std::move(documentMetaStore)),
       _attributesResult(attributesResult)
 { }
 
@@ -132,7 +132,7 @@ AttributeInitializerTasksBuilder::add(AttributeInitializer::UP initializer) {
 
 }
 
-AttributeCollectionSpec::UP
+std::unique_ptr<AttributeCollectionSpec>
 AttributeManagerInitializer::createAttributeSpec() const
 {
     uint32_t docIdLimit = 1; // The real docIdLimit is used after attributes are loaded to pad them
@@ -143,7 +143,7 @@ AttributeManagerInitializer::createAttributeSpec() const
 AttributeManagerInitializer::AttributeManagerInitializer(SerialNum configSerialNum,
                                                          initializer::InitializerTask::SP documentMetaStoreInitTask,
                                                          DocumentMetaStore::SP documentMetaStore,
-                                                         AttributeManager::SP baseAttrMgr,
+                                                         const AttributeManager & baseAttrMgr,
                                                          const AttributesConfig &attrCfg,
                                                          const AllocStrategy& alloc_strategy,
                                                          bool fastAccessAttributesOnly,
@@ -157,13 +157,15 @@ AttributeManagerInitializer::AttributeManagerInitializer(SerialNum configSerialN
       _fastAccessAttributesOnly(fastAccessAttributesOnly),
       _master(master),
       _attributesResult(),
-      _attrMgrResult(attrMgrResult)
+      _attrMgrResult(std::move(attrMgrResult))
 {
     addDependency(documentMetaStoreInitTask);
-    AttributeInitializerTasksBuilder tasksBuilder(*this, documentMetaStoreInitTask, documentMetaStore, _attributesResult);
-    AttributeCollectionSpec::UP attrSpec = createAttributeSpec();
-    _attrMgr = std::make_shared<AttributeManager>(*baseAttrMgr, *attrSpec, tasksBuilder);
+    AttributeInitializerTasksBuilder tasksBuilder(*this, std::move(documentMetaStoreInitTask), std::move(documentMetaStore), _attributesResult);
+    std::unique_ptr<AttributeCollectionSpec> attrSpec = createAttributeSpec();
+    _attrMgr = std::make_shared<AttributeManager>(baseAttrMgr, std::move(*attrSpec), tasksBuilder);
 }
+
+AttributeManagerInitializer::~AttributeManagerInitializer() = default;
 
 void
 AttributeManagerInitializer::run()

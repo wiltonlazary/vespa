@@ -7,12 +7,12 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>linguistics</artifactId>
   <packaging>container-plugin</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <dependencies>
     <dependency>
       <groupId>junit</groupId>
@@ -22,6 +22,7 @@
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -61,17 +62,9 @@
       <groupId>org.apache.opennlp</groupId>
       <artifactId>opennlp-tools</artifactId>
     </dependency>
-    <dependency>
-      <groupId>com.optimaize.languagedetector</groupId>
-      <artifactId>language-detector</artifactId>
-    </dependency>
   </dependencies>
   <build>
     <plugins>
-      <plugin>
-        <groupId>com.github.os72</groupId>
-        <artifactId>protoc-jar-maven-plugin</artifactId>
-      </plugin>
       <plugin>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>bundle-plugin</artifactId>
@@ -80,14 +73,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Xlint:rawtypes</arg>
-            <arg>-Xlint:unchecked</arg>
-            <arg>-Xlint:deprecation</arg>
-	    <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>com.yahoo.vespa</groupId>

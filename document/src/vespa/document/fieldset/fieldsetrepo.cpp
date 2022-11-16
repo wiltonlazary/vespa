@@ -28,10 +28,12 @@ parseSpecialValues(vespalib::stringref name)
         return std::make_shared<NoFields>();
     } else if ((name.size() == 7) && (name[1] == 'd') && (name[2] == 'o') && (name[3] == 'c') && (name[4] == 'i') && (name[5] == 'd') && (name[6] == ']')) {
         return std::make_shared<DocIdOnly>();
+    } else if (name.size() == 10 && name == DocumentOnly::NAME) {
+        return std::make_shared<DocumentOnly>();
     } else {
         throw vespalib::IllegalArgumentException(
                 "The only special names (enclosed in '[]') allowed are "
-                "id, all, none, not '" + name + "'.");
+                "id, all, none, docid, document; but not '" + name + "'.");
     }
 }
 
@@ -109,6 +111,8 @@ FieldSetRepo::serialize(const FieldSet& fieldSet)
             return NoFields::NAME;
         case FieldSet::Type::DOCID:
             return DocIdOnly::NAME;
+        case FieldSet::Type::DOCUMENT_ONLY:
+            return DocumentOnly::NAME;
         default:
             return "";
     }
@@ -119,9 +123,9 @@ FieldSetRepo::FieldSetRepo(const DocumentTypeRepo& repo)
     : _doumentTyperepo(repo),
       _configuredFieldSets()
 {
-    repo.forEachDocumentType(*DocumentTypeRepo::makeLambda([&](const DocumentType &type) {
+    repo.forEachDocumentType([&](const DocumentType &type) {
         configureDocumentType(type);
-    }));
+    });
 }
 FieldSetRepo::~FieldSetRepo() = default;
 

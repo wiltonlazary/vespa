@@ -1,13 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "predicate_attribute.h"
 #include "attribute_header.h"
 #include "iattributesavetarget.h"
 #include "load_utils.h"
-#include "predicate_attribute.h"
 #include <vespa/document/fieldvalue/predicatefieldvalue.h>
 #include <vespa/document/predicate/predicate.h>
 #include <vespa/searchlib/predicate/predicate_index.h>
 #include <vespa/searchlib/util/fileutil.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/data/slime/slime.h>
 #include <vespa/vespalib/util/size_literals.h>
 
@@ -64,10 +65,14 @@ adjustUpperBound(int32_t arity, int64_t upper_bound) {
 
 SimpleIndexConfig createSimpleIndexConfig(const search::attribute::Config &config) {
     return SimpleIndexConfig(config.predicateParams().dense_posting_list_threshold(),
-                             config.getGrowStrategy().to_generic_strategy());
+                             config.getGrowStrategy());
 }
 
 }  // namespace
+
+PredicateAttribute::PredicateAttribute(const vespalib::string &base_file_name)
+    : PredicateAttribute(base_file_name, Config(BasicType::PREDICATE))
+{}
 
 PredicateAttribute::PredicateAttribute(const vespalib::string &base_file_name, const Config &config)
     : NotImplementedAttribute(base_file_name, config),
@@ -76,15 +81,15 @@ PredicateAttribute::PredicateAttribute(const vespalib::string &base_file_name, c
                                               createSimpleIndexConfig(config), config.predicateParams().arity())),
       _lower_bound(adjustLowerBound(config.predicateParams().arity(), config.predicateParams().lower_bound())),
       _upper_bound(adjustUpperBound(config.predicateParams().arity(), config.predicateParams().upper_bound())),
-      _min_feature(config.getGrowStrategy().to_generic_strategy(), getGenerationHolder()),
-      _interval_range_vector(config.getGrowStrategy().to_generic_strategy(), getGenerationHolder()),
+      _min_feature(config.getGrowStrategy(), getGenerationHolder()),
+      _interval_range_vector(config.getGrowStrategy(), getGenerationHolder()),
       _max_interval_range(1)
 {
 }
 
 PredicateAttribute::~PredicateAttribute()
 {
-    getGenerationHolder().clearHoldLists();
+    getGenerationHolder().reclaim_all();
 }
 
 void PredicateAttribute::populateIfNeeded() {
@@ -113,24 +118,24 @@ PredicateAttribute::onUpdateStat()
     combined.merge(_min_feature.getMemoryUsage());
     combined.merge(_interval_range_vector.getMemoryUsage());
     combined.merge(_index->getMemoryUsage());
-    combined.mergeGenerationHeldBytes(getGenerationHolder().getHeldBytes());
+    combined.mergeGenerationHeldBytes(getGenerationHolder().get_held_bytes());
     this->updateStatistics(_min_feature.size(), _min_feature.size(),
                            combined.allocatedBytes(), combined.usedBytes(),
                            combined.deadBytes(), combined.allocatedBytesOnHold());
 }
 
 void
-PredicateAttribute::removeOldGenerations(generation_t firstUsed)
+PredicateAttribute::reclaim_memory(generation_t oldest_used_gen)
 {
-    getGenerationHolder().trimHoldLists(firstUsed);
-    _index->trimHoldLists(firstUsed);
+    getGenerationHolder().reclaim(oldest_used_gen);
+    _index->reclaim_memory(oldest_used_gen);
 }
 
 void
-PredicateAttribute::onGenerationChange(generation_t generation)
+PredicateAttribute::before_inc_generation(generation_t current_gen)
 {
-    getGenerationHolder().transferHoldLists(generation - 1);
-    _index->transferHoldLists(generation - 1);
+    getGenerationHolder().assign_generation(current_gen);
+    _index->assign_generation(current_gen);
 }
 
 void
@@ -194,7 +199,7 @@ PredicateAttribute::onLoad(vespalib::Executor *)
     buffer.moveFreeToData(size);
 
     const GenericHeader &header = loaded_buffer->getHeader();
-    auto attributeHeader = attribute::AttributeHeader::extractTags(header);
+    auto attributeHeader = attribute::AttributeHeader::extractTags(header, getBaseFileName());
     uint32_t version = attributeHeader.getVersion();
 
     setCreateSerialNum(attributeHeader.getCreateSerialNum());
@@ -282,7 +287,5 @@ PredicateAttribute::updateValue(uint32_t doc_id, const PredicateFieldValue &valu
     _max_interval_range = std::max(result.interval_range, _max_interval_range);
     assert(result.interval_range > 0);
 }
-
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(PredicateAttribute, AttributeVector);
 
 }  // namespace search

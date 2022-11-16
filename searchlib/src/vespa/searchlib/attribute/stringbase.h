@@ -3,42 +3,12 @@
 #pragma once
 
 #include "no_loaded_vector.h"
-#include "enum_store_loaders.h"
-#include <vespa/searchlib/attribute/attributevector.h>
-#include <vespa/searchlib/attribute/changevector.h>
-#include <vespa/searchlib/attribute/i_enum_store.h>
-#include <vespa/searchlib/attribute/loadedenumvalue.h>
-#include <vespa/vespalib/regex/regex.h>
-#include <vespa/vespalib/text/lowercase.h>
-#include <vespa/vespalib/text/utf8.h>
-#include <optional>
+#include "attributevector.h"
+#include "i_enum_store.h"
+#include "loadedenumvalue.h"
+#include "string_search_context.h"
 
 namespace search {
-
-/**
- * Helper class for search context when scanning string fields
- * It handles different search settings like prefix, regex and cased/uncased.
- */
-class StringSearchHelper {
-public:
-    StringSearchHelper(QueryTermUCS4 & qTerm, bool cased);
-    ~StringSearchHelper();
-    bool isMatch(const char *src) const;
-    bool isPrefix() const { return _isPrefix; }
-    bool isRegex() const { return _isRegex; }
-    bool isCased() const { return _isCased; }
-    const vespalib::Regex & getRegex() const { return _regex; }
-private:
-    vespalib::Regex                _regex;
-    union {
-        const ucs4_t *_ucs4;
-        const char   *_char;
-    }                              _term;
-    uint32_t                       _termLen;
-    bool                           _isPrefix;
-    bool                           _isRegex;
-    bool                           _isCased;
-};
 
 class ReaderBase;
 
@@ -52,9 +22,8 @@ public:
     using EnumVector = IEnumStore::EnumVector;
     using LoadedValueType = const char*;
     using LoadedVector = NoLoadedVector;
-    using OffsetVector = vespalib::Array<uint32_t>;
+    using OffsetVector = std::vector<uint32_t, vespalib::allocator_large<uint32_t>>;
 public:
-    DECLARE_IDENTIFIABLE_ABSTRACT(StringAttribute);
     bool append(DocId doc, const vespalib::string & v, int32_t weight) {
         return AttributeVector::append(_changes, doc, StringChangeData(v), weight);
     }
@@ -78,7 +47,6 @@ public:
     uint32_t get(DocId doc, WeightedInt * v, uint32_t sz) const override;
     uint32_t get(DocId doc, WeightedFloat * v, uint32_t sz) const override;
     uint32_t clearDoc(DocId doc) override;
-    largeint_t getDefaultValue() const override { return 0; }
     static size_t countZero(const char * bt, size_t sz);
     static void generateOffsets(const char * bt, size_t sz, OffsetVector & offsets);
     virtual const char * getFromEnum(EnumHandle e) const = 0;
@@ -100,6 +68,8 @@ protected:
     bool onAddDoc(DocId doc) override;
 
     vespalib::MemoryUsage getChangeVectorMemoryUsage() const override;
+
+    bool get_match_is_cased() const noexcept;
 private:
     virtual void load_posting_lists(LoadedVector& loaded);
     virtual void load_enum_store(LoadedVector& loaded);
@@ -115,61 +85,6 @@ private:
 
     long onSerializeForAscendingSort(DocId doc, void * serTo, long available, const common::BlobConverter * bc) const override;
     long onSerializeForDescendingSort(DocId doc, void * serTo, long available, const common::BlobConverter * bc) const override;
-
-protected:
-    class StringSearchContext : public SearchContext {
-    public:
-        StringSearchContext(QueryTermSimpleUP qTerm, const StringAttribute & toBeSearched);
-        ~StringSearchContext() override;
-    protected:
-        bool valid() const override;
-        const QueryTermUCS4 * queryTerm() const override;
-        bool isMatch(const char *src) const { return _helper.isMatch(src); }
-        bool isPrefix() const { return _helper.isPrefix(); }
-        bool isRegex() const { return _helper.isRegex(); }
-        bool isCased() const { return _helper.isCased(); }
-        const vespalib::Regex & getRegex() const { return _helper.getRegex(); }
-
-        class CollectHitCount {
-        public:
-            CollectHitCount() : _hitCount(0) { }
-            void addWeight(int32_t w) {
-                (void) w;
-                _hitCount++;
-            }
-            int32_t getWeight() const { return _hitCount; }
-            bool hasMatch() const { return _hitCount != 0; }
-        private:
-            uint32_t _hitCount;
-        };
-        class CollectWeight {
-        public:
-            CollectWeight() : _hitCount(0), _weight(0) { }
-            void addWeight(int32_t w) {
-                _weight += w;
-                _hitCount++;
-            }
-            int32_t getWeight() const { return _weight; }
-            bool hasMatch() const { return _hitCount != 0; }
-        private:
-            uint32_t _hitCount;
-            int32_t  _weight;
-        };
-
-        template<typename WeightedT, typename Accessor, typename Collector>
-        int32_t findNextMatch(vespalib::ConstArrayRef<WeightedT> w, int32_t elemId, const Accessor & ac, Collector & collector) const {
-            for (uint32_t i(elemId); i < w.size(); i++) {
-                if (isMatch(ac.get(w[i].value()))) {
-                    collector.addWeight(w[i].weight());
-                    return i;
-                }
-            }
-            return -1;
-        }
-    private:
-        std::unique_ptr<QueryTermUCS4> _queryTerm;
-        StringSearchHelper             _helper;
-    };
 };
 
 }

@@ -31,19 +31,19 @@ public class FilterChainsBuilder extends DomChainsBuilder<Filter, Chain<Filter>,
                     HttpBuilder.RESPONSE_CHAIN_TAG_NAME, FilterChainBuilder.class);
 
     public FilterChainsBuilder() {
-        super(null, allowedComponentTypes, null);
+        super(allowedComponentTypes);
     }
 
     @Override
-    protected FilterChains newChainsInstance(AbstractConfigProducer parent) {
+    protected FilterChains newChainsInstance(AbstractConfigProducer<?> parent) {
         return new FilterChains(parent);
     }
 
     @Override
     protected ChainsBuilder<Filter, Chain<Filter>> readChains(
             DeployState deployState,
-            AbstractConfigProducer ancestor,
-            List<Element> allChainsElems, Map<String, ComponentsBuilder.ComponentType> outerComponentTypeByComponentName) {
+            AbstractConfigProducer<?> ancestor,
+            List<Element> allChainsElems, Map<String, ComponentsBuilder.ComponentType<?>> outerComponentTypeByComponentName) {
 
         return new ChainsBuilder<>(deployState, ancestor, allChainsElems, outerComponentTypeByComponentName, chainType2BuilderClass);
     }

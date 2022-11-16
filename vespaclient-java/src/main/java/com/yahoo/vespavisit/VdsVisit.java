@@ -3,6 +3,7 @@ package com.yahoo.vespavisit;
 
 import com.yahoo.document.FixedBucketSpaces;
 import com.yahoo.document.fieldset.DocIdOnly;
+import com.yahoo.document.fieldset.DocumentOnly;
 import com.yahoo.document.select.parser.ParseException;
 import com.yahoo.documentapi.ProgressToken;
 import com.yahoo.documentapi.VisitorControlHandler;
@@ -10,7 +11,6 @@ import com.yahoo.documentapi.VisitorParameters;
 import com.yahoo.documentapi.VisitorSession;
 import com.yahoo.documentapi.messagebus.MessageBusDocumentAccess;
 import com.yahoo.documentapi.messagebus.MessageBusParams;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
 import com.yahoo.log.LogSetup;
 import com.yahoo.messagebus.StaticThrottlePolicy;
@@ -25,6 +25,7 @@ import org.apache.commons.cli.Options;
 
 import java.io.*;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -36,7 +37,7 @@ import java.util.stream.Collectors;
 public class VdsVisit {
 
     private VdsVisitParameters params;
-    private MessageBusParams mbparams = new MessageBusParams(new LoadTypeSet());
+    private MessageBusParams mbparams = new MessageBusParams();
     private VisitorSession session;
 
     private final VisitorSessionAccessorFactory sessionAccessorFactory;
@@ -194,7 +195,7 @@ public class VdsVisit {
                 .longOpt("fieldset")
                 .hasArg(true)
                 .argName("fieldset")
-                .desc("Retrieve the specified fields only (see https://docs.vespa.ai/en/documents.html#fieldsets). Default is [all].")
+                .desc("Retrieve the specified fields only (see https://docs.vespa.ai/en/documents.html#fieldsets). Default is [document].")
                 .build());
 
         options.addOption(Option.builder()
@@ -468,6 +469,8 @@ public class VdsVisit {
             }
             if (line.hasOption("l")) {
                 params.fieldSet(line.getOptionValue("l"));
+            } else {
+                params.fieldSet(DocumentOnly.NAME);
             }
             if (line.hasOption("visitinconsistentbuckets")) {
                 params.visitInconsistentBuckets(true);
@@ -522,9 +525,6 @@ public class VdsVisit {
             }
             if (line.hasOption("processtime")) {
                 allParams.setProcessTime(((Number) line.getParsedOptionValue("processtime")).intValue());
-            }
-            if (line.hasOption("maxhits")) {
-                params.setMaxFirstPassHits(((Number)line.getParsedOptionValue("maxhits")).intValue());
             }
             if (line.hasOption("maxtotalhits")) {
                 params.setMaxTotalHits(((Number)line.getParsedOptionValue("maxtotalhits")).intValue());
@@ -650,7 +650,7 @@ public class VdsVisit {
             out.println("Adding the following library specific parameters:");
             for (Map.Entry<String, byte[]> entry : params.getLibraryParameters().entrySet()) {
                 out.println("  " + entry.getKey() + " = " +
-                        new String(entry.getValue(), Charset.forName("utf-8")));
+                            new String(entry.getValue(), StandardCharsets.UTF_8));
             }
         }
         if (params.getPriority() != DocumentProtocol.Priority.NORMAL_3) {

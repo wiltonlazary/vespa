@@ -8,11 +8,11 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>orchestrator</artifactId>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <packaging>container-plugin</packaging>
   <name>${project.artifactId}</name>
   <dependencies>
@@ -54,9 +54,15 @@
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
-      <artifactId>jaxrs_client_utils</artifactId>
+      <artifactId>http-client</artifactId>
       <version>${project.version}</version>
       <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.yahoo.vespa</groupId>
+      <artifactId>container-apache-http-client-bundle</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -91,20 +97,6 @@
       <artifactId>configdefinitions</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.glassfish.jersey.ext</groupId>
-      <artifactId>jersey-proxy-client</artifactId>
-        <exclusions>
-            <exclusion>
-                <groupId>org.glassfish.jersey.core</groupId>
-                <artifactId>jersey-common</artifactId>
-            </exclusion>
-            <exclusion>
-                <groupId>javax.ws.rs</groupId>
-                <artifactId>javax.ws.rs-api</artifactId>
-            </exclusion>
-        </exclusions>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
@@ -155,16 +147,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Xlint:all</arg>
-            <arg>-Xlint:-deprecation</arg>
-            <arg>-Xlint:-serial</arg>
-	    <arg>-Xlint:-varargs</arg>
-            <arg>-Xlint:-try</arg>
-            <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
       </plugin>
     </plugins>
   </build>

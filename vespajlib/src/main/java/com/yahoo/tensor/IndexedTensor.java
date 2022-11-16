@@ -220,20 +220,37 @@ public abstract class IndexedTensor implements Tensor {
 
     @Override
     public String toString() {
-        if (type.rank() == 0) return Tensor.toStandardString(this);
-        if (type.dimensions().stream().anyMatch(d -> d.size().isEmpty()))
-            return Tensor.toStandardString(this);
+        return toString(true, true);
+    }
+
+    @Override
+    public String toString(boolean withType, boolean shortForms) {
+        return toString(withType, shortForms, Long.MAX_VALUE);
+    }
+
+    @Override
+    public String toAbbreviatedString(boolean withType, boolean shortForms) {
+        return toString(withType, shortForms, Math.max(2, 10 / (type().dimensions().stream().filter(d -> d.isMapped()).count() + 1)));
+    }
+
+    private String toString(boolean withType, boolean shortForms, long maxCells) {
+        if (! shortForms || type.rank() == 0 || type.dimensions().stream().anyMatch(d -> d.size().isEmpty()))
+            return Tensor.toStandardString(this, withType, shortForms, maxCells);
 
         Indexes indexes = Indexes.of(dimensionSizes);
-
-        StringBuilder b = new StringBuilder(type.toString()).append(":");
-        indexedBlockToString(this, indexes, b);
+        StringBuilder b = new StringBuilder();
+        if (withType)
+            b.append(type).append(":");
+        indexedBlockToString(this, indexes, maxCells, b);
         return b.toString();
     }
 
-    static void indexedBlockToString(IndexedTensor tensor, Indexes indexes, StringBuilder b) {
-        for (int index = 0; index < tensor.size(); index++) {
+    static void indexedBlockToString(IndexedTensor tensor, Indexes indexes, long maxCells, StringBuilder b) {
+        int index = 0;
+        for (; index < tensor.size() && index < maxCells; index++) {
             indexes.next();
+            if (index > 0)
+                b.append(", ");
 
             // start brackets
             for (int i = 0; i < indexes.nextDimensionsAtStart(); i++)
@@ -252,9 +269,9 @@ public abstract class IndexedTensor implements Tensor {
             // end bracket and comma
             for (int i = 0; i < indexes.nextDimensionsAtEnd(); i++)
                 b.append("]");
-            if (index < tensor.size() - 1)
-                b.append(", ");
         }
+        if (index == maxCells && index < tensor.size())
+            b.append(", ...]");
     }
 
     @Override
@@ -428,7 +445,7 @@ public abstract class IndexedTensor implements Tensor {
             this.sizes = sizes;
         }
 
-        BoundBuilder fill(float[] values) {
+        public BoundBuilder fill(float[] values) {
             long index = 0;
             for (float value : values) {
                 cellByDirectIndex(index++, value);
@@ -436,7 +453,7 @@ public abstract class IndexedTensor implements Tensor {
             return this;
         }
 
-        BoundBuilder fill(double[] values) {
+        public BoundBuilder fill(double[] values) {
             long index = 0;
             for (double value : values) {
                 cellByDirectIndex(index++, value);

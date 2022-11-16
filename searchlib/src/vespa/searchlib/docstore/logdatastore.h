@@ -5,12 +5,15 @@
 #include "idatastore.h"
 #include "lid_info.h"
 #include "writeablefilechunk.h"
-#include <vespa/vespalib/util/compressionconfig.h>
 #include <vespa/searchcommon/common/growstrategy.h>
 #include <vespa/searchlib/common/tunefileinfo.h>
 #include <vespa/searchlib/transactionlog/syncproxy.h>
+#include <vespa/vespalib/datastore/atomic_value_wrapper.h>
+#include <vespa/vespalib/util/atomic.h>
+#include <vespa/vespalib/util/compressionconfig.h>
+#include <vespa/vespalib/util/cpu_usage.h>
+#include <vespa/vespalib/util/executor.h>
 #include <vespa/vespalib/util/rcuvector.h>
-#include <vespa/vespalib/util/threadexecutor.h>
 
 #include <set>
 
@@ -35,22 +38,22 @@ public:
     using NameIdSet = std::set<NameId>;
     using MonitorGuard = std::unique_lock<std::mutex>;
     using CompressionConfig = vespalib::compression::CompressionConfig;
+    template <typename T>
+    using AtomicValueWrapper = vespalib::datastore::AtomicValueWrapper<T>;
     class Config {
     public:
         Config();
 
         Config & setMaxFileSize(size_t v) { _maxFileSize = v; return *this; }
         Config & setMaxNumLids(size_t v) { _maxNumLids = v; return *this; }
-        Config & setMaxDiskBloatFactor(double v) { _maxDiskBloatFactor = v; return *this; }
-        Config & setMaxBucketSpread(double v) { _maxBucketSpread = v; return *this; }
+        Config & setMaxBucketSpread(double v) noexcept { _maxBucketSpread.store_relaxed(v); return *this; }
         Config & setMinFileSizeFactor(double v) { _minFileSizeFactor = v; return *this; }
 
         Config & compactCompression(CompressionConfig v) { _compactCompression = v; return *this; }
         Config & setFileConfig(WriteableFileChunk::Config v) { _fileConfig = v; return *this; }
 
         size_t getMaxFileSize() const { return _maxFileSize; }
-        double getMaxDiskBloatFactor() const { return _maxDiskBloatFactor; }
-        double getMaxBucketSpread() const { return _maxBucketSpread; }
+        double getMaxBucketSpread() const noexcept { return _maxBucketSpread.load_relaxed(); }
         double getMinFileSizeFactor() const { return _minFileSizeFactor; }
         uint32_t getMaxNumLids() const { return _maxNumLids; }
 
@@ -63,8 +66,7 @@ public:
         bool operator == (const Config &) const;
     private:
         size_t                      _maxFileSize;
-        double                      _maxDiskBloatFactor;
-        double                      _maxBucketSpread;
+        AtomicValueWrapper<double>  _maxBucketSpread;
         double                      _minFileSizeFactor;
         uint32_t                    _maxNumLids;
         bool                        _skipCrcOnRead;
@@ -87,7 +89,7 @@ public:
      *                          The caller must keep it alive for the semantic
      *                          lifetime of the log data store.
      */
-    LogDataStore(vespalib::ThreadExecutor &executor, const vespalib::string &dirName, const Config & config,
+    LogDataStore(vespalib::Executor &executor, const vespalib::string &dirName, const Config & config,
                  const GrowStrategy &growStrategy, const TuneFileSummary &tune,
                  const search::common::FileHeaderContext &fileHeaderContext,
                  transactionlog::SyncProxy &tlSyncer, IBucketizer::SP bucketizer, bool readOnly = false);
@@ -109,17 +111,16 @@ public:
     size_t getDiskFootprint() const override;
     size_t getDiskHeaderFootprint() const override;
     size_t getDiskBloat() const override;
-    size_t getMaxCompactGain() const override;
+    size_t getMaxSpreadAsBloat() const override;
 
-    /**
-     * Will compact the docsummary up to a lower limit of 5% bloat.
-     */
-    void compact(uint64_t syncToken);
+    void compactBloat(uint64_t syncToken) { compactWorst(syncToken, true); }
+    void compactSpread(uint64_t syncToken) { compactWorst(syncToken, false);}
 
     const Config & getConfig() const { return _config; }
     Config & getConfig() { return _config; }
 
-    void write(MonitorGuard guard, WriteableFileChunk & destination, uint64_t serialNum, uint32_t lid, const void * buffer, size_t len);
+    void write(MonitorGuard guard, WriteableFileChunk & destination, uint64_t serialNum, uint32_t lid,
+               const void * buffer, size_t len, vespalib::CpuUsage::Category cpu_category);
     void write(MonitorGuard guard, FileId destinationFileId, uint32_t lid, const void * buffer, size_t len);
 
     /**
@@ -155,7 +156,7 @@ public:
     LidInfo getLid(const Guard & guard, uint32_t lid) const override {
         (void) guard;
         if (lid < getDocIdLimit()) {
-            return _lidInfo[lid];
+            return vespalib::atomic::load_ref_acquire(_lidInfo.acquire_elem_ref(lid));
         } else {
             return LidInfo();
         }
@@ -183,10 +184,9 @@ private:
     class WrapVisitorProgress;
     class FileChunkHolder;
 
-    // Implements ISetLid API
     void setLid(const ISetLid::unique_lock & guard, uint32_t lid, const LidInfo & lm) override;
 
-    void compactWorst(double bloatLimit, double spreadLimit, bool prioritizeDiskBloat);
+    void compactWorst(uint64_t syncToken, bool compactDiskBloat);
     void compactFile(FileId chunkId);
 
     typedef vespalib::RcuVector<uint64_t> LidInfoVector;
@@ -201,8 +201,6 @@ private:
     NameIdSet eraseEmptyIdxFiles(NameIdSet partList);
     NameIdSet eraseIncompleteCompactedFiles(NameIdSet partList);
     void internalFlushAll();
-
-    bool isTotalDiskBloatExceeded(size_t diskFootPrint, size_t bloat) const;
 
     NameIdSet scanDir(const vespalib::string &dir, const vespalib::string &suffix);
     FileId allocateFileId(const MonitorGuard & guard);
@@ -223,7 +221,7 @@ private:
     vespalib::string createDatFileName(NameId id) const;
     vespalib::string createIdxFileName(NameId id) const;
 
-    void requireSpace(MonitorGuard guard, WriteableFileChunk & active);
+    void requireSpace(MonitorGuard guard, WriteableFileChunk & active, vespalib::CpuUsage::Category cpu_category);
     bool isReadOnly() const { return _readOnly; }
     void updateSerialNum();
 
@@ -240,7 +238,8 @@ private:
      */
     void unholdFileChunk(FileId fileId);
 
-    SerialNum flushFile(MonitorGuard guard, WriteableFileChunk & file, SerialNum syncToken);
+    SerialNum flushFile(MonitorGuard guard, WriteableFileChunk & file, SerialNum syncToken,
+                        vespalib::CpuUsage::Category cpu_category);
     SerialNum flushActive(SerialNum syncToken);
     void flushActiveAndWait(SerialNum syncToken);
     void flushFileAndWait(MonitorGuard guard, WriteableFileChunk & file, SerialNum syncToken);
@@ -248,7 +247,7 @@ private:
         return (_fileChunks.empty() ? 0 : _fileChunks.back()->getLastPersistedSerialNum());
     }
     bool shouldCompactToActiveFile(size_t compactedSize) const;
-    std::pair<bool, FileId> findNextToCompact(double bloatLimit, double spreadLimit, bool prioritizeDiskBloat);
+    std::pair<bool, FileId> findNextToCompact(bool compactDiskBloat);
     void incGeneration();
     bool canShrinkLidSpace(const MonitorGuard &guard) const;
 
@@ -264,7 +263,7 @@ private:
     FileId                                   _prevActive;
     mutable std::mutex                       _updateLock;
     bool                                     _readOnly;
-    vespalib::ThreadExecutor                &_executor;
+    vespalib::Executor                      &_executor;
     SerialNum                                _initFlushSyncToken;
     transactionlog::SyncProxy               &_tlSyncer;
     IBucketizer::SP                          _bucketizer;

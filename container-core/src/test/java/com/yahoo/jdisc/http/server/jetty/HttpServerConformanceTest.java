@@ -7,7 +7,6 @@ import com.google.inject.util.Modules;
 import com.yahoo.container.logging.ConnectionLog;
 import com.yahoo.container.logging.RequestLog;
 import com.yahoo.jdisc.http.ServerConfig;
-import com.yahoo.jdisc.http.ServletPathsConfig;
 import com.yahoo.jdisc.http.server.jetty.testutils.ConnectorFactoryRegistryModule;
 import com.yahoo.jdisc.test.ServerProviderConformanceTest;
 import org.apache.http.HttpResponse;
@@ -22,9 +21,9 @@ import org.apache.http.util.EntityUtils;
 import org.hamcrest.Description;
 import org.hamcrest.Matcher;
 import org.hamcrest.TypeSafeMatcher;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.URI;
@@ -72,7 +71,7 @@ public class HttpServerConformanceTest extends ServerProviderConformanceTest {
      * Reduce logging of every stack trace for {@link ServerProviderConformanceTest.ConformanceException} thrown.
      * This makes the log more readable and the test faster as well.
      */
-    @BeforeClass
+    @BeforeAll
     public static void reduceExcessiveLogging() {
         httpRequestDispatchLoggerOriginalLevel = httpRequestDispatchLogger.getLevel();
         httpRequestDispatchLogger.setLevel(Level.SEVERE);
@@ -80,7 +79,7 @@ public class HttpServerConformanceTest extends ServerProviderConformanceTest {
         executorService = Executors.newSingleThreadExecutor();
     }
 
-    @AfterClass
+    @AfterAll
     public static void restoreExcessiveLogging() throws IOException, InterruptedException {
         httpRequestDispatchLogger.setLevel(httpRequestDispatchLoggerOriginalLevel);
         httpClient.close();
@@ -88,7 +87,7 @@ public class HttpServerConformanceTest extends ServerProviderConformanceTest {
         executorService.awaitTermination(30, TimeUnit.SECONDS);
     }
 
-    @AfterClass
+    @AfterAll
     public static void reportDiagnostics() {
         System.out.println(
                 "After " + HttpServerConformanceTest.class.getSimpleName()
@@ -773,8 +772,6 @@ public class HttpServerConformanceTest extends ServerProviderConformanceTest {
                                     .toInstance(new FilterBindings.Builder().build());
                             bind(ServerConfig.class)
                                     .toInstance(new ServerConfig(new ServerConfig.Builder()));
-                            bind(ServletPathsConfig.class)
-                                    .toInstance(new ServletPathsConfig(new ServletPathsConfig.Builder()));
                             bind(ConnectionLog.class)
                                     .toInstance(new VoidConnectionLog());
                             bind(RequestLog.class)

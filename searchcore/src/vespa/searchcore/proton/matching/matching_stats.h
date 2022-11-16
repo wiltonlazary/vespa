@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstddef>
 #include <vespa/vespalib/util/time.h>
+#include <vespa/vespalib/datastore/atomic_value_wrapper.h>
 
 namespace proton::matching {
 
@@ -67,7 +68,7 @@ public:
         Avg    _wait_time;
         friend MatchingStats;
     public:
-        Partition()
+        Partition() noexcept
             : _docsCovered(0),
               _docsMatched(0),
               _docsRanked(0),
@@ -124,8 +125,8 @@ private:
     size_t                 _docsReRanked;
     size_t                 _softDoomed;
     Avg                    _doomOvertime;
-    double                 _softDoomFactor;
-    Avg                    _queryCollateralTime; // TODO: Remove in Vespa 8
+    using SoftDoomFactor = vespalib::datastore::AtomicValueWrapper<double>;
+    SoftDoomFactor         _softDoomFactor;
     Avg                    _querySetupTime;
     Avg                    _queryLatency;
     Avg                    _matchTime;
@@ -139,7 +140,7 @@ public:
     MatchingStats & operator = (const MatchingStats &) = delete;
     MatchingStats(MatchingStats &&) = default;
     MatchingStats & operator =  (MatchingStats &&) = default;
-    MatchingStats();
+    MatchingStats(double prev_soft_doom_factor = INITIAL_SOFT_DOOM_FACTOR);
     ~MatchingStats();
 
     MatchingStats &queries(size_t value) { _queries = value; return *this; }
@@ -165,16 +166,9 @@ public:
 
     vespalib::duration doomOvertime() const { return vespalib::from_s(_doomOvertime.max()); }
 
-    MatchingStats &softDoomFactor(double value) { _softDoomFactor = value; return *this; }
-    double softDoomFactor() const { return _softDoomFactor; }
+    MatchingStats &softDoomFactor(double value) { _softDoomFactor.store_relaxed(value); return *this; }
+    double softDoomFactor() const { return _softDoomFactor.load_relaxed(); }
     MatchingStats &updatesoftDoomFactor(vespalib::duration hardLimit, vespalib::duration softLimit, vespalib::duration duration);
-
-    // TODO: Remove in Vespa 8
-    MatchingStats &queryCollateralTime(double time_s) { _queryCollateralTime.set(time_s); return *this; }
-    double queryCollateralTimeAvg() const { return _queryCollateralTime.avg(); }
-    size_t queryCollateralTimeCount() const { return _queryCollateralTime.count(); }
-    double queryCollateralTimeMin() const { return _queryCollateralTime.min(); }
-    double queryCollateralTimeMax() const { return _queryCollateralTime.max(); }
 
     MatchingStats &querySetupTime(double time_s) { _querySetupTime.set(time_s); return *this; }
     double querySetupTimeAvg() const { return _querySetupTime.avg(); }

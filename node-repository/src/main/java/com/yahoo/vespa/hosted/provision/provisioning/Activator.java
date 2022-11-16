@@ -3,6 +3,7 @@ package com.yahoo.vespa.hosted.provision.provisioning;
 
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationTransaction;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Flavor;
@@ -45,8 +46,8 @@ class Activator {
 
     /** Activate required resources for application guarded by given lock */
     public void activate(Collection<HostSpec> hosts, long generation, ApplicationTransaction transaction) {
-        activateNodes(hosts, generation, transaction);
-        activateLoadBalancers(hosts, transaction);
+        NodeList newActive = activateNodes(hosts, generation, transaction);
+        activateLoadBalancers(hosts, newActive, transaction);
     }
 
     /**
@@ -62,8 +63,9 @@ class Activator {
      * @param generation the application config generation that is activated
      * @param transaction transaction with operations to commit together with any operations done within the repository,
      *                    while holding the node repository lock on this application
+     * @return the nodes that will be active when transaction is committed
      */
-    private void activateNodes(Collection<HostSpec> hosts, long generation, ApplicationTransaction transaction) {
+    private NodeList activateNodes(Collection<HostSpec> hosts, long generation, ApplicationTransaction transaction) {
         Instant activationTime = nodeRepository.clock().instant(); // Use one timestamp for all activation changes
         ApplicationId application = transaction.application();
         Set<String> hostnames = hosts.stream().map(HostSpec::hostname).collect(Collectors.toSet());
@@ -72,34 +74,35 @@ class Activator {
 
         NodeList reserved = updatePortsFrom(hosts, applicationNodes.state(Node.State.reserved)
                                                                    .matching(node -> hostnames.contains(node.hostname())));
+        nodeRepository.nodes().reserve(reserved.asList()); // Re-reserve nodes to avoid reservation expiry
+
         NodeList oldActive = applicationNodes.state(Node.State.active); // All nodes active now
         NodeList continuedActive = oldActive.matching(node -> hostnames.contains(node.hostname()));
         NodeList newActive = withHostInfo(continuedActive, hosts, activationTime).and(reserved); // All nodes that will be active when this is committed
         if ( ! containsAll(hostnames, newActive))
-            throw new IllegalArgumentException("Activation of " + application + " failed. " +
-                                               "Could not find all requested hosts." +
+            throw new RuntimeException("Activation of " + application + " failed, could not find all requested hosts." +
                                                "\nRequested: " + hosts +
                                                "\nReserved: " + reserved.hostnames() +
-                                               "\nActive: " + oldActive.hostnames() +
-                                               "\nThis might happen if the time from reserving host to activation takes " +
-                                               "longer time than reservation expiry (the hosts will then no longer be reserved)");
+                                               "\nActive: " + oldActive.hostnames());
 
         validateParentHosts(application, allNodes, reserved);
 
         NodeList activeToRemove = oldActive.matching(node ->  ! hostnames.contains(node.hostname()));
-        activeToRemove = NodeList.copyOf(activeToRemove.mapToList(Node::unretire)); // only active nodes can be retired. TODO: Move this line to deactivate
-        deactivate(activeToRemove, transaction); // TODO: Pass activation time in this call and next line
-        nodeRepository.nodes().activate(newActive.asList(), transaction.nested()); // activate also continued active to update node state
+        remove(activeToRemove, transaction); // TODO: Pass activation time in this call and next line
+        // TODO (freva): Replace .mapToList(...) with .asList() after 8.80
+        nodeRepository.nodes().activate(newActive.mapToList(node -> fixCloudAccount(node, allNodes)), transaction.nested()); // activate also continued active to update node state
 
         rememberResourceChange(transaction, generation, activationTime,
                                oldActive.not().retired(),
                                newActive.not().retired());
         unreserveParentsOf(reserved);
+        return newActive;
     }
 
-    private void deactivate(NodeList toDeactivate, ApplicationTransaction transaction) {
-        nodeRepository.nodes().deactivate(toDeactivate.not().failing().asList(), transaction);
-        nodeRepository.nodes().fail(toDeactivate.failing().asList(), transaction);
+    private void remove(NodeList nodes, ApplicationTransaction transaction) {
+        nodes = NodeList.copyOf(nodes.mapToList(Node::unretire)); // clear retire flag when moving to non-active state
+        nodeRepository.nodes().deactivate(nodes.not().failing().asList(), transaction);
+        nodeRepository.nodes().fail(nodes.failing().asList(), transaction);
     }
 
     private void rememberResourceChange(ApplicationTransaction transaction, long generation, Instant at,
@@ -113,7 +116,8 @@ class Activator {
             var cluster = modified.cluster(clusterEntry.getKey()).get();
             var previousResources = oldNodes.cluster(clusterEntry.getKey()).toResources();
             var currentResources = clusterEntry.getValue().toResources();
-            if ( ! previousResources.justNumbers().equals(currentResources.justNumbers())) {
+            if ( previousResources.nodeResources().isUnspecified()
+                 || ! previousResources.justNumbers().equals(currentResources.justNumbers())) {
                 cluster = cluster.with(ScalingEvent.create(previousResources, currentResources, generation, at));
             }
             if (cluster.targetResources().isPresent()
@@ -148,8 +152,8 @@ class Activator {
     }
 
     /** Activate load balancers */
-    private void activateLoadBalancers(Collection<HostSpec> hosts, ApplicationTransaction transaction) {
-        loadBalancerProvisioner.ifPresent(provisioner -> provisioner.activate(allClustersOf(hosts), transaction));
+    private void activateLoadBalancers(Collection<HostSpec> hosts, NodeList newActive, ApplicationTransaction transaction) {
+        loadBalancerProvisioner.ifPresent(provisioner -> provisioner.activate(allClustersOf(hosts), newActive, transaction));
     }
 
     private static Set<ClusterSpec> allClustersOf(Collection<HostSpec> hosts) {
@@ -244,6 +248,16 @@ class Activator {
             if (host.hostname().equals(hostname))
                 return host;
         return null;
+    }
+
+    private Node fixCloudAccount(Node node, NodeList allNodes) {
+        // Existing nodes do not have cloudAccount set, copy the one from parent
+        CloudAccount cloudAccount = allNodes.parentOf(node).map(Node::cloudAccount).orElseGet(node::cloudAccount);
+        return new Node(node.id(), node.ipConfig(), node.hostname(),
+                node.parentHostname(), node.flavor(), node.status(), node.state(), node.allocation(), node.history(),
+                node.type(), node.reports(), node.modelName(), node.reservedTo(),
+                node.exclusiveToApplicationId(), node.exclusiveToClusterType(), node.switchHostname(),
+                node.trustedCertificates(), cloudAccount, node.wireguardPubKey());
     }
 
 }

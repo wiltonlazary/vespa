@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.user;
 
 import com.yahoo.application.container.handler.Request;
@@ -8,10 +8,10 @@ import com.yahoo.vespa.athenz.utils.AthenzIdentities;
 import com.yahoo.vespa.flags.Flags;
 import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
-import com.yahoo.vespa.hosted.controller.api.integration.user.User;
+import com.yahoo.jdisc.http.filter.security.misc.User;
 import com.yahoo.vespa.hosted.controller.restapi.ContainerTester;
 import com.yahoo.vespa.hosted.controller.restapi.ControllerContainerTest;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.HashMap;
@@ -26,7 +26,7 @@ public class UserApiOnPremTest extends ControllerContainerTest {
     private static final String responseFiles = "src/test/java/com/yahoo/vespa/hosted/controller/restapi/user/responses/";
 
     @Test
-    public void userMetadataOnPremTest() {
+    void userMetadataOnPremTest() {
         try (Flags.Replacer ignored = Flags.clearFlagsForTesting(PermanentFlags.MAX_TRIAL_TENANTS.id(), PermanentFlags.ENABLE_PUBLIC_SIGNUP_FLOW.id())) {
             ContainerTester tester = new ContainerTester(container, responseFiles);
             ControllerTester controller = new ControllerTester(tester);
@@ -58,7 +58,7 @@ public class UserApiOnPremTest extends ControllerContainerTest {
                     .forEach(d -> d.admin(AthenzIdentities.from("domain1.bob")));
 
             tester.assertResponse(createUserRequest(user, operator),
-                    new File("user-without-applications.json"));
+                    new File("on-prem-user-without-applications.json"));
 
             tester.assertResponse(createUserRequest(user, tenantAdmin),
                     new File("user-with-applications-athenz.json"));

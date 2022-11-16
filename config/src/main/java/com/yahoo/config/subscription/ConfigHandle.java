@@ -6,7 +6,7 @@ import com.yahoo.config.subscription.impl.ConfigSubscription;
 
 /**
  * A config handle represents one config in the context of one active subscription on a {@link ConfigSubscriber}.
- * It will contain meta data of the subscription of that particular config, as well as access to the {@link com.yahoo.config.ConfigInstance} itself.
+ * It will contain metadata of the subscription of that particular config, as well as access to the {@link com.yahoo.config.ConfigInstance} itself.
  *
  * @param <T> the type of the config
  * @author vegardh

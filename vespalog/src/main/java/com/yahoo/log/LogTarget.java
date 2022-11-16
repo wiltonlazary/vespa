@@ -6,8 +6,9 @@ import java.io.OutputStream;
 /**
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
-public interface LogTarget {
+interface LogTarget {
     /**
      * Opens an output stream for the target. If already open, the stream should be reopened.
      * @return a new outputstream for the log target.

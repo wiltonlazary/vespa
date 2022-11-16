@@ -6,7 +6,7 @@ import com.yahoo.foo.StructtypesConfig;
 import com.yahoo.test.FunctionTestConfig;
 import com.yahoo.test.IntConfig;
 import com.yahoo.test.RestartConfig;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.reflect.Field;
@@ -15,6 +15,7 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.yahoo.foo.StructtypesConfig.Simple.Gender.Enum.FEMALE;
 import static com.yahoo.test.FunctionTestConfig.BasicStruct;
@@ -26,37 +27,31 @@ import static com.yahoo.test.FunctionTestConfig.RootStruct;
 import static com.yahoo.test.FunctionTestConfig.MyStructMap;
 import static com.yahoo.foo.MaptypesConfig.Innermap;
 
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.startsWith;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author gjoranv
- * @since 5.1.11
  */
-public class ConfigInstanceBuilderTest
-{
+public class ConfigInstanceBuilderTest {
 
     @Test
-    public void struct_values_can_be_set_without_declaring_a_new_struct_builder() {
+    void struct_values_can_be_set_without_declaring_a_new_struct_builder() {
         var builder = new StructtypesConfig.Builder();
         builder.simple
                 .name("myname")
                 .gender(FEMALE);
 
         StructtypesConfig config = builder.build();
-        assertThat(config.simple().name(), is("myname"));
-        assertThat(config.simple().gender(), is(FEMALE));
+        assertEquals("myname", config.simple().name());
+        assertEquals(FEMALE, config.simple().gender());
     }
 
     @Test
-    public void leaf_map_setter_merges_maps() {
+    void leaf_map_setter_merges_maps() {
         MaptypesConfig.Builder builder = new MaptypesConfig.Builder()
                 .intmap("one", 1);
 
@@ -65,33 +60,33 @@ public class ConfigInstanceBuilderTest
         builder.intmap(newMap);
 
         MaptypesConfig config = new MaptypesConfig(builder);
-        assertThat(config.intmap("one"), is(1));
-        assertThat(config.intmap("two"), is(2));
+        assertEquals(1, config.intmap("one"));
+        assertEquals(2, config.intmap("two"));
     }
 
     @Test
-    public void inner_map_setter_merges_maps() {
+    void inner_map_setter_merges_maps() {
         MaptypesConfig.Builder builder = new MaptypesConfig.Builder()
                 .innermap("one", new Innermap.Builder()
-                .foo(1));
+                        .foo(1));
 
         Map<String, Innermap.Builder> newMap = new HashMap<>();
         newMap.put("two", new Innermap.Builder().foo(2));
         builder.innermap(newMap);
 
         MaptypesConfig config = new MaptypesConfig(builder);
-        assertThat(config.innermap("one").foo(), is(1));
-        assertThat(config.innermap("two").foo(), is(2));
+        assertEquals(1, config.innermap("one").foo());
+        assertEquals(2, config.innermap("two").foo());
     }
 
     @Test
-    public void testVariableAccessWithBuilder() {
+    void testVariableAccessWithBuilder() {
         FunctionTestConfig config = createVariableAccessConfigWithBuilder();
         assertVariableAccessValues(config, ":parent:");
     }
 
     @Test
-    public void require_that_unset_builder_fields_are_null() throws Exception {
+    void require_that_unset_builder_fields_are_null() throws Exception {
         FunctionTestConfig.Builder builder = new FunctionTestConfig.Builder();
         assertNull(getMember(builder, "bool_val"));
         assertNull(getMember(builder, "bool_with_def"));
@@ -115,7 +110,7 @@ public class ConfigInstanceBuilderTest
     }
 
     @Test
-    public void require_that_set_builder_fields_are_nonNull() throws Exception {
+    void require_that_set_builder_fields_are_nonNull() throws Exception {
         FunctionTestConfig.Builder builder = createVariableAccessBuilder();
         assertNotNull(getMember(builder, "bool_val"));
         assertNotNull(getMember(builder, "bool_with_def"));
@@ -133,13 +128,13 @@ public class ConfigInstanceBuilderTest
         assertNotNull(getMember(builder, "refwithdef"));
         assertNotNull(getMember(builder, "fileVal"));
 
-        BasicStruct.Builder basicStructBuilder = (BasicStruct.Builder)getMember(builder, "basicStruct");
+        BasicStruct.Builder basicStructBuilder = (BasicStruct.Builder) getMember(builder, "basicStruct");
         assertNotNull(getMember(basicStructBuilder, "foo"));
         assertNotNull(getMember(basicStructBuilder, "bar"));
     }
 
     @Test
-    public void require_that_config_can_be_recreated_from_another_configs_builder() {
+    void require_that_config_can_be_recreated_from_another_configs_builder() {
         FunctionTestConfig original = createVariableAccessConfigWithBuilder();
         FunctionTestConfig copy = new FunctionTestConfig(new FunctionTestConfig.Builder(original));
         assertVariableAccessValues(copy, ":parent:");
@@ -174,6 +169,7 @@ public class ConfigInstanceBuilderTest
                 fileVal("etc").
                 pathVal(FileReference.mockFileReferenceForUnitTesting(new File("pom.xml"))).
                 urlVal(new UrlReference("http://docs.vespa.ai")).
+                modelVal(ModelReference.unresolved(FileReference.mockFileReferenceForUnitTesting(new File("pom.xml")))).
                 boolarr(false).
                 longarr(9223372036854775807L).
                 longarr(-9223372036854775808L).
@@ -262,12 +258,12 @@ public class ConfigInstanceBuilderTest
         assertEquals("etc", config.fileVal().value());
         assertEquals(1, config.boolarr().size());
         assertEquals(1, config.boolarr().size());  // new api with accessor for a List of the original Java type
-        assertEquals(false, config.boolarr().get(0));  // new List api
-        assertEquals(false, config.boolarr(0));        // short-hand
+        assertFalse(config.boolarr().get(0));  // new List api
+        assertFalse(config.boolarr(0));        // short-hand
         assertEquals(0, config.intarr().size());
         assertEquals(2, config.longarr().size());
         assertEquals(Long.MAX_VALUE, config.longarr(0));
-        assertThat(config.longarr().get(1), is(Long.MIN_VALUE));
+        assertEquals(Long.MIN_VALUE, config.longarr().get(1).longValue());
         assertEquals(2, config.doublearr().size());
         assertEquals(1, config.stringarr().size());
         assertEquals(1, config.enumarr().size());
@@ -279,25 +275,25 @@ public class ConfigInstanceBuilderTest
         assertEquals("parent:", config.refarr(2));
         assertEquals("bin", config.fileArr(0).value());
 
-        assertThat(config.intMap("one"), is(1));
-        assertThat(config.intMap("two"), is(2));
-        assertThat(config.stringMap("one"), is("first"));
-        assertThat(config.filemap("f1").value(), is("/var"));
-        assertThat(config.filemap("f2").value(), is("/store"));
+        assertEquals(1, config.intMap("one"));
+        assertEquals(2, config.intMap("two"));
+        assertEquals("first", config.stringMap("one"));
+        assertEquals("/var", config.filemap("f1").value());
+        assertEquals("/store", config.filemap("f2").value());
         assertEquals("basicFoo", config.basicStruct().foo());
         assertEquals(3, config.basicStruct().bar());  // new List api
         assertEquals(2, config.basicStruct().intArr().size());
-        assertThat(config.basicStruct().intArr().get(0), is(310));  // new List api
-        assertThat(config.basicStruct().intArr().get(1), is(311));  // new List api
+        assertEquals(310, config.basicStruct().intArr().get(0).intValue());  // new List api
+        assertEquals(311, config.basicStruct().intArr().get(1).intValue());  // new List api
         assertEquals(310, config.basicStruct().intArr(0));          // short-hand
         assertEquals("inner0", config.rootStruct().inner0().name());  // new List api
         assertEquals(11, config.rootStruct().inner0().index());
         assertEquals("inner1", config.rootStruct().inner1().name());
         assertEquals(12, config.rootStruct().inner1().index());
         assertEquals(2, config.rootStruct().innerArr().size());
-        assertEquals(true, config.rootStruct().innerArr(0).boolVal());
+        assertTrue(config.rootStruct().innerArr(0).boolVal());
         assertEquals("deep", config.rootStruct().innerArr(0).stringVal());
-        assertEquals(false, config.rootStruct().innerArr(1).boolVal());
+        assertFalse(config.rootStruct().innerArr(1).boolVal());
         assertEquals("blue a=\"escaped\"", config.rootStruct().innerArr(1).stringVal());
 
         assertEquals(2, config.myarray().size());  // new List api
@@ -311,12 +307,12 @@ public class ConfigInstanceBuilderTest
         assertEquals(-1, config.myarray(1).myStruct().a());
         assertEquals(-2, config.myarray(1).myStruct().b());
 
-        assertThat(config.myStructMap("one").myInt(), is(1));
-        assertThat(config.myStructMap("one").myString(), is("bull"));
-        assertThat(config.myStructMap("one").myIntDef(), is(2));
-        assertThat(config.myStructMap("one").myStringDef(), is("bear"));
-        assertThat(config.myStructMap("one").anotherMap("anotherOne").anInt(), is(3));
-        assertThat(config.myStructMap("one").anotherMap("anotherOne").anIntDef(), is(4));
+        assertEquals(1, config.myStructMap("one").myInt());
+        assertEquals("bull", config.myStructMap("one").myString());
+        assertEquals(2, config.myStructMap("one").myIntDef());
+        assertEquals("bear", config.myStructMap("one").myStringDef());
+        assertEquals(3, config.myStructMap("one").anotherMap("anotherOne").anInt());
+        assertEquals(4, config.myStructMap("one").anotherMap("anotherOne").anIntDef());
     }
 
     private boolean callContainsFieldsFlaggedWithRestart(Class<?> configClass)
@@ -334,13 +330,13 @@ public class ConfigInstanceBuilderTest
     }
 
     @Test
-    public void require_that_config_class_reports_any_restart_values() throws Exception {
+    void require_that_config_class_reports_any_restart_values() throws Exception {
         assertTrue(callContainsFieldsFlaggedWithRestart(RestartConfig.class));
         assertFalse(callContainsFieldsFlaggedWithRestart(IntConfig.class));
     }
 
     @Test
-    public void require_that_config_class_can_make_change_report() throws Exception {
+    void require_that_config_class_can_make_change_report() throws Exception {
         IntConfig noRestart1 = new IntConfig(new IntConfig.Builder().intVal(42));
         IntConfig noRestart2 = new IntConfig(new IntConfig.Builder().intVal(21));
         ChangesRequiringRestart report = callGetChangesRequiringRestart(noRestart1, noRestart2);
@@ -372,37 +368,35 @@ public class ConfigInstanceBuilderTest
         report = callGetChangesRequiringRestart(function1, function2);
         assertTrue(report.needsRestart());
         assertEquals("function-test", report.getName());
-        assertThat(
-                report.toString(),
-                startsWith(
-                    "# An int value\n" +
-                    "# Also test that multiline comments\n" +
-                    "# work.\n" +
-                    "function-test.int_val has changed from 5 to 100\n" +
-                    "function-test.stringarr[0] has changed from \"bar\" to \"foo\"\n" +
-                    "# This is a map of ints.\n" +
-                    "function-test.intMap{one} has changed from 1 to 42\n" +
-                    "# This is a map of ints.\n" +
-                    "function-test.intMap{two} with value 2 was removed\n" +
-                    "# This is a map of ints.\n" +
-                    "function-test.intMap{three} was added with value 3\n" +
-                    "# A basic struct\n" +
-                    "function-test.basicStruct.foo has changed from \"basicFoo\" to \"basic\"\n" +
-                    "function-test.basicStruct.bar has changed from 3 to 1234\n" +
-                    "function-test.basicStruct.intArr[0] with value 310 was removed\n" +
-                    "function-test.basicStruct.intArr[1] with value 311 was removed\n" +
-                    "function-test.myarray[0].anotherarray[0].foo has changed from 7 to 32\n" +
-                    "# This is my array\n" +
-                    "function-test.myarray[1].intval has changed from 5 to 17\n" +
-                    "function-test.myarray[2] was added with value \n"
+        assertTrue(
+                report.toString().startsWith(
+                        "# An int value\n" +
+                                "# Also test that multiline comments\n" +
+                                "# work.\n" +
+                                "function-test.int_val has changed from 5 to 100\n" +
+                                "function-test.stringarr[0] has changed from \"bar\" to \"foo\"\n" +
+                                "# This is a map of ints.\n" +
+                                "function-test.intMap{one} has changed from 1 to 42\n" +
+                                "# This is a map of ints.\n" +
+                                "function-test.intMap{two} with value 2 was removed\n" +
+                                "# This is a map of ints.\n" +
+                                "function-test.intMap{three} was added with value 3\n" +
+                                "# A basic struct\n" +
+                                "function-test.basicStruct.foo has changed from \"basicFoo\" to \"basic\"\n" +
+                                "function-test.basicStruct.bar has changed from 3 to 1234\n" +
+                                "function-test.basicStruct.intArr[0] with value 310 was removed\n" +
+                                "function-test.basicStruct.intArr[1] with value 311 was removed\n" +
+                                "function-test.myarray[0].anotherarray[0].foo has changed from 7 to 32\n" +
+                                "# This is my array\n" +
+                                "function-test.myarray[1].intval has changed from 5 to 17\n" +
+                                "function-test.myarray[2] was added with value \n"
                 )
         );
 
-        assertThat(
-                report.toString(),
-                containsString(
-                     "function-test.myStructMap{one}.myInt has changed from 1 to 42\n" +
-                     "function-test.myStructMap{new} was added with value \n"
+        assertTrue(
+                report.toString().contains(
+                        "function-test.myStructMap{one}.myInt has changed from 1 to 42\n" +
+                                "function-test.myStructMap{new} was added with value \n"
                 )
         );
 
@@ -410,9 +404,9 @@ public class ConfigInstanceBuilderTest
         FunctionTestConfig function3 = new FunctionTestConfig(funcBuilder);
         report = callGetChangesRequiringRestart(function2, function3);
         assertEquals(1, report.getReportLines().size());
-        assertThat(
-                report.toString(),
-                containsString("function-test.myStructMap{one} with value \n")
+        assertTrue(
+                report.toString().contains("function-test.myStructMap{one} with value \n")
         );
     }
+
 }

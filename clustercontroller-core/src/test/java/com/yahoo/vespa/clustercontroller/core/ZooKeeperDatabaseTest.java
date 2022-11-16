@@ -4,21 +4,15 @@ package com.yahoo.vespa.clustercontroller.core;
 import com.yahoo.vespa.clustercontroller.core.database.CasWriteFailed;
 import com.yahoo.vespa.clustercontroller.core.database.Database;
 import com.yahoo.vespa.clustercontroller.core.database.ZooKeeperDatabase;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Duration;
 
-import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 
 public class ZooKeeperDatabaseTest {
-
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
 
     private static class Fixture implements AutoCloseable {
         final ZooKeeperTestServer zkServer;
@@ -35,8 +29,10 @@ public class ZooKeeperDatabaseTest {
 
         void createDatabase() throws Exception {
             closeDatabaseIfOpen();
-            zkDatabase = new ZooKeeperDatabase(clusterFixture.cluster(), nodeIndex, zkServer.getAddress(),
-                    (int)sessionTimeout.toMillis(), mockListener);
+            var id = new FleetControllerId(clusterFixture.cluster.getName(), nodeIndex);
+            var context = new TestFleetControllerContext(id);
+            zkDatabase = new ZooKeeperDatabase(context, zkServer.getAddress(),
+                                               (int)sessionTimeout.toMillis(), mockListener);
         }
 
         ZooKeeperDatabase db() { return zkDatabase; }
@@ -56,7 +52,7 @@ public class ZooKeeperDatabaseTest {
     }
 
     @Test
-    public void can_store_and_load_cluster_state_bundle_from_database() throws Exception {
+    void can_store_and_load_cluster_state_bundle_from_database() throws Exception {
         try (Fixture f = new Fixture()) {
             f.createDatabase();
             f.db().retrieveLastPublishedStateBundle(); // Must be called once prior to prime last known znode version
@@ -64,7 +60,7 @@ public class ZooKeeperDatabaseTest {
             f.db().storeLastPublishedStateBundle(bundleToStore);
 
             ClusterStateBundle bundleReceived = f.db().retrieveLastPublishedStateBundle();
-            assertThat(bundleReceived, equalTo(bundleToStore));
+            assertEquals(bundleToStore, bundleReceived);
         }
     }
 
@@ -75,32 +71,34 @@ public class ZooKeeperDatabaseTest {
     }
 
     @Test
-    public void storing_cluster_state_bundle_with_mismatching_expected_znode_version_throws_exception() throws Exception {
-        expectedException.expect(CasWriteFailed.class);
-        expectedException.expectMessage("version mismatch in cluster state bundle znode (expected -2)");
-        try (Fixture f = new Fixture()) {
-            f.createDatabase();
-            f.db().storeLastPublishedStateBundle(dummyBundle());
-        }
+    void storing_cluster_state_bundle_with_mismatching_expected_znode_version_throws_exception() throws Exception {
+        Throwable exception = assertThrows(CasWriteFailed.class, () -> {
+            try (Fixture f = new Fixture()) {
+                f.createDatabase();
+                f.db().storeLastPublishedStateBundle(dummyBundle());
+            }
+        });
+        assertTrue(exception.getMessage().contains("version mismatch in cluster state bundle znode (expected -2)"));
     }
 
     @Test
-    public void storing_cluster_state_version_with_mismatching_expected_znode_version_throws_exception() throws Exception {
-        expectedException.expect(CasWriteFailed.class);
-        expectedException.expectMessage("version mismatch in cluster state version znode (expected -2)");
-        try (Fixture f = new Fixture()) {
-            f.createDatabase();
-            f.db().storeLatestSystemStateVersion(12345);
-        }
+    void storing_cluster_state_version_with_mismatching_expected_znode_version_throws_exception() throws Exception {
+        Throwable exception = assertThrows(CasWriteFailed.class, () -> {
+            try (Fixture f = new Fixture()) {
+                f.createDatabase();
+                f.db().storeLatestSystemStateVersion(12345);
+            }
+        });
+        assertTrue(exception.getMessage().contains("version mismatch in cluster state version znode (expected -2)"));
     }
 
     @Test
-    public void empty_state_bundle_is_returned_if_no_bundle_already_stored_in_database() throws Exception {
+    void empty_state_bundle_is_returned_if_no_bundle_already_stored_in_database() throws Exception {
         try (Fixture f = new Fixture()) {
             f.createDatabase();
             ClusterStateBundle bundleReceived = f.db().retrieveLastPublishedStateBundle();
 
-            assertThat(bundleReceived, equalTo(ClusterStateBundle.empty()));
+            assertEquals(ClusterStateBundle.empty(), bundleReceived);
         }
     }
 

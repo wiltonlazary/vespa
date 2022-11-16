@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root. -->
+<!-- Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -7,7 +7,7 @@
 
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>hosted-tenant-base</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <name>Base pom for all tenant base poms</name>
     <description>Parent POM for all Vespa base poms.</description>
     <url>https://github.com/vespa-engine</url>
@@ -33,10 +33,11 @@
 
     <properties>
         <vespaversion>${project.version}</vespaversion>
-        <target_jdk_version>11</target_jdk_version>
-        <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
-        <maven-surefire-plugin.version>2.22.0</maven-surefire-plugin.version>
-        <junit.version>5.7.0</junit.version> <!-- NOTE: this must be in sync with junit version specified in 'tenant-cd-api' -->
+        <target_jdk_version>17</target_jdk_version>
+        <maven-compiler-plugin.version>3.10.1</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>2.22.2</maven-surefire-plugin.version>
+        <!-- NOTE: this must not be overriden by users, and must be in sync with junit version specified in 'tenant-cd-api' -->
+        <vespa.junit.version>5.8.1</vespa.junit.version>
         <test.categories>!integration</test.categories>
 
         <!-- To allow specialized base pom to include additional "test provided" dependencies -->
@@ -66,10 +67,47 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
             <dependency>
                 <groupId>org.glassfish.jaxb</groupId>
                 <artifactId>jaxb-runtime</artifactId>
                 <version>2.3.2</version> <!-- 2.3.3 has BROKEN manifest -->
+            </dependency>
+
+            <dependency>
+                <groupId>com.yahoo.vespa</groupId>
+                <artifactId>container</artifactId>
+                <version>${vespaversion}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.yahoo.vespa</groupId>
+                <artifactId>container-test</artifactId>
+                <version>${vespaversion}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.yahoo.vespa</groupId>
+                <artifactId>tenant-cd-api</artifactId>
+                <version>${vespaversion}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-engine</artifactId>
+                <version>${vespa.junit.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-api</artifactId>
+                <version>${vespa.junit.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.junit.vintage</groupId>
+                <artifactId>junit-vintage-engine</artifactId>
+                <version>${vespa.junit.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -78,36 +116,30 @@
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
             <artifactId>container</artifactId>
-            <version>${vespaversion}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
             <artifactId>container-test</artifactId>
-            <version>${vespaversion}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
             <artifactId>tenant-cd-api</artifactId>
-            <version>${vespaversion}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
-            <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
-            <!-- Allow applications to use Junit4 in unit tests -->
             <groupId>org.junit.vintage</groupId>
             <artifactId>junit-vintage-engine</artifactId>
-            <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -160,7 +192,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-enforcer-plugin</artifactId>
-                        <version>3.0.0-M2</version>
+                        <version>3.0.0</version>
                         <executions>
                             <execution>
                                 <id>enforce-java</id>
@@ -170,11 +202,50 @@
                                 <configuration>
                                     <rules>
                                         <requireJavaVersion>
-                                            <version>[11, )</version>
+                                            <version>[17, )</version>
                                         </requireJavaVersion>
                                         <requireMavenVersion>
-                                            <version>[3.5, )</version>
+                                            <version>[3.6, )</version>
                                         </requireMavenVersion>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>enforce-no-log4j</id>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <bannedDependencies>
+                                            <!-- Fail validation for apps with log4j deps in compile or provided scope. -->
+                                            <excludes>
+                                                <exclude>log4j:log4j:*:jar:compile</exclude>
+                                                <exclude>log4j:log4j:*:jar:provided</exclude>
+                                                <exclude>org.apache.logging.log4j:log4j-core:(,2.17.0]:jar:compile</exclude>
+                                                <exclude>org.apache.logging.log4j:log4j-core:(,2.17.0]:jar:provided</exclude>
+                                            </excludes>
+                                        </bannedDependencies>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>enforce-just-our-jupiter</id>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <bannedDependencies>
+                                            <!-- Fail validation for apps with junit-jupiter-api in compile scope, or on wrong version. -->
+                                            <excludes>
+                                                <exclude>org.junit.jupiter:junit-jupiter-api:*:jar:compile</exclude>
+                                                <exclude>org.junit.jupiter:junit-jupiter-api:*:jar:provided</exclude>
+                                                <exclude>org.junit.jupiter:junit-jupiter-api:*:jar:runtime</exclude>
+                                                <exclude>org.junit.jupiter:junit-jupiter-api:(,${vespa.junit.version}):jar:*</exclude>
+                                                <exclude>org.junit.jupiter:junit-jupiter-api:(${vespa.junit.version},):jar:*</exclude>
+                                            </excludes>
+                                        </bannedDependencies>
                                     </rules>
                                 </configuration>
                             </execution>
@@ -188,15 +259,18 @@
                         <extensions>true</extensions>
                         <configuration>
                             <!-- override default test bundle scope translation which translates 'test' to 'compile' -->
-                            <!-- note: ordering affects how overrides are evaluated! -->
+                            <!-- note: ordering affects how overrides are evaluated; put the most specific overrides first! -->
                             <testBundleScopeOverrides>
                                 ${extraTestBundleScopeOverrides},
-                                com.yahoo.vespa:application:test,
-                                com.yahoo.vespa:container-test:runtime,
-                                org.junit.jupiter:junit-jupiter-api:provided,
-                                org.junit.jupiter:junit-jupiter-engine:test,
-                                org.junit.vintage:junit-vintage-engine:test,
-                                com.yahoo.vespa:tenant-cd-api:provided
+                                org.junit.jupiter:junit-jupiter-engine:test,    <!-- avoid embedding engine libraries, which are only used by the runner -->
+                                org.junit.jupiter:junit-platform-engine:test,   <!-- avoid embedding engine libraries, which are only used by the runner -->
+                                org.junit.vintage:junit-vintage-engine:test,    <!-- avoid embedding vintage engine, which isn't even supported -->
+                                org.junit.jupiter:junit-jupiter-api:provided,   <!-- ensure the api bundle provided by the tester container is used -->
+                                com.yahoo.vespa:application:test,               <!-- its transitive dependencies should be provided by the regular container -->
+                                com.yahoo.vespa:container-test:test,            <!-- its transitive dependencies should be provided by the regular container -->
+                                com.yahoo.vespa:vespa-feed-client:test,         <!-- ensure the implementation provided by the tester container is used -->
+                                com.yahoo.vespa:vespa-feed-client-api:provided, <!-- ensure the api bundle provided by the tester container is used -->
+                                com.yahoo.vespa:tenant-cd-api:provided          <!-- ensure the api bundle provided by the tester container is used -->
                             </testBundleScopeOverrides>
                         </configuration>
                         <executions>
@@ -261,10 +335,26 @@
                                 </goals>
                                 <configuration>
                                     <tasks>
-                                        <!-- Creating a dummy file to support running tests with old test runner. Remove when it is no longer in use -->
-                                        <mkdir dir="target/application-test/artifacts" />
-                                        <touch file="target/application-test/artifacts/.ignore" />
+                                        <!-- Workaround to copy src/test/application/tests only when its parents exists:
+                                             Copy in two steps, eliminating the parents in the helper step-->
+
+                                        <mkdir dir="target/application-test/src/test/application" />
+                                        <copy todir="target/application-test/">
+                                            <fileset dir="." includes="src/test/application/tests/**" />
+                                        </copy>
+
+                                        <copy todir="target/application-test/">
+                                            <fileset dir="target/application-test/src/test/application" includes="tests/**" />
+                                        </copy>
+                                        <delete dir="target/application-test/src" />
+
                                         <copy file="target/${project.artifactId}-tests.jar" todir="target/application-test/components/" />
+
+                                        <!-- Copy any additional application bundles to the test package -->
+                                        <copy todir="target/application-test/components">
+                                            <fileset dir="target/application/components" includes="*.jar" excludes="${project.artifactId}-deploy.jar" />
+                                        </copy>
+
                                         <zip destfile="target/application-test.zip" basedir="target/application-test/" />
                                     </tasks>
                                 </configuration>
@@ -318,6 +408,12 @@
                                 <goals>
                                     <goal>sign</goal>
                                 </goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>
@@ -353,8 +449,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
-                    <source>${target_jdk_version}</source>
-                    <target>${target_jdk_version}</target>
+                    <release>${target_jdk_version}</release>
                     <showWarnings>true</showWarnings>
                     <showDeprecation>true</showDeprecation>
                     <compilerArgs>

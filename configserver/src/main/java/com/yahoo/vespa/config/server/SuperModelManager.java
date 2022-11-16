@@ -2,7 +2,7 @@
 
 package com.yahoo.vespa.config.server;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.config.model.api.ApplicationInfo;
 import com.yahoo.config.model.api.SuperModel;
@@ -121,7 +121,7 @@ public class SuperModelManager implements SuperModelProvider {
     public void markAsComplete() {
         // Invoked on component graph bootstrap (even before ConfigServerBootstrap),
         // there is no need to bump generation counter.
-        logger.log(Level.INFO, "Super model is complete");
+        logger.log(Level.FINE, "Super model is complete");
         SuperModel newSuperModel = getSuperModel().cloneAsComplete();
         superModelConfigProvider = new SuperModelConfigProvider(newSuperModel, zone, flagSource);
         listeners.forEach(listener -> listener.notifyOfCompleteness(newSuperModel));

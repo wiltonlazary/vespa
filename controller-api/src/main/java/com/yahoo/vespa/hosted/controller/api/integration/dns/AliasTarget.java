@@ -1,22 +1,22 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.dns;
 
-import com.yahoo.config.provision.HostName;
+import ai.vespa.http.DomainName;
 
 import java.util.Objects;
 
 /**
- * The target of an {@link Record.Type#ALIAS} record. Contains record fields unique to aliases.
+ * The target of a {@link Record.Type#ALIAS} record. Contains record fields unique to aliases.
  *
  * @author mpolden
  */
-public abstract class AliasTarget {
+public sealed abstract class AliasTarget permits LatencyAliasTarget, WeightedAliasTarget {
 
-    private final HostName name;
+    private final DomainName name;
     private final String dnsZone;
     private final String id;
 
-    public AliasTarget(HostName name, String dnsZone, String id) {
+    public AliasTarget(DomainName name, String dnsZone, String id) {
         this.name = Objects.requireNonNull(name, "name must be non-null");
         this.dnsZone = Objects.requireNonNull(dnsZone, "dnsZone must be non-null");
         this.id = Objects.requireNonNull(id, "id must be non-null");
@@ -28,7 +28,7 @@ public abstract class AliasTarget {
     }
 
     /** DNS name this points to */
-    public final HostName name() {
+    public final DomainName name() {
         return name;
     }
 
@@ -59,8 +59,8 @@ public abstract class AliasTarget {
     public static AliasTarget unpack(RecordData data) {
         String[] parts = data.asString().split("/");
         switch (parts[0]) {
-            case "latency": return LatencyAliasTarget.unpack(data);
-            case "weighted": return WeightedAliasTarget.unpack(data);
+            case LatencyAliasTarget.TARGET_TYPE: return LatencyAliasTarget.unpack(data);
+            case WeightedAliasTarget.TARGET_TYPE: return WeightedAliasTarget.unpack(data);
         }
         throw new IllegalArgumentException("Unknown alias type '" + parts[0] + "'");
     }

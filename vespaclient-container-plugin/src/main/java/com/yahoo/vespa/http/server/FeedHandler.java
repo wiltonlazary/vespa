@@ -5,9 +5,9 @@ import com.yahoo.collections.Tuple2;
 import com.yahoo.container.handler.threadpool.ContainerThreadPool;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.container.jdisc.messagebus.SessionCache;
-import com.yahoo.document.config.DocumentmanagerConfig;
+import com.yahoo.document.DocumentTypeManager;
 import com.yahoo.documentapi.metrics.DocumentApiMetrics;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.Request;
@@ -15,7 +15,6 @@ import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.messagebus.ReplyHandler;
 import com.yahoo.metrics.simple.MetricReceiver;
-import com.yahoo.vespa.http.client.core.Headers;
 
 import javax.inject.Inject;
 import java.io.IOException;
@@ -30,14 +29,14 @@ import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
 /**
- * Accept feeds from outside of the Vespa cluster.
+ * Accept feeds from outside the Vespa cluster.
  *
  * @author Steinar Knutsen
  */
-public class FeedHandler extends LoggingRequestHandler {
+public class FeedHandler extends ThreadedHttpRequestHandler {
 
     protected final ReplyHandler feedReplyHandler;
-    private static final List<Integer> serverSupportedVersions = Collections.unmodifiableList(Arrays.asList(3));
+    private static final List<Integer> serverSupportedVersions = List.of(3);
     private static final Pattern USER_AGENT_PATTERN = Pattern.compile("vespa-http-client \\((.+)\\)");
     private final FeedHandlerV3 feedHandlerV3;
     private final DocumentApiMetrics metricsHelper;
@@ -45,12 +44,12 @@ public class FeedHandler extends LoggingRequestHandler {
     @Inject
     public FeedHandler(ContainerThreadPool threadpool,
                        Metric metric,
-                       DocumentmanagerConfig documentManagerConfig,
+                       DocumentTypeManager documentTypeManager,
                        SessionCache sessionCache,
                        MetricReceiver metricReceiver) {
         super(threadpool.executor(), metric);
         metricsHelper = new DocumentApiMetrics(metricReceiver, "vespa.http.server");
-        feedHandlerV3 = new FeedHandlerV3(threadpool.executor(), metric, documentManagerConfig, sessionCache, metricsHelper);
+        feedHandlerV3 = new FeedHandlerV3(threadpool.executor(), metric, documentTypeManager, sessionCache, metricsHelper);
         feedReplyHandler = new FeedReplyReader(metric, metricsHelper);
     }
 
@@ -144,20 +143,6 @@ public class FeedHandler extends LoggingRequestHandler {
         }
     }
 
-    @Override
-    protected void destroy() {
-        feedHandlerV3.destroy();
-        // We are forking this to avoid that accidental dereferrencing causes any random thread doing destruction.
-        // This caused a deadlock when the single Messenger thread in MessageBus was the last one referring this
-        // and started destructing something that required something only the messenger thread could provide.
-        Thread destroyer = new Thread(() -> {
-            internalDestroy();
-        });
-        destroyer.setDaemon(true);
-        destroyer.start();
-    }
+    @Override protected void destroy() { feedHandlerV3.destroy(); }
 
-    private void internalDestroy() {
-        super.destroy();
-    }
 }

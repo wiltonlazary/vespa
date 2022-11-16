@@ -2,13 +2,11 @@
 
 #pragma once
 
-#include <vespa/searchlib/common/sort.h>
-#include <vespa/searchlib/util/fileutil.h>
 #include "loadedvalue.h"
+#include <vespa/vespalib/util/sort.h>
+#include <vespa/searchlib/util/fileutil.h>
 
-namespace search {
-
-namespace attribute {
+namespace search::attribute {
 
 /**
  * Temporary representation of enumerated attribute loaded from non-enumerated
@@ -20,7 +18,7 @@ struct LoadedNumericValue : public LoadedValue<T>
 {
     LoadedNumericValue() : LoadedValue<T>() { }
 
-    class ValueCompare : public std::binary_function<LoadedNumericValue<T>, LoadedNumericValue<T>, bool>
+    class ValueCompare
     {
     public:
         bool operator()(const LoadedNumericValue<T> &x, const LoadedNumericValue<T> &y) const {
@@ -46,7 +44,4 @@ template <typename T>
 void
 sortLoadedByDocId(SequentialReadModifyWriteVector<LoadedNumericValue<T>> & loaded);
 
-} // namespace attribute
-
-} // namespace search
-
+}

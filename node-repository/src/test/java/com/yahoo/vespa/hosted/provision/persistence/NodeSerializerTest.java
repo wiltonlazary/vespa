@@ -6,6 +6,7 @@ import com.yahoo.component.Version;
 import com.yahoo.component.Vtag;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.InstanceName;
@@ -44,6 +45,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static com.yahoo.config.provision.NodeResources.Architecture;
+import static com.yahoo.config.provision.NodeResources.DiskSpeed;
+import static com.yahoo.config.provision.NodeResources.StorageType;
 import static java.time.temporal.ChronoUnit.MILLIS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -55,7 +59,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class NodeSerializerTest {
 
-    private final NodeFlavors nodeFlavors = FlavorConfigBuilder.createDummies("default", "large", "ugccloud-container");
+    private final NodeFlavors nodeFlavors = FlavorConfigBuilder.createDummies("default", "large", "ugccloud-container", "arm64");
     private final NodeSerializer nodeSerializer = new NodeSerializer(nodeFlavors, 1000);
     private final ManualClock clock = new ManualClock();
 
@@ -74,23 +78,26 @@ public class NodeSerializerTest {
     @Test
     public void reserved_node_serialization() {
         Node node = createNode();
-        NodeResources requestedResources = new NodeResources(1.2, 3.4, 5.6, 7.8, NodeResources.DiskSpeed.any);
+        NodeResources requestedResources = new NodeResources(1.2, 3.4, 5.6, 7.8,
+                                                             DiskSpeed.any, StorageType.any, Architecture.arm64);
 
-        clock.advance(Duration.ofMinutes(3));
         assertEquals(0, node.history().events().size());
         node = node.allocate(ApplicationId.from(TenantName.from("myTenant"),
                                                 ApplicationName.from("myApplication"),
                                                 InstanceName.from("myInstance")),
                              ClusterMembership.from("content/myId/0/0/stateful", Vtag.currentVersion, Optional.empty()),
                              requestedResources,
-                             clock.instant());
+                             Instant.ofEpochMilli(1));
         assertEquals(1, node.history().events().size());
         node = node.withRestart(new Generation(1, 2));
         node = node.withReboot(new Generation(3, 4));
-        node = node.with(FlavorConfigBuilder.createDummies("large").getFlavorOrThrow("large"), Agent.system, clock.instant());
+        node = node.with(FlavorConfigBuilder.createDummies("arm64").getFlavorOrThrow("arm64"), Agent.system, Instant.ofEpochMilli(2));
         node = node.with(node.status().withVespaVersion(Version.fromString("1.2.3")));
         node = node.with(node.status().withIncreasedFailCount().withIncreasedFailCount());
         node = node.with(NodeType.tenant);
+        node = node.downAt(Instant.ofEpochMilli(5), Agent.system)
+                   .upAt(Instant.ofEpochMilli(6), Agent.system)
+                   .downAt(Instant.ofEpochMilli(7), Agent.system);
         Node copy = nodeSerializer.fromJson(Node.State.provisioned, nodeSerializer.toJson(node));
 
         assertEquals(node.id(), copy.id());
@@ -100,15 +107,19 @@ public class NodeSerializerTest {
         assertEquals(2, copy.allocation().get().restartGeneration().current());
         assertEquals(3, copy.status().reboot().wanted());
         assertEquals(4, copy.status().reboot().current());
-        assertEquals("large", copy.flavor().name());
+        assertEquals("arm64", copy.flavor().name());
+        assertEquals(Architecture.arm64.name(), copy.resources().architecture().name());
         assertEquals("1.2.3", copy.status().vespaVersion().get().toString());
         assertEquals(2, copy.status().failCount());
         assertEquals(node.allocation().get().owner(), copy.allocation().get().owner());
         assertEquals(node.allocation().get().membership(), copy.allocation().get().membership());
         assertEquals(node.allocation().get().requestedResources(), copy.allocation().get().requestedResources());
-        assertEquals(node.allocation().get().isRemovable(), copy.allocation().get().isRemovable());
-        assertEquals(2, copy.history().events().size());
-        assertEquals(clock.instant().truncatedTo(MILLIS), copy.history().event(History.Event.Type.reserved).get().at());
+        assertEquals(node.allocation().get().removable(), copy.allocation().get().removable());
+        assertEquals(4, copy.history().events().size());
+        assertEquals(5, copy.history().log().size());
+        assertEquals(Instant.ofEpochMilli(1), copy.history().event(History.Event.Type.reserved).get().at());
+        assertEquals(new History.Event(History.Event.Type.down, Agent.system, Instant.ofEpochMilli(7)),
+                     copy.history().log().get(copy.history().log().size() - 1));
         assertEquals(NodeType.tenant, copy.type());
     }
 
@@ -154,9 +165,9 @@ public class NodeSerializerTest {
         assertEquals(2, node.status().reboot().current());
         assertEquals(3, node.allocation().get().restartGeneration().wanted());
         assertEquals(4, node.allocation().get().restartGeneration().current());
-        assertEquals(Arrays.asList(History.Event.Type.provisioned, History.Event.Type.reserved),
-                node.history().events().stream().map(History.Event::type).collect(Collectors.toList()));
-        assertTrue(node.allocation().get().isRemovable());
+        assertEquals(List.of(History.Event.Type.provisioned, History.Event.Type.reserved),
+                     node.history().events().stream().map(History.Event::type).collect(Collectors.toList()));
+        assertTrue(node.allocation().get().removable());
         assertEquals(NodeType.tenant, node.type());
     }
 
@@ -182,9 +193,10 @@ public class NodeSerializerTest {
                      (copy.history().event(History.Event.Type.retired).get()).agent());
         assertTrue(copy.allocation().get().membership().retired());
 
-        Node removable = copy.with(node.allocation().get().removable(true));
+        Node removable = copy.with(node.allocation().get().removable(true, true));
         Node removableCopy = nodeSerializer.fromJson(Node.State.provisioned, nodeSerializer.toJson(removable));
-        assertTrue(removableCopy.allocation().get().isRemovable());
+        assertTrue(removableCopy.allocation().get().removable());
+        assertTrue(removableCopy.allocation().get().reusable());
     }
 
     @Test
@@ -329,6 +341,9 @@ public class NodeSerializerTest {
                         "   \"hostname\" : \"myHostname\",\n" +
                         "   \"ipAddresses\" : [\"127.0.0.1\"],\n" +
                         "   \"instance\": {\n" +
+                        "     \"tenantId\":\"t\",\n" +
+                        "     \"applicationId\":\"a\",\n" +
+                        "     \"instanceId\":\"i\",\n" +
                         "     \"serviceId\": \"content/myId/0/0/stateful\",\n" +
                         "     \"wantedVespaVersion\": \"6.42.2\"\n" +
                         "   }\n" +
@@ -343,11 +358,13 @@ public class NodeSerializerTest {
         assertFalse(serialized.status().osVersion().current().isPresent());
 
         // Update OS version
-        serialized = serialized.withCurrentOsVersion(Version.fromString("7.1"), Instant.ofEpochMilli(123))
-                               // Another update for same version:
-                               .withCurrentOsVersion(Version.fromString("7.1"), Instant.ofEpochMilli(456));
+        serialized = serialized.withCurrentOsVersion(Version.fromString("7.1"), Instant.ofEpochMilli(42));
+        assertFalse("No event is added when initial version is set",
+                    serialized.history().event(History.Event.Type.osUpgraded).isPresent());
+        serialized = serialized.withCurrentOsVersion(Version.fromString("7.2"), Instant.ofEpochMilli(123))
+                               .withCurrentOsVersion(Version.fromString("7.2"), Instant.ofEpochMilli(456));
         serialized = nodeSerializer.fromJson(State.provisioned, nodeSerializer.toJson(serialized));
-        assertEquals(Version.fromString("7.1"), serialized.status().osVersion().current().get());
+        assertEquals(Version.fromString("7.2"), serialized.status().osVersion().current().get());
         var osUpgradedEvents = serialized.history().events().stream()
                                          .filter(event -> event.type() == History.Event.Type.osUpgraded)
                                          .collect(Collectors.toList());
@@ -471,6 +488,17 @@ public class NodeSerializerTest {
         node = node.with(trustStoreItems);
         node = nodeSerializer.fromJson(State.active, nodeSerializer.toJson(node));
         assertEquals(trustStoreItems, node.trustedCertificates());
+    }
+
+    @Test
+    public void cloud_account_serialization() {
+        CloudAccount account = CloudAccount.from("012345678912");
+        Node node = Node.create("id", "host1.example.com", nodeFlavors.getFlavorOrThrow("default"), State.provisioned, NodeType.host)
+                        .cloudAccount(account)
+                        .exclusiveToApplicationId(ApplicationId.defaultId())
+                        .build();
+        node = nodeSerializer.fromJson(State.provisioned, nodeSerializer.toJson(node));
+        assertEquals(account, node.cloudAccount());
     }
 
     private byte[] createNodeJson(String hostname, String... ipAddress) {

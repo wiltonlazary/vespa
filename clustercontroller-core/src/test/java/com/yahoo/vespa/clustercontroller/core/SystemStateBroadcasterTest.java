@@ -6,15 +6,13 @@ import com.yahoo.vdslib.state.NodeState;
 import com.yahoo.vdslib.state.NodeType;
 import com.yahoo.vdslib.state.State;
 import com.yahoo.vespa.clustercontroller.core.database.DatabaseHandler;
-import com.yahoo.vespa.clustercontroller.core.listeners.NodeAddedOrRemovedListener;
-import com.yahoo.vespa.clustercontroller.core.listeners.NodeStateOrHostInfoChangeHandler;
-import org.junit.Test;
+import com.yahoo.vespa.clustercontroller.core.listeners.NodeListener;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-
 import java.util.stream.Stream;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -26,7 +24,8 @@ public class SystemStateBroadcasterTest {
     private static class Fixture {
         FakeTimer timer = new FakeTimer();
         final Object monitor = new Object();
-        SystemStateBroadcaster broadcaster = new SystemStateBroadcaster(timer, monitor);
+        FleetControllerContext context = mock(FleetControllerContext.class);
+        SystemStateBroadcaster broadcaster = new SystemStateBroadcaster(context, timer, monitor);
         Communicator mockCommunicator = mock(Communicator.class);
         DatabaseHandler mockDatabaseHandler = mock(DatabaseHandler.class);
         FleetController mockFleetController = mock(FleetController.class);
@@ -55,8 +54,8 @@ public class SystemStateBroadcasterTest {
         }
     }
 
-    private static DatabaseHandler.Context dbContextFrom(ContentCluster cluster) {
-        return new DatabaseHandler.Context() {
+    private static DatabaseHandler.DatabaseContext dbContextFrom(ContentCluster cluster) {
+        return new DatabaseHandler.DatabaseContext() {
             @Override
             public ContentCluster getCluster() {
                 return cluster;
@@ -68,12 +67,7 @@ public class SystemStateBroadcasterTest {
             }
 
             @Override
-            public NodeAddedOrRemovedListener getNodeAddedOrRemovedListener() {
-                return null;
-            }
-
-            @Override
-            public NodeStateOrHostInfoChangeHandler getNodeStateUpdateListener() {
+            public NodeListener getNodeStateUpdateListener() {
                 return null;
             }
         };
@@ -84,17 +78,17 @@ public class SystemStateBroadcasterTest {
     }
 
     @Test
-    public void always_publish_baseline_cluster_state() {
+    void always_publish_baseline_cluster_state() {
         Fixture f = new Fixture();
         ClusterStateBundle stateBundle = ClusterStateBundleUtil.makeBundle("version:3 distributor:2 storage:2");
         ClusterFixture cf = ClusterFixture.forFlatCluster(2).bringEntireClusterUp().assignDummyRpcAddresses();
         f.broadcaster.handleNewClusterStates(stateBundle);
         f.broadcaster.broadcastNewStateBundleIfRequired(dbContextFrom(cf.cluster()), f.mockCommunicator, 3);
-        cf.cluster().getNodeInfo().forEach(nodeInfo -> verify(f.mockCommunicator).setSystemState(eq(stateBundle), eq(nodeInfo), any()));
+        cf.cluster().getNodeInfos().forEach(nodeInfo -> verify(f.mockCommunicator).setSystemState(eq(stateBundle), eq(nodeInfo), any()));
     }
 
     @Test
-    public void non_observed_startup_timestamps_are_published_per_node_for_baseline_state() {
+    void non_observed_startup_timestamps_are_published_per_node_for_baseline_state() {
         Fixture f = new Fixture();
         ClusterStateBundle stateBundle = ClusterStateBundleUtil.makeBundle("version:3 distributor:2 storage:2");
         ClusterFixture cf = ClusterFixture.forFlatCluster(2).bringEntireClusterUp().assignDummyRpcAddresses();
@@ -111,7 +105,7 @@ public class SystemStateBroadcasterTest {
     }
 
     @Test
-    public void bucket_space_states_are_published_verbatim_when_no_additional_timestamps_needed() {
+    void bucket_space_states_are_published_verbatim_when_no_additional_timestamps_needed() {
         Fixture f = new Fixture();
         ClusterStateBundle stateBundle = ClusterStateBundleUtil.makeBundle("version:3 distributor:2 storage:2",
                 StateMapping.of("default", "version:3 distributor:2 storage:2 .0.s:d"),
@@ -120,11 +114,11 @@ public class SystemStateBroadcasterTest {
         f.broadcaster.handleNewClusterStates(stateBundle);
         f.broadcaster.broadcastNewStateBundleIfRequired(dbContextFrom(cf.cluster()), f.mockCommunicator, 3);
 
-        cf.cluster().getNodeInfo().forEach(nodeInfo -> verify(f.mockCommunicator).setSystemState(eq(stateBundle), eq(nodeInfo), any()));
+        cf.cluster().getNodeInfos().forEach(nodeInfo -> verify(f.mockCommunicator).setSystemState(eq(stateBundle), eq(nodeInfo), any()));
     }
 
     @Test
-    public void non_observed_startup_timestamps_are_published_per_bucket_space_state() {
+    void non_observed_startup_timestamps_are_published_per_bucket_space_state() {
         Fixture f = new Fixture();
         ClusterStateBundle stateBundle = ClusterStateBundleUtil.makeBundle("version:3 distributor:2 storage:2",
                 StateMapping.of("default", "version:3 distributor:2 storage:2 .0.s:d"),
@@ -145,27 +139,27 @@ public class SystemStateBroadcasterTest {
     }
 
     @Test
-    public void state_not_broadcast_if_version_not_tagged_as_written_to_zookeeper() {
+    void state_not_broadcast_if_version_not_tagged_as_written_to_zookeeper() {
         Fixture f = new Fixture();
         ClusterStateBundle stateBundle = ClusterStateBundleUtil.makeBundle("version:100 distributor:2 storage:2");
         ClusterFixture cf = ClusterFixture.forFlatCluster(2).bringEntireClusterUp().assignDummyRpcAddresses();
         f.broadcaster.handleNewClusterStates(stateBundle);
         f.broadcaster.broadcastNewStateBundleIfRequired(dbContextFrom(cf.cluster()), f.mockCommunicator, 99);
 
-        cf.cluster().getNodeInfo().forEach(nodeInfo -> {
+        cf.cluster().getNodeInfos().forEach(nodeInfo -> {
             verify(f.mockCommunicator, times(0)).setSystemState(any(), eq(nodeInfo), any());
         });
     }
 
     @Test
-    public void state_is_broadcast_if_version_is_tagged_as_written_to_zookeeper() {
+    void state_is_broadcast_if_version_is_tagged_as_written_to_zookeeper() {
         Fixture f = new Fixture();
         ClusterStateBundle stateBundle = ClusterStateBundleUtil.makeBundle("version:100 distributor:2 storage:2");
         ClusterFixture cf = ClusterFixture.forFlatCluster(2).bringEntireClusterUp().assignDummyRpcAddresses();
         f.broadcaster.handleNewClusterStates(stateBundle);
         f.broadcaster.broadcastNewStateBundleIfRequired(dbContextFrom(cf.cluster()), f.mockCommunicator, 100);
 
-        cf.cluster().getNodeInfo().forEach(nodeInfo -> {
+        cf.cluster().getNodeInfos().forEach(nodeInfo -> {
             verify(f.mockCommunicator, times(1)).setSystemState(any(), eq(nodeInfo), any());
         });
     }
@@ -261,9 +255,10 @@ public class SystemStateBroadcasterTest {
         }
     }
 
+    // Type erasure of Waiter in mocked argument capture
     @Test
-    @SuppressWarnings("unchecked") // Type erasure of Waiter in mocked argument capture
-    public void activation_not_sent_before_all_distributors_have_acked_state_bundle() {
+    @SuppressWarnings("unchecked")
+    void activation_not_sent_before_all_distributors_have_acked_state_bundle() {
         var f = StateActivationFixture.withTwoPhaseEnabled();
         var cf = f.cf;
 
@@ -275,7 +270,7 @@ public class SystemStateBroadcasterTest {
         f.simulateBroadcastTick(cf, 123);
 
         // No activations should be sent yet
-        cf.cluster().getNodeInfo().forEach(nodeInfo -> {
+        cf.cluster().getNodeInfos().forEach(nodeInfo -> {
             verify(f.mockCommunicator, times(0)).activateClusterStateVersion(eq(123), eq(nodeInfo), any());
         });
         assertNull(f.broadcaster.getLastClusterStateBundleConverged());
@@ -284,16 +279,17 @@ public class SystemStateBroadcasterTest {
         f.simulateBroadcastTick(cf, 123);
 
         // Activation should now be sent to _all_ nodes (distributor and storage)
-        cf.cluster().getNodeInfo().forEach(nodeInfo -> {
+        cf.cluster().getNodeInfos().forEach(nodeInfo -> {
             verify(f.mockCommunicator).activateClusterStateVersion(eq(123), eq(nodeInfo), any());
         });
         // But not converged yet, as activations have not been ACKed
         assertNull(f.broadcaster.getLastClusterStateBundleConverged());
     }
 
+    // Type erasure of Waiter in mocked argument capture
     @Test
-    @SuppressWarnings("unchecked") // Type erasure of Waiter in mocked argument capture
-    public void state_bundle_not_considered_converged_until_activation_acked_by_all_distributors() {
+    @SuppressWarnings("unchecked")
+    void state_bundle_not_considered_converged_until_activation_acked_by_all_distributors() {
         var f = StateActivationFixture.withTwoPhaseEnabled();
         var cf = f.cf;
 
@@ -308,22 +304,23 @@ public class SystemStateBroadcasterTest {
         });
 
         respondToActivateClusterStateVersion(cf.cluster.getNodeInfo(Node.ofDistributor(0)),
-                                             f.stateBundle, d0ActivateWaiter.getValue());
+                f.stateBundle, d0ActivateWaiter.getValue());
         f.simulateBroadcastTick(cf, 123);
 
         assertNull(f.broadcaster.getLastClusterStateBundleConverged()); // Not yet converged
 
         respondToActivateClusterStateVersion(cf.cluster.getNodeInfo(Node.ofDistributor(1)),
-                                             f.stateBundle, d1ActivateWaiter.getValue());
+                f.stateBundle, d1ActivateWaiter.getValue());
         f.simulateBroadcastTick(cf, 123);
 
         // Finally, all distributors have ACKed the version! State is marked as converged.
         assertEquals(f.stateBundle, f.broadcaster.getLastClusterStateBundleConverged());
     }
 
+    // Type erasure of Waiter in mocked argument capture
     @Test
-    @SuppressWarnings("unchecked") // Type erasure of Waiter in mocked argument capture
-    public void activation_not_sent_if_deferred_activation_is_disabled_in_state_bundle() {
+    @SuppressWarnings("unchecked")
+    void activation_not_sent_if_deferred_activation_is_disabled_in_state_bundle() {
         var f = StateActivationFixture.withTwoPhaseDisabled();
         var cf = f.cf;
 
@@ -338,9 +335,10 @@ public class SystemStateBroadcasterTest {
         });
     }
 
+    // Type erasure of Waiter in mocked argument capture
     @Test
-    @SuppressWarnings("unchecked") // Type erasure of Waiter in mocked argument capture
-    public void activation_convergence_considers_actual_version_returned_from_node() {
+    @SuppressWarnings("unchecked")
+    void activation_convergence_considers_actual_version_returned_from_node() {
         var f = StateActivationFixture.withTwoPhaseEnabled();
         var cf = f.cf;
 

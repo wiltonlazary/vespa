@@ -2,6 +2,7 @@
 
 #include "http_connection.h"
 #include <vespa/vespalib/data/output_writer.h>
+#include <vespa/vespalib/net/connection_auth_context.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <cassert>
 
@@ -102,8 +103,9 @@ void emit_http_security_headers(OutputWriter &dst) {
     // Do not allow embedding via iframe (clickjacking prevention)
     dst.printf("X-Frame-Options: DENY\r\n");
     // Do not allow _anything_ to be externally loaded, nor inline scripts
-    // etc to be executed.
-    dst.printf("Content-Security-Policy: default-src 'none'\r\n");
+    // etc. to be executed.
+    // "frame-ancestors: none" is analogous to X-Frame-Options: DENY.
+    dst.printf("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n");
     // No heuristic auto-inference of content-type based on payload.
     dst.printf("X-Content-Type-Options: nosniff\r\n");
     // Don't store any potentially sensitive data in any caches.
@@ -121,14 +123,21 @@ HttpConnection::set_state(State state, bool read, bool write)
 }
 
 void
+HttpConnection::complete_handshake()
+{
+    _auth_ctx = _socket->make_auth_context();
+    set_state(State::READ_REQUEST, true, false);
+}
+
+void
 HttpConnection::do_handshake()
 {
     for (;;) {
         switch (_socket->handshake()) {
-        case vespalib::CryptoSocket::HandshakeResult::FAIL:       return set_state(State::NOTIFY,       false, false);
-        case vespalib::CryptoSocket::HandshakeResult::DONE:       return set_state(State::READ_REQUEST,  true, false);
-        case vespalib::CryptoSocket::HandshakeResult::NEED_READ:  return set_state(State::HANDSHAKE,     true, false);
-        case vespalib::CryptoSocket::HandshakeResult::NEED_WRITE: return set_state(State::HANDSHAKE,    false,  true);
+        case vespalib::CryptoSocket::HandshakeResult::FAIL:       return set_state(State::NOTIFY,    false, false);
+        case vespalib::CryptoSocket::HandshakeResult::DONE:       return complete_handshake();
+        case vespalib::CryptoSocket::HandshakeResult::NEED_READ:  return set_state(State::HANDSHAKE,  true, false);
+        case vespalib::CryptoSocket::HandshakeResult::NEED_WRITE: return set_state(State::HANDSHAKE, false,  true);
         case vespalib::CryptoSocket::HandshakeResult::NEED_WORK:  _socket->do_handshake_work();
         }
     }
@@ -158,7 +167,7 @@ HttpConnection::do_dispatch()
 void
 HttpConnection::do_wait()
 {
-    if (_reply_ready) {
+    if (_reply_ready.load(std::memory_order_acquire)) {
         set_state(State::WRITE_REPLY, false, true);
     }
 }
@@ -193,6 +202,7 @@ HttpConnection::HttpConnection(HandleGuard guard, Reactor &reactor, CryptoSocket
     : _guard(std::move(guard)),
       _state(State::HANDSHAKE),
       _socket(std::move(socket)),
+      _auth_ctx(),
       _input(CHUNK_SIZE * 2),
       _output(CHUNK_SIZE * 2),
       _request(),
@@ -248,8 +258,8 @@ HttpConnection::respond_with_content(const vespalib::string &content_type,
         dst.printf("\r\n");
         dst.write(content.data(), content.size());
     }
-    _reply_ready = true;
     _token->update(false, true);
+    _reply_ready.store(true, std::memory_order_release);
 }
 
 void
@@ -261,8 +271,8 @@ HttpConnection::respond_with_error(int code, const vespalib::string &msg)
         dst.printf("Connection: close\r\n");
         dst.printf("\r\n");
     }
-    _reply_ready = true;
     _token->update(false, true);
+    _reply_ready.store(true, std::memory_order_release);
 }
 
 } // namespace vespalib::portal

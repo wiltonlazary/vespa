@@ -3,6 +3,7 @@ package com.yahoo.vespa.hosted.provision.restapi;
 
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.ApplicationLockException;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.HostFilter;
 import com.yahoo.config.provision.NodeFlavors;
@@ -11,7 +12,7 @@ import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.io.IOUtils;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.MessageResponse;
@@ -35,11 +36,11 @@ import com.yahoo.vespa.hosted.provision.node.Address;
 import com.yahoo.vespa.hosted.provision.node.Agent;
 import com.yahoo.vespa.hosted.provision.node.IP;
 import com.yahoo.vespa.hosted.provision.node.filter.ApplicationFilter;
+import com.yahoo.vespa.hosted.provision.node.filter.NodeFilter;
 import com.yahoo.vespa.hosted.provision.node.filter.NodeHostFilter;
 import com.yahoo.vespa.hosted.provision.node.filter.NodeOsVersionFilter;
 import com.yahoo.vespa.hosted.provision.node.filter.NodeTypeFilter;
 import com.yahoo.vespa.hosted.provision.node.filter.ParentHostFilter;
-import com.yahoo.vespa.hosted.provision.node.filter.StateFilter;
 import com.yahoo.vespa.hosted.provision.restapi.NodesResponse.ResponseType;
 import com.yahoo.vespa.orchestrator.Orchestrator;
 import com.yahoo.yolean.Exceptions;
@@ -49,14 +50,12 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -68,7 +67,7 @@ import static com.yahoo.slime.SlimeUtils.optionalString;
  *
  * @author bratseth
  */
-public class NodesV2ApiHandler extends LoggingRequestHandler {
+public class NodesV2ApiHandler extends ThreadedHttpRequestHandler {
 
     private final Orchestrator orchestrator;
     private final NodeRepository nodeRepository;
@@ -76,7 +75,7 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
     private final NodeFlavors nodeFlavors;
 
     @Inject
-    public NodesV2ApiHandler(LoggingRequestHandler.Context parentCtx, Orchestrator orchestrator,
+    public NodesV2ApiHandler(ThreadedHttpRequestHandler.Context parentCtx, Orchestrator orchestrator,
                              NodeRepository nodeRepository, MetricsDb metricsDb, NodeFlavors flavors) {
         super(parentCtx);
         this.orchestrator = orchestrator;
@@ -102,6 +101,10 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
         }
         catch (IllegalArgumentException e) {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
+        }
+        catch (ApplicationLockException e) {
+            log.log(Level.INFO, "Timed out getting lock when handling '" + request.getUri() + "': " + Exceptions.toMessageString(e));
+            return ErrorResponse.internalServerError(Exceptions.toMessageString(e));
         }
         catch (RuntimeException e) {
             log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
@@ -165,12 +168,10 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
     private HttpResponse handlePATCH(HttpRequest request) {
         Path path = new Path(request.getUri());
         if (path.matches("/nodes/v2/node/{hostname}")) {
-            try (NodePatcher patcher = new NodePatcher(nodeFlavors, request.getData(), nodeFromHostname(path.get("hostname")), nodeRepository)) {
-                var patchedNodes = patcher.apply();
-                nodeRepository.nodes().write(patchedNodes, patcher.nodeMutexOfHost());
-
-                return new MessageResponse("Updated " + patcher.nodeMutexOfHost().node().hostname());
-            }
+            NodePatcher patcher = new NodePatcher(nodeFlavors, nodeRepository);
+            String hostname = path.get("hostname");
+            patcher.patch(hostname, request.getData());
+            return new MessageResponse("Updated " + hostname);
         }
         else if (path.matches("/nodes/v2/application/{applicationId}")) {
             try (ApplicationPatcher patcher = new ApplicationPatcher(request.getData(),
@@ -239,11 +240,6 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
         }
     }
 
-    private Node nodeFromHostname(String hostname) {
-        return nodeRepository.nodes().node(hostname).orElseThrow(() ->
-                new NotFoundException("No node found with hostname " + hostname));
-    }
-
     public int addNodes(Inspector inspector) {
         List<Node> nodes = createNodesFromSlime(inspector);
         return nodeRepository.nodes().addNodes(nodes, Agent.operator).size();
@@ -274,7 +270,7 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
         inspector.field("additionalHostnames").traverse((ArrayTraverser) (i, item) ->
                 addressPool.add(new Address(item.asString())));
 
-        Node.Builder builder = Node.create(inspector.field("openStackId").asString(),
+        Node.Builder builder = Node.create(inspector.field("id").asString(),
                                            IP.Config.of(ipAddresses, ipAddressPool, addressPool),
                                            inspector.field("hostname").asString(),
                                            flavorFromSlime(inspector),
@@ -297,7 +293,8 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
                     requiredField(resourcesInspector, "diskGb", Inspector::asDouble),
                     requiredField(resourcesInspector, "bandwidthGbps", Inspector::asDouble),
                     optionalString(resourcesInspector.field("diskSpeed")).map(NodeResourcesSerializer::diskSpeedFrom).orElse(NodeResources.DiskSpeed.getDefault()),
-                    optionalString(resourcesInspector.field("storageType")).map(NodeResourcesSerializer::storageTypeFrom).orElse(NodeResources.StorageType.getDefault())));
+                    optionalString(resourcesInspector.field("storageType")).map(NodeResourcesSerializer::storageTypeFrom).orElse(NodeResources.StorageType.getDefault()),
+                    optionalString(resourcesInspector.field("architecture")).map(NodeResourcesSerializer::architectureFrom).orElse(NodeResources.Architecture.getDefault())));
         }
 
         Flavor flavor = nodeFlavors.getFlavorOrThrow(flavorInspector.asString());
@@ -314,6 +311,8 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
                 flavor = flavor.with(flavor.resources().with(NodeResourcesSerializer.diskSpeedFrom(resourcesInspector.field("diskSpeed").asString())));
             if (resourcesInspector.field("storageType").valid())
                 flavor = flavor.with(flavor.resources().with(NodeResourcesSerializer.storageTypeFrom(resourcesInspector.field("storageType").asString())));
+            if (resourcesInspector.field("architecture").valid())
+                flavor = flavor.with(flavor.resources().with(NodeResourcesSerializer.architectureFrom(resourcesInspector.field("architecture").asString())));
         }
         return flavor;
     }
@@ -329,16 +328,17 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
         return NodeSerializer.typeFrom(object.asString());
     }
 
-    public static Predicate<Node> toNodeFilter(HttpRequest request) {
-        return NodeHostFilter.from(HostFilter.from(request.getProperty("hostname"),
-                                                   request.getProperty("flavor"),
-                                                   request.getProperty("clusterType"),
-                                                   request.getProperty("clusterId")))
-                .and(ApplicationFilter.from(request.getProperty("application")))
-                .and(StateFilter.from(request.getProperty("state"), request.getBooleanProperty("includeDeprovisioned")))
-                .and(NodeTypeFilter.from(request.getProperty("type")))
-                .and(ParentHostFilter.from(request.getProperty("parentHost")))
-                .and(NodeOsVersionFilter.from(request.getProperty("osVersion")));
+    public static NodeFilter toNodeFilter(HttpRequest request) {
+        return NodeFilter.in(request.getProperty("state"),
+                             request.getBooleanProperty("includeDeprovisioned"))
+                         .matching(NodeHostFilter.from(HostFilter.from(request.getProperty("hostname"),
+                                                                       request.getProperty("flavor"),
+                                                                       request.getProperty("clusterType"),
+                                                                       request.getProperty("clusterId")))
+                                                 .and(ApplicationFilter.from(request.getProperty("application")))
+                                                 .and(NodeTypeFilter.from(request.getProperty("type")))
+                                                 .and(ParentHostFilter.from(request.getProperty("parentHost")))
+                                                 .and(NodeOsVersionFilter.from(request.getProperty("osVersion"))));
     }
 
     private static boolean isPatchOverride(HttpRequest request) {
@@ -362,7 +362,6 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
         boolean force = inspector.field("force").asBool();
         Inspector versionField = inspector.field("version");
         Inspector osVersionField = inspector.field("osVersion");
-        Inspector upgradeBudgetField = inspector.field("upgradeBudget");
 
         if (versionField.valid()) {
             Version version = Version.fromString(versionField.asString());
@@ -377,20 +376,8 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
                 messageParts.add("osVersion to null");
             } else {
                 Version osVersion = Version.fromString(v);
-                Optional<Duration> upgradeBudget = Optional.of(upgradeBudgetField)
-                                                           .filter(Inspector::valid)
-                                                           .map(Inspector::asString)
-                                                           .map(s -> {
-                                                               try {
-                                                                   return Duration.parse(s);
-                                                               } catch (Exception e) {
-                                                                   throw new IllegalArgumentException("Invalid duration '" + s + "'", e);
-                                                               }
-                                                           });
-                if (upgradeBudget.isEmpty()) throw new IllegalArgumentException("upgradeBudget must be set");
-                nodeRepository.osVersions().setTarget(nodeType, osVersion, upgradeBudget.get(), force);
+                nodeRepository.osVersions().setTarget(nodeType, osVersion, force);
                 messageParts.add("osVersion to " + osVersion.toFullString());
-                messageParts.add("upgradeBudget to " + upgradeBudget.get());
             }
         }
 
@@ -453,6 +440,8 @@ public class NodesV2ApiHandler extends LoggingRequestHandler {
         Slime slime = new Slime();
         Cursor root = slime.setObject();
 
+        root.setDouble("totalCost", stats.totalCost());
+        root.setDouble("totalAllocatedCost", stats.totalAllocatedCost());
         toSlime(stats.load(), root.setObject("load"));
         toSlime(stats.activeLoad(), root.setObject("activeLoad"));
         Cursor applicationsArray = root.setArray("applications");

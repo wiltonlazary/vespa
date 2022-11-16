@@ -26,9 +26,9 @@ import com.yahoo.vespa.model.container.docproc.ContainerDocproc;
 import com.yahoo.vespa.model.container.docproc.DocprocChain;
 import com.yahoo.vespa.model.container.docproc.DocprocChains;
 import com.yahoo.vespa.model.content.cluster.ContentCluster;
-import com.yahoo.vespa.model.search.AbstractSearchCluster;
 import com.yahoo.vespa.model.search.IndexedSearchCluster;
 import com.yahoo.vespa.model.search.IndexingDocprocChain;
+import com.yahoo.vespa.model.search.SearchCluster;
 import com.yahoo.vespa.model.search.SearchNode;
 import org.w3c.dom.Element;
 
@@ -48,13 +48,15 @@ import java.util.Set;
  */
 public class Content extends ConfigModel {
 
+    private static final String DOCPROC_RESERVED_NAME = "docproc";
+
     private ContentCluster cluster;
     private Optional<ApplicationContainerCluster> ownedIndexingCluster = Optional.empty();
 
     // Dependencies to other models
     private final AdminModel adminModel;
 
-    // to find or add the docproc container and supplement cluster controllers with clusters having less then 3 nodes
+    // to find or add the docproc container and supplement cluster controllers with clusters having less than 3 nodes
     private final Collection<ContainerModel> containers;
 
     @SuppressWarnings("UnusedDeclaration") // Created by reflection in ConfigModelRepo
@@ -130,8 +132,8 @@ public class Content extends ConfigModel {
         return contents;
     }
 
-    public static List<AbstractSearchCluster> getSearchClusters(ConfigModelRepo pc) {
-        List<AbstractSearchCluster> clusters = new ArrayList<>();
+    public static List<SearchCluster> getSearchClusters(ConfigModelRepo pc) {
+        List<SearchCluster> clusters = new ArrayList<>();
         for (ContentCluster c : getContentClusters(pc))
             clusters.addAll(c.getSearch().getClusters().values());
         return clusters;
@@ -179,7 +181,6 @@ public class Content extends ConfigModel {
                 s.setVespaMallocDebugStackTrace(cluster.getRootGroup().getVespaMallocDebugStackTrace().get());
             }
         }
-        cluster.prepare();
     }
 
     private void setCpuSocketAffinity() {
@@ -244,8 +245,8 @@ public class Content extends ConfigModel {
             String indexingClusterName = cluster.getIndexingClusterName();
             ContainerModel containerModel = findByName(indexingClusterName, containers);
             if (containerModel == null)
-                throw new RuntimeException("Content cluster '" + cluster.getClusterName() + "' refers to docproc " +
-                                           "cluster '" + indexingClusterName + "', but this cluster does not exist.");
+                throw new IllegalArgumentException("Content cluster '" + cluster.getClusterName() + "' refers to docproc " +
+                                                   "cluster '" + indexingClusterName + "', but this cluster does not exist.");
             addIndexingChainsTo(containerModel.getCluster(), cluster);
         }
 
@@ -289,9 +290,9 @@ public class Content extends ConfigModel {
                                                    ConfigModelContext modelContext,
                                                    ApplicationConfigProducerRoot root) {
             String indexerName = cluster.getIndexingClusterName();
-            AbstractConfigProducer<?> parent = root.getChildren().get(ContainerModel.DOCPROC_RESERVED_NAME);
+            AbstractConfigProducer<?> parent = root.getChildren().get(DOCPROC_RESERVED_NAME);
             if (parent == null)
-                parent = new SimpleConfigProducer(root, ContainerModel.DOCPROC_RESERVED_NAME);
+                parent = new SimpleConfigProducer(root, DOCPROC_RESERVED_NAME);
             ApplicationContainerCluster indexingCluster = new ApplicationContainerCluster(parent, "cluster." + indexerName, indexerName, modelContext.getDeployState());
             ContainerModel indexingClusterModel = new ContainerModel(modelContext.withParent(parent).withId(indexingCluster.getSubId()));
             indexingClusterModel.setCluster(indexingCluster);
@@ -299,6 +300,7 @@ public class Content extends ConfigModel {
             content.ownedIndexingCluster = Optional.of(indexingCluster);
 
             indexingCluster.addDefaultHandlersWithVip();
+            indexingCluster.addAllPlatformBundles();
             addDocproc(indexingCluster);
 
             List<ApplicationContainer> nodes = new ArrayList<>();
@@ -313,7 +315,7 @@ public class Content extends ConfigModel {
                     index++;
                     docprocService.useDynamicPorts();
                     docprocService.setHostResource(host);
-                    docprocService.initService(modelContext.getDeployLogger());
+                    docprocService.initService(modelContext.getDeployState());
                     nodes.add(docprocService);
                     processedHosts.add(host);
                 }

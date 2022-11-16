@@ -1,8 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/fastos/file.h>
 #include <vespa/searchcore/proton/index/indexmanager.h>
-#include <vespa/searchcore/proton/server/executorthreadingservice.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/repo/configbuilder.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/searchcorespi/index/index_manager_stats.h>
 #include <vespa/searchcorespi/index/indexcollection.h>
 #include <vespa/searchcorespi/index/indexflushtarget.h>
@@ -10,19 +13,25 @@
 #include <vespa/vespalib/util/sequencedtaskexecutor.h>
 #include <vespa/searchlib/common/flush_token.h>
 #include <vespa/searchlib/common/serialnum.h>
-#include <vespa/searchlib/index/docbuilder.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
+#include <vespa/searchlib/test/doc_builder.h>
+#include <vespa/searchlib/test/schema_builder.h>
+#include <vespa/searchlib/test/string_field_builder.h>
 #include <vespa/searchlib/memoryindex/compact_words_store.h>
 #include <vespa/searchlib/memoryindex/document_inverter.h>
+#include <vespa/searchlib/memoryindex/document_inverter_context.h>
 #include <vespa/searchlib/memoryindex/field_index_collection.h>
 #include <vespa/searchlib/memoryindex/field_inverter.h>
 #include <vespa/searchlib/queryeval/isourceselector.h>
 #include <vespa/searchlib/test/index/mock_field_length_inspector.h>
 #include <vespa/vespalib/gtest/gtest.h>
-#include <vespa/vespalib/io/fileutil.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
+#include <vespa/vespalib/util/gate.h>
 #include <vespa/vespalib/util/size_literals.h>
-#include <vespa/vespalib/util/threadstackexecutor.h>
 #include <vespa/vespalib/util/time.h>
+#include <vespa/vespalib/stllike/asciistream.h>
+#include <vespa/fastos/file.h>
+#include <filesystem>
 #include <set>
 #include <thread>
 
@@ -31,6 +40,7 @@ LOG_SETUP("indexmanager_test");
 
 using document::Document;
 using document::FieldValue;
+using document::StringFieldValue;
 using proton::index::IndexConfig;
 using proton::index::IndexManager;
 using vespalib::SequencedTaskExecutor;
@@ -39,18 +49,18 @@ using search::TuneFileAttributes;
 using search::TuneFileIndexManager;
 using search::TuneFileIndexing;
 using vespalib::datastore::EntryRef;
-using search::index::DocBuilder;
 using search::index::DummyFileHeaderContext;
 using search::index::FieldLengthInfo;
 using search::index::Schema;
-using search::index::schema::DataType;
 using search::index::test::MockFieldLengthInspector;
 using search::memoryindex::CompactWordsStore;
 using search::memoryindex::FieldIndexCollection;
 using search::queryeval::Source;
+using search::test::DocBuilder;
+using search::test::SchemaBuilder;
+using search::test::StringFieldBuilder;
 using std::set;
 using std::string;
-using vespalib::ThreadStackExecutor;
 using vespalib::makeLambdaTask;
 using std::chrono::duration_cast;
 
@@ -76,33 +86,37 @@ const string index_dir = "test_data";
 const string field_name = "field";
 const uint32_t docid = 1;
 
+auto add_fields = [](auto& header) { header.addField(field_name, document::DataType::T_STRING); };
+
 Schema getSchema() {
-    Schema schema;
-    schema.addIndexField(Schema::IndexField(field_name, DataType::STRING));
-    return schema;
+    DocBuilder db(add_fields);
+    return SchemaBuilder(db).add_all_indexes().build();
 }
 
 void removeTestData() {
-    FastOS_FileInterface::EmptyAndRemoveDirectory(index_dir.c_str());
+    std::filesystem::remove_all(std::filesystem::path(index_dir));
 }
 
 Document::UP buildDocument(DocBuilder &doc_builder, int id,
                            const string &word) {
     vespalib::asciistream ost;
     ost << "id:ns:searchdocument::" << id;
-    doc_builder.startDocument(ost.str());
-    doc_builder.startIndexField(field_name).addStr(word).endField();
-    return doc_builder.endDocument();
+    auto doc = doc_builder.make_document(ost.str());
+    doc->setValue(field_name, StringFieldBuilder(doc_builder).word(word).build());
+    return doc;
 }
 
-std::shared_ptr<vespalib::IDestructorCallback> emptyDestructorCallback;
+void push_documents_and_wait(search::memoryindex::DocumentInverter &inverter) {
+    vespalib::Gate gate;
+    inverter.pushDocuments(std::make_shared<vespalib::GateCallback>(gate));
+    gate.await();
+}
 
 struct IndexManagerTest : public ::testing::Test {
     SerialNum _serial_num;
     IndexManagerDummyReconfigurer _reconfigurer;
     DummyFileHeaderContext _fileHeaderContext;
-    vespalib::ThreadStackExecutor _sharedExecutor;
-    ExecutorThreadingService _writeService;
+    TransportAndExecutorService _service;
     std::unique_ptr<IndexManager> _index_manager;
     Schema _schema;
     DocBuilder _builder;
@@ -111,41 +125,48 @@ struct IndexManagerTest : public ::testing::Test {
         : _serial_num(0),
           _reconfigurer(),
           _fileHeaderContext(),
-          _sharedExecutor(1, 0x10000),
-          _writeService(_sharedExecutor),
+          _service(1),
           _index_manager(),
           _schema(getSchema()),
-          _builder(_schema)
+          _builder(add_fields)
     {
         removeTestData();
-        vespalib::mkdir(index_dir, false);
-        _writeService.sync();
+        std::filesystem::create_directory(std::filesystem::path(index_dir));
         resetIndexManager();
     }
 
     ~IndexManagerTest() {
-        _writeService.shutdown();
+        _service.shutdown();
     }
 
     template <class FunctionType>
     inline void runAsMaster(FunctionType &&function) {
-        _writeService.master().execute(makeLambdaTask(std::move(function)));
-        _writeService.master().sync();
+        vespalib::Gate gate;
+        _service.write().master().execute(makeLambdaTask([&gate,function = std::move(function)]() {
+            function();
+            gate.countDown();
+        }));
+        gate.await();
     }
     template <class FunctionType>
     inline void runAsIndex(FunctionType &&function) {
-        _writeService.index().execute(makeLambdaTask(std::move(function)));
-        _writeService.index().sync();
+        vespalib::Gate gate;
+        _service.write().index().execute(makeLambdaTask([&gate,function = std::move(function)]() {
+            function();
+            gate.countDown();
+        }));
+        gate.await();
     }
     void flushIndexManager();
     Document::UP addDocument(uint32_t docid);
     void resetIndexManager();
     void removeDocument(uint32_t docId, SerialNum serialNum) {
-        runAsIndex([&]() { _index_manager->removeDocument(docId, serialNum);
-                              _index_manager->commit(serialNum,
-                                                     emptyDestructorCallback);
-                          });
-        _writeService.indexFieldWriter().sync();
+        vespalib::Gate gate;
+        runAsIndex([&]() {
+            _index_manager->removeDocument(docId, serialNum);
+            _index_manager->commit(serialNum, std::make_shared<vespalib::GateCallback>(gate));
+        });
+        gate.await();
     }
     void removeDocument(uint32_t docId) {
         SerialNum serialNum = ++_serial_num;
@@ -182,10 +203,11 @@ IndexManagerTest::addDocument(uint32_t id)
 {
     Document::UP doc = buildDocument(_builder, id, "foo");
     SerialNum serialNum = ++_serial_num;
-    runAsIndex([&]() { _index_manager->putDocument(id, *doc, serialNum);
+    vespalib::Gate gate;
+    runAsIndex([&]() { _index_manager->putDocument(id, *doc, serialNum, {});
                           _index_manager->commit(serialNum,
-                                                 emptyDestructorCallback); });
-    _writeService.indexFieldWriter().sync();
+                                                 std::make_shared<vespalib::GateCallback>(gate)); });
+    gate.await();
     return doc;
 }
 
@@ -194,8 +216,8 @@ IndexManagerTest::resetIndexManager()
 {
     _index_manager.reset();
     _index_manager = std::make_unique<IndexManager>(index_dir, IndexConfig(), getSchema(), 1,
-                             _reconfigurer, _writeService, _writeService.master(),
-                             TuneFileIndexManager(), TuneFileAttributes(),_fileHeaderContext);
+                             _reconfigurer, _service.write(), _service.shared(),
+                             TuneFileIndexManager(), TuneFileAttributes(), _fileHeaderContext);
 }
 
 void
@@ -393,7 +415,8 @@ TEST_F(IndexManagerTest, require_that_flush_stats_are_calculated)
     FieldIndexCollection fic(schema, MockFieldLengthInspector());
     auto invertThreads = SequencedTaskExecutor::create(invert_executor, 2);
     auto pushThreads = SequencedTaskExecutor::create(push_executor, 2);
-    search::memoryindex::DocumentInverter inverter(schema, *invertThreads, *pushThreads, fic);
+    search::memoryindex::DocumentInverterContext inverter_context(schema, *invertThreads, *pushThreads, fic);
+    search::memoryindex::DocumentInverter inverter(inverter_context);
 
     uint64_t fixed_index_size = fic.getMemoryUsage().allocatedBytes();
     uint64_t index_size = fic.getMemoryUsage().allocatedBytes() - fixed_index_size;
@@ -405,10 +428,8 @@ TEST_F(IndexManagerTest, require_that_flush_stats_are_calculated)
     EXPECT_EQ(0u, _index_manager->getMaintainer().getFlushStats().cpu_time_required);
 
     Document::UP doc = addDocument(docid);
-    inverter.invertDocument(docid, *doc);
-    invertThreads->sync();
-    inverter.pushDocuments(std::shared_ptr<vespalib::IDestructorCallback>());
-    pushThreads->sync();
+    inverter.invertDocument(docid, *doc, {});
+    push_documents_and_wait(inverter);
     index_size = fic.getMemoryUsage().allocatedBytes() - fixed_index_size;
 
     /// Must account for both docid 0 being reserved and the extra after.
@@ -422,12 +443,10 @@ TEST_F(IndexManagerTest, require_that_flush_stats_are_calculated)
               _index_manager->getMaintainer().getFlushStats().cpu_time_required);
 
     doc = addDocument(docid + 10);
-    inverter.invertDocument(docid + 10, *doc);
-    doc = addDocument(docid + 100);
-    inverter.invertDocument(docid + 100, *doc);
-    invertThreads->sync();
-    inverter.pushDocuments(std::shared_ptr<vespalib::IDestructorCallback>());
-    pushThreads->sync();
+    inverter.invertDocument(docid + 10, *doc, {});
+    auto doc100 = addDocument(docid + 100);
+    inverter.invertDocument(docid + 100, *doc100, {});
+    push_documents_and_wait(inverter);
     index_size = fic.getMemoryUsage().allocatedBytes() - fixed_index_size;
     /// Must account for both docid 0 being reserved and the extra after.
     selector_size = (docid + 100 + 1) * sizeof(Source);

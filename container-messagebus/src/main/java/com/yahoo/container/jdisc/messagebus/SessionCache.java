@@ -1,14 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc.messagebus;
 
-import com.google.inject.Inject;
-import com.yahoo.cloud.config.SlobroksConfig;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.container.jdisc.ContainerMbusConfig;
 import com.yahoo.document.DocumentTypeManager;
 import com.yahoo.document.DocumentUtil;
-import com.yahoo.document.config.DocumentmanagerConfig;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocol;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocolPoliciesConfig;
 import com.yahoo.jdisc.ReferencedResource;
@@ -30,7 +27,7 @@ import com.yahoo.messagebus.shared.SharedIntermediateSession;
 import com.yahoo.messagebus.shared.SharedMessageBus;
 import com.yahoo.messagebus.shared.SharedSourceSession;
 import com.yahoo.vespa.config.content.DistributionConfig;
-import com.yahoo.vespa.config.content.LoadTypeConfig;
+import com.yahoo.yolean.concurrent.Memoized;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -56,9 +53,7 @@ public final class SessionCache extends AbstractComponent {
 
     private static final Logger log = Logger.getLogger(SessionCache.class.getName());
 
-    private final Object monitor = new Object();
-    private Supplier<SharedMessageBus> messageBuses;
-    private SharedMessageBus messageBus;
+    private final Memoized<SharedMessageBus, RuntimeException> messageBus;
 
     private final Object intermediateLock = new Object();
     private final Map<String, SharedIntermediateSession> intermediates = new HashMap<>();
@@ -70,49 +65,42 @@ public final class SessionCache extends AbstractComponent {
 
     @Inject
     public SessionCache(NetworkMultiplexerProvider nets, ContainerMbusConfig containerMbusConfig,
-                        DocumentmanagerConfig documentmanagerConfig,
-                        LoadTypeConfig loadTypeConfig, MessagebusConfig messagebusConfig,
+                        DocumentTypeManager documentTypeManager,
+                        MessagebusConfig messagebusConfig,
                         DocumentProtocolPoliciesConfig policiesConfig,
                         DistributionConfig distributionConfig) {
-        this(nets::net, containerMbusConfig, documentmanagerConfig,
-             loadTypeConfig, messagebusConfig, policiesConfig, distributionConfig);
+        this(nets::net, containerMbusConfig, documentTypeManager,
+             messagebusConfig, policiesConfig, distributionConfig);
 
     }
 
     public SessionCache(Supplier<NetworkMultiplexer> net, ContainerMbusConfig containerMbusConfig,
-                        DocumentmanagerConfig documentmanagerConfig,
-                        LoadTypeConfig loadTypeConfig, MessagebusConfig messagebusConfig,
+                        DocumentTypeManager documentTypeManager,
+                        MessagebusConfig messagebusConfig,
                         DocumentProtocolPoliciesConfig policiesConfig,
                         DistributionConfig distributionConfig) {
         this(net,
              containerMbusConfig,
              messagebusConfig,
-             new DocumentProtocol(new DocumentTypeManager(documentmanagerConfig),
-                                  new LoadTypeSet(loadTypeConfig),
+             new DocumentProtocol(documentTypeManager,
                                   policiesConfig,
                                   distributionConfig));
     }
 
     public SessionCache(Supplier<NetworkMultiplexer> net, ContainerMbusConfig containerMbusConfig,
                         MessagebusConfig messagebusConfig, Protocol protocol) {
-        this.messageBuses = () -> createSharedMessageBus(net.get(), containerMbusConfig, messagebusConfig, protocol);
+        this.messageBus = new Memoized<>(() -> createSharedMessageBus(net.get(), containerMbusConfig, messagebusConfig, protocol),
+                                         SharedMessageBus::release);
     }
 
     @Override
     public void deconstruct() {
-        synchronized (monitor) {
-            messageBuses = () -> { throw new IllegalStateException("Session cache already deconstructed"); };
-
-            if (messageBus != null)
-                messageBus.release();
-        }
+        messageBus.close();
     }
 
     // Lazily create shared message bus.
     private SharedMessageBus bus() {
-        synchronized (monitor) {
-            return messageBus = messageBus != null ? messageBus : messageBuses.get();
-        }
+        return messageBus.get();
     }
 
     private static SharedMessageBus createSharedMessageBus(NetworkMultiplexer net,

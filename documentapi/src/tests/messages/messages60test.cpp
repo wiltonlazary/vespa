@@ -10,6 +10,7 @@
 #include <vespa/document/update/fieldpathupdates.h>
 #include <vespa/documentapi/documentapi.h>
 #include <vespa/document/bucket/fixed_bucket_spaces.h>
+#include <vespa/document/fieldvalue/document.h>
 
 using document::DataType;
 using document::DocumentTypeRepo;
@@ -365,8 +366,6 @@ Messages60Test::testCreateVisitorReply()
     vs.setBytesVisited(1024000);
     vs.setDocumentsReturned(123);
     vs.setBytesReturned(512000);
-    vs.setSecondPassDocumentsReturned(456);
-    vs.setSecondPassBytesReturned(789100);
     reply.setVisitorStatistics(vs);
 
     EXPECT_EQUAL(65u, serialize("CreateVisitorReply", reply));
@@ -382,8 +381,6 @@ Messages60Test::testCreateVisitorReply()
             EXPECT_EQUAL(ref.getVisitorStatistics().getBytesVisited(), (uint64_t)1024000);
             EXPECT_EQUAL(ref.getVisitorStatistics().getDocumentsReturned(), (uint64_t)123);
             EXPECT_EQUAL(ref.getVisitorStatistics().getBytesReturned(), (uint64_t)512000);
-            EXPECT_EQUAL(ref.getVisitorStatistics().getSecondPassDocumentsReturned(), (uint64_t)456);
-            EXPECT_EQUAL(ref.getVisitorStatistics().getSecondPassBytesReturned(), (uint64_t)789100);
         }
     }
     return true;
@@ -399,7 +396,7 @@ Messages60Test::testPutDocumentMessage()
     msg.setCondition(TestAndSetCondition("There's just one condition"));
 
     EXPECT_EQUAL(64u, sizeof(vespalib::string));
-    EXPECT_EQUAL(sizeof(std::string), sizeof(TestAndSetCondition));
+    EXPECT_EQUAL(sizeof(vespalib::string), sizeof(TestAndSetCondition));
     EXPECT_EQUAL(112u, sizeof(DocumentMessage));
     EXPECT_EQUAL(sizeof(TestAndSetCondition) + sizeof(DocumentMessage), sizeof(TestAndSetMessage));
     EXPECT_EQUAL(sizeof(TestAndSetMessage) + 24, sizeof(PutDocumentMessage));
@@ -662,8 +659,7 @@ Messages60Test::testUpdateDocumentMessage()
 
     auto docUpdate = std::make_shared<document::DocumentUpdate>(repo, docType, document::DocumentId("id:ns:testdoc::"));
 
-    docUpdate->addFieldPathUpdate(document::FieldPathUpdate::CP(
-        new document::RemoveFieldPathUpdate("intfield", "testdoc.intfield > 0")));
+    docUpdate->addFieldPathUpdate(std::make_unique<document::RemoveFieldPathUpdate>("intfield", "testdoc.intfield > 0"));
 
     UpdateDocumentMessage msg(docUpdate);
     msg.setOldTimestamp(666u);

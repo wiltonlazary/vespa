@@ -139,11 +139,11 @@ TEST("requireThatSpanTreeCanHaveMultipleLevels") {
 
 TEST("requireThatAnnotationsCanHaveValues") {
     PrimitiveDataType double_type(DataType::T_DOUBLE);
-    StructDataType city_data_type;
+    StructDataType city_data_type("city");
     city_data_type.addField(Field("latitude", 0, double_type));
     city_data_type.addField(Field("longitude", 1, double_type));
 
-    StructFieldValue::UP position(new StructFieldValue(city_data_type));
+    auto position = std::make_unique<StructFieldValue>(city_data_type);
     position->setValue("latitude", DoubleFieldValue(37.774929));
     position->setValue("longitude", DoubleFieldValue(-122.419415));
     StructFieldValue original(*position);
@@ -154,17 +154,17 @@ TEST("requireThatAnnotationsCanHaveValues") {
 }
 
 TEST("requireThatAnnotationsCanReferenceAnnotations") {
-    SpanList::UP root(new SpanList);
+    auto root = std::make_unique<SpanList>();
     SpanTree tree("html", std::move(root));
-    size_t san_index = tree.annotate(makeUP(new Annotation(text_type)));
-    size_t fran_index = tree.annotate(makeUP(new Annotation(text_type)));
+    size_t san_index = tree.annotate(Annotation(text_type));
+    size_t fran_index = tree.annotate(Annotation(text_type));
 
     AnnotationReferenceDataType annotation_ref_type(text_type, 101);
     ArrayDataType array_type(annotation_ref_type);
     StructDataType city_data_type("name", 42);
     city_data_type.addField(Field("references", 0, array_type));
 
-    StructFieldValue::UP city_data(new StructFieldValue(city_data_type));
+    auto city_data = std::make_unique<StructFieldValue>(city_data_type);
     ArrayFieldValue ref_list(array_type);
     ref_list.add(AnnotationReferenceFieldValue(annotation_ref_type, san_index));
     ref_list.add(AnnotationReferenceFieldValue(annotation_ref_type, fran_index));
@@ -174,7 +174,6 @@ TEST("requireThatAnnotationsCanReferenceAnnotations") {
     Annotation city(city_type, std::move(city_data));
 
     ASSERT_TRUE(city.getFieldValue());
-    EXPECT_TRUE(city.getFieldValue()->isA(original));
     EXPECT_EQUAL(original, *city.getFieldValue());
 }
 

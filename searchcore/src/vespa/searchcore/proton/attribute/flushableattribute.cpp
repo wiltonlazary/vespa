@@ -1,18 +1,19 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "attributedisklayout.h"
 #include "flushableattribute.h"
+#include "attributedisklayout.h"
 #include "attribute_directory.h"
 #include <vespa/searchlib/attribute/attributefilesavetarget.h>
 #include <vespa/searchlib/attribute/attributesaver.h>
-#include <vespa/searchlib/util/dirtraverse.h>
 #include <vespa/searchlib/util/filekit.h>
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/searchlib/common/serialnumfileheadercontext.h>
 #include <vespa/searchlib/attribute/attributememorysavetarget.h>
 #include <vespa/searchlib/attribute/attributevector.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/util/isequencedtaskexecutor.h>
 #include <vespa/vespalib/util/stringfmt.h>
+#include <filesystem>
 #include <fstream>
 #include <future>
 
@@ -78,7 +79,7 @@ FlushableAttribute::Flusher::~Flusher() = default;
 bool
 FlushableAttribute::Flusher::saveAttribute()
 {
-    vespalib::mkdir(vespalib::dirname(_flushFile), false);
+    std::filesystem::create_directory(std::filesystem::path(vespalib::dirname(_flushFile)));
     SerialNumFileHeaderContext fileHeaderContext(_fattr._fileHeaderContext, _syncToken);
     bool saveSuccess = true;
     if (_saver && _saver->hasGenerationGuard() &&
@@ -145,7 +146,7 @@ FlushableAttribute::Flusher::run()
     }
 }
 
-FlushableAttribute::FlushableAttribute(const AttributeVectorSP attr,
+FlushableAttribute::FlushableAttribute(AttributeVectorSP attr,
                                        const std::shared_ptr<AttributeDirectory> &attrDir,
                                        const TuneFileAttributes &
                                        tuneFileAttributes,
@@ -206,7 +207,7 @@ IFlushTarget::Task::UP
 FlushableAttribute::internalInitFlush(SerialNum currentSerial)
 {
     // Called by attribute field writer thread while document db executor waits
-    _attr->removeAllOldGenerations();
+    _attr->reclaim_unused_memory();
     SerialNum syncToken = std::max(currentSerial, _attr->getStatus().getLastSyncToken());
     auto writer = _attrDir->tryGetWriter();
     if (!writer) {

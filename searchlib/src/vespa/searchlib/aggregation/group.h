@@ -5,7 +5,6 @@
 #include "aggregationresult.h"
 #include <vespa/searchlib/common/hitrank.h>
 #include <vespa/vespalib/stllike/hash_set.h>
-#include <vespa/fastos/dynamiclibrary.h>
 #include <vector>
 
 namespace search::aggregation {
@@ -39,7 +38,7 @@ public:
     using UP = std::unique_ptr<Group>;
     typedef Group * ChildP;
     typedef ChildP * GroupList;
-    struct GroupEqual : public std::binary_function<ChildP, ChildP, bool> {
+    struct GroupEqual {
         GroupEqual(const GroupList * v) : _v(v) { }
         bool operator()(uint32_t a, uint32_t b) { return (*_v)[a]->getId().cmpFast((*_v)[b]->getId()) == 0; }
         bool operator()(const Group & a, uint32_t b) { return a.getId().cmpFast((*_v)[b]->getId()) == 0; }

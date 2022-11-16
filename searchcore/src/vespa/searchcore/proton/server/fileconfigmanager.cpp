@@ -2,13 +2,14 @@
 
 #include "fileconfigmanager.h"
 #include "bootstrapconfig.h"
+#include "documentdbconfigmanager.h"
 #include <vespa/searchcore/proton/common/hw_info_sampler.h>
 #include <vespa/config/print/fileconfigwriter.h>
 #include <vespa/config-bucketspaces.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/document_type_repo_factory.h>
 #include <vespa/searchcommon/common/schemaconfigurer.h>
 #include <vespa/vespalib/io/fileutil.h>
-#include <vespa/config-summarymap.h>
 #include <vespa/config-rank-profiles.h>
 #include <vespa/config-attributes.h>
 #include <vespa/config-imported-fields.h>
@@ -16,6 +17,8 @@
 #include <vespa/config-summary.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
 #include <vespa/config/helper/configgetter.hpp>
+#include <vespa/fastos/file.h>
+#include <filesystem>
 #include <sstream>
 #include <cassert>
 #include <fcntl.h>
@@ -25,7 +28,6 @@ LOG_SETUP(".proton.server.fileconfigmanager");
 
 using document::DocumentTypeRepo;
 using document::DocumentTypeRepoFactory;
-using document::DocumenttypesConfig;
 using search::IndexMetaInfo;
 using search::SerialNum;
 using search::index::Schema;
@@ -34,7 +36,6 @@ using vespa::config::search::AttributesConfig;
 using vespa::config::search::IndexschemaConfig;
 using vespa::config::search::RankProfilesConfig;
 using vespa::config::search::SummaryConfig;
-using vespa::config::search::SummarymapConfig;
 using vespa::config::search::core::ProtonConfig;
 using vespa::config::search::summary::JuniperrcConfig;
 using vespa::config::content::core::BucketspacesConfig;
@@ -68,7 +69,6 @@ fsyncFile(const vespalib::string &fileName)
     if (!f.Sync()) {
         LOG(error, "Could not fsync file '%s'", fileName.c_str());
     }
-    f.Close();
 }
 
 template <class Config>
@@ -129,9 +129,8 @@ ConfigFile::ConfigFile(const vespalib::string &name, const vespalib::string &ful
         return;
     int64_t fileSize = file.getSize();
     _content.resize(fileSize);
-    file.ReadBuf(&_content[0], fileSize);
+    file.ReadBuf(_content.data(), fileSize);
     _modTime = file.GetModificationTime();
-    file.Close();
 }
 
 nbostream &
@@ -142,7 +141,7 @@ ConfigFile::serialize(nbostream &stream) const
     stream << static_cast<int64_t>(_modTime);;
     uint32_t sz = _content.size();
     stream << sz;
-    stream.write(&_content[0], sz);
+    stream.write(_content.data(), sz);
     return stream;
 }
 
@@ -158,7 +157,9 @@ ConfigFile::deserialize(nbostream &stream)
     stream >> sz;
     _content.resize(sz);
     assert(stream.size() >= sz);
-    memcpy(&_content[0], stream.peek(), sz);
+    if (sz > 0) {
+        memcpy(_content.data(), stream.peek(), sz);
+    }
     stream.adjustReadPos(sz);
     return stream;
 }
@@ -172,7 +173,7 @@ ConfigFile::save(const vespalib::string &snapDir) const
     assert(openRes);
     (void) openRes;
 
-    file.WriteBuf(&_content[0], _content.size());
+    file.WriteBuf(_content.data(), _content.size());
     bool closeRes = file.Close();
     assert(closeRes);
     (void) closeRes;
@@ -207,18 +208,37 @@ getFileList(const vespalib::string &snapDir)
     return res;
 }
 
+// add an empty file if it's not already present
+void addEmptyFile(vespalib::string snapDir, vespalib::string fileName)
+{
+    vespalib::string path = snapDir + "/" + fileName;
+    if (access(path.c_str(), R_OK) == 0) {
+        // exists OK
+        return;
+    }
+    int fd = creat(path.c_str(), 0444);
+    if (fd < 0) {
+        LOG(error, "Could not create empty file '%s': %s", path.c_str(), strerror(errno));
+        return;
+    }
+    fsync(fd);
+    close(fd);
 }
 
-FileConfigManager::FileConfigManager(const vespalib::string &baseDir,
+}
+
+FileConfigManager::FileConfigManager(FNET_Transport & transport,
+                                     const vespalib::string &baseDir,
                                      const vespalib::string &configId,
                                      const vespalib::string &docTypeName)
-    : _baseDir(baseDir),
+    : _transport(transport),
+      _baseDir(baseDir),
       _configId(configId),
       _docTypeName(docTypeName),
       _info(baseDir),
       _protonConfig()
 {
-    vespalib::mkdir(baseDir, false);
+    std::filesystem::create_directory(std::filesystem::path(baseDir));
     vespalib::File::sync(vespalib::dirname(baseDir));
     if (!_info.load())
         _info.save();
@@ -264,23 +284,15 @@ FileConfigManager::saveConfig(const DocumentDBConfig &snapshot, SerialNum serial
     bool saveInvalidSnap = _info.save();
     assert(saveInvalidSnap);
     (void) saveInvalidSnap;
-    vespalib::mkdir(snapDir, false);
+    std::filesystem::create_directory(std::filesystem::path(snapDir));
     save(snapDir, snapshot.getRankProfilesConfig());
     save(snapDir, snapshot.getIndexschemaConfig());
     save(snapDir, snapshot.getAttributesConfig());
     save(snapDir, snapshot.getSummaryConfig());
-    save(snapDir, snapshot.getSummarymapConfig());
     save(snapDir, snapshot.getJuniperrcConfig());
     save(snapDir, snapshot.getDocumenttypesConfig());
+    addEmptyFile(snapDir, "summarymap.cfg");
 
-    bool saveSchemaRes = snapshot.getSchemaSP()->saveToFile(snapDir + "/schema.txt");
-    assert(saveSchemaRes);
-    (void) saveSchemaRes;
-
-    search::index::Schema historySchema;
-    bool saveHistorySchemaRes = historySchema.saveToFile(snapDir + "/historyschema.txt");
-    assert(saveHistorySchemaRes);
-    (void) saveHistorySchemaRes;
     vespalib::File::sync(snapDir);
     vespalib::File::sync(_baseDir);
 
@@ -289,26 +301,6 @@ FileConfigManager::saveConfig(const DocumentDBConfig &snapshot, SerialNum serial
     bool saveValidSnap = _info.save();
     assert(saveValidSnap);
     (void) saveValidSnap;
-}
-
-namespace {
-
-// add an empty file if it's not already present
-void addEmptyFile(vespalib::string snapDir, vespalib::string fileName)
-{
-    vespalib::string path = snapDir + "/" + fileName;
-    if (access(path.c_str(), R_OK) == 0) {
-        // exists OK
-        return;
-    }
-    int fd = creat(path.c_str(), 0444);
-    if (fd < 0) {
-        LOG(error, "Could not create empty file '%s': %s", path.c_str(), strerror(errno));
-        return;
-    }
-    close(fd);
-}
-
 }
 
 void
@@ -323,6 +315,7 @@ FileConfigManager::loadConfig(const DocumentDBConfig &currentSnapshot, search::S
     addEmptyFile(snapDir, "ranking-expressions.cfg");
     addEmptyFile(snapDir, "onnx-models.cfg");
     addEmptyFile(snapDir, "imported-fields.cfg");
+    addEmptyFile(snapDir, "summarymap.cfg");
 
     DocumentDBConfigHelper dbc(spec, _docTypeName);
 
@@ -360,7 +353,7 @@ FileConfigManager::loadConfig(const DocumentDBConfig &currentSnapshot, search::S
                                                        bucketspaces,currentSnapshot.getTuneFileDocumentDBSP(),
                                                        sampler.hwInfo());
     dbc.forwardConfig(bootstrap);
-    dbc.nextGeneration(0ms);
+    dbc.nextGeneration(_transport, 0ms);
 
     loadedSnapshot = dbc.getConfig();
     loadedSnapshot->setConfigId(_configId);
@@ -384,7 +377,7 @@ FileConfigManager::removeInvalid()
         vespalib::string snapDirBaseName(makeSnapDirBaseName(serial));
         vespalib::string snapDir(_baseDir + "/" + snapDirBaseName);
         try {
-            FastOS_FileInterface::EmptyAndRemoveDirectory(snapDir.c_str());
+            std::filesystem::remove_all(std::filesystem::path(snapDir));
         } catch (const std::exception &e) {
             LOG(warning, "Removing obsolete config directory '%s' failed due to %s", snapDir.c_str(), e.what());
         }
@@ -475,7 +468,7 @@ FileConfigManager::deserializeConfig(SerialNum serialNum, nbostream &stream)
         bool saveInvalidSnap = _info.save();
         assert(saveInvalidSnap);
         (void) saveInvalidSnap;
-        vespalib::mkdir(snapDir, false);
+        std::filesystem::create_directory(std::filesystem::path(snapDir));
     }
 
     uint32_t numConfigs;

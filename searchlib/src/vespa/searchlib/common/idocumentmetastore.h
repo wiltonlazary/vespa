@@ -5,7 +5,8 @@
 #include "lid_usage_stats.h"
 #include <vespa/document/base/globalid.h>
 #include <vespa/document/bucket/bucketid.h>
-#include <persistence/spi/types.h>
+#include <vector>
+#include <memory>
 
 namespace search {
 
@@ -15,14 +16,14 @@ namespace search {
 struct DocumentMetaData {
     typedef uint32_t DocId;
     DocId lid;
-    storage::spi::Timestamp timestamp;
+    uint64_t timestamp;
     document::BucketId bucketId;
     document::GlobalId gid;
     bool removed;
 
     typedef std::vector<DocumentMetaData> Vector;
 
-    DocumentMetaData()
+    DocumentMetaData() noexcept
         : lid(0),
           timestamp(0),
           bucketId(),
@@ -31,21 +32,17 @@ struct DocumentMetaData {
     { }
 
     DocumentMetaData(DocId lid_,
-                     storage::spi::Timestamp timestamp_,
+                     uint64_t timestamp_,
                      document::BucketId bucketId_,
-                     const document::GlobalId &gid_)
-        : lid(lid_),
-          timestamp(timestamp_),
-          bucketId(bucketId_),
-          gid(gid_),
-          removed(false)
+                     const document::GlobalId &gid_) noexcept
+        : DocumentMetaData(lid_, timestamp_, bucketId_, gid_, false)
     { }
 
     DocumentMetaData(DocId lid_,
-                     storage::spi::Timestamp timestamp_,
+                     uint64_t timestamp_,
                      document::BucketId bucketId_,
                      const document::GlobalId &gid_,
-                     bool removed_)
+                     bool removed_) noexcept
         : lid(lid_),
           timestamp(timestamp_),
           bucketId(bucketId_),
@@ -76,9 +73,9 @@ struct IDocumentMetaStore {
     typedef uint32_t                DocId;
     typedef document::GlobalId      GlobalId;
     typedef document::BucketId      BucketId;
-    typedef storage::spi::Timestamp Timestamp;
+    typedef uint64_t Timestamp;
 
-    virtual ~IDocumentMetaStore() {}
+    virtual ~IDocumentMetaStore() = default;
 
     /**
      * Retrieves the gid associated with the given lid.

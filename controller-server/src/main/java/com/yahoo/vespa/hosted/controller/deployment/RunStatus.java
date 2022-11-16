@@ -11,10 +11,13 @@ public enum RunStatus {
     /** Run is still proceeding normally, i.e., without failures. */
     running,
 
-    /** Deployment was rejected due to lack of capacity. */
-    outOfCapacity,
+    /** Deployment was rejected due node allocation failure. */
+    nodeAllocationFailure,
 
-    /** Deployment of the real application was rejected. */
+    /** Deployment of the real application was rejected because the package is faulty. */
+    invalidApplication,
+
+    /** Deployment of the real application was rejected, for other reasons. */
     deploymentFailed,
 
     /** Deployment timed out waiting for endpoint certificate */
@@ -26,6 +29,9 @@ public enum RunStatus {
     /** The verification tests failed. */
     testFailure,
 
+    /** No tests, for a test job. */
+    noTests,
+
     /** An unexpected error occurred. */
     error,
 
@@ -33,6 +39,9 @@ public enum RunStatus {
     success,
 
     /** Run was abandoned, due to user intervention or job timeout. */
-    aborted
+    aborted,
+
+    /** Run should be reset to its starting state. Used for production tests. */
+    reset
 
 }

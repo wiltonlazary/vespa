@@ -6,6 +6,7 @@ import com.yahoo.config.model.ConfigModelContext;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
+import com.yahoo.config.provision.Environment;
 import com.yahoo.vespa.config.content.StorDistributionConfig;
 import com.yahoo.vespa.model.HostResource;
 import com.yahoo.vespa.model.HostSystem;
@@ -203,17 +204,17 @@ public class StorageGroup {
         }
 
         public StorageGroup buildRootGroup(DeployState deployState, RedundancyBuilder redundancyBuilder, ContentCluster owner) {
-            Optional<Integer> maxRedundancy = Optional.empty();
             if (owner.isHosted())
-                maxRedundancy = validateRedundancyAndGroups();
+                validateRedundancyAndGroups(deployState.zone().environment());
 
             Optional<ModelElement> group = Optional.ofNullable(clusterElement.child("group"));
             Optional<ModelElement> nodes = getNodes(clusterElement);
 
             if (group.isPresent() && nodes.isPresent())
-                throw new IllegalStateException("Both group and nodes exists, only one of these tags is legal");
-            if (group.isPresent() && (group.get().stringAttribute("name") != null || group.get().integerAttribute("distribution-key") != null))
-                    deployState.getDeployLogger().logApplicationPackage(Level.INFO, "'distribution-key' attribute on a content cluster's root group is ignored");
+                throw new IllegalArgumentException("Both <group> and <nodes> is specified: Only one of these tags can be used in the same configuration");
+            if (group.isPresent() && (group.get().integerAttribute("distribution-key") != null)) {
+                deployState.getDeployLogger().logApplicationPackage(Level.INFO, "'distribution-key' attribute on a content cluster's root group is ignored");
+            }
 
             GroupBuilder groupBuilder = collectGroup(owner.isHosted(), group, nodes, null, null);
             StorageGroup storageGroup = owner.isHosted()
@@ -221,8 +222,7 @@ public class StorageGroup {
                                         : groupBuilder.buildNonHosted(deployState, owner, Optional.empty());
 
             Redundancy redundancy = redundancyBuilder.build(owner.getName(), owner.isHosted(), storageGroup.subgroups.size(),
-                                                            storageGroup.getNumberOfLeafGroups(), storageGroup.countNodes(false),
-                                                            maxRedundancy);
+                                                            storageGroup.getNumberOfLeafGroups(), storageGroup.countNodes(false));
             owner.setRedundancy(redundancy);
             if (storageGroup.partitions.isEmpty() && (redundancy.groups() > 1)) {
                 storageGroup.partitions = Optional.of(computePartitions(redundancy.finalRedundancy(), redundancy.groups()));
@@ -230,27 +230,24 @@ public class StorageGroup {
             return storageGroup;
         }
 
-        private Optional<Integer> validateRedundancyAndGroups() {
+        private void validateRedundancyAndGroups(Environment environment) {
             var redundancyElement = clusterElement.child("redundancy");
-            if (redundancyElement == null) return Optional.empty();
+            if (redundancyElement == null) return;
             long redundancy = redundancyElement.asLong();
 
             var nodesElement = clusterElement.child("nodes");
-            if (nodesElement == null) return Optional.empty();
+            if (nodesElement == null) return;
             var nodesSpec = NodesSpecification.from(nodesElement, context);
+
+            // Allow dev deployment of self-hosted app (w/o count attribute): absent count => 1 node
+            if (!nodesSpec.hasCountAttribute() && environment == Environment.dev) return;
 
             int minNodesPerGroup = (int)Math.ceil((double)nodesSpec.minResources().nodes() / nodesSpec.minResources().groups());
 
-            if (minNodesPerGroup < redundancy) { // TODO: Fail on this on Vespa 8, and simplify
-                context.getDeployLogger()
-                       .logApplicationPackage(Level.WARNING,
-                                              "Cluster '" + clusterElement.stringAttribute("id") + "' " +
-                                              "specifies redundancy " + redundancy + " but cannot be higher than " +
-                                              "the minimum nodes per group, which is " + minNodesPerGroup);
-                return Optional.of(minNodesPerGroup);
-            }
-            else {
-                return Optional.empty();
+            if (minNodesPerGroup < redundancy) {
+                throw new IllegalArgumentException("Cluster '" + clusterElement.stringAttribute("id") + "' " +
+                                                   "specifies redundancy " + redundancy + ", but it cannot be higher than " +
+                                                   "the minimum nodes per group, which is " + minNodesPerGroup);
             }
         }
 
@@ -280,15 +277,13 @@ public class StorageGroup {
             /** The nodes explicitly specified as a nodes tag in this group, or empty if none */
             private final Optional<NodesSpecification> nodeRequirement;
 
-            private final DeployLogger deployLogger;
 
             private GroupBuilder(StorageGroup storageGroup, List<GroupBuilder> subGroups, List<XmlNodeBuilder> nodeBuilders,
-                                 Optional<NodesSpecification> nodeRequirement, DeployLogger deployLogger) {
+                                 Optional<NodesSpecification> nodeRequirement) {
                 this.storageGroup = storageGroup;
                 this.subGroups = subGroups;
                 this.nodeBuilders = nodeBuilders;
                 this.nodeRequirement = nodeRequirement;
-                this.deployLogger = deployLogger;
             }
 
             /**
@@ -319,11 +314,11 @@ public class StorageGroup {
                 StorageNode searchNode = new StorageNode(deployState.getProperties(), parent.getStorageCluster(), 1.0, distributionKey , false);
                 searchNode.setHostResource(parent.hostSystem().getHost(Container.SINGLENODE_CONTAINER_SERVICESPEC));
                 PersistenceEngine provider = parent.getPersistence().create(deployState, searchNode, storageGroup, null);
-                searchNode.initService(deployLogger);
+                searchNode.initService(deployState);
 
                 Distributor distributor = new Distributor(deployState.getProperties(), parent.getDistributorNodes(), distributionKey, null, provider);
                 distributor.setHostResource(searchNode.getHostResource());
-                distributor.initService(deployLogger);
+                distributor.initService(deployState);
                 return searchNode;
             }
             
@@ -339,7 +334,7 @@ public class StorageGroup {
                     throw new IllegalArgumentException("Specifying individual groups is not supported on hosted applications");
                 Map<HostResource, ClusterMembership> hostMapping =
                         nodeRequirement.isPresent() ?
-                        provisionHosts(nodeRequirement.get(), owner.getStorageCluster().getClusterName(), owner.getRoot().hostSystem(), deployLogger) :
+                        provisionHosts(nodeRequirement.get(), owner.getStorageCluster().getClusterName(), owner.getRoot().hostSystem(), deployState.getDeployLogger()) :
                         Collections.emptyMap();
 
                 Map<Optional<ClusterSpec.Group>, Map<HostResource, ClusterMembership>> hostGroups = collectAllocatedSubgroups(hostMapping);
@@ -447,10 +442,15 @@ public class StorageGroup {
                 nodeRequirement = Optional.of(NodesSpecification.from(nodesElement.get(), context));
             else if (nodesElement.isEmpty() && subGroups.isEmpty() && context.getDeployState().isHosted()) // request one node
                 nodeRequirement = Optional.of(NodesSpecification.nonDedicated(1, context));
+            else if (nodesElement.isPresent() && nodesElement.get().stringAttribute("count") == null && context.getDeployState().isHosted())
+                throw new IllegalArgumentException("""
+                                                           Clusters in hosted environments must have a <nodes count='N'> tag
+                                                           matching all zones, and having no <node> subtags,
+                                                           see https://cloud.vespa.ai/en/reference/services""");
             else // Nodes or groups explicitly listed - resolve in GroupBuilder
                 nodeRequirement = Optional.empty();
 
-            return new GroupBuilder(group, subGroups, explicitNodes, nodeRequirement, context.getDeployLogger());
+            return new GroupBuilder(group, subGroups, explicitNodes, nodeRequirement);
         }
 
         private Optional<String> childAsString(Optional<ModelElement> element, String childTagName) {
@@ -503,13 +503,13 @@ public class StorageGroup {
         private static StorageNode createStorageNode(DeployState deployState, ContentCluster parent, HostResource hostResource, StorageGroup parentGroup, ClusterMembership clusterMembership) {
             StorageNode sNode = new StorageNode(deployState.getProperties(), parent.getStorageCluster(), null, clusterMembership.index(), clusterMembership.retired());
             sNode.setHostResource(hostResource);
-            sNode.initService(deployState.getDeployLogger());
+            sNode.initService(deployState);
 
             // TODO: Supplying null as XML is not very nice
             PersistenceEngine provider = parent.getPersistence().create(deployState, sNode, parentGroup, null);
             Distributor d = new Distributor(deployState.getProperties(), parent.getDistributorNodes(), clusterMembership.index(), null, provider);
             d.setHostResource(sNode.getHostResource());
-            d.initService(deployState.getDeployLogger());
+            d.initService(deployState);
             return sNode;
         }
     }

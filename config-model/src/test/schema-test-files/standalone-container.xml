@@ -2,20 +2,6 @@
 <!-- Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root. -->
 <container id='qrsCluster_1' version='1.0'>
 
-  <servlet id="my-servlet" class="com.yahoo.MyServlet" bundle="my-bundle">
-    <path>p/a/t/h</path>
-  </servlet>
-
-  <servlet id="my-servlet" class="com.yahoo.MyServlet" bundle="my-bundle">
-    <path>Apps/app_1.3-4/*</path>
-    <config name="foo">
-      <intVal>0</intVal>
-    </config>
-    <servlet-config>
-      <foo>bar</foo>
-    </servlet-config>
-  </servlet>
-
   <http>
     <filtering>
       <filter id="com.yahoo.YcaFilter" bundle="mybundle">
@@ -69,8 +55,7 @@
       <searcher id='inner-searcher' />
     </chain>
 
-    <provider id='yca-provider' type='vespa' yca-application-id='my-app'>
-      <yca-proxy host='myhost' port='80'/>
+    <provider id='yca-provider' type='vespa'>
       <nodes>
         <node host='sourcehost' port='12'/>
       </nodes>
@@ -108,18 +93,8 @@
   <handler id="jdisc-handler">
     <binding>http://*:*/HelloWorld</binding>
     <binding>http://*:*/Status</binding>
-    <clientBinding>http://*:*/foo</clientBinding>
-    <clientBinding>http://*:*/bar</clientBinding>
   </handler>
 
-  <client id="client-provider">
-    <binding>http://*:*/HelloWorld</binding>
-    <binding>http://*:*/Status</binding>
-    <serverBinding>http://*:*/foo</serverBinding>
-    <serverBinding>http://*:*/bar</serverBinding>
-  </client>
-
   <server id="server-provider" />
-
 
 </container>

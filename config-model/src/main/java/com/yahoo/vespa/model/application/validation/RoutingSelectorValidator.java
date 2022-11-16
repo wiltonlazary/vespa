@@ -4,19 +4,18 @@ package com.yahoo.vespa.model.application.validation;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.document.select.DocumentSelector;
 import com.yahoo.vespa.model.VespaModel;
-import com.yahoo.vespa.model.search.AbstractSearchCluster;
+import com.yahoo.vespa.model.search.SearchCluster;
 import com.yahoo.vespa.model.search.IndexedSearchCluster;
 
 
 /**
  * Validates routing selector for search and content clusters
- *
  */
 public class RoutingSelectorValidator extends Validator {
 
     @Override
     public void validate(VespaModel model, DeployState deployState) {
-        for (AbstractSearchCluster cluster : model.getSearchClusters()) {
+        for (SearchCluster cluster : model.getSearchClusters()) {
             if (cluster instanceof IndexedSearchCluster) {
                 IndexedSearchCluster sc = (IndexedSearchCluster) cluster;
                 String routingSelector = sc.getRoutingSelector();
@@ -30,4 +29,5 @@ public class RoutingSelectorValidator extends Validator {
             }
         }
     }
+
 }

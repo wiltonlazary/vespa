@@ -1,53 +1,39 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.session;
 
-import com.yahoo.config.model.api.ApplicationRoles;
+import com.yahoo.config.model.api.ApplicationClusterEndpoint;
 import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.EndpointCertificateMetadata;
 import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.CloudAccount;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
-import com.yahoo.security.KeyAlgorithm;
-import com.yahoo.security.KeyUtils;
-import com.yahoo.security.SignatureAlgorithm;
-import com.yahoo.security.X509CertificateBuilder;
+
 import com.yahoo.security.X509CertificateUtils;
-import com.yahoo.security.X509CertificateWithKey;
-import com.yahoo.slime.ArrayInserter;
+
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.Injector;
-import com.yahoo.slime.Inspector;
 import com.yahoo.slime.ObjectInserter;
-import com.yahoo.slime.ObjectSymbolInserter;
 import com.yahoo.slime.Slime;
-import com.yahoo.slime.SlimeInserter;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.config.server.tenant.ContainerEndpointSerializer;
 import com.yahoo.vespa.config.server.tenant.EndpointCertificateMetadataSerializer;
 import com.yahoo.vespa.config.server.tenant.TenantSecretStoreSerializer;
 import org.junit.Test;
 
-import javax.security.auth.x500.X500Principal;
 import java.io.IOException;
-import java.math.BigInteger;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.security.KeyPair;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.OptionalInt;
+;
 
-import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -76,31 +62,48 @@ public class PrepareParamsTest {
     public void testCorrectParsing() {
         PrepareParams prepareParams = createParams("http://foo:19071/application/v2/", TenantName.defaultName());
 
-        assertThat(prepareParams.getApplicationId(), is(ApplicationId.defaultId()));
+        assertEquals(ApplicationId.defaultId(), prepareParams.getApplicationId());
+        assertTrue(prepareParams.tags().isEmpty());
         assertFalse(prepareParams.isDryRun());
         assertFalse(prepareParams.isVerbose());
         assertFalse(prepareParams.ignoreValidationErrors());
-        assertThat(prepareParams.vespaVersion(), is(Optional.<String>empty()));
+        assertTrue(prepareParams.vespaVersion().isEmpty());
         assertTrue(prepareParams.getTimeoutBudget().hasTimeLeft());
-        assertThat(prepareParams.containerEndpoints().size(), is(0));
+        assertTrue(prepareParams.containerEndpoints().isEmpty());
+        assertTrue(prepareParams.cloudAccount().isEmpty());
+    }
+
+    @Test
+    public void testTagsParsing() throws IOException {
+        var prepareParams = createParams(request + "&" + PrepareParams.TAGS_PARAM_NAME + "=tag1%20tag2", TenantName.from("foo"));
+        assertEquals(Tags.fromString("tag1 tag2"), prepareParams.tags());
+
+        // Verify using json object
+        var slime = SlimeUtils.jsonToSlime(json);
+        slime.get().setString(PrepareParams.TAGS_PARAM_NAME, "tag1 tag2");
+        PrepareParams prepareParamsJson = PrepareParams.fromJson(SlimeUtils.toJsonBytes(slime), TenantName.from("foo"), Duration.ofSeconds(60));
+        assertPrepareParamsEqual(prepareParams, prepareParamsJson);
     }
 
     @Test
     public void testCorrectParsingWithContainerEndpoints() throws IOException {
-        var endpoints = List.of(new ContainerEndpoint("qrs1",
+        var endpoints = List.of(new ContainerEndpoint("qrs1", ApplicationClusterEndpoint.Scope.global,
                                                       List.of("c1.example.com",
-                                                              "c2.example.com")),
-                                new ContainerEndpoint("qrs2",
+                                                              "c2.example.com"), OptionalInt.of(3)),
+                                new ContainerEndpoint("qrs2",ApplicationClusterEndpoint.Scope.global,
                                                       List.of("c3.example.com",
                                                               "c4.example.com")));
         var param = "[\n" +
                     "  {\n" +
                     "    \"clusterId\": \"qrs1\",\n" +
-                    "    \"names\": [\"c1.example.com\", \"c2.example.com\"]\n" +
+                    "    \"names\": [\"c1.example.com\", \"c2.example.com\"],\n" +
+                    "    \"scope\": \"global\",\n" +
+                    "    \"weight\": 3\n" +
                     "  },\n" +
                     "  {\n" +
                     "    \"clusterId\": \"qrs2\",\n" +
-                    "    \"names\": [\"c3.example.com\", \"c4.example.com\"]\n" +
+                    "    \"names\": [\"c3.example.com\", \"c4.example.com\"],\n" +
+                    "    \"scope\": \"global\"\n" +
                     "  }\n" +
                     "]";
 
@@ -203,6 +206,13 @@ public class PrepareParamsTest {
         assertPrepareParamsEqual(prepareParams, prepareParamsJson);
     }
 
+    @Test
+    public void testCloudAccount() {
+        String json = "{\"cloudAccount\": {\"id\": \"012345678912\"}}";
+        PrepareParams params = PrepareParams.fromJson(json.getBytes(StandardCharsets.UTF_8), TenantName.defaultName(), Duration.ZERO);
+        assertEquals(CloudAccount.from("012345678912"), params.cloudAccount().get());
+    }
+
     private void assertPrepareParamsEqual(PrepareParams urlParams, PrepareParams jsonParams) {
         assertEquals(urlParams.ignoreValidationErrors(), jsonParams.ignoreValidationErrors());
         assertEquals(urlParams.isDryRun(), jsonParams.isDryRun());
@@ -211,6 +221,7 @@ public class PrepareParamsTest {
         assertEquals(urlParams.force(), jsonParams.force());
         assertEquals(urlParams.waitForResourcesInPrepare(), jsonParams.waitForResourcesInPrepare());
         assertEquals(urlParams.getApplicationId(), jsonParams.getApplicationId());
+        assertEquals(urlParams.tags(), jsonParams.tags());
         assertEquals(urlParams.getTimeoutBudget().timeout(), jsonParams.getTimeoutBudget().timeout());
         assertEquals(urlParams.vespaVersion(), jsonParams.vespaVersion());
         assertEquals(urlParams.containerEndpoints(), jsonParams.containerEndpoints());

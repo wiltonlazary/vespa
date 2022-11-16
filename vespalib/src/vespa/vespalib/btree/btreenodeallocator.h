@@ -29,6 +29,7 @@ public:
     using BTreeRootBaseType = BTreeRootBase<KeyT, DataT, AggrT, INTERNAL_SLOTS, LEAF_SLOTS>;
     using generation_t = vespalib::GenerationHandler::generation_t;
     using NodeStore = BTreeNodeStore<KeyT, DataT, AggrT, INTERNAL_SLOTS, LEAF_SLOTS>;
+    using CompactionStrategy = datastore::CompactionStrategy;
     using EntryRef = datastore::EntryRef;
     using DataStoreBase = datastore::DataStoreBase;
 
@@ -100,7 +101,7 @@ public:
     /**
      * Try to free held nodes if nobody can be referencing them.
      */
-    void trimHoldLists(generation_t usedGen);
+    void reclaim_memory(generation_t oldest_used_gen);
 
     /**
      * Transfer nodes from hold1 lists to hold2 lists, they are no
@@ -108,9 +109,9 @@ public:
      * older versions of the frozen structure must leave before elements
      * can be unheld.
      */
-    void transferHoldLists(generation_t generation);
+    void assign_generation(generation_t current_gen);
 
-    void clearHoldLists();
+    void reclaim_all_memory();
 
     static bool isValidRef(BTreeNode::Ref ref) { return NodeStore::isValidRef(ref); }
 
@@ -163,13 +164,8 @@ public:
     vespalib::string toString(const BTreeNode * node) const;
 
     bool getCompacting(EntryRef ref) const { return _nodeStore.getCompacting(ref); }
-    std::vector<uint32_t> startCompact() { return _nodeStore.startCompact(); }
 
-    std::vector<uint32_t> start_compact_worst() { return _nodeStore.start_compact_worst(); }
-
-    void finishCompact(const std::vector<uint32_t> &toHold) {
-        return _nodeStore.finishCompact(toHold);
-    }
+    std::unique_ptr<vespalib::datastore::CompactingBuffers> start_compact_worst(const CompactionStrategy& compaction_strategy) { return _nodeStore.start_compact_worst(compaction_strategy); }
 
     template <typename FunctionType>
     void foreach_key(EntryRef ref, FunctionType func) const {

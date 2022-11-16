@@ -1,10 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model;
 
-import com.yahoo.config.FileReference;
-import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.api.PortInfo;
 import com.yahoo.config.model.api.ServiceInfo;
+import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.defaults.Defaults;
 
@@ -17,6 +16,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 import static com.yahoo.text.Lowercase.toLowerCase;
 
@@ -26,8 +27,6 @@ import static com.yahoo.text.Lowercase.toLowerCase;
  * @author gjoranv
  */
 public abstract class AbstractService extends AbstractConfigProducer<AbstractConfigProducer<?>> implements Service {
-
-    private static final long serialVersionUID = 1L;
 
     // The physical host this Service runs on.
     private HostResource hostResource = null;
@@ -55,19 +54,7 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
     // Please keep non-null, as passed to command line in service startup
     private String preload = null;
 
-    // If larger or equal to 0 it mean that explicit mmaps shall not be included in coredump.
-    private long mmapNoCoreLimit = -1L;
-
-    // If this is true it will dump core when OOM
-    private boolean coreOnOOM = false;
-
-    // If greater than 0, controls the number of threads used by open mp
-    private int ompNumThreads = 0;
-
-    private String noVespaMalloc = "";
-    private String vespaMalloc = "";
-    private String vespaMallocDebug = "";
-    private String vespaMallocDebugStackTrace = "";
+    private final Map<String, Object> environmentVariables = new TreeMap<>();
 
     /** The ports metainfo object */
     protected PortsMeta portsMeta = new PortsMeta();
@@ -98,6 +85,7 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
      */
     public AbstractService(AbstractConfigProducer<?> parent, String name) {
         super(parent, name);
+        environmentVariables.put("VESPA_SILENCE_CORE_ON_OOM", true);
     }
 
     /**
@@ -106,7 +94,7 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
      * @param name the name of this service.
      */
     public AbstractService(String name) {
-        super(name);
+        this(null, name);
     }
 
     @Override
@@ -140,25 +128,28 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
      * @param hostResource The physical host on which this service should run.
      * @param userPort The wanted port given by the user.
      */
-    private void initService(DeployLogger deployLogger, HostResource hostResource, int userPort) {
+    private void initService(DeployState deployState, HostResource hostResource, int userPort) {
         if (initialized) {
             throw new IllegalStateException("Service '" + getConfigId() + "' already initialized.");
         }
         if (hostResource == null) {
-            throw new RuntimeException("No host found for service '" + getServiceName() + "'. " +
-                                       "The hostalias is probably missing from hosts.xml.");
+            throw new IllegalArgumentException("No host found for service '" + getServiceName() + "'. " +
+                                               "The hostalias is probably missing from hosts.xml.");
         }
         id = getIndex(hostResource);
-        ports = hostResource.allocateService(deployLogger, this, getInstanceWantedPort(userPort));
+        ports = hostResource.allocateService(deployState.getDeployLogger(), this, getInstanceWantedPort(userPort));
         initialized = true;
+        for(String envVar : deployState.getProperties().environmentVariables()) {
+            addEnvironmentVariable(envVar);
+        }
     }
 
     /**
      * Called by builder class which has not given the host or port in a constructor, hence
      * initService is not yet run for this.
      */
-    public void initService(DeployLogger deployLogger) {
-        initService(deployLogger, this.hostResource, this.basePort);
+    public void initService(DeployState deployState) {
+        initService(deployState, this.hostResource, this.basePort);
     }
 
     /**
@@ -231,13 +222,11 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
     /**
      * Must be overridden by services that should be started by
      * config-sentinel. The returned value will be used in
-     * config-sentinel configuration. Returns null by default.
+     * config-sentinel configuration. Returns empty by default.
      *
-     * @return null by default.
+     * @return empty by default.
      */
-    public String getStartupCommand() {
-        return null;
-    }
+    public Optional<String> getStartupCommand() { return Optional.empty(); }
 
     public Optional<String> getPreShutdownCommand() {
         return Optional.empty();
@@ -382,60 +371,50 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
     public void setPreLoad(String preload) {
         this.preload = preload;
     }
-    public long getMMapNoCoreLimit() { return mmapNoCoreLimit; }
-    public void setMMapNoCoreLimit(long noCoreLimit) { this.mmapNoCoreLimit = noCoreLimit; }
-    public boolean getCoreOnOOM() { return coreOnOOM; }
-    public void setCoreOnOOM(boolean coreOnOOM) { this.coreOnOOM = coreOnOOM; }
-    public int getOmpNumThreads() { return ompNumThreads; }
-    public void setOmpNumThreads(int value) { ompNumThreads = value; }
-
-    public String getNoVespaMalloc() { return noVespaMalloc; }
-    public String getVespaMalloc() { return vespaMalloc; }
-    public String getVespaMallocDebug() { return vespaMallocDebug; }
-    public String getVespaMallocDebugStackTrace() { return vespaMallocDebugStackTrace; }
-    public void setNoVespaMalloc(String s) { noVespaMalloc = s; }
-    public void setVespaMalloc(String s) { vespaMalloc = s; }
-    public void setVespaMallocDebug(String s) { vespaMallocDebug = s; }
-    public void setVespaMallocDebugStackTrace(String s) { vespaMallocDebugStackTrace = s; }
-
-    public String getMMapNoCoreEnvVariable() {
-        return (getMMapNoCoreLimit() >= 0L)
-                ? "VESPA_MMAP_NOCORE_LIMIT=" + getMMapNoCoreLimit() + " "
-                : "";
+    /** If larger or equal to 0 it mean that explicit mmaps shall not be included in coredump.*/
+    public void setMMapNoCoreLimit(long noCoreLimit) {
+        if (noCoreLimit >= 0) {
+            environmentVariables.put("VESPA_MMAP_NOCORE_LIMIT", noCoreLimit);
+        } else {
+            environmentVariables.remove("VESPA_MMAP_NOCORE_LIMIT");
+        }
+    }
+    public void setCoreOnOOM(boolean coreOnOOM) {
+        if ( ! coreOnOOM) {
+            environmentVariables.put("VESPA_SILENCE_CORE_ON_OOM", true);
+        } else {
+            environmentVariables.remove("VESPA_SILENCE_CORE_ON_OOM");
+        }
     }
 
-    public String getCoreOnOOMEnvVariable() {
-        return getCoreOnOOM() ? "" : "VESPA_SILENCE_CORE_ON_OOM=true ";
-    }
-    public String getOmpNumThreadsEnvVariable() {
-        return (getOmpNumThreads() == 0)
-            ? ""
-            : "OMP_NUM_THREADS=" + getOmpNumThreads() + " ";
-    }
-    public String getNoVespaMallocEnvVariable() {
-        return "".equals(getNoVespaMalloc())
-                ? ""
-                : "VESPA_USE_NO_VESPAMALLOC=\"" + getNoVespaMalloc() + "\" ";
-    }
-    public String getVespaMallocEnvVariable() {
-        return "".equals(getVespaMalloc())
-                ? ""
-                : "VESPA_USE_VESPAMALLOC=\"" + getVespaMalloc() + "\" ";
-    }
-    public String getVespaMallocDebugEnvVariable() {
-        return "".equals(getVespaMallocDebug())
-                ? ""
-                : "VESPA_USE_VESPAMALLOC_D=\"" + getVespaMallocDebug() + "\" ";
-    }
-    public String getVespaMallocDebugStackTraceEnvVariable() {
-        return "".equals(getVespaMallocDebugStackTrace())
-                ? ""
-                : "VESPA_USE_VESPAMALLOC_DST=\"" + getVespaMallocDebugStackTrace() + "\" ";
+    public void setNoVespaMalloc(String s) { environmentVariables.put("VESPA_USE_NO_VESPAMALLOC", s); }
+    public void setVespaMalloc(String s) { environmentVariables.put("VESPA_USE_VESPAMALLOC", s); }
+    public void setVespaMallocDebug(String s) { environmentVariables.put("VESPA_USE_VESPAMALLOC_D", s); }
+    public void setVespaMallocDebugStackTrace(String s) { environmentVariables.put("VESPA_USE_VESPAMALLOC_DST", s); }
+
+    private static String toEnvValue(Object o) {
+        if (o instanceof Number || o instanceof Boolean) {
+            return o.toString();
+        }
+        return '"' + o.toString() + '"';
     }
 
-    public String getEnvVariables() {
-        return getCoreOnOOMEnvVariable() + getOmpNumThreadsEnvVariable() + getMMapNoCoreEnvVariable() + getNoVespaMallocEnvVariable() +
-                getVespaMallocEnvVariable() + getVespaMallocDebugEnvVariable() + getVespaMallocDebugStackTraceEnvVariable();
+    public void addEnvironmentVariable(String nameAndValue) {
+        int pos = nameAndValue.indexOf('=');
+        environmentVariables.put(nameAndValue.substring(0, pos), nameAndValue.substring(pos+1));
+    }
+
+    public void addEnvironmentVariable(String name, Object value) {
+        environmentVariables.put(name, value);
+    }
+
+    @Override
+    public Map<String, Object> getEnvVars() {
+        return Map.copyOf(environmentVariables);
+    }
+
+    public String getEnvStringForTesting() {
+        return environmentVariables.entrySet().stream().map(e -> e.getKey() + '=' + toEnvValue(e.getValue())).collect(Collectors.joining(" "));
     }
 
     /**
@@ -451,15 +430,6 @@ public abstract class AbstractService extends AbstractConfigProducer<AbstractCon
 
     public boolean isInitialized() {
         return initialized;
-    }
-
-    /**
-     * Add the given file to the application's file distributor.
-     *
-     * @param reference file reference (hash)
-     */
-    public void send(FileReference reference) {
-        getRoot().fileReferencesRepository().add(reference);
     }
 
     /** The service HTTP port for health status */

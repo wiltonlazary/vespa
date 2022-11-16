@@ -72,14 +72,17 @@ findhost () {
 findroot
 findhost
 
+ROOT=${VESPA_HOME%/}
+export ROOT
+
 # END environment bootstrap section
 
-cd $VESPA_HOME || { echo "Cannot cd to $VESPA_HOME" 1>&2; exit 1; }
+cd ${VESPA_HOME} || { echo "Cannot cd to ${VESPA_HOME}" 1>&2; exit 1; }
 
 fixlimits
 checkjava
 runvalidation
-no_transparent_hugepages
+enable_transparent_hugepages_with_background_compaction
 disable_vm_zone_reclaim_mode
 drop_caches
 

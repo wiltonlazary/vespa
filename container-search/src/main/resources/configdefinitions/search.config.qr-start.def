@@ -24,7 +24,7 @@ jvm.stacksize int default=512 restart
 jvm.compressedClassSpaceSize int default=32 restart
 
 ## Base value of maximum direct memory size (in megabytes)
-jvm.baseMaxDirectMemorySize int default=75 restart
+jvm.baseMaxDirectMemorySize int default=16 restart
 
 ## Amount of direct memory used for caching. (in megabytes)
 jvm.directMemorySizeCache int default=0 restart
@@ -39,9 +39,6 @@ jvm.availableProcessors int default=0 restart
 
 ## Extra environment variables
 qrs.env string default="" restart
-
-## Set ulimit -v in start script? this is mainly a safeguard against JNI stuff leaking memory.
-ulimitv string default="" restart
 
 ## Extra class path entries, forwarded to vespa-start-container_daemon. Overrides the corresponding env setting.
 jdisc.classpath_extra string default="" restart

@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.container.handler.Timing;
 import com.yahoo.container.logging.AccessLog;
 import com.yahoo.container.logging.AccessLogEntry;
@@ -25,20 +25,17 @@ import java.util.logging.Level;
  * ThreadedHttpRequestHandler with access logging.
  *
  * @author Steinar Knutsen
+ *
+ * @deprecated  Use {@link ThreadedHttpRequestHandler}, which provides the same level of functionality.
  */
-// TODO Vespa 8: Remove deprecated constructors
+@Deprecated
 public abstract class LoggingRequestHandler extends ThreadedHttpRequestHandler {
 
+    // TODO: Deprecate
     public static class Context {
 
         final Executor executor;
         final Metric metric;
-
-        /** @deprecated Use {@link #Context(Executor, Metric)} instead */
-        @Deprecated(forRemoval = true, since = "7")
-        public Context(Executor executor, AccessLog ignored, Metric metric) {
-            this(executor, metric);
-        }
 
         @Inject
         public Context(Executor executor, Metric metric) {
@@ -52,7 +49,6 @@ public abstract class LoggingRequestHandler extends ThreadedHttpRequestHandler {
         }
 
         public Executor getExecutor() { return executor; }
-        @Deprecated(forRemoval = true, since = "7") public AccessLog getAccessLog() { return null; }
         public Metric getMetric() { return metric; }
 
     }
@@ -72,12 +68,6 @@ public abstract class LoggingRequestHandler extends ThreadedHttpRequestHandler {
         this(ctx.executor, ctx.metric);
     }
 
-    /** @deprecated Use {@link #LoggingRequestHandler(Executor)} instead */
-    @Deprecated(forRemoval = true, since = "7")
-    public LoggingRequestHandler(Executor executor, AccessLog ignored) {
-        this(executor, (Metric)null);
-    }
-
     public LoggingRequestHandler(Executor executor) {
         this(executor, (Metric)null);
     }
@@ -88,18 +78,6 @@ public abstract class LoggingRequestHandler extends ThreadedHttpRequestHandler {
 
     public LoggingRequestHandler(Executor executor, Metric metric) {
         this(executor, metric, false);
-    }
-
-    /** @deprecated Use {@link #LoggingRequestHandler(Executor, Metric)} instead */
-    @Deprecated(forRemoval = true, since = "7")
-    public LoggingRequestHandler(Executor executor, AccessLog ignored, Metric metric) {
-        this(executor, metric, false);
-    }
-
-    /** @deprecated Use {@link #LoggingRequestHandler(Executor, Metric, boolean)} instead */
-    @Deprecated(forRemoval = true, since = "7")
-    public LoggingRequestHandler(Executor executor, AccessLog ignored, Metric metric, boolean allowAsyncResponse) {
-        this(executor, metric, allowAsyncResponse);
     }
 
     public LoggingRequestHandler(Executor executor, Metric metric, boolean allowAsyncResponse) {

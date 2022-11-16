@@ -1,12 +1,11 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.restapi.filter;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.http.HttpRequest;
 import com.yahoo.jdisc.http.filter.DiscFilterRequest;
 import com.yahoo.jdisc.http.filter.security.base.JsonSecurityRequestFilterBase;
-import java.util.logging.Level;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.api.role.Action;
 import com.yahoo.vespa.hosted.controller.api.role.Enforcer;
@@ -15,6 +14,7 @@ import com.yahoo.vespa.hosted.controller.api.role.SecurityContext;
 
 import java.util.Optional;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**

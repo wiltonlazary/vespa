@@ -1,9 +1,8 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "base.h"
 #include "query_term_simple.h"
+#include "base.h"
 #include <vespa/vespalib/objects/visit.h>
-#include <vespa/vespalib/text/utf8.h>
 #include <vespa/vespalib/util/classname.h>
 #include <vespa/vespalib/locale/c.h>
 #include <cmath>
@@ -210,7 +209,9 @@ QueryTermSimple::QueryTermSimple(const string & term_, Type type)
       _diversityCutoffStrict(false),
       _valid(true),
       _term(term_),
-      _diversityAttribute()
+      _diversityAttribute(),
+      _fuzzyMaxEditDistance(2),
+      _fuzzyPrefixLength(0)
 {
     if (isFullRange(_term)) {
         stringref rest(_term.c_str() + 1, _term.size() - 2);
@@ -312,7 +313,7 @@ QueryTermSimple::getClassName() const
 void
 visit(vespalib::ObjectVisitor &self, const vespalib::string &name, const search::QueryTermSimple *obj)
 {
-    if (obj != 0) {
+    if (obj != nullptr) {
         self.openStruct(name, obj->getClassName());
         obj->visitMembers(self);
         self.closeStruct();

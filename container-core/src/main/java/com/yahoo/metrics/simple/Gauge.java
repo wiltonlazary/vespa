@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.metrics.simple;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.metrics.simple.UntypedMetric.AssumedType;
 
 /**
@@ -43,7 +43,7 @@ public class Gauge {
      *            position/dimension values for the sample
      */
     public void sample(double x, Point p) {
-        receiver.update(new Sample(new Measurement(Double.valueOf(x)), new Identifier(name, p), AssumedType.GAUGE));
+        receiver.update(new Sample(new Measurement(x), new Identifier(name, p), AssumedType.GAUGE));
     }
 
     /**

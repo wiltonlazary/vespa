@@ -2,7 +2,6 @@
 package com.yahoo.vespa.model.test;
 
 import com.yahoo.component.ComponentId;
-import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.ConfigModel;
 import com.yahoo.config.model.ConfigModelContext;
 import com.yahoo.config.model.ConfigModelRegistry;
@@ -10,6 +9,7 @@ import com.yahoo.config.model.MapConfigModelRegistry;
 import com.yahoo.config.model.admin.AdminModel;
 import com.yahoo.config.model.builder.xml.ConfigModelBuilder;
 import com.yahoo.config.model.builder.xml.ConfigModelId;
+import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.producer.AbstractConfigProducer;
 import com.yahoo.vespa.defaults.Defaults;
 import com.yahoo.vespa.model.AbstractService;
@@ -20,16 +20,14 @@ import com.yahoo.vespa.model.container.ContainerCluster;
 import com.yahoo.vespa.model.container.ContainerModel;
 import com.yahoo.vespa.model.container.xml.ContainerModelBuilder;
 import com.yahoo.vespa.model.content.Content;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.w3c.dom.Element;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Demonstrates how a model can be added at build time to amend another model.
@@ -42,94 +40,94 @@ import static org.junit.Assert.assertNotNull;
 public class ModelAmendingTestCase {
 
     @Test
-    public void testModelAmending() {
+    void testModelAmending() {
         ConfigModelRegistry amendingModelRepo = MapConfigModelRegistry.createFromList(new AdminModelAmenderBuilder(),
-                                                                                      new ContainerModelAmenderBuilder(),
-                                                                                      new ContentModelAmenderBuilder());
+                new ContainerModelAmenderBuilder(),
+                new ContentModelAmenderBuilder());
         String services =
                 "<services version='1.0'>" +
-                "    <admin version='4.0'/>" +
-                "    <container id='test1' version='1.0'>" +
-                "        <search/>" +
-                "        <nodes count='2'/>" +
-                "    </container>" +
-                "    <container id='test2' version='1.0'>" +
-                "        <http><server id='server1' port='" + Defaults.getDefaults().vespaWebServicePort() + "'/></http>" +
-                "        <document-api/>" +
-                "        <nodes count='2'/>" +
-                "    </container>" +
-                "    <content id='test3' version='1.0'>" +
-                "        <redundancy>1</redundancy>" +
-                "        <documents>" +
-                "            <document mode='index' type='type1'/>" +
-                "        </documents>" +
-                "        <nodes count='2'/>" +
-                "    </content>" +
-                "    <content id='test4' version='1.0'>" +
-                "        <redundancy>1</redundancy>" +
-                "        <documents>" +
-                "            <document mode='index' type='type1'/>" +
-                "        </documents>" +
-                "        <nodes count='3'/>" +
-                "    </content>" +
-                "</services>";
+                        "    <admin version='4.0'/>" +
+                        "    <container id='test1' version='1.0'>" +
+                        "        <search/>" +
+                        "        <nodes count='2'/>" +
+                        "    </container>" +
+                        "    <container id='test2' version='1.0'>" +
+                        "        <http><server id='server1' port='" + Defaults.getDefaults().vespaWebServicePort() + "'/></http>" +
+                        "        <document-api/>" +
+                        "        <nodes count='2'/>" +
+                        "    </container>" +
+                        "    <content id='test3' version='1.0'>" +
+                        "        <redundancy>1</redundancy>" +
+                        "        <documents>" +
+                        "            <document mode='index' type='type1'/>" +
+                        "        </documents>" +
+                        "        <nodes count='2'/>" +
+                        "    </content>" +
+                        "    <content id='test4' version='1.0'>" +
+                        "        <redundancy>1</redundancy>" +
+                        "        <documents>" +
+                        "            <document mode='index' type='type1'/>" +
+                        "        </documents>" +
+                        "        <nodes count='3'/>" +
+                        "    </content>" +
+                        "</services>";
         VespaModelTester tester = new VespaModelTester(amendingModelRepo);
         tester.addHosts(12);
         VespaModel model = tester.createModel(services);
 
         // Check that all hosts are amended
         for (HostResource host : model.getAdmin().hostSystem().getHosts()) {
-            assertFalse(host + " is amended", host.getHost().getChildrenByTypeRecursive(AmendedService.class).isEmpty());
+            assertFalse(host.getHost().getChildrenByTypeRecursive(AmendedService.class).isEmpty(), host + " is amended");
         }
 
-        // Check that jdisc clusters are amended
+        // Check that container clusters are amended
         assertEquals(2, model.getContainerClusters().size());
         assertNotNull(model.getContainerClusters().get("test1").getComponentsMap().get(new ComponentId("com.yahoo.MyAmendedComponent")));
         assertNotNull(model.getContainerClusters().get("test2").getComponentsMap().get(new ComponentId("com.yahoo.MyAmendedComponent")));
     }
 
     @Test
-    public void testModelAmendingWithDedicatedCC() {
+    void testModelAmendingWithDedicatedCC() {
         ConfigModelRegistry amendingModelRepo = MapConfigModelRegistry.createFromList(new AdminModelAmenderBuilder(),
-                                                                                      new ContainerModelAmenderBuilder(),
-                                                                                      new ContentModelAmenderBuilder());
+                new ContainerModelAmenderBuilder(),
+                new ContentModelAmenderBuilder());
         String services =
                 "<services version='1.0'>" +
-                "    <admin version='4.0'/>" +
-                "    <container id='test1' version='1.0'>" +
-                "        <search/>" +
-                "        <nodes count='2'/>" +
-                "    </container>" +
-                "    <container id='test2' version='1.0'>" +
-                "        <http><server id='server1' port='" + Defaults.getDefaults().vespaWebServicePort() + "'/></http>" +
-                "        <document-api/>" +
-                "        <nodes count='2'/>" +
-                "    </container>" +
-                "    <content id='test3' version='1.0'>" +
-                "        <redundancy>1</redundancy>" +
-                "        <documents>" +
-                "            <document mode='index' type='type1'/>" +
-                "        </documents>" +
-                "        <nodes count='2'/>" +
-                "    </content>" +
-                "    <content id='test4' version='1.0'>" +
-                "        <redundancy>1</redundancy>" +
-                "        <documents>" +
-                "            <document mode='index' type='type1'/>" +
-                "        </documents>" +
-                "        <nodes count='3'/>" +
-                "    </content>" +
-                "</services>";
+                        "    <admin version='4.0'/>" +
+                        "    <container id='test1' version='1.0'>" +
+                        "        <search/>" +
+                        "        <nodes count='2'/>" +
+                        "    </container>" +
+                        "    <container id='test2' version='1.0'>" +
+                        "        <http><server id='server1' port='" + Defaults.getDefaults().vespaWebServicePort() + "'/></http>" +
+                        "        <document-api/>" +
+                        "        <nodes count='2'/>" +
+                        "    </container>" +
+                        "    <content id='test3' version='1.0'>" +
+                        "        <redundancy>1</redundancy>" +
+                        "        <documents>" +
+                        "            <document mode='index' type='type1'/>" +
+                        "        </documents>" +
+                        "        <nodes count='2'/>" +
+                        "    </content>" +
+                        "    <content id='test4' version='1.0'>" +
+                        "        <redundancy>1</redundancy>" +
+                        "        <documents>" +
+                        "            <document mode='index' type='type1'/>" +
+                        "        </documents>" +
+                        "        <nodes count='3'/>" +
+                        "    </content>" +
+                        "</services>";
         VespaModelTester tester = new VespaModelTester(amendingModelRepo);
         tester.addHosts(12);
         VespaModel model = tester.createModel(services);
 
         // Check that all hosts are amended
         for (HostResource host : model.getAdmin().hostSystem().getHosts()) {
-            assertFalse(host + " is amended", host.getHost().getChildrenByTypeRecursive(AmendedService.class).isEmpty());
+            assertFalse(host.getHost().getChildrenByTypeRecursive(AmendedService.class).isEmpty(), host + " is amended");
         }
 
-        // Check that jdisc clusters are amended
+        // Check that container clusters are amended
         assertEquals(2, model.getContainerClusters().size());
         assertNotNull(model.getContainerClusters().get("test1").getComponentsMap().get(new ComponentId("com.yahoo.MyAmendedComponent")));
         assertNotNull(model.getContainerClusters().get("test2").getComponentsMap().get(new ComponentId("com.yahoo.MyAmendedComponent")));
@@ -152,13 +150,13 @@ public class ModelAmendingTestCase {
         @Override
         public void doBuild(AdminModelAmender model, Element spec, ConfigModelContext modelContext) {
             for (AdminModel adminModel : model.adminModels)
-                amend(modelContext.getDeployLogger(), adminModel);
+                amend(modelContext.getDeployState(), adminModel);
         }
 
-        private void amend(DeployLogger deployLogger, AdminModel adminModel) {
+        private void amend(DeployState deployState, AdminModel adminModel) {
             for (HostResource host : adminModel.getAdmin().hostSystem().getHosts()) {
                 if ( ! host.getHost().getChildrenByTypeRecursive(AmendedService.class).isEmpty()) continue; // already amended
-                adminModel.getAdmin().addAndInitializeService(deployLogger, host, new AmendedService(host.getHost()));
+                adminModel.getAdmin().addAndInitializeService(deployState, host, new AmendedService(host.getHost()));
             }
         }
 
@@ -211,7 +209,7 @@ public class ModelAmendingTestCase {
 
         @Override
         public void doBuild(ContainerModelAmender model, Element spec, ConfigModelContext modelContext) {
-            if (built) return; // the same instance will be called once per jdisc cluster
+            if (built) return; // the same instance will be called once per container cluster
             for (ContainerModel containerModel : model.containerModels)
                 amend(containerModel.getCluster());
             built = true;

@@ -21,6 +21,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+/**
+ * @author bratseth
+ */
 public class MetricsV2MetricsFetcherTest {
 
     private static final double delta = 0.00000001;
@@ -78,7 +81,7 @@ public class MetricsV2MetricsFetcherTest {
 
         {
             httpClient.cannedResponse = cannedResponseForApplication2;
-            try (Mutex lock = tester.nodeRepository().nodes().lock(application1)) {
+            try (Mutex lock = tester.nodeRepository().applications().lock(application1)) {
                 tester.nodeRepository().nodes().write(tester.nodeRepository().nodes().list(Node.State.active).owner(application2)
                         .first().get().retire(tester.clock().instant()), lock);
             }

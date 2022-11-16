@@ -5,7 +5,7 @@ import com.yahoo.vdslib.state.ClusterState;
 import com.yahoo.vespa.clustercontroller.core.ClusterStateBundle;
 import com.yahoo.vespa.clustercontroller.core.FakeTimer;
 import com.yahoo.vespa.clustercontroller.core.listeners.SystemStateListener;
-
+import java.time.Duration;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
  * Deprecated.. Use the Waiter class instead
  */
 public class StateWaiter implements SystemStateListener {
+
     private final FakeTimer timer;
     protected ClusterState current;
 
@@ -57,12 +58,12 @@ public class StateWaiter implements SystemStateListener {
         }
     }
 
-    public void waitForState(String stateRegex, long timeout) {
-        waitForState(stateRegex, timeout, 0);
+    public void waitForState(String stateRegex, Duration timeout) {
+        waitForState(stateRegex, timeout.toMillis(), 0);
     }
 
     /**
-     * WARNING: If timeIntervalToProvokeRetry is set != 0 that means time will can be set far into future
+     * WARNING: If timeIntervalToProvokeRetry is set != 0 that means time will be set far into the future
      * and thus hit various unintended timeout periods. Only auto-step time if this is a non-issue.
      */
     public void waitForState(String stateRegex, long timeout, long timeIntervalToProvokeRetry) {
@@ -82,9 +83,10 @@ public class StateWaiter implements SystemStateListener {
                         return;
                     }
                 }
-                try{
+                try {
                     if (timeIntervalToProvokeRetry == 0) {
-                        timer.wait(endTime - startTime);
+                        var waitTime = Math.max(1, endTime - startTime);
+                        timer.wait(waitTime);
                     } else {
                         if (++iteration % 10 == 0) {
                             timer.advanceTime(timeIntervalToProvokeRetry);
@@ -92,10 +94,10 @@ public class StateWaiter implements SystemStateListener {
                         timer.wait(10);
                     }
                 } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
                 }
             }
-            startTime = System.currentTimeMillis();
-            if (startTime >= endTime) {
+            if (System.currentTimeMillis() >= endTime) {
                 throw new IllegalStateException("Timeout. Did not find a state matching " + stateRegex + " within timeout of " + timeout + " milliseconds. Current state is " + currentClusterState);
             }
         }

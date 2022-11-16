@@ -11,9 +11,9 @@ import com.yahoo.vespa.hosted.node.admin.configserver.ConfigServerApi;
 import com.yahoo.vespa.hosted.node.admin.configserver.ConfigServerApiImpl;
 import com.yahoo.vespa.hosted.provision.restapi.NodesV2ApiHandler;
 import com.yahoo.vespa.hosted.provision.testutils.ContainerConfig;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -23,12 +23,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests the NodeRepository class used for talking to the node repository. It uses a mock from the node repository
@@ -56,7 +51,7 @@ public class RealNodeRepositoryTest {
      *   {@link NodesV2ApiHandler}
      * These classes define some test data that is used in these tests.
      */
-    @Before
+    @BeforeEach
     public void startContainer() throws Exception {
         Exception lastException = null;
 
@@ -91,7 +86,7 @@ public class RealNodeRepositoryTest {
         throw new RuntimeException("Could not get answer from container.");
     }
 
-    @After
+    @AfterEach
     public void stopContainer() {
         if (container != null) {
             container.close();
@@ -99,24 +94,24 @@ public class RealNodeRepositoryTest {
     }
 
     @Test
-    public void testGetContainersToRunApi() {
+    void testGetContainersToRunApi() {
         String dockerHostHostname = "dockerhost1.yahoo.com";
 
         List<NodeSpec> containersToRun = nodeRepositoryApi.getNodes(dockerHostHostname);
-        assertThat(containersToRun.size(), is(1));
+        assertEquals(1, containersToRun.size());
         NodeSpec node = containersToRun.get(0);
-        assertThat(node.hostname(), is("host4.yahoo.com"));
-        assertThat(node.wantedDockerImage().get(), is(DockerImage.fromString("docker-registry.domain.tld:8080/dist/vespa:6.42.0")));
-        assertThat(node.state(), is(NodeState.active));
-        assertThat(node.wantedRestartGeneration().get(), is(0L));
-        assertThat(node.currentRestartGeneration().get(), is(0L));
+        assertEquals("host4.yahoo.com", node.hostname());
+        assertEquals(DockerImage.fromString("docker-registry.domain.tld:8080/dist/vespa:6.42.0"), node.wantedDockerImage().get());
+        assertEquals(NodeState.active, node.state());
+        assertEquals(Long.valueOf(0), node.wantedRestartGeneration().get());
+        assertEquals(Long.valueOf(0), node.currentRestartGeneration().get());
         assertEquals(1, node.vcpu(), delta);
         assertEquals(4, node.memoryGb(), delta);
         assertEquals(100, node.diskGb(), delta);
     }
 
     @Test
-    public void testGetContainer() {
+    void testGetContainer() {
         String hostname = "host4.yahoo.com";
         Optional<NodeSpec> node = nodeRepositoryApi.getOptionalNode(hostname);
         assertTrue(node.isPresent());
@@ -124,24 +119,24 @@ public class RealNodeRepositoryTest {
     }
 
     @Test
-    public void testGetContainerForNonExistingNode() {
+    void testGetContainerForNonExistingNode() {
         String hostname = "host-that-does-not-exist";
         Optional<NodeSpec> node = nodeRepositoryApi.getOptionalNode(hostname);
         assertFalse(node.isPresent());
     }
 
     @Test
-    public void testUpdateNodeAttributes() {
+    void testUpdateNodeAttributes() {
         String hostname = "host4.yahoo.com";
         nodeRepositoryApi.updateNodeAttributes(
                 hostname,
                 new NodeAttributes()
                         .withRestartGeneration(1)
-                        .withDockerImage(DockerImage.fromString("registry.example.com/image-1:6.2.3")));
+                        .withDockerImage(DockerImage.fromString("registry.example.com/repo/image-1:6.2.3")));
     }
 
     @Test
-    public void testMarkAsReady() {
+    void testMarkAsReady() {
         nodeRepositoryApi.setNodeState("host5.yahoo.com", NodeState.dirty);
         nodeRepositoryApi.setNodeState("host5.yahoo.com", NodeState.ready);
 
@@ -161,25 +156,26 @@ public class RealNodeRepositoryTest {
     }
 
     @Test
-    public void testAddNodes() {
+    void testAddNodes() {
         AddNode host = AddNode.forHost("host123.domain.tld",
-                                       Optional.of("id1"),
-                                       "default",
-                                       Optional.of(FlavorOverrides.ofDisk(123)),
-                                       NodeType.confighost,
-                                       Set.of("::1"), Set.of("::2", "::3"));
+                "id1",
+                "default",
+                Optional.of(FlavorOverrides.ofDisk(123)),
+                NodeType.confighost,
+                Set.of("::1"), Set.of("::2", "::3"));
 
         NodeResources nodeResources = new NodeResources(1, 2, 3, 4, NodeResources.DiskSpeed.slow, NodeResources.StorageType.local);
-        AddNode node = AddNode.forNode("host123-1.domain.tld", "host123.domain.tld", nodeResources, NodeType.config, Set.of("::2", "::3"));
+        AddNode node = AddNode.forNode("host123-1.domain.tld", "id1", "host123.domain.tld", nodeResources, NodeType.config, Set.of("::2", "::3"));
 
         assertFalse(nodeRepositoryApi.getOptionalNode("host123.domain.tld").isPresent());
         nodeRepositoryApi.addNodes(List.of(host, node));
 
         NodeSpec hostSpec = nodeRepositoryApi.getOptionalNode("host123.domain.tld").orElseThrow();
-        assertEquals("id1", hostSpec.id().orElseThrow());
+        assertEquals("id1", hostSpec.id());
         assertEquals("default", hostSpec.flavor());
         assertEquals(123, hostSpec.diskGb(), 0);
         assertEquals(NodeType.confighost, hostSpec.type());
+        assertEquals(NodeResources.Architecture.x86_64, hostSpec.resources().architecture());
 
         NodeSpec nodeSpec = nodeRepositoryApi.getOptionalNode("host123-1.domain.tld").orElseThrow();
         assertEquals(nodeResources, nodeSpec.resources());

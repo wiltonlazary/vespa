@@ -5,18 +5,22 @@ import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.Cloud;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.NodeResources;
+import com.yahoo.config.provision.NodeResources.Architecture;
 import com.yahoo.config.provision.NodeResources.DiskSpeed;
 import com.yahoo.config.provision.NodeResources.StorageType;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.vespa.flags.InMemoryFlagSource;
+import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.NodeList;
 import com.yahoo.vespa.hosted.provision.node.Agent;
@@ -30,6 +34,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -41,6 +46,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -54,7 +60,7 @@ import static org.mockito.Mockito.when;
 public class DynamicProvisioningTest {
 
     private static final Zone zone = new Zone(
-            Cloud.builder().dynamicProvisioning(true).build(),
+            Cloud.builder().dynamicProvisioning(true).allowHostSharing(false).build(),
             SystemName.main,
             Environment.prod,
             RegionName.from("us-east"));
@@ -72,8 +78,8 @@ public class DynamicProvisioningTest {
 
         mockHostProvisioner(hostProvisioner, "large", 3, null); // Provision shared hosts
         prepareAndActivate(application1, clusterSpec("mycluster"), 4, 1, resources);
-        verify(hostProvisioner).provisionHosts(List.of(100, 101, 102, 103), NodeType.host, resources, application1,
-                Version.emptyVersion, HostSharing.any, Optional.of(ClusterSpec.Type.content));
+        verify(hostProvisioner).provisionHosts(eq(List.of(100, 101, 102, 103)), eq(NodeType.host), eq(resources), eq(application1),
+                                               eq(Version.emptyVersion), eq(HostSharing.any), eq(Optional.of(ClusterSpec.Type.content)), eq(CloudAccount.empty), any());
 
         // Total of 8 nodes should now be in node-repo, 4 active hosts and 4 active nodes
         assertEquals(8, tester.nodeRepository().nodes().list().size());
@@ -96,8 +102,8 @@ public class DynamicProvisioningTest {
         ApplicationId application3 = ProvisioningTester.applicationId();
         mockHostProvisioner(hostProvisioner, "large", 3, application3);
         prepareAndActivate(application3, clusterSpec("mycluster", true), 4, 1, resources);
-        verify(hostProvisioner).provisionHosts(List.of(104, 105, 106, 107), NodeType.host, resources, application3,
-                Version.emptyVersion, HostSharing.exclusive, Optional.of(ClusterSpec.Type.content));
+        verify(hostProvisioner).provisionHosts(eq(List.of(104, 105, 106, 107)), eq(NodeType.host), eq(resources), eq(application3),
+                eq(Version.emptyVersion), eq(HostSharing.exclusive), eq(Optional.of(ClusterSpec.Type.content)), eq(CloudAccount.empty), any());
 
         // Total of 20 nodes should now be in node-repo, 8 active hosts and 12 active nodes
         assertEquals(20, tester.nodeRepository().nodes().list().size());
@@ -258,6 +264,49 @@ public class DynamicProvisioningTest {
     }
 
     @Test
+    public void migrates_nodes_on_host_flavor_flag_change() {
+        InMemoryFlagSource flagSource = new InMemoryFlagSource();
+        List<Flavor> flavors = List.of(new Flavor("x86", new NodeResources(1, 4, 50, 0.1, fast, local, Architecture.x86_64)),
+                                       new Flavor("arm", new NodeResources(1, 4, 50, 0.1, fast, local, Architecture.arm64)));
+        MockHostProvisioner hostProvisioner = new MockHostProvisioner(flavors);
+        ProvisioningTester tester = new ProvisioningTester.Builder().zone(zone)
+                .flavors(flavors)
+                .hostProvisioner(hostProvisioner)
+                .resourcesCalculator(0, 0)
+                .nameResolver(nameResolver)
+                .flagSource(flagSource)
+                .build();
+
+        ApplicationId app = ProvisioningTester.applicationId();
+        ClusterSpec cluster = ClusterSpec.request(ClusterSpec.Type.content, new ClusterSpec.Id("cluster1")).vespaVersion("8").build();
+        Capacity capacity = Capacity.from(new ClusterResources(4, 2, new NodeResources(1, 4, 50, 0.1, DiskSpeed.any, StorageType.any, Architecture.any)));
+
+        hostProvisioner.overrideHostFlavor("x86");
+        tester.activate(app, cluster, capacity);
+        NodeList nodes = tester.nodeRepository().nodes().list();
+        nodes.forEach(n -> System.out.println(n.hostname() + " " + n.flavor().name()));
+        assertEquals(4, nodes.owner(app).state(Node.State.active).size());
+        assertEquals(Set.of("x86"), nodes.parentsOf(nodes.owner(app).state(Node.State.active)).stream().map(n -> n.flavor().name()).collect(Collectors.toSet()));
+
+        hostProvisioner.overrideHostFlavor("arm");
+        flagSource.withStringFlag(PermanentFlags.HOST_FLAVOR.id(), "arm");
+        tester.activate(app, cluster, capacity);
+        nodes = tester.nodeRepository().nodes().list();
+        assertEquals(4, nodes.owner(app).state(Node.State.inactive).size());
+        assertEquals(4, nodes.owner(app).state(Node.State.active).size());
+        assertEquals(Set.of("x86"), nodes.parentsOf(tester.getNodes(app, Node.State.inactive)).stream().map(n -> n.flavor().name()).collect(Collectors.toSet()));
+        assertEquals(Set.of("arm"), nodes.parentsOf(tester.getNodes(app, Node.State.active)).stream().map(n -> n.flavor().name()).collect(Collectors.toSet()));
+
+        flagSource.removeFlag(PermanentFlags.HOST_FLAVOR.id()); // Resetting flag does not moves the nodes back
+        tester.activate(app, cluster, capacity);
+        nodes = tester.nodeRepository().nodes().list();
+        assertEquals(4, nodes.owner(app).state(Node.State.inactive).size());
+        assertEquals(4, nodes.owner(app).state(Node.State.active).size());
+        assertEquals(Set.of("x86"), nodes.parentsOf(tester.getNodes(app, Node.State.inactive)).stream().map(n -> n.flavor().name()).collect(Collectors.toSet()));
+        assertEquals(Set.of("arm"), nodes.parentsOf(tester.getNodes(app, Node.State.active)).stream().map(n -> n.flavor().name()).collect(Collectors.toSet()));
+    }
+
+    @Test
     public void test_changing_limits() {
         int memoryTax = 3;
         List<Flavor> flavors = List.of(new Flavor("1x", new NodeResources(1, 10 - memoryTax, 100, 0.1, fast, remote)),
@@ -393,40 +442,11 @@ public class DynamicProvisioningTest {
                            app1, cluster1);
     }
 
-    @Test
-    public void test_any_disk_prefers_local_for_content() {
-        int memoryTax = 3;
-        int localDiskTax = 55;
-        // Disk tax is not included in flavor resources but memory tax is
-        List<Flavor> flavors = List.of(new Flavor("2x",  new NodeResources(2, 20 - memoryTax, 200, 0.1, fast, local)),
-                                       new Flavor("4x",  new NodeResources(4, 40 - memoryTax, 400, 0.1, fast, local)),
-                                       new Flavor("2xl", new NodeResources(2, 20 - memoryTax, 200, 0.1, fast, remote)),
-                                       new Flavor("4xl", new NodeResources(4, 40 - memoryTax, 400, 0.1, fast, remote)));
-
-        ProvisioningTester tester = new ProvisioningTester.Builder().zone(zone)
-                                                                    .flavors(flavors)
-                                                                    .hostProvisioner(new MockHostProvisioner(flavors, memoryTax))
-                                                                    .nameResolver(nameResolver)
-                                                                    .resourcesCalculator(memoryTax, localDiskTax)
-                                                                    .build();
-
-        tester.activateTenantHosts();
-
-        ApplicationId app1 = ProvisioningTester.applicationId("app1");
-        ClusterSpec cluster1 = ClusterSpec.request(ClusterSpec.Type.content, new ClusterSpec.Id("cluster1")).vespaVersion("7").build();
-
-        tester.activate(app1, cluster1, Capacity.from(resources(4, 2, 2, 10, 200, fast, StorageType.any),
-                                                      resources(6, 3, 3, 25, 400, fast, StorageType.any)));
-        tester.assertNodes("'any' selects a flavor with local storage",
-                           6, 2, 2, 20, 200, fast, local,
-                           app1, cluster1);
-    }
-
     private void prepareAndActivate(ApplicationId application, ClusterSpec clusterSpec, int nodes, int groups, NodeResources resources) {
         List<HostSpec> prepared = tester.prepare(application, clusterSpec, nodes, groups, resources);
         NodeList provisionedHosts = tester.nodeRepository().nodes().list(Node.State.provisioned).nodeType(NodeType.host);
         if (!provisionedHosts.isEmpty()) {
-            tester.nodeRepository().nodes().setReady(provisionedHosts.asList(), Agent.system, DynamicProvisioningTest.class.getSimpleName());
+            tester.move(Node.State.ready, provisionedHosts.asList());
             tester.activateTenantHosts();
         }
         tester.activate(application, prepared);
@@ -450,14 +470,14 @@ public class DynamicProvisioningTest {
         return new ClusterResources(nodes, groups, new NodeResources(vcpu, memory, disk, 0.1, diskSpeed, storageType));
     }
 
-    @SuppressWarnings("unchecked")
     private void mockHostProvisioner(HostProvisioner hostProvisioner, String hostFlavorName, int numIps, ApplicationId exclusiveTo) {
         doAnswer(invocation -> {
             Flavor hostFlavor = tester.nodeRepository().flavors().getFlavorOrThrow(hostFlavorName);
-            List<Integer> provisionIndexes = (List<Integer>) invocation.getArguments()[0];
-            NodeResources nodeResources = (NodeResources) invocation.getArguments()[2];
+            List<Integer> provisionIndexes = invocation.getArgument(0);
+            NodeResources nodeResources = invocation.getArgument(2);
+            Consumer<List<ProvisionedHost>> provisionedHostConsumer = invocation.getArgument(8);
 
-            return provisionIndexes.stream()
+            List<ProvisionedHost> provisionedHosts = provisionIndexes.stream()
                     .map(hostIndex -> {
                         String hostHostname = "host-" + hostIndex;
                         String hostIp = "::" + hostIndex + ":0";
@@ -475,9 +495,10 @@ public class DynamicProvisioningTest {
                         when(provisionedHost.generateHost()).thenReturn(parent);
                         when(provisionedHost.generateNode()).thenReturn(child);
                         return provisionedHost;
-                    })
-                    .collect(Collectors.toList());
-        }).when(hostProvisioner).provisionHosts(any(), any(), any(), any(), any(), any(), any());
+                    }).toList();
+            provisionedHostConsumer.accept(provisionedHosts);
+            return null;
+        }).when(hostProvisioner).provisionHosts(any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
 }

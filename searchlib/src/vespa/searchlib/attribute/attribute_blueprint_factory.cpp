@@ -33,6 +33,7 @@
 #include <vespa/searchlib/queryeval/wand/parallel_weak_and_search.h>
 #include <vespa/searchlib/queryeval/weighted_set_term_blueprint.h>
 #include <vespa/searchlib/queryeval/weighted_set_term_search.h>
+#include <vespa/searchlib/queryeval/irequestcontext.h>
 #include <vespa/searchlib/tensor/dense_tensor_attribute.h>
 #include <vespa/vespalib/util/regexp.h>
 #include <vespa/vespalib/util/stringfmt.h>
@@ -44,6 +45,8 @@
 #include <vespa/log/log.h>
 LOG_SETUP(".searchlib.attribute.attribute_blueprint_factory");
 
+using search::attribute::BasicType;
+using search::attribute::CollectionType;
 using search::attribute::IAttributeVector;
 using search::attribute::ISearchContext;
 using search::fef::TermFieldMatchData;
@@ -51,6 +54,7 @@ using search::fef::TermFieldMatchDataArray;
 using search::fef::TermFieldMatchDataPosition;
 using search::query::Location;
 using search::query::LocationTerm;
+using search::query::MultiTerm;
 using search::query::Node;
 using search::query::NumberTerm;
 using search::query::PredicateQuery;
@@ -61,7 +65,6 @@ using search::query::StackDumpCreator;
 using search::query::StringTerm;
 using search::query::SubstringTerm;
 using search::query::SuffixTerm;
-using search::query::MultiTerm;
 using search::queryeval::AndBlueprint;
 using search::queryeval::AndSearchStrict;
 using search::queryeval::Blueprint;
@@ -83,11 +86,11 @@ using search::queryeval::SimpleLeafBlueprint;
 using search::queryeval::WeightedSetTermBlueprint;
 using search::tensor::DenseTensorAttribute;
 using search::tensor::ITensorAttribute;
+using vespalib::Issue;
 using vespalib::geo::ZCurve;
 using vespalib::make_string;
 using vespalib::string;
 using vespalib::stringref;
-using vespalib::Issue;
 
 namespace search {
 namespace {
@@ -115,16 +118,30 @@ private:
 class AttributeFieldBlueprint : public SimpleLeafBlueprint
 {
 private:
+    const IAttributeVector& _attr;
+    // Must take a copy of the query term for visitMembers()
+    // as only a few ISearchContext implementations exposes the query term.
+    vespalib::string _query_term;
     ISearchContext::UP _search_context;
+    enum Type {INT, FLOAT, OTHER};
+    Type _type;
 
     AttributeFieldBlueprint(const FieldSpec &field, const IAttributeVector &attribute,
                             QueryTermSimple::UP term, const attribute::SearchContextParams &params)
         : SimpleLeafBlueprint(field),
-          _search_context(attribute.createSearchContext(std::move(term), params))
+          _attr(attribute),
+          _query_term(term->getTermString()),
+          _search_context(attribute.createSearchContext(std::move(term), params)),
+          _type(OTHER)
     {
         uint32_t estHits = _search_context->approximateHits();
         HitEstimate estimate(estHits, estHits == 0);
         setEstimate(estimate);
+        if (attribute.isFloatingPointType()) {
+            _type = FLOAT;
+        } else if (attribute.isIntegerType()) {
+            _type = INT;
+        }
     }
 
     AttributeFieldBlueprint(const FieldSpec &field, const IAttributeVector &attribute,
@@ -152,7 +169,7 @@ public:
                                       .diversityCutoffStrict(diversityCutoffStrict))
     {}
 
-    SearchIterator::UP createLeafSearch(const TermFieldMatchDataArray &tfmda, bool strict) const override {
+    SearchIteratorUP createLeafSearch(const TermFieldMatchDataArray &tfmda, bool strict) const override {
         assert(tfmda.size() == 1);
         return _search_context->createIterator(tfmda[0], strict);
     }
@@ -179,13 +196,43 @@ public:
     const attribute::ISearchContext *get_attribute_search_context() const override {
         return _search_context.get();
     }
+    bool getRange(vespalib::string &from, vespalib::string &to) const override;
 };
+
+namespace {
+
+vespalib::string
+get_type(const IAttributeVector& attr)
+{
+    auto coll_type = CollectionType(attr.getCollectionType());
+    auto basic_type = BasicType(attr.getBasicType());
+    if (coll_type.type() == CollectionType::SINGLE) {
+        return basic_type.asString();
+    }
+    std::ostringstream oss;
+    oss << coll_type.asString() << "<" << basic_type.asString() << ">";
+    return oss.str();
+}
+
+void
+visit_attribute(vespalib::ObjectVisitor& visitor, const IAttributeVector& attr)
+{
+    visitor.openStruct("attribute", "IAttributeVector");
+    visitor.visitString("name", attr.getName());
+    visitor.visitString("type", get_type(attr));
+    visitor.visitBool("fast_search", attr.getIsFastSearch());
+    visitor.visitBool("filter", attr.getIsFilter());
+    visitor.closeStruct();
+}
+
+}
 
 void
 AttributeFieldBlueprint::visitMembers(vespalib::ObjectVisitor &visitor) const
 {
     LeafBlueprint::visitMembers(visitor);
-    visit(visitor, "attribute", _search_context->attributeName());
+    visit_attribute(visitor, _attr);
+    visit(visitor, "query_term", _query_term);
 }
 
 //-----------------------------------------------------------------------------
@@ -193,7 +240,7 @@ AttributeFieldBlueprint::visitMembers(vespalib::ObjectVisitor &visitor) const
 template <bool is_strict>
 struct LocationPreFilterIterator : public OrLikeSearch<is_strict, NoUnpack>
 {
-    LocationPreFilterIterator(OrSearch::Children children)
+    explicit LocationPreFilterIterator(OrSearch::Children children)
         : OrLikeSearch<is_strict, NoUnpack>(std::move(children), NoUnpack()) {}
     void doUnpack(uint32_t) override {}
 };
@@ -214,8 +261,7 @@ public:
     {
         uint64_t estHits(0);
         const IAttributeVector &attr(_attribute);
-        for (auto it(rangeVector.begin()), mt(rangeVector.end()); it != mt; it++) {
-            const ZCurve::Range &r(*it);
+        for (const ZCurve::Range & r : rangeVector) {
             query::Range qr(r.min(), r.max());
             query::SimpleRangeTerm rt(qr, "", 0, query::Weight(0));
             string stack(StackDumpCreator::create(rt));
@@ -235,14 +281,16 @@ public:
         set_allow_termwise_eval(true);
     }
 
+    ~LocationPreFilterBlueprint() override;
+
     bool should_use() const { return _should_use; }
 
     SearchIterator::UP
     createLeafSearch(const TermFieldMatchDataArray &tfmda, bool strict) const override
     {
         OrSearch::Children children;
-        for (auto it(_rangeSearches.begin()), mt(_rangeSearches.end()); it != mt; it++) {
-            children.push_back((*it)->createIterator(tfmda[0], strict));
+        for (auto & search : _rangeSearches) {
+            children.push_back(search->createIterator(tfmda[0], strict));
         }
         if (strict) {
             return std::make_unique<LocationPreFilterIterator<true>>(std::move(children));
@@ -250,13 +298,23 @@ public:
             return std::make_unique<LocationPreFilterIterator<false>>(std::move(children));
         }
     }
+    SearchIteratorUP createFilterSearch(bool strict, FilterConstraint constraint) const override {
+        return create_default_filter(strict, constraint);
+    }
 
     void fetchPostings(const queryeval::ExecuteInfo &execInfo) override {
-        for (size_t i(0); i < _rangeSearches.size(); i++) {
-            _rangeSearches[i]->fetchPostings(execInfo);
+        for (auto & search : _rangeSearches) {
+            search->fetchPostings(execInfo);
         }
     }
+
+    void visitMembers(vespalib::ObjectVisitor& visitor) const override {
+        LeafBlueprint::visitMembers(visitor);
+        visit_attribute(visitor, _attribute);
+    }
 };
+
+LocationPreFilterBlueprint::~LocationPreFilterBlueprint() = default;
 
 //-----------------------------------------------------------------------------
 
@@ -282,6 +340,8 @@ public:
         setEstimate(estimate);
     }
 
+    ~LocationPostFilterBlueprint() override;
+
     const common::Location &location() const { return _location; }
 
     SearchIterator::UP
@@ -298,6 +358,13 @@ public:
             LOG(debug, "wrong size tfmda: %zu (fallback to old location iterator)\n", tfmda.size());
         }
         return FastS_AllocLocationIterator(_attribute.getNumDocs(), strict, _location);
+    }
+    SearchIteratorUP createFilterSearch(bool strict, FilterConstraint constraint) const override {
+        return create_default_filter(strict, constraint);
+    }
+    void visitMembers(vespalib::ObjectVisitor& visitor) const override {
+        LeafBlueprint::visitMembers(visitor);
+        visit_attribute(visitor, _attribute);
     }
 };
 
@@ -333,6 +400,8 @@ make_location_blueprint(const FieldSpec &field, const IAttributeVector &attribut
     root->addChild(std::move(post_filter));
     return root;
 }
+
+LocationPostFilterBlueprint::~LocationPostFilterBlueprint() = default;
 
 class LookupKey : public IDocumentWeightAttribute::LookupKey {
 public:
@@ -381,6 +450,7 @@ public:
         _weights.reserve(size_hint);
         _terms.reserve(size_hint);
     }
+    ~DirectWeightedSetBlueprint() override;
 
     void addTerm(const IDocumentWeightAttribute::LookupKey & key, int32_t weight) {
         IDocumentWeightAttribute::LookupResult result = _attr.lookup(key, _dictionary_snapshot);
@@ -397,30 +467,44 @@ public:
         }
     }
 
-    SearchIterator::UP createLeafSearch(const TermFieldMatchDataArray &tfmda, bool) const override
-    {
-        assert(tfmda.size() == 1);
-        if (_terms.size() == 0) {
-            return std::make_unique<queryeval::EmptySearch>();
-        }
-        std::vector<DocumentWeightIterator> iterators;
-        const size_t numChildren = _terms.size();
-        iterators.reserve(numChildren);
-        for (const IDocumentWeightAttribute::LookupResult &r : _terms) {
-            _attr.create(r.posting_idx, iterators);
-        }
-        return SearchType::create(*tfmda[0], _weights, std::move(iterators));
-    }
+    SearchIterator::UP createLeafSearch(const TermFieldMatchDataArray &tfmda, bool) const override;
 
     std::unique_ptr<SearchIterator> createFilterSearch(bool strict, FilterConstraint constraint) const override;
     std::unique_ptr<queryeval::MatchingElementsSearch> create_matching_elements_search(const MatchingElementsFields &fields) const override {
         if (fields.has_field(_field_name)) {
             return queryeval::MatchingElementsSearch::create(_iattr, _dictionary_snapshot, vespalib::ConstArrayRef<IDocumentWeightAttribute::LookupResult>(_terms));
         } else {
-            return std::unique_ptr<queryeval::MatchingElementsSearch>();
+            return {};
         }
     }
+    void visitMembers(vespalib::ObjectVisitor& visitor) const override {
+        LeafBlueprint::visitMembers(visitor);
+        visit_attribute(visitor, _iattr);
+    }
 };
+
+template <typename SearchType>
+SearchIterator::UP
+DirectWeightedSetBlueprint<SearchType>::createLeafSearch(const TermFieldMatchDataArray &tfmda, bool) const
+{
+    assert(tfmda.size() == 1);
+    assert(getState().numFields() == 1);
+    if (_terms.empty()) {
+        return std::make_unique<queryeval::EmptySearch>();
+    }
+    std::vector<DocumentWeightIterator> iterators;
+    const size_t numChildren = _terms.size();
+    iterators.reserve(numChildren);
+    for (const IDocumentWeightAttribute::LookupResult &r : _terms) {
+        _attr.create(r.posting_idx, iterators);
+    }
+    bool field_is_filter = getState().fields()[0].isFilter();
+    return SearchType::create(*tfmda[0], field_is_filter, _weights, std::move(iterators));
+}
+
+
+template <typename SearchType>
+DirectWeightedSetBlueprint<SearchType>::~DirectWeightedSetBlueprint() = default;
 
 template <typename SearchType>
 std::unique_ptr<SearchIterator>
@@ -467,6 +551,8 @@ public:
         _terms.reserve(size_hint);
     }
 
+    ~DirectWandBlueprint() override;
+
     void addTerm(const IDocumentWeightAttribute::LookupKey & key, int32_t weight) {
         IDocumentWeightAttribute::LookupResult result = _attr.lookup(key, _dictionary_snapshot);
         HitEstimate childEst(result.posting_size, (result.posting_size == 0));
@@ -484,7 +570,7 @@ public:
 
     SearchIterator::UP createLeafSearch(const TermFieldMatchDataArray &tfmda, bool strict) const override {
         assert(tfmda.size() == 1);
-        if (_terms.size() == 0) {
+        if (_terms.empty()) {
             return std::make_unique<queryeval::EmptySearch>();
         }
         return queryeval::ParallelWeakAndSearch::create(*tfmda[0],
@@ -496,6 +582,8 @@ public:
     std::unique_ptr<SearchIterator> createFilterSearch(bool strict, FilterConstraint constraint) const override;
     bool always_needs_unpack() const override { return true; }
 };
+
+DirectWandBlueprint::~DirectWandBlueprint() = default;
 
 std::unique_ptr<SearchIterator>
 DirectWandBlueprint::createFilterSearch(bool, FilterConstraint constraint) const
@@ -510,6 +598,25 @@ DirectWandBlueprint::createFilterSearch(bool, FilterConstraint constraint) const
     } else {
         return std::make_unique<queryeval::EmptySearch>();
     }
+}
+
+bool
+AttributeFieldBlueprint::getRange(vespalib::string &from, vespalib::string &to) const {
+    if (_type == INT) {
+        Int64Range range = _search_context->getAsIntegerTerm();
+        char buf[32];
+        auto res = std::to_chars(buf, buf + sizeof(buf), range.lower(), 10);
+        from = vespalib::stringref(buf, res.ptr - buf);
+        res = std::to_chars(buf, buf + sizeof(buf), range.upper(), 10);
+        to = vespalib::stringref(buf, res.ptr - buf);
+        return true;
+    } else if (_type == FLOAT) {
+        DoubleRange range = _search_context->getAsDoubleTerm();
+        from = vespalib::make_string("%g", range.lower());
+        to = vespalib::make_string("%g", range.upper());
+        return true;
+    }
+    return false;
 }
 
 //-----------------------------------------------------------------------------
@@ -538,23 +645,36 @@ public:
         setEstimate(HitEstimate(_dict_entry.posting_size, (_dict_entry.posting_size == 0)));
     }
 
-    SearchIterator::UP createLeafSearch(const TermFieldMatchDataArray &tfmda, bool) const override {
+    SearchIterator::UP createLeafSearch(const TermFieldMatchDataArray &tfmda, bool strict) const override {
         assert(tfmda.size() == 1);
         if (_dict_entry.posting_size == 0) {
             return std::make_unique<queryeval::EmptySearch>();
         }
+        if (tfmda[0]->isNotNeeded()) {
+            auto bitvector_iterator = _attr.make_bitvector_iterator(_dict_entry.posting_idx, get_docid_limit(), *tfmda[0], strict);
+            if (bitvector_iterator) {
+                return bitvector_iterator;
+            }
+        }
         return std::make_unique<queryeval::DocumentWeightSearchIterator>(*tfmda[0], _attr, _dict_entry);
+    }
+
+    SearchIteratorUP createFilterSearch(bool strict, FilterConstraint constraint) const override {
+        (void) constraint; // We provide an iterator with exact results, so no need to take constraint into consideration.
+        auto wrapper = std::make_unique<FilterWrapper>(getState().numFields());
+        wrapper->wrap(createLeafSearch(wrapper->tfmda(), strict));
+        return wrapper;
     }
 
     void visitMembers(vespalib::ObjectVisitor &visitor) const override {
         LeafBlueprint::visitMembers(visitor);
-        visit(visitor, "attribute", _attrName);
+        visit_attribute(visitor, _iattr);
     }
     std::unique_ptr<queryeval::MatchingElementsSearch> create_matching_elements_search(const MatchingElementsFields &fields) const override {
         if (fields.has_field(_attrName)) {
             return queryeval::MatchingElementsSearch::create(_iattr, _dictionary_snapshot, vespalib::ConstArrayRef<IDocumentWeightAttribute::LookupResult>(&_dict_entry, 1));
         } else {
-            return std::unique_ptr<queryeval::MatchingElementsSearch>();
+            return {};
         }
     }
 };
@@ -566,13 +686,6 @@ bool check_valid_diversity_attr(const IAttributeVector *attr) {
         return false;
     }
     return (attr->hasEnum() || attr->isIntegerType() || attr->isFloatingPointType());
-}
-
-bool
-is_compatible_for_nearest_neighbor(const vespalib::eval::ValueType& lhs,
-                                   const vespalib::eval::ValueType& rhs)
-{
-    return (lhs.dimensions() == rhs.dimensions());
 }
 
 //-----------------------------------------------------------------------------
@@ -613,12 +726,11 @@ public:
     }
 
     void visitLocation(LocationTerm &node) {
-        Location loc(node.getTerm());
-        setResult(make_location_blueprint(_field, _attr, loc));
+        setResult(make_location_blueprint(_field, _attr, node.getTerm()));
     }
 
     void visitPredicate(PredicateQuery &query) {
-        const PredicateAttribute *attr = dynamic_cast<const PredicateAttribute *>(&_attr);
+        const auto *attr = dynamic_cast<const PredicateAttribute *>(&_attr);
         if (!attr) {
             Issue::report("Trying to apply a PredicateQuery node to a non-predicate attribute.");
             setResult(std::make_unique<queryeval::EmptyBlueprint>(_field));
@@ -729,40 +841,27 @@ public:
         setResult(std::make_unique<queryeval::EmptyBlueprint>(_field));
     }
     void visit(query::NearestNeighborTerm &n) override {
-        const ITensorAttribute *tensor_attr = _attr.asTensorAttribute();
-        if (tensor_attr == nullptr) {
-            return fail_nearest_neighbor_term(n, "Attribute is not a tensor");
-        }
-        const auto & ta_type = tensor_attr->getTensorType();
-        if ((! ta_type.is_dense()) || (ta_type.dimensions().size() != 1)) {
-            return fail_nearest_neighbor_term(n, make_string("Attribute tensor type (%s) is not a dense tensor of order 1",
-                                                             ta_type.to_spec().c_str()));
-        }
-        auto query_tensor = getRequestContext().get_query_tensor(n.get_query_tensor_name());
-        if (query_tensor.get() == nullptr) {
+        const auto* query_tensor = getRequestContext().get_query_tensor(n.get_query_tensor_name());
+        if (query_tensor == nullptr) {
             return fail_nearest_neighbor_term(n, "Query tensor was not found in request context");
         }
-        const auto & qt_type = query_tensor->type();
-        if (! qt_type.is_dense()) {
-            return fail_nearest_neighbor_term(n, make_string("Query tensor is not a dense tensor (type=%s)",
-                                                             qt_type.to_spec().c_str()));
+        try {
+            auto calc = tensor::DistanceCalculator::make_with_validation(_attr, *query_tensor);
+            setResult(std::make_unique<queryeval::NearestNeighborBlueprint>(_field,
+                                                                            std::move(calc),
+                                                                            n.get_target_num_hits(),
+                                                                            n.get_allow_approximate(),
+                                                                            n.get_explore_additional_hits(),
+                                                                            n.get_distance_threshold(),
+                                                                            getRequestContext().get_attribute_blueprint_params().global_filter_lower_limit,
+                                                                            getRequestContext().get_attribute_blueprint_params().global_filter_upper_limit));
+        } catch (const vespalib::IllegalArgumentException& ex) {
+            return fail_nearest_neighbor_term(n, ex.getMessage());
+
         }
-        if (!is_compatible_for_nearest_neighbor(ta_type, qt_type)) {
-            return fail_nearest_neighbor_term(n, make_string("Attribute tensor type (%s) and query tensor type (%s) are not compatible",
-                                                             ta_type.to_spec().c_str(), qt_type.to_spec().c_str()));
-        }
-        if (tensor_attr->supports_extract_cells_ref() == false) {
-            return fail_nearest_neighbor_term(n, make_string("Attribute does not support access to tensor data (type=%s)",
-                                                             ta_type.to_spec().c_str()));
-        }
-        setResult(std::make_unique<queryeval::NearestNeighborBlueprint>(_field, *tensor_attr,
-                                                                        std::move(query_tensor),
-                                                                        n.get_target_num_hits(),
-                                                                        n.get_allow_approximate(),
-                                                                        n.get_explore_additional_hits(),
-                                                                        n.get_distance_threshold(),
-                                                                        getRequestContext().get_attribute_blueprint_params().nearest_neighbor_brute_force_limit));
     }
+
+    void visit(query::FuzzyTerm &n) override { visitTerm(n); }
 };
 
 template <typename WS>

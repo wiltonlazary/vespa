@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.autoscale;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.collections.ListMap;
 import com.yahoo.collections.Pair;
 import com.yahoo.component.AbstractComponent;
@@ -18,6 +18,7 @@ import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursor;
 import io.questdb.cairo.sql.RecordCursorFactory;
 import io.questdb.griffin.CompiledQuery;
+import io.questdb.griffin.QueryFuture;
 import io.questdb.griffin.SqlCompiler;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
@@ -40,6 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+
+import static com.yahoo.vespa.defaults.Defaults.getDefaults;
 
 /**
  * An implementation of the metrics Db backed by Quest:
@@ -64,14 +67,14 @@ public class QuestMetricsDb extends AbstractComponent implements MetricsDb {
 
     @Inject
     public QuestMetricsDb() {
-        this(Defaults.getDefaults().underVespaHome("var/db/vespa/autoscaling"), Clock.systemUTC());
+        this(getDefaults().underVespaHome("var/db/vespa/autoscaling"), Clock.systemUTC());
     }
 
     public QuestMetricsDb(String dataDir, Clock clock) {
         this.clock = clock;
 
-        if (dataDir.startsWith(Defaults.getDefaults().vespaHome())
-            && ! new File(Defaults.getDefaults().vespaHome()).exists())
+        if (dataDir.startsWith(getDefaults().vespaHome())
+            && ! new File(getDefaults().vespaHome()).exists())
             dataDir = "data"; // We're injected, but not on a node with Vespa installed
 
         // silence Questdb's custom logging system
@@ -341,6 +344,16 @@ public class QuestMetricsDb extends AbstractComponent implements MetricsDb {
         }
     }
 
+    /**
+     * Issues and wait for an SQL statement to be executed against the QuestDb engine.
+     * Needs to be done for some queries, e.g. 'alter table' queries, see https://github.com/questdb/questdb/issues/1846
+     */
+    private void issueAsync(String sql, SqlExecutionContext context) throws SqlException {
+        try (QueryFuture future = issue(sql, context).execute(null)) {
+            future.await();
+        }
+    }
+
     private SqlExecutionContext newContext() {
         return new SqlExecutionContextImpl(engine(), 1);
     }
@@ -374,7 +387,7 @@ public class QuestMetricsDb extends AbstractComponent implements MetricsDb {
         void gc() {
             synchronized (writeLock) {
                 try {
-                    issue("alter table " + name + " drop partition where at < dateadd('d', -4, now());", newContext());
+                    issueAsync("alter table " + name + " drop partition where at < dateadd('d', -4, now());", newContext());
                 }
                 catch (SqlException e) {
                     log.log(Level.WARNING, "Failed to gc old metrics data in " + dir + " table " + name, e);
@@ -396,7 +409,7 @@ public class QuestMetricsDb extends AbstractComponent implements MetricsDb {
 
         void ensureColumnExists(String column, String columnType) throws SqlException {
             if (columnNames().contains(column)) return;
-            issue("alter table " + name + " add column " + column + " " + columnType, newContext());
+            issueAsync("alter table " + name + " add column " + column + " " + columnType, newContext());
         }
 
         private Optional<Long> adjustOrDiscard(Instant at) {

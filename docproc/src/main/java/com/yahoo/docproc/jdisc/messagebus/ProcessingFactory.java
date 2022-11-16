@@ -8,7 +8,6 @@ import com.yahoo.component.ComponentId;
 import com.yahoo.component.provider.ComponentRegistry;
 import com.yahoo.container.core.document.ContainerDocumentConfig;
 import com.yahoo.docproc.AbstractConcreteDocumentFactory;
-import com.yahoo.docproc.DocprocService;
 import com.yahoo.docproc.Processing;
 import com.yahoo.document.Document;
 import com.yahoo.document.DocumentOperation;
@@ -27,16 +26,13 @@ import com.yahoo.messagebus.Message;
 class ProcessingFactory {
 
     private final static Logger log = Logger.getLogger(ProcessingFactory.class.getName());
-    private final ComponentRegistry<DocprocService> docprocServiceComponentRegistry;
     private final ComponentRegistry<AbstractConcreteDocumentFactory> docFactoryRegistry;
     private final ContainerDocumentConfig containerDocConfig;
     private final String serviceName;
 
-    public ProcessingFactory(ComponentRegistry<DocprocService> docprocServiceComponentRegistry,
-                             ComponentRegistry<AbstractConcreteDocumentFactory> docFactoryRegistry,
+    public ProcessingFactory(ComponentRegistry<AbstractConcreteDocumentFactory> docFactoryRegistry,
                              ContainerDocumentConfig containerDocConfig,
                              String serviceName) {
-        this.docprocServiceComponentRegistry = docprocServiceComponentRegistry;
         this.docFactoryRegistry = docFactoryRegistry;
         this.containerDocConfig = containerDocConfig;
         this.serviceName = serviceName;
@@ -102,9 +98,10 @@ class ProcessingFactory {
         Processing processing = new Processing();
         processing.addDocumentOperation(documentOperation);
         processing.setServiceName(serviceName);
-        processing.setDocprocServiceRegistry(docprocServiceComponentRegistry);
+
         processing.setVariable("route", message.getRoute());
         processing.setVariable("timeout", message.getTimeRemaining());
         return processing;
     }
+
 }

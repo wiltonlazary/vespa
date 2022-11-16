@@ -1,12 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #pragma once
 
-#include "documentdbconfig.h"
 #include "idocumentsubdb.h"
 #include "storeonlyfeedview.h"
 #include "summaryadapter.h"
 #include "tlssyncer.h"
-#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/common/doctypename.h>
 #include <vespa/searchcore/proton/common/subdbtype.h>
 #include <vespa/searchcore/proton/docsummary/summarymanager.h>
@@ -16,11 +14,13 @@
 #include <vespa/searchcore/proton/persistenceengine/i_document_retriever.h>
 #include <vespa/searchlib/common/fileheadercontext.h>
 #include <vespa/vespalib/util/varholder.h>
+#include <vespa/vespalib/datastore/compaction_strategy.h>
 #include <mutex>
 
 namespace proton {
 
 class AllocStrategy;
+class DocumentDBConfig;
 struct DocumentDBTaggedMetrics;
 class DocumentMetaStoreInitializerResult;
 class FeedHandler;
@@ -47,7 +47,7 @@ public:
           _tlSyncer(tlSyncer)
     { }
 
-    virtual ~DocSubDB() { }
+    ~DocSubDB() override = default;
     void close() override { }
 };
 
@@ -67,7 +67,7 @@ public:
     StoreOnlySubDBFileHeaderContext(const search::common::FileHeaderContext & parentFileHeaderContext,
                                     const DocTypeName &docTypeName,
                                     const vespalib::string &baseDir);
-    ~StoreOnlySubDBFileHeaderContext();
+    ~StoreOnlySubDBFileHeaderContext() override;
 
     void addTags(vespalib::GenericHeader &header, const vespalib::string &name) const override;
 };
@@ -146,12 +146,14 @@ protected:
     vespalib::VarHolder<IFeedView::SP>      _iFeedView;
     std::mutex                             &_configMutex;
     HwInfo                                  _hwInfo;
+    const IGetSerialNum                    &_getSerialNum;
 private:
-    const IGetSerialNum             &_getSerialNum;
-    TlsSyncer                        _tlsSyncer;
-    DocumentMetaStoreFlushTarget::SP _dmsFlushTarget;
+    TlsSyncer                                  _tlsSyncer;
+    DocumentMetaStoreFlushTarget::SP           _dmsFlushTarget;
     std::shared_ptr<ShrinkLidSpaceFlushTarget> _dmsShrinkTarget;
     std::shared_ptr<PendingLidTrackerBase>     _pendingLidsForCommit;
+    bool                                       _nodeRetired;
+    vespalib::datastore::CompactionStrategy    _lastConfiguredCompactionStrategy;
 
     IFlushTargetList getFlushTargets() override;
 protected:
@@ -180,9 +182,8 @@ protected:
     StoreOnlyFeedView::Context getStoreOnlyFeedViewContext(const DocumentDBConfig &configSnapshot);
     StoreOnlyFeedView::PersistentParams getFeedViewPersistentParams();
     vespalib::string getSubDbName() const;
-
-    void reconfigure(const search::LogDocumentStore::Config & protonConfig,
-                     const AllocStrategy& alloc_strategy);
+    void reconfigure(const search::LogDocumentStore::Config & protonConfig, const AllocStrategy& alloc_strategy);
+    void reconfigureAttributesConsideringNodeState(OnDone onDone);
 public:
     StoreOnlyDocSubDB(const Config &cfg, const Context &ctx);
     ~StoreOnlyDocSubDB() override;
@@ -202,7 +203,7 @@ public:
     IReprocessingTask::List
     applyConfig(const DocumentDBConfig &newConfigSnapshot, const DocumentDBConfig &oldConfigSnapshot,
                 SerialNum serialNum, const ReconfigParams &params, IDocumentDBReferenceResolver &resolver) override;
-    void setBucketStateCalculator(const std::shared_ptr<IBucketStateCalculator> &calc) override;
+    void setBucketStateCalculator(const std::shared_ptr<IBucketStateCalculator> &calc, OnDone onDone) override;
 
     ISearchHandler::SP getSearchView() const override { return _iSearchView.get(); }
     IFeedView::SP getFeedView() const override { return _iFeedView.get(); }
@@ -233,6 +234,9 @@ public:
     std::shared_ptr<IDocumentDBReference> getDocumentDBReference() override;
     void tearDownReferences(IDocumentDBReferenceResolver &resolver) override;
     PendingLidTrackerBase & getUncommittedLidsTracker() override { return *_pendingLidsForCommit; }
+    vespalib::datastore::CompactionStrategy computeCompactionStrategy(vespalib::datastore::CompactionStrategy strategy) const;
+    bool isNodeRetired() const { return _nodeRetired; }
+
 };
 
 }

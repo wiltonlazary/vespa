@@ -5,6 +5,7 @@
 #include <vespa/document/bucket/bucketidfactory.h>
 #include <vespa/document/update/documentupdate.h>
 #include <vespa/documentapi/documentapi.h>
+#include <vespa/document/fieldvalue/document.h>
 #include <vespa/storage/common/bucket_resolver.h>
 #include <vespa/storageapi/message/datagram.h>
 #include <vespa/storageapi/message/documentsummary.h>
@@ -15,6 +16,7 @@
 #include <vespa/storageapi/message/stat.h>
 #include <vespa/storageapi/message/visitor.h>
 #include <vespa/messagebus/error.h>
+#include <climits>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".documentapiconverter");

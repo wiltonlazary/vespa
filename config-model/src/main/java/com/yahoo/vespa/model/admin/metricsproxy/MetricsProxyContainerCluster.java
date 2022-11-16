@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 package com.yahoo.vespa.model.admin.metricsproxy;
 
@@ -36,16 +36,19 @@ import com.yahoo.vespa.model.admin.monitoring.MetricSet;
 import com.yahoo.vespa.model.admin.monitoring.MetricsConsumer;
 import com.yahoo.vespa.model.admin.monitoring.Monitoring;
 import com.yahoo.vespa.model.container.ContainerCluster;
+import com.yahoo.vespa.model.container.PlatformBundles;
 import com.yahoo.vespa.model.container.component.Handler;
 import com.yahoo.vespa.model.container.component.SystemBindingPattern;
-import com.yahoo.vespa.model.container.PlatformBundles;
 
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.yahoo.vespa.model.admin.metricsproxy.ConsumersConfigGenerator.addMetrics;
 import static com.yahoo.vespa.model.admin.metricsproxy.ConsumersConfigGenerator.generateConsumers;
@@ -75,6 +78,12 @@ public class MetricsProxyContainerCluster extends ContainerCluster<MetricsProxyC
     static final Path METRICS_PROXY_BUNDLE_FILE = PlatformBundles.absoluteBundlePath(METRICS_PROXY_NAME);
     static final String METRICS_PROXY_BUNDLE_NAME = "com.yahoo.vespa." + METRICS_PROXY_NAME;
 
+    private static final Set<Path> UNNECESSARY_BUNDLES = Stream.concat
+            (
+                    PlatformBundles.VESPA_SECURITY_BUNDLES.stream(),
+                    PlatformBundles.VESPA_ZK_BUNDLES.stream()
+            ).collect(Collectors.toSet());
+
     static final class AppDimensionNames {
         static final String SYSTEM = "system";
         static final String TENANT = "tenantName";
@@ -98,6 +107,9 @@ public class MetricsProxyContainerCluster extends ContainerCluster<MetricsProxyC
         addClusterComponents();
     }
 
+    @Override
+    protected Set<Path> unnecessaryPlatformBundles() { return UNNECESSARY_BUNDLES; }
+
     private void addClusterComponents() {
         addMetricsProxyComponent(ApplicationDimensions.class);
         addMetricsProxyComponent(ConfigSentinelClient.class);
@@ -119,12 +131,12 @@ public class MetricsProxyContainerCluster extends ContainerCluster<MetricsProxyC
     }
 
     private void addHttpHandler(Class<? extends ThreadedHttpRequestHandler> clazz, String bindingPath) {
-        Handler<AbstractConfigProducer<?>> metricsHandler = createMetricsHandler(clazz, bindingPath);
+        Handler metricsHandler = createMetricsHandler(clazz, bindingPath);
         addComponent(metricsHandler);
     }
 
-    static Handler<AbstractConfigProducer<?>> createMetricsHandler(Class<? extends ThreadedHttpRequestHandler> clazz, String bindingPath) {
-        Handler<AbstractConfigProducer<?>> metricsHandler = new Handler<>(
+    static Handler createMetricsHandler(Class<? extends ThreadedHttpRequestHandler> clazz, String bindingPath) {
+        Handler metricsHandler = new Handler(
                 new ComponentModel(clazz.getName(), null, METRICS_PROXY_BUNDLE_NAME, null));
         metricsHandler.addServerBindings(
                 SystemBindingPattern.fromHttpPath(bindingPath),

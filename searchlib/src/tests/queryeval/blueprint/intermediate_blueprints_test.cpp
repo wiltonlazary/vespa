@@ -2,6 +2,7 @@
 
 #include "mysearch.h"
 #include <vespa/vespalib/testkit/testapp.h>
+#include <vespa/searchlib/queryeval/isourceselector.h>
 #include <vespa/searchlib/queryeval/blueprint.h>
 #include <vespa/searchlib/queryeval/intermediate_blueprints.h>
 #include <vespa/searchlib/queryeval/leaf_blueprints.h>
@@ -10,10 +11,10 @@
 #include <vespa/searchlib/queryeval/andnotsearch.h>
 #include <vespa/searchlib/queryeval/wand/weak_and_search.h>
 #include <vespa/searchlib/queryeval/fake_requestcontext.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/searchlib/test/diskindex/testdiskindex.h>
 #include <vespa/searchlib/query/tree/simplequery.h>
 #include <vespa/searchlib/common/bitvectoriterator.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP("blueprint_test");
@@ -22,6 +23,14 @@ using namespace search::queryeval;
 using namespace search::fef;
 using namespace search::query;
 using search::BitVector;
+
+struct InvalidSelector : ISourceSelector {
+    InvalidSelector() : ISourceSelector(Source()) {}
+    void setSource(uint32_t, Source) override { abort(); }
+    uint32_t getDocIdLimit() const override { abort(); }
+    void compactLidSpace(uint32_t) override { abort(); }
+    std::unique_ptr<sourceselector::Iterator> createIterator() const override { abort(); }
+};
 
 struct WeightOrder {
     bool operator()(const wand::Term &t1, const wand::Term &t2) const {
@@ -45,6 +54,18 @@ Blueprint::UP ap(Blueprint &b) { return Blueprint::UP(&b); }
 
 bool got_global_filter(Blueprint &b) {
     return (static_cast<MyLeaf &>(b)).got_global_filter();
+}
+
+void check_sort_order(IntermediateBlueprint &self, std::vector<Blueprint*> unordered, std::vector<size_t> order) {
+    ASSERT_EQUAL(unordered.size(), order.size());
+    std::vector<Blueprint::UP> children;
+    for (auto *child: unordered) {
+        children.push_back(std::unique_ptr<Blueprint>(child));
+    }
+    self.sort(children);
+    for (size_t i = 0; i < children.size(); ++i) {
+        EXPECT_EQUAL(children[i].get(), unordered[order[i]]);
+    }
 }
 
 TEST("test AndNot Blueprint") {
@@ -71,26 +92,18 @@ TEST("test AndNot Blueprint") {
         a.addChild(ap(MyLeafSpec(20).addField(1, 1).want_global_filter().create()));
         EXPECT_EQUAL(true, a.getState().want_global_filter());
         auto empty_global_filter = GlobalFilter::create();
-        EXPECT_FALSE(empty_global_filter->has_filter());
-        a.set_global_filter(*empty_global_filter);
+        EXPECT_FALSE(empty_global_filter->is_active());
+        a.set_global_filter(*empty_global_filter, 1.0);
         EXPECT_EQUAL(false, got_global_filter(a.getChild(0)));
         EXPECT_EQUAL(true,  got_global_filter(a.getChild(1)));
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(20).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(30).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c1.get(), children[0]);
-        EXPECT_EQUAL(c3.get(), children[1]);
-        EXPECT_EQUAL(c4.get(), children[2]);
-        EXPECT_EQUAL(c2.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(10).create(),
+                          MyLeafSpec(20).create(),
+                          MyLeafSpec(40).create(),
+                          MyLeafSpec(30).create()},
+                         {0, 2, 3, 1});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -147,25 +160,17 @@ TEST("test And Blueprint") {
         a.addChild(ap(MyLeafSpec(20).addField(1, 1).want_global_filter().create()));
         EXPECT_EQUAL(true, a.getState().want_global_filter());
         auto empty_global_filter = GlobalFilter::create();
-        a.set_global_filter(*empty_global_filter);
+        a.set_global_filter(*empty_global_filter, 1.0);
         EXPECT_EQUAL(false, got_global_filter(a.getChild(0)));
         EXPECT_EQUAL(true,  got_global_filter(a.getChild(1)));
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(20).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(30).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c3.get(), children[0]);
-        EXPECT_EQUAL(c1.get(), children[1]);
-        EXPECT_EQUAL(c4.get(), children[2]);
-        EXPECT_EQUAL(c2.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(20).create(),
+                          MyLeafSpec(40).create(),
+                          MyLeafSpec(10).create(),
+                          MyLeafSpec(30).create()},
+                         {2, 0, 3, 1});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -227,25 +232,17 @@ TEST("test Or Blueprint") {
         o.addChild(ap(MyLeafSpec(20).addField(1, 1).want_global_filter().create()));
         EXPECT_EQUAL(true, o.getState().want_global_filter());
         auto empty_global_filter = GlobalFilter::create();
-        o.set_global_filter(*empty_global_filter);
+        o.set_global_filter(*empty_global_filter, 1.0);
         EXPECT_EQUAL(false, got_global_filter(o.getChild(0)));
         EXPECT_EQUAL(true,  got_global_filter(o.getChild(o.childCnt() - 1)));
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(20).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(30).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c3.get(), children[0]);
-        EXPECT_EQUAL(c4.get(), children[1]);
-        EXPECT_EQUAL(c2.get(), children[2]);
-        EXPECT_EQUAL(c1.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(10).create(),
+                          MyLeafSpec(20).create(),
+                          MyLeafSpec(40).create(),
+                          MyLeafSpec(30).create()},
+                         {2, 3, 1, 0});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -281,20 +278,12 @@ TEST("test Near Blueprint") {
         EXPECT_EQUAL(0u, a.exposeFields().size());
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(30).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(20).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c2.get(), children[0]);
-        EXPECT_EQUAL(c4.get(), children[1]);
-        EXPECT_EQUAL(c3.get(), children[2]);
-        EXPECT_EQUAL(c1.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(40).create(),
+                          MyLeafSpec(10).create(),
+                          MyLeafSpec(30).create(),
+                          MyLeafSpec(20).create()},
+                         {1, 3, 2, 0});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -330,20 +319,12 @@ TEST("test ONear Blueprint") {
         EXPECT_EQUAL(0u, a.exposeFields().size());
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(20).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(30).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c1.get(), children[0]);
-        EXPECT_EQUAL(c2.get(), children[1]);
-        EXPECT_EQUAL(c3.get(), children[2]);
-        EXPECT_EQUAL(c4.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(20).create(),
+                          MyLeafSpec(10).create(),
+                          MyLeafSpec(40).create(),
+                          MyLeafSpec(30).create()},
+                         {0, 1, 2, 3});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -382,25 +363,17 @@ TEST("test Rank Blueprint") {
         a.addChild(ap(MyLeafSpec(20).addField(1, 1).want_global_filter().create()));
         EXPECT_EQUAL(true, a.getState().want_global_filter());
         auto empty_global_filter = GlobalFilter::create();
-        a.set_global_filter(*empty_global_filter);
+        a.set_global_filter(*empty_global_filter, 1.0);
         EXPECT_EQUAL(false, got_global_filter(a.getChild(0)));
         EXPECT_EQUAL(true,  got_global_filter(a.getChild(1)));
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(20).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(30).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c1.get(), children[0]);
-        EXPECT_EQUAL(c2.get(), children[1]);
-        EXPECT_EQUAL(c3.get(), children[2]);
-        EXPECT_EQUAL(c4.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(20).create(),
+                          MyLeafSpec(10).create(),
+                          MyLeafSpec(40).create(),
+                          MyLeafSpec(30).create()},
+                         {0, 1, 2, 3});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -412,7 +385,7 @@ TEST("test Rank Blueprint") {
 }
 
 TEST("test SourceBlender Blueprint") {
-    ISourceSelector *selector = nullptr; // not needed here
+    auto selector = std::make_unique<InvalidSelector>(); // not needed here
     SourceBlenderBlueprint b(*selector);
     { // combine
         std::vector<Blueprint::HitEstimate> est;
@@ -460,20 +433,12 @@ TEST("test SourceBlender Blueprint") {
         EXPECT_EQUAL(0u, a->getState().numFields());
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(20).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(30).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c1.get(), children[0]);
-        EXPECT_EQUAL(c2.get(), children[1]);
-        EXPECT_EQUAL(c3.get(), children[2]);
-        EXPECT_EQUAL(c4.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(20).create(),
+                          MyLeafSpec(10).create(),
+                          MyLeafSpec(40).create(),
+                          MyLeafSpec(30).create()},
+                         {0, 1, 2, 3});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -485,8 +450,8 @@ TEST("test SourceBlender Blueprint") {
 }
 
 TEST("test SourceBlender below AND optimization") {
-    ISourceSelector *selector_1 = 0; // the one
-    ISourceSelector *selector_2 = reinterpret_cast<ISourceSelector*>(100); // not the one
+    auto selector_1 = std::make_unique<InvalidSelector>(); // the one
+    auto selector_2 = std::make_unique<InvalidSelector>(); // not the one
     //-------------------------------------------------------------------------
     AndBlueprint *top = new AndBlueprint();
     Blueprint::UP top_bp(top);
@@ -567,8 +532,8 @@ TEST("test SourceBlender below AND optimization") {
 }
 
 TEST("test SourceBlender below OR optimization") {
-    ISourceSelector *selector_1 = 0; // the one
-    ISourceSelector *selector_2 = reinterpret_cast<ISourceSelector*>(100); // not the one
+    auto selector_1 = std::make_unique<InvalidSelector>(); // the one
+    auto selector_2 = std::make_unique<InvalidSelector>(); // not the one
     //-------------------------------------------------------------------------
     OrBlueprint *top = new OrBlueprint();
     Blueprint::UP top_up(top);
@@ -649,8 +614,8 @@ TEST("test SourceBlender below OR optimization") {
 }
 
 TEST("test SourceBlender below AND_NOT optimization") {
-    ISourceSelector *selector_1 = 0; // the one
-    ISourceSelector *selector_2 = reinterpret_cast<ISourceSelector*>(100); // not the one
+    auto selector_1 = std::make_unique<InvalidSelector>(); // the one
+    auto selector_2 = std::make_unique<InvalidSelector>(); // not the one
     //-------------------------------------------------------------------------
     AndNotBlueprint *top = new AndNotBlueprint();
     Blueprint::UP top_up(top);
@@ -741,8 +706,8 @@ TEST("test SourceBlender below AND_NOT optimization") {
 }
 
 TEST("test SourceBlender below RANK optimization") {
-    ISourceSelector *selector_1 = 0; // the one
-    ISourceSelector *selector_2 = reinterpret_cast<ISourceSelector*>(100); // not the one
+    auto selector_1 = std::make_unique<InvalidSelector>(); // the one
+    auto selector_2 = std::make_unique<InvalidSelector>(); // not the one
     //-------------------------------------------------------------------------
     RankBlueprint *top = new RankBlueprint();
     Blueprint::UP top_up(top);
@@ -876,7 +841,7 @@ TEST("test empty root node optimization and safeness") {
 }
 
 TEST("and with one empty child is optimized away") {
-    ISourceSelector *selector = 0;
+    auto selector = std::make_unique<InvalidSelector>();
     Blueprint::UP top(ap((new SourceBlenderBlueprint(*selector))->
                           addChild(ap(MyLeafSpec(10).create())).
                           addChild(ap((new AndBlueprint())->
@@ -891,7 +856,7 @@ TEST("and with one empty child is optimized away") {
 }
 
 TEST("test single child optimization") {
-    ISourceSelector *selector = 0;
+    auto selector = std::make_unique<InvalidSelector>();
     //-------------------------------------------------------------------------
     Blueprint::UP top_up(
             ap((new AndNotBlueprint())->
@@ -1071,20 +1036,12 @@ TEST("test WeakAnd Blueprint") {
         EXPECT_EQUAL(0u, a.exposeFields().size());
     }
     {
-        std::vector<Blueprint *> children;
-        Blueprint::UP c1 = ap(MyLeafSpec(10).create());
-        Blueprint::UP c2 = ap(MyLeafSpec(20).create());
-        Blueprint::UP c3 = ap(MyLeafSpec(40).create());
-        Blueprint::UP c4 = ap(MyLeafSpec(30).create());
-        children.push_back(c1.get());
-        children.push_back(c2.get());
-        children.push_back(c3.get());
-        children.push_back(c4.get());
-        b.sort(children);
-        EXPECT_EQUAL(c1.get(), children[0]);
-        EXPECT_EQUAL(c2.get(), children[1]);
-        EXPECT_EQUAL(c3.get(), children[2]);
-        EXPECT_EQUAL(c4.get(), children[3]);
+        check_sort_order(b,
+                         {MyLeafSpec(20).create(),
+                          MyLeafSpec(10).create(),
+                          MyLeafSpec(40).create(),
+                          MyLeafSpec(30).create()},
+                         {0, 1, 2, 3});
     }
     {
         EXPECT_EQUAL(true, b.inheritStrict(0));
@@ -1246,7 +1203,7 @@ makeTerm(const std::string & term)
 TEST("require that children does not optimize when parents refuse them to") {
     FakeRequestContext requestContext;
     search::diskindex::TestDiskIndex index;
-    vespalib::mkdir("index", false);
+    std::filesystem::create_directory(std::filesystem::path("index"));
     index.buildSchema();
     index.openIndex("index/1", false, true, false, false, false);
     FieldSpecBaseList fields;

@@ -1,18 +1,19 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.http.application;
 
 import ai.vespa.metricsproxy.metric.model.ConsumerId;
 import ai.vespa.metricsproxy.metric.model.MetricsPacket;
 import ai.vespa.util.http.hc5.VespaAsyncHttpClientBuilder;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.AbstractComponent;
-import org.apache.hc.client5.http.HttpHostConnectException;
+import org.apache.hc.client5.http.ConnectTimeoutException;
 import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient;
 import org.apache.hc.core5.reactor.IOReactorConfig;
 import org.apache.hc.core5.util.Timeout;
 
 import java.io.IOException;
+import java.net.SocketException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.HashMap;
@@ -24,7 +25,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CancellationException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -53,15 +54,13 @@ public class ApplicationMetricsRetriever extends AbstractComponent implements Ru
     private final Thread pollThread;
     private final Set<ConsumerId> consumerSet;
     private long pollCount = 0;
-    private boolean stopped;
-
-    // Non-final for testing
-    private final AtomicReference<Duration> taskTimeout;
+    private volatile boolean stopped;
+    private volatile Duration taskTimeout;
 
     @Inject
     public ApplicationMetricsRetriever(MetricsNodesConfig nodesConfig) {
         clients = createNodeClients(nodesConfig);
-        taskTimeout = new AtomicReference<>(timeout(clients.size()));
+        taskTimeout = timeout(clients.size());
         stopped = false;
         consumerSet = new HashSet<>();
         httpClient.start();
@@ -71,8 +70,8 @@ public class ApplicationMetricsRetriever extends AbstractComponent implements Ru
 
     @Override
     public void run() {
-        try {
-            while (true) {
+        while (true) {
+            try {
                 ConsumerId [] consumers;
                 synchronized (pollThread) {
                     consumers = consumerSet.toArray(new ConsumerId[0]);
@@ -92,24 +91,33 @@ public class ApplicationMetricsRetriever extends AbstractComponent implements Ru
                     pollThread.wait(timeUntilNextPoll.toMillis());
                     if (stopped) return;
                 }
+            } catch (InterruptedException e) {
+            } catch (Exception e) {
+                log.log(Level.WARNING, "Got unknown exception:", e);
             }
-        } catch (InterruptedException e) {}
+        }
+
     }
 
     @Override
     public void deconstruct() {
-        synchronized (pollThread) {
-            stopped = true;
-            pollThread.notifyAll();
-        }
-        try {
-            pollThread.join();
-        } catch (InterruptedException e) {}
         try {
             httpClient.close();
         } catch (IOException e) {
             log.warning("Failed closing httpclient: " + e);
         }
+        synchronized (pollThread) {
+            stopped = true;
+            pollThread.notifyAll();
+        }
+        try {
+            pollThread.join(Duration.ofSeconds(3).toMillis());
+            if (pollThread.isAlive()) {
+                log.log(Level.WARNING, "metrics poller thread still not stopped, using Thread.interrupt():");
+                pollThread.interrupt();
+                pollThread.join();
+            }
+        } catch (InterruptedException e) {}
         super.deconstruct();
     }
 
@@ -118,7 +126,7 @@ public class ApplicationMetricsRetriever extends AbstractComponent implements Ru
     }
 
     public Map<Node, List<MetricsPacket>> getMetrics(ConsumerId consumer) {
-        log.log(Level.INFO, () -> "Retrieving metrics from " + clients.size() + " nodes.");
+        log.log(Level.FINE, () -> "Retrieving metrics from " + clients.size() + " nodes.");
         synchronized (pollThread) {
             if (consumerSet.add(consumer)) {
                 // Wakeup poll thread first time we see a new consumer
@@ -149,22 +157,21 @@ public class ApplicationMetricsRetriever extends AbstractComponent implements Ru
     }
 
     private int fetchMetricsAsync(ConsumerId consumer) {
-        Map<Node, Future<Boolean>> futures = new HashMap<>();
+        Map<Node, Future<?>> futures = new HashMap<>();
         for (NodeMetricsClient client : clients) {
-            var optional = client.startSnapshotUpdate(consumer, METRICS_TTL);
-            optional.ifPresent(future -> futures.put(client.node, future));
+            client.startSnapshotUpdate(consumer, METRICS_TTL).ifPresent(future -> futures.put(client.node, future));
         }
         int numOk = 0;
         int numTried = futures.size();
-        for (Map.Entry<Node, Future<Boolean>> entry : futures.entrySet()) {
+        for (Map.Entry<Node, Future<?>> entry : futures.entrySet()) {
+            if (stopped) break;
             try {
-                Boolean result = entry.getValue().get(taskTimeout.get().toMillis(), TimeUnit.MILLISECONDS);
-                if ((result != null) && result) numOk++;
-            } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                entry.getValue().get(taskTimeout.toMillis(), TimeUnit.MILLISECONDS);
+                numOk++;
+            } catch (InterruptedException | ExecutionException | TimeoutException | CancellationException e) {
                 Throwable cause = e.getCause();
-                if ( e instanceof ExecutionException && (cause != null) && (cause instanceof HttpHostConnectException)) {
-                    // Remove once we have some track time.
-                    log.log(Level.WARNING, "Failed retrieving metrics for '" + entry.getKey() +  "' : " + cause.getMessage());
+                if (stopped || e instanceof ExecutionException && ((cause instanceof SocketException) || cause instanceof ConnectTimeoutException)) {
+                    log.log(Level.FINE, "Failed retrieving metrics for '" + entry.getKey() + "' : " + cause.getMessage());
                 } else {
                     log.log(Level.WARNING, "Failed retrieving metrics for '" + entry.getKey() + "' : ", e);
                 }
@@ -183,12 +190,15 @@ public class ApplicationMetricsRetriever extends AbstractComponent implements Ru
 
     static CloseableHttpAsyncClient createHttpClient() {
         return VespaAsyncHttpClientBuilder.create()
-                .setIOReactorConfig(IOReactorConfig.custom().setIoThreadCount(2).build())
+                .setIOReactorConfig(IOReactorConfig.custom()
+                        .setSoTimeout(Timeout.ofMilliseconds(HTTP_SOCKET_TIMEOUT))
+                        .setIoThreadCount(2)
+                        .build())
                 .setUserAgent("application-metrics-retriever")
                 .setDefaultRequestConfig(RequestConfig.custom()
-                                                 .setConnectTimeout(Timeout.ofMilliseconds(HTTP_CONNECT_TIMEOUT))
-                                                 .setResponseTimeout(Timeout.ofMilliseconds(HTTP_SOCKET_TIMEOUT))
-                                                 .build())
+                        .setConnectTimeout(Timeout.ofMilliseconds(HTTP_CONNECT_TIMEOUT))
+                        .setResponseTimeout(Timeout.ofMilliseconds(HTTP_SOCKET_TIMEOUT))
+                        .build())
                 .build();
     }
 
@@ -199,7 +209,7 @@ public class ApplicationMetricsRetriever extends AbstractComponent implements Ru
 
     // For testing only!
     void setTaskTimeout(Duration taskTimeout) {
-        this.taskTimeout.set(taskTimeout);
+        this.taskTimeout = taskTimeout;
     }
 
 }

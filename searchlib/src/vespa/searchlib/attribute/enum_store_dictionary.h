@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -15,7 +15,9 @@ class IEnumStore;
 template <typename BTreeDictionaryT, typename HashDictionaryT = vespalib::datastore::NoHashDictionary>
 class EnumStoreDictionary : public vespalib::datastore::UniqueStoreDictionary<BTreeDictionaryT, IEnumStoreDictionary, HashDictionaryT> {
 protected:
+    using AtomicEntryRef = IEnumStoreDictionary::AtomicEntryRef;
     using EntryRef = IEnumStoreDictionary::EntryRef;
+    using EntryRefFilter = IEnumStoreDictionary::EntryRefFilter;
     using Index = IEnumStoreDictionary::Index;
     using BTreeDictionaryType = BTreeDictionaryT;
     using EntryComparator = IEnumStoreDictionary::EntryComparator;
@@ -54,6 +56,8 @@ public:
     void clear_all_posting_lists(std::function<void(EntryRef)> clearer) override;
     void update_posting_list(Index idx, const EntryComparator& cmp, std::function<EntryRef(EntryRef)> updater) override;
     bool normalize_posting_lists(std::function<EntryRef(EntryRef)> normalize) override;
+    bool normalize_posting_lists(std::function<void(std::vector<EntryRef>&)> normalize, const EntryRefFilter& filter) override;
+    void foreach_posting_list(std::function<void(const std::vector<EntryRef>&)> callback, const EntryRefFilter& filter) override;
     const EnumPostingTree& get_posting_dictionary() const override;
 };
 
@@ -85,95 +89,95 @@ public:
 namespace vespalib::btree {
 
 extern template
-class BTreeNodeT<search::IEnumStore::Index, search::EnumTreeTraits::INTERNAL_SLOTS>;
+class BTreeNodeT<datastore::AtomicEntryRef, search::EnumTreeTraits::INTERNAL_SLOTS>;
 
 extern template
-class BTreeNodeTT<search::IEnumStore::Index, uint32_t, NoAggregated, search::EnumTreeTraits::INTERNAL_SLOTS>;
+class BTreeNodeTT<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated, search::EnumTreeTraits::INTERNAL_SLOTS>;
 
 extern template
-class BTreeNodeTT<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
+class BTreeNodeTT<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeInternalNode<search::IEnumStore::Index, NoAggregated, search::EnumTreeTraits::INTERNAL_SLOTS>;
+class BTreeInternalNode<datastore::AtomicEntryRef, NoAggregated, search::EnumTreeTraits::INTERNAL_SLOTS>;
 
 extern template
-class BTreeLeafNode<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
+class BTreeLeafNode<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeLeafNode<search::IEnumStore::Index, uint32_t, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
+class BTreeLeafNode<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeLeafNodeTemp<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
+class BTreeLeafNodeTemp<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeLeafNodeTemp<search::IEnumStore::Index, uint32_t, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
+class BTreeLeafNodeTemp<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeNodeStore<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
+class BTreeNodeStore<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
                      search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeNodeStore<search::IEnumStore::Index, uint32_t, NoAggregated,
+class BTreeNodeStore<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
                      search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeRoot<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
-                const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+class BTreeRoot<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
+                const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 
 extern template
-class BTreeRoot<search::IEnumStore::Index, uint32_t, NoAggregated,
-                const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+class BTreeRoot<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
+                const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 
 extern template
-class BTreeRootT<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
-                 const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+class BTreeRootT<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
+                 const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 
 extern template
-class BTreeRootT<search::IEnumStore::Index, uint32_t, NoAggregated,
-                 const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+class BTreeRootT<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
+                 const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 
 extern template
-class BTreeRootBase<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
+class BTreeRootBase<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
                     search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeRootBase<search::IEnumStore::Index, uint32_t, NoAggregated,
+class BTreeRootBase<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
                     search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeNodeAllocator<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
+class BTreeNodeAllocator<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
                          search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS>;
 
 extern template
-class BTreeNodeAllocator<search::IEnumStore::Index, uint32_t, NoAggregated,
+class BTreeNodeAllocator<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
                          search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS>;
 
 
 extern template
-class BTreeIteratorBase<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
+class BTreeIteratorBase<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
                         search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS, search::EnumTreeTraits::PATH_SIZE>;
 extern template
-class BTreeIteratorBase<search::IEnumStore::Index, uint32_t, NoAggregated,
+class BTreeIteratorBase<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
                         search::EnumTreeTraits::INTERNAL_SLOTS, search::EnumTreeTraits::LEAF_SLOTS, search::EnumTreeTraits::PATH_SIZE>;
 
-extern template class BTreeConstIterator<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
-                                         const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+extern template class BTreeConstIterator<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
+                                         const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 
-extern template class BTreeConstIterator<search::IEnumStore::Index, uint32_t, NoAggregated,
-                                         const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
-
-extern template
-class BTreeIterator<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
-                    const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
-extern template
-class BTreeIterator<search::IEnumStore::Index, uint32_t, NoAggregated,
-                    const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+extern template class BTreeConstIterator<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
+                                         const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 
 extern template
-class BTree<search::IEnumStore::Index, BTreeNoLeafData, NoAggregated,
-            const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+class BTreeIterator<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
+                    const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 extern template
-class BTree<search::IEnumStore::Index, uint32_t, NoAggregated,
-            const vespalib::datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+class BTreeIterator<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
+                    const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+
+extern template
+class BTree<datastore::AtomicEntryRef, BTreeNoLeafData, NoAggregated,
+            const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
+extern template
+class BTree<datastore::AtomicEntryRef, datastore::AtomicEntryRef, NoAggregated,
+            const datastore::EntryComparatorWrapper, search::EnumTreeTraits>;
 
 }

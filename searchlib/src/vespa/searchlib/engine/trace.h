@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -54,7 +54,7 @@ class Trace
 {
 public:
     using Cursor = vespalib::slime::Cursor;
-    Trace(const RelativeTime & relativeTime, uint32_t traceLevel=0);
+    Trace(const RelativeTime & relativeTime, uint32_t traceLevel, uint32_t profileDepth);
     ~Trace();
 
     /**
@@ -85,10 +85,13 @@ public:
     vespalib::string toString() const;
     bool hasTrace() const { return static_cast<bool>(_trace); }
     Cursor & getRoot() const { return root(); }
+    Cursor & getTraces() const { return traces(); }
     vespalib::Slime & getSlime() const { return slime(); }
     bool shouldTrace(uint32_t level) const { return level <= _level; }
     uint32_t getLevel() const { return _level; }
     Trace & setLevel(uint32_t level) { _level = level; return *this; }
+    Trace & setProfileDepth(uint32_t depth) { _profileDepth = depth; return *this; }
+    uint32_t getProfileDepth() const { return _profileDepth; }
     const RelativeTime & getRelativeTime() const { return _relativeTime; }
 private:
     vespalib::Slime & slime() const {
@@ -113,10 +116,11 @@ private:
     void constructTraces() const;
     void addTimeStamp(Cursor & trace);
     mutable std::unique_ptr<vespalib::Slime> _trace;
-    mutable Cursor              * _root;
-    mutable Cursor              * _traces;
+    mutable Cursor      * _root;
+    mutable Cursor      * _traces;
     const RelativeTime  & _relativeTime;
     uint32_t              _level;
+    uint32_t              _profileDepth;
 };
 
 }

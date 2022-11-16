@@ -21,8 +21,6 @@ namespace document {
 
 using namespace fieldvalue;
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(FieldPathUpdate, Identifiable);
-
 namespace {
 
 std::unique_ptr<select::Node>
@@ -40,17 +38,19 @@ parseDocumentSelection(vespalib::stringref query, const DocumentTypeRepo& repo)
 
 }  // namespace
 
-FieldPathUpdate::FieldPathUpdate() :
-    _originalFieldPath(),
-    _originalWhereClause()
+FieldPathUpdate::FieldPathUpdate(FieldPathUpdateType type)
+    : _type(type),
+      _originalFieldPath(),
+      _originalWhereClause()
 { }
 
 FieldPathUpdate::FieldPathUpdate(const FieldPathUpdate &) = default;
 FieldPathUpdate & FieldPathUpdate::operator =(const FieldPathUpdate &) = default;
 
-FieldPathUpdate::FieldPathUpdate(stringref fieldPath, stringref whereClause) :
-    _originalFieldPath(fieldPath),
-    _originalWhereClause(whereClause)
+FieldPathUpdate::FieldPathUpdate(FieldPathUpdateType type, stringref fieldPath, stringref whereClause)
+    : _type(type),
+      _originalFieldPath(fieldPath),
+      _originalWhereClause(whereClause)
 { }
 
 FieldPathUpdate::~FieldPathUpdate() = default;
@@ -58,7 +58,8 @@ FieldPathUpdate::~FieldPathUpdate() = default;
 bool
 FieldPathUpdate::operator==(const FieldPathUpdate& other) const
 {
-    return (other._originalFieldPath == _originalFieldPath)
+    return (_type == other._type)
+            && (other._originalFieldPath == _originalFieldPath)
             && (other._originalWhereClause == _originalWhereClause);
 }
 
@@ -74,10 +75,10 @@ FieldPathUpdate::applyTo(Document& doc) const
     } else {
         std::unique_ptr<select::Node> whereClause = parseDocumentSelection(_originalWhereClause, *doc.getRepo());
         select::ResultList results = whereClause->contains(doc);
-        for (select::ResultList::const_reverse_iterator i = results.rbegin(); i != results.rend(); ++i) {
+        for (auto i = results.rbegin(); i != results.rend(); ++i) {
             LOG(spam, "vars = %s", handler->getVariables().toString().c_str());
             if (*i->second == select::Result::True) {
-                handler->setVariables(i->first);
+                handler->setVariables(std::move(i->first));
                 doc.iterateNested(path, *handler);
             }
         }

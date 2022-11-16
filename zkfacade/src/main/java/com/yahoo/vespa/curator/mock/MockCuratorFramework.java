@@ -1,13 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.curator.mock;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
 import com.yahoo.collections.Pair;
 import com.yahoo.concurrent.Lock;
 import com.yahoo.concurrent.Locks;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.path.Path;
 import com.yahoo.vespa.curator.CompletionTimeoutException;
 import com.yahoo.vespa.curator.Curator;
+import com.yahoo.vespa.curator.mock.MemoryFileSystem.Node;
 import com.yahoo.vespa.curator.recipes.CuratorLockException;
 import org.apache.curator.CuratorZookeeperClient;
 import org.apache.curator.framework.CuratorFramework;
@@ -83,6 +84,8 @@ import org.apache.curator.retry.RetryForever;
 import org.apache.curator.utils.EnsurePath;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.KeeperException.BadVersionException;
+import org.apache.zookeeper.KeeperException.NoNodeException;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Stat;
@@ -123,6 +126,8 @@ public class MockCuratorFramework implements CuratorFramework  {
 
     /** Listeners to changes to a particular path */
     private final ListenerMap listeners = new ListenerMap();
+
+    public final MockListenable<ConnectionStateListener> connectionStateListeners = new MockListenable<>();
 
     private CuratorFrameworkState curatorState = CuratorFrameworkState.LATENT;
     private int monotonicallyIncreasingNumber = 0;
@@ -267,7 +272,7 @@ public class MockCuratorFramework implements CuratorFramework  {
 
     @Override
     public Listenable<ConnectionStateListener> getConnectionStateListenable() {
-        return new MockListenable<>();
+        return connectionStateListeners;
     }
 
     @Override
@@ -351,7 +356,7 @@ public class MockCuratorFramework implements CuratorFramework  {
     // ----- Start of adaptor methods from Curator to the mock file system -----
 
     /** Creates a node below the given directory root */
-    private String createNode(String pathString, byte[] content, boolean createParents, CreateMode createMode, MemoryFileSystem.Node root, Listeners listeners)
+    private String createNode(String pathString, byte[] content, boolean createParents, Stat stat, CreateMode createMode, MemoryFileSystem.Node root, Listeners listeners, Long ttl)
             throws KeeperException.NodeExistsException, KeeperException.NoNodeException {
         validatePath(pathString);
         Path path = Path.fromString(pathString);
@@ -364,21 +369,28 @@ public class MockCuratorFramework implements CuratorFramework  {
         if (parent.children().containsKey(path.getName()))
             throw new KeeperException.NodeExistsException(path.toString());
 
-        parent.add(name).setContent(content);
+        MemoryFileSystem.Node node = parent.add(name);
+        node.setContent(content);
+        if (List.of(CreateMode.PERSISTENT_WITH_TTL, CreateMode.PERSISTENT_SEQUENTIAL_WITH_TTL).contains(createMode)
+                && ttl != null)
+            node.setTtl(ttl);
         String nodePath = "/" + path.getParentPath().toString() + "/" + name;
         listeners.notify(Path.fromString(nodePath), content, PathChildrenCacheEvent.Type.CHILD_ADDED);
+        if (stat != null) stat.setVersion(node.version());
         return nodePath;
     }
 
     /** Deletes a node below the given directory root */
-    private void deleteNode(String pathString, boolean deleteChildren, MemoryFileSystem.Node root, Listeners listeners)
-            throws KeeperException.NoNodeException, KeeperException.NotEmptyException {
+    private void deleteNode(String pathString, boolean deleteChildren, int version, MemoryFileSystem.Node root, Listeners listeners)
+            throws KeeperException {
         validatePath(pathString);
         Path path = Path.fromString(pathString);
         MemoryFileSystem.Node parent = root.getNode(Paths.get(path.getParentPath().toString()), false);
         if (parent == null) throw new KeeperException.NoNodeException(path.toString());
         MemoryFileSystem.Node node = parent.children().get(path.getName());
         if (node == null) throw new KeeperException.NoNodeException(path.getName() + " under " + parent);
+        if (version != -1 && version != node.version())
+            throw new KeeperException.BadVersionException("expected version " + version + ", but was " + node.version());
         if ( ! node.children().isEmpty() && ! deleteChildren)
             throw new KeeperException.NotEmptyException(path.toString());
         parent.remove(path.getName());
@@ -386,16 +398,20 @@ public class MockCuratorFramework implements CuratorFramework  {
     }
 
     /** Returns the data of a node */
-    private byte[] getData(String pathString, MemoryFileSystem.Node root) throws KeeperException.NoNodeException {
+    private byte[] getData(String pathString, Stat stat, MemoryFileSystem.Node root) throws KeeperException.NoNodeException {
         validatePath(pathString);
-        return getNode(pathString, root).getContent();
+        return getNode(pathString, stat, root).getContent();
     }
 
     /** sets the data of an existing node */
-    private void setData(String pathString, byte[] content, MemoryFileSystem.Node root, Listeners listeners)
-            throws KeeperException.NoNodeException {
+    private void setData(String pathString, byte[] content, int version, Stat stat, MemoryFileSystem.Node root, Listeners listeners)
+            throws KeeperException {
         validatePath(pathString);
-        getNode(pathString, root).setContent(content);
+        Node node = getNode(pathString, null, root);
+        if (version != -1 && version != node.version())
+            throw new KeeperException.BadVersionException("expected version " + version + ", but was " + node.version());
+        node.setContent(content);
+        if (stat != null) stat.setVersion(node.version());
         listeners.notify(Path.fromString(pathString), content, PathChildrenCacheEvent.Type.CHILD_UPDATED);
     }
 
@@ -410,19 +426,20 @@ public class MockCuratorFramework implements CuratorFramework  {
     }
 
     /** Returns a node or throws the appropriate exception if it doesn't exist */
-    private MemoryFileSystem.Node getNode(String pathString, MemoryFileSystem.Node root) throws KeeperException.NoNodeException {
+    private MemoryFileSystem.Node getNode(String pathString, Stat stat, MemoryFileSystem.Node root) throws KeeperException.NoNodeException {
         validatePath(pathString);
         Path path = Path.fromString(pathString);
         MemoryFileSystem.Node parent = root.getNode(Paths.get(path.getParentPath().toString()), false);
         if (parent == null) throw new KeeperException.NoNodeException(path.toString());
         MemoryFileSystem.Node node = parent.children().get(path.getName());
         if (node == null) throw new KeeperException.NoNodeException(path.toString());
+        if (stat != null) stat.setVersion(node.version());
         return node;
     }
 
     private String nodeName(String baseName, CreateMode createMode) {
         switch (createMode) {
-            case PERSISTENT: case EPHEMERAL: return baseName;
+            case PERSISTENT: case EPHEMERAL: case PERSISTENT_WITH_TTL: return baseName;
             case PERSISTENT_SEQUENTIAL: case EPHEMERAL_SEQUENTIAL: return baseName + monotonicallyIncreasingNumber++;
             default: throw new UnsupportedOperationException(createMode + " support not implemented in MockCurator");
         }
@@ -779,6 +796,7 @@ public class MockCuratorFramework implements CuratorFramework  {
     private abstract static class MockProtectACLCreateModeStatPathAndBytesable<String>
             implements ProtectACLCreateModeStatPathAndBytesable<String> {
 
+        Stat stat = null;
         public BackgroundPathAndBytesable<String> withACL(List<ACL> list) {
             throw new UnsupportedOperationException("Not implemented in MockCurator");
         }
@@ -828,6 +846,7 @@ public class MockCuratorFramework implements CuratorFramework  {
 
         @Override
         public ACLBackgroundPathAndBytesable<String> storingStatIn(Stat stat) {
+            this.stat = stat;
             return this;
         }
 
@@ -837,6 +856,7 @@ public class MockCuratorFramework implements CuratorFramework  {
 
         private boolean createParents = false;
         private CreateMode createMode = CreateMode.PERSISTENT;
+        private Long ttl;
 
         @Override
         public ProtectACLCreateModeStatPathAndBytesable<String> creatingParentsIfNeeded() {
@@ -845,12 +865,12 @@ public class MockCuratorFramework implements CuratorFramework  {
 
                 @Override
                 public String forPath(String s, byte[] bytes) throws Exception {
-                    return createNode(s, bytes, createParents, createMode, fileSystem.root(), listeners);
+                    return createNode(s, bytes, createParents, stat, createMode, fileSystem.root(), listeners, ttl);
                 }
 
                 @Override
                 public String forPath(String s) throws Exception {
-                    return createNode(s, new byte[0], createParents, createMode, fileSystem.root(), listeners);
+                    return createNode(s, new byte[0], createParents, stat, createMode, fileSystem.root(), listeners, ttl);
                 }
 
             };
@@ -862,12 +882,12 @@ public class MockCuratorFramework implements CuratorFramework  {
 
                 @Override
                 public String forPath(String s, byte[] bytes) throws Exception {
-                    return createNode(s, bytes, createParents, createMode, fileSystem.root(), listeners);
+                    return createNode(s, bytes, createParents, stat, createMode, fileSystem.root(), listeners, ttl);
                 }
 
                 @Override
                 public String forPath(String s) throws Exception {
-                    return createNode(s, new byte[0], createParents, createMode, fileSystem.root(), listeners);
+                    return createNode(s, new byte[0], createParents, stat, createMode, fileSystem.root(), listeners, ttl);
                 }
 
             };
@@ -885,11 +905,11 @@ public class MockCuratorFramework implements CuratorFramework  {
         }
 
         public String forPath(String s) throws Exception {
-            return createNode(s, new byte[0], createParents, createMode, fileSystem.root(), listeners);
+            return createNode(s, new byte[0], createParents, null, createMode, fileSystem.root(), listeners, ttl);
         }
 
         public String forPath(String s, byte[] bytes) throws Exception {
-            return createNode(s, bytes, createParents, createMode, fileSystem.root(), listeners);
+            return createNode(s, bytes, createParents, null, createMode, fileSystem.root(), listeners, ttl);
         }
 
         @Override
@@ -923,7 +943,7 @@ public class MockCuratorFramework implements CuratorFramework  {
         }
 
         @Override
-        public CreateBuilderMain withTtl(long l) { return this; }
+        public CreateBuilderMain withTtl(long l) { this.ttl = l; return this; }
 
         @Override
         public CreateBuilder2 orSetData() {
@@ -1038,9 +1058,8 @@ public class MockCuratorFramework implements CuratorFramework  {
         @Override
         public Stat forPath(String path) throws Exception {
             try {
-                MemoryFileSystem.Node node = getNode(path, fileSystem.root());
                 Stat stat = new Stat();
-                stat.setVersion(node.version());
+                getNode(path, stat, fileSystem.root());
                 return stat;
             }
             catch (KeeperException.NoNodeException e) {
@@ -1062,6 +1081,7 @@ public class MockCuratorFramework implements CuratorFramework  {
     private class MockDeleteBuilder extends MockBackgroundPathableBuilder<Void> implements DeleteBuilder {
 
         private boolean deleteChildren = false;
+        private int version = -1;
 
         @Override
         public BackgroundVersionable deletingChildrenIfNeeded() {
@@ -1076,11 +1096,12 @@ public class MockCuratorFramework implements CuratorFramework  {
 
         @Override
         public BackgroundPathable<Void> withVersion(int i) {
-            throw new UnsupportedOperationException("Not implemented in MockCurator");
+            version = i;
+            return this;
         }
 
         public Void forPath(String pathString) throws Exception {
-            deleteNode(pathString, deleteChildren, fileSystem.root(), listeners);
+            deleteNode(pathString, deleteChildren, version, fileSystem.root(), listeners);
             return null;
         }
 
@@ -1102,7 +1123,7 @@ public class MockCuratorFramework implements CuratorFramework  {
         }
 
         public byte[] forPath(String path) throws Exception {
-            return getData(path, fileSystem.root());
+            return getData(path, null, fileSystem.root());
         }
 
         @Override
@@ -1137,13 +1158,34 @@ public class MockCuratorFramework implements CuratorFramework  {
 
         @Override
         public WatchPathable<byte[]> storingStatIn(Stat stat) {
-            throw new UnsupportedOperationException("Not implemented in MockCurator");
+            return new WatchPathable<byte[]>() {
+                @Override
+                public byte[] forPath(String path) throws Exception {
+                    return getData(path, stat, fileSystem.root());
+                }
+
+                @Override
+                public Pathable<byte[]> watched() {
+                    return null;
+                }
+
+                @Override
+                public Pathable<byte[]> usingWatcher(Watcher watcher) {
+                    return null;
+                }
+
+                @Override
+                public Pathable<byte[]> usingWatcher(CuratorWatcher watcher) {
+                    return null;
+                }
+            };
         }
     }
 
     // extends MockBackgroundACLPathAndBytesableBuilder<Stat>
     private class MockSetDataBuilder implements SetDataBuilder {
 
+        int version = -1;
         @Override
         public SetDataBackgroundVersionable compressed() {
             throw new UnsupportedOperationException("Not implemented in MockCurator");
@@ -1151,18 +1193,22 @@ public class MockCuratorFramework implements CuratorFramework  {
 
         @Override
         public BackgroundPathAndBytesable<Stat> withVersion(int i) {
-            throw new UnsupportedOperationException("Not implemented in MockCurator");
+            version = i;
+            return this;
         }
 
         @Override
         public Stat forPath(String path, byte[] bytes) throws Exception {
-            setData(path, bytes, fileSystem.root(), listeners);
-            return null;
+            Stat stat = new Stat();
+            setData(path, bytes, version, stat, fileSystem.root(), listeners);
+            return stat;
         }
 
         @Override
-        public Stat forPath(String s) throws Exception {
-            return null;
+        public Stat forPath(String path) throws Exception {
+            Stat stat = new Stat();
+            setData(path, new byte[0], version, stat, fileSystem.root(), listeners);
+            return stat;
         }
 
         @Override
@@ -1201,18 +1247,21 @@ public class MockCuratorFramework implements CuratorFramework  {
     }
 
     /** Allows addition of directoryListeners which are never called */
-    private static class MockListenable<T> implements Listenable<T> {
+    public static class MockListenable<T> implements Listenable<T> {
+
+        public final List<T> listeners = new ArrayList<>();
 
         @Override
         public void addListener(T t) {
+            listeners.add(t);
         }
 
         @Override
-        public void addListener(T t, Executor executor) {
-        }
+        public void addListener(T t, Executor executor) { throw new UnsupportedOperationException("not supported in mock curator"); }
 
         @Override
         public void removeListener(T t) {
+            listeners.remove(t);
         }
 
     }
@@ -1239,25 +1288,25 @@ public class MockCuratorFramework implements CuratorFramework  {
         }
 
         @Override
-        public TransactionCreateBuilder create() {
+        public TransactionCreateBuilder<CuratorTransactionBridge> create() {
             ensureNotCommitted();
             return new MockTransactionCreateBuilder();
         }
 
         @Override
-        public TransactionDeleteBuilder delete() {
+        public TransactionDeleteBuilder<CuratorTransactionBridge> delete() {
             ensureNotCommitted();
             return new MockTransactionDeleteBuilder();
         }
 
         @Override
-        public TransactionSetDataBuilder setData() {
+        public TransactionSetDataBuilder<CuratorTransactionBridge> setData() {
             ensureNotCommitted();
             return new MockTransactionSetDataBuilder();
         }
 
         @Override
-        public TransactionCheckBuilder check() {
+        public TransactionCheckBuilder<CuratorTransactionBridge> check() {
             ensureNotCommitted();
             throw new UnsupportedOperationException("Not implemented in MockCurator");
         }
@@ -1266,7 +1315,7 @@ public class MockCuratorFramework implements CuratorFramework  {
             if (committed) throw new IllegalStateException("transaction already committed");
         }
 
-        private class MockTransactionCreateBuilder implements TransactionCreateBuilder {
+        private class MockTransactionCreateBuilder implements TransactionCreateBuilder<CuratorTransactionBridge> {
 
             private CreateMode createMode = CreateMode.PERSISTENT;
 
@@ -1283,49 +1332,52 @@ public class MockCuratorFramework implements CuratorFramework  {
 
             @Override
             public CuratorTransactionBridge forPath(String s, byte[] bytes) throws Exception {
-                createNode(s, bytes, false, createMode, newRoot, delayedListener);
+                createNode(s, bytes, false, null, createMode, newRoot, delayedListener, null);
                 return new MockCuratorTransactionBridge();
             }
 
             @Override
             public CuratorTransactionBridge forPath(String s) throws Exception {
-                createNode(s, new byte[0], false, createMode, newRoot, delayedListener);
+                createNode(s, new byte[0], false, null, createMode, newRoot, delayedListener, null);
                 return new MockCuratorTransactionBridge();
             }
 
             @Override
-            public TransactionCreateBuilder2 withTtl(long l) {
+            public TransactionCreateBuilder2<CuratorTransactionBridge> withTtl(long l) {
                 return this;
             }
 
             @Override
-            public Object withACL(List list, boolean b) {
+            public MockTransactionCreateBuilder withACL(List<ACL> list, boolean b) {
                 return this;
             }
 
             @Override
-            public Object withACL(List list) {
+            public MockTransactionCreateBuilder withACL(List<ACL> list) {
                 return this;
             }
         }
 
-        private class MockTransactionDeleteBuilder implements TransactionDeleteBuilder {
+        private class MockTransactionDeleteBuilder implements TransactionDeleteBuilder<CuratorTransactionBridge> {
 
+            int version = -1;
             @Override
             public Pathable<CuratorTransactionBridge> withVersion(int i) {
-                throw new UnsupportedOperationException("Not implemented in MockCurator");
+                version = i;
+                return this;
             }
 
             @Override
             public CuratorTransactionBridge forPath(String path) throws Exception {
-                deleteNode(path, false, newRoot, delayedListener);
+                deleteNode(path, false, version, newRoot, delayedListener);
                 return new MockCuratorTransactionBridge();
             }
 
         }
 
-        private class MockTransactionSetDataBuilder implements TransactionSetDataBuilder {
+        private class MockTransactionSetDataBuilder implements TransactionSetDataBuilder<CuratorTransactionBridge> {
 
+            int version = -1;
             @Override
             public VersionPathAndBytesable<CuratorTransactionBridge> compressed() {
                 throw new UnsupportedOperationException("Not implemented in MockCurator");
@@ -1333,18 +1385,19 @@ public class MockCuratorFramework implements CuratorFramework  {
 
             @Override
             public PathAndBytesable<CuratorTransactionBridge> withVersion(int i) {
-                throw new UnsupportedOperationException("Not implemented in MockCurator");
+                version = i;
+                return this;
             }
 
             @Override
             public CuratorTransactionBridge forPath(String s, byte[] bytes) throws Exception {
-                MockCuratorFramework.this.setData(s, bytes, newRoot, delayedListener);
+                MockCuratorFramework.this.setData(s, bytes, version, null, newRoot, delayedListener);
                 return new MockCuratorTransactionBridge();
             }
 
             @Override
             public CuratorTransactionBridge forPath(String s) throws Exception {
-                MockCuratorFramework.this.setData(s, new byte[0], newRoot, delayedListener);
+                MockCuratorFramework.this.setData(s, new byte[0], version, null, newRoot, delayedListener);
                 return new MockCuratorTransactionBridge();
             }
 

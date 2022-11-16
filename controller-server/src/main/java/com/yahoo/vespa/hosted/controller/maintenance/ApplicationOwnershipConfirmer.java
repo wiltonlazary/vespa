@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
-import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.vespa.hosted.controller.Application;
 import com.yahoo.vespa.hosted.controller.ApplicationController;
 import com.yahoo.vespa.hosted.controller.Controller;
@@ -32,11 +31,18 @@ public class ApplicationOwnershipConfirmer extends ControllerMaintainer {
 
     private final OwnershipIssues ownershipIssues;
     private final ApplicationController applications;
+    private final int shards;
 
     public ApplicationOwnershipConfirmer(Controller controller, Duration interval, OwnershipIssues ownershipIssues) {
+        this(controller, interval, ownershipIssues, 24);
+    }
+
+    public ApplicationOwnershipConfirmer(Controller controller, Duration interval, OwnershipIssues ownershipIssues, int shards) {
         super(controller, interval);
         this.ownershipIssues = ownershipIssues;
         this.applications = controller.applications();
+        if (shards <= 0) throw new IllegalArgumentException("shards must be a positive number, but got " + shards);
+        this.shards = shards;
     }
 
     @Override
@@ -57,10 +63,10 @@ public class ApplicationOwnershipConfirmer extends ControllerMaintainer {
                        .asList()
                        .stream()
                        .filter(application -> application.createdAt().isBefore(controller().clock().instant().minus(Duration.ofDays(90))))
+                       .filter(application -> isInCurrentShard(application.id()))
                        .forEach(application -> {
                            try {
                                attempts.incrementAndGet();
-                               // TODO jvenstad: Makes sense to require, and run this only in main?
                                tenantOf(application.id()).contact().flatMap(contact -> {
                                    return ownershipIssues.confirmOwnership(application.ownershipIssueId(),
                                                                            summaryOf(application.id()),
@@ -74,6 +80,12 @@ public class ApplicationOwnershipConfirmer extends ControllerMaintainer {
                            }
                        });
         return asSuccessFactor(attempts.get(), failures.get());
+    }
+
+    private boolean isInCurrentShard(TenantAndApplicationId id) {
+        double participants = Math.max(1, controller().curator().cluster().size());
+        long ticksSinceEpoch = Math.round((controller().clock().millis() * participants / interval().toMillis()));
+        return (ticksSinceEpoch + id.hashCode()) % shards == 0;
     }
 
     private ApplicationSummary summaryOf(TenantAndApplicationId application) {
@@ -90,7 +102,7 @@ public class ApplicationOwnershipConfirmer extends ControllerMaintainer {
             }
         }
         return new ApplicationSummary(app.id().defaultInstance(), app.activity().lastQueried(), app.activity().lastWritten(),
-                                      app.latestVersion().flatMap(version -> version.buildTime()), metrics);
+                                      app.revisions().last().flatMap(version -> version.buildTime()), metrics);
     }
 
     /** Escalate ownership issues which have not been closed before a defined amount of time has passed. */
@@ -98,17 +110,18 @@ public class ApplicationOwnershipConfirmer extends ControllerMaintainer {
         AtomicInteger attempts = new AtomicInteger(0);
         AtomicInteger failures = new AtomicInteger(0);
         for (Application application : applications())
-            application.ownershipIssueId().ifPresent(issueId -> {
-                try {
-                    attempts.incrementAndGet();
-                    Tenant tenant = tenantOf(application.id());
-                    ownershipIssues.ensureResponse(issueId, tenant.contact());
-                }
-                catch (RuntimeException e) {
-                    failures.incrementAndGet();
-                    log.log(Level.INFO, "Exception caught when attempting to escalate issue with id '" + issueId + "': " + Exceptions.toMessageString(e));
-                }
-            });
+            if (isInCurrentShard(application.id()))
+                application.ownershipIssueId().ifPresent(issueId -> {
+                    try {
+                        attempts.incrementAndGet();
+                        Tenant tenant = tenantOf(application.id());
+                        ownershipIssues.ensureResponse(issueId, tenant.contact());
+                    }
+                    catch (RuntimeException e) {
+                        failures.incrementAndGet();
+                        log.log(Level.INFO, "Exception caught when attempting to escalate issue with id '" + issueId + "': " + Exceptions.toMessageString(e));
+                    }
+                });
         return asSuccessFactor(attempts.get(), failures.get());
     }
 
@@ -120,6 +133,7 @@ public class ApplicationOwnershipConfirmer extends ControllerMaintainer {
                 .withProductionDeployment()
                 .asList()
                 .stream()
+                .filter(application -> isInCurrentShard(application.id()))
                 .filter(application -> application.ownershipIssueId().isPresent())
                 .forEach(application -> {
                     attempts.incrementAndGet();

@@ -1,14 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.ml;
 
-import com.google.common.collect.ImmutableList;
+import com.yahoo.config.FileReference;
 import com.yahoo.config.model.ApplicationPackageTester;
 import ai.vespa.rankingexpression.importer.configmodelview.MlModelImporter;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.io.GrowableByteBuffer;
 import com.yahoo.io.IOUtils;
 import com.yahoo.path.Path;
-import com.yahoo.searchdefinition.RankingConstant;
 import ai.vespa.rankingexpression.importer.lightgbm.LightGBMImporter;
 import ai.vespa.rankingexpression.importer.onnx.OnnxImporter;
 import ai.vespa.rankingexpression.importer.tensorflow.TensorFlowImporter;
@@ -21,10 +20,10 @@ import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.List;
 import java.util.Optional;
 
-import static junit.framework.TestCase.assertTrue;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Helper for testing of imported models.
@@ -34,26 +33,28 @@ import static org.junit.Assert.assertEquals;
  */
 public class ImportedModelTester {
 
-    private final ImmutableList<MlModelImporter> importers = ImmutableList.of(new TensorFlowImporter(),
-                                                                              new OnnxImporter(),
-                                                                              new LightGBMImporter(),
-                                                                              new XGBoostImporter(),
-                                                                              new VespaImporter());
+    private final List<MlModelImporter> importers = List.of(new TensorFlowImporter(),
+                                                            new OnnxImporter(),
+                                                            new LightGBMImporter(),
+                                                            new XGBoostImporter(),
+                                                            new VespaImporter());
 
     private final String modelName;
     private final Path applicationDir;
+    private final DeployState deployState;
 
     public ImportedModelTester(String modelName, Path applicationDir) {
         this.modelName = modelName;
         this.applicationDir = applicationDir;
+        deployState = new DeployState.Builder()
+                .applicationPackage(ApplicationPackageTester.create(applicationDir.toString()).app())
+                .modelImporters(importers)
+                .build();
     }
 
     public VespaModel createVespaModel() {
         try {
-            DeployState.Builder state = new DeployState.Builder();
-            state.applicationPackage(ApplicationPackageTester.create(applicationDir.toString()).app());
-            state.modelImporters(importers);
-            return new VespaModel(state.build());
+            return new VespaModel(deployState);
         }
         catch (SAXException | IOException e) {
             throw new RuntimeException(e);
@@ -67,14 +68,17 @@ public class ImportedModelTester {
     public void assertLargeConstant(String constantName, VespaModel model, Optional<Long> expectedSize) {
         try {
             Path constantApplicationPackagePath = Path.fromString("models.generated/" + modelName + "/constants").append(constantName + ".tbf");
-            RankingConstant rankingConstant = model.rankingConstants().get(constantName);
-            assertEquals(constantName, rankingConstant.getName());
-            assertTrue(rankingConstant.getFileName().endsWith(constantApplicationPackagePath.toString()));
+            var constant = model.rankProfileList().constants().asMap().get(constantName);
+            assertNotNull(constant);
+            assertEquals(constantName, constant.getName());
+            assertTrue(constant.getFileName().endsWith(constantApplicationPackagePath.toString()));
+
+            assertTrue(model.fileReferences().contains(new FileReference(constant.getFileName())));
 
             if (expectedSize.isPresent()) {
                 Path constantPath = applicationDir.append(constantApplicationPackagePath);
-                assertTrue("Constant file '" + constantPath + "' has been written",
-                           constantPath.toFile().exists());
+                assertTrue(constantPath.toFile().exists(),
+                           "Constant file '" + constantPath + "' has been written");
                 Tensor deserializedConstant = TypedBinaryFormat.decode(Optional.empty(),
                                                                        GrowableByteBuffer.wrap(IOUtils.readFileBytes(constantPath.toFile())));
                 assertEquals(expectedSize.get().longValue(), deserializedConstant.size());

@@ -34,17 +34,16 @@ protected:
     config::ConfigSubscriber _configSubscriber;
 
 private:
-    config::ConfigHandle<document::DocumenttypesConfig>::UP _documentHandler;
+    config::ConfigHandle<document::config::DocumenttypesConfig>::UP _documentHandler;
     std::vector<DocumentTypeRepoSP> _repos;
 
 public:
     using UP = std::unique_ptr<Process>;
-    using milliseconds = std::chrono::milliseconds;
 
     Process(const config::ConfigUri & configUri);
-    virtual ~Process() {}
+    ~Process() override;
 
-    virtual void setupConfig(milliseconds subscribeTimeout);
+    virtual void setupConfig(vespalib::duration subscribeTimeout);
     virtual void createNode() = 0;
     virtual bool configUpdated();
     virtual void updateConfig();

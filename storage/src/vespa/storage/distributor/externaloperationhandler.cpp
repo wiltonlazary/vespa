@@ -63,6 +63,9 @@ public:
     const OperationSequencer& operation_sequencer() const noexcept override {
         abort(); // Never called by the messages using this component.
     }
+    OperationSequencer& operation_sequencer() noexcept override {
+        abort(); // Never called by the messages using this component.
+    }
 };
 
 ExternalOperationHandler::ExternalOperationHandler(DistributorNodeContext& node_ctx,
@@ -97,9 +100,9 @@ ExternalOperationHandler::~ExternalOperationHandler() = default;
 bool
 ExternalOperationHandler::handleMessage(const std::shared_ptr<api::StorageMessage>& msg, Operation::SP& op)
 {
-    _op = Operation::SP();
+    _op.reset();
     bool retVal = msg->callHandler(*this, msg);
-    op = _op;
+    op = std::move(_op); // Don't maintain any strong refs in _op after we've passed it on.
     return retVal;
 }
 
@@ -282,7 +285,7 @@ bool put_is_from_reindexing_visitor(const api::PutCommand& cmd) {
 
 // Precondition: put_is_from_reindexing_visitor(cmd) == true
 std::string extract_reindexing_token(const api::PutCommand& cmd) {
-    const std::string& tas_str = cmd.getCondition().getSelection();
+    const auto& tas_str = cmd.getCondition().getSelection();
     auto eq_idx = tas_str.find_first_of('=');
     if (eq_idx != std::string::npos) {
         return tas_str.substr(eq_idx + 1);

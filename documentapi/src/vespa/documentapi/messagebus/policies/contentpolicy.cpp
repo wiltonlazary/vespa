@@ -3,6 +3,7 @@
 #include "contentpolicy.h"
 #include <vespa/document/base/documentid.h>
 #include <vespa/document/update/documentupdate.h>
+#include <vespa/document/fieldvalue/document.h>
 #include <vespa/messagebus/emptyreply.h>
 #include <vespa/messagebus/error.h>
 #include <vespa/documentapi/documentapi.h>
@@ -10,6 +11,7 @@
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/config-stor-distribution.h>
+#include <vespa/config/helper/configfetcher.hpp>
 #include <vespa/config/subscription/configuri.h>
 #include <cassert>
 
@@ -62,10 +64,10 @@ string ContentPolicy::init()
 
     using storage::lib::Distribution;
     config::ConfigUri uri(_clusterConfigId);
-    if (!_configSources.empty()) {
-        _configFetcher.reset(new config::ConfigFetcher(config::ServerSpec(_configSources)));
+    if (!configSources().empty()) {
+        _configFetcher = std::make_unique<config::ConfigFetcher>(config::ServerSpec(configSources()));
     } else {
-        _configFetcher.reset(new config::ConfigFetcher(uri.getContext()));
+        _configFetcher = std::make_unique<config::ConfigFetcher>(uri.getContext());
     }
     _callBack = std::make_unique<CallBack>(*this);
     _configFetcher->subscribe<vespa::config::content::StorDistributionConfig>(uri.getConfigId(), static_cast<CallBack *>(_callBack.get()));

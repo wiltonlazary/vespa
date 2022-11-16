@@ -6,8 +6,9 @@ import java.io.*;
 /**
  * @author Ulf Lilleengen
  * @since 5.1
+ * Should only be used internally in the log library
  */
-public class FileLogTarget implements LogTarget {
+class FileLogTarget implements LogTarget {
     private final File file;
     private FileOutputStream fileOutputStream;
 

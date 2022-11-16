@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.persistence;
 
 import com.yahoo.slime.ArrayTraverser;
@@ -8,6 +8,7 @@ import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.hosted.controller.auditlog.AuditLog;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,6 +32,7 @@ public class AuditLogSerializer {
     private static final String methodField = "method";
     private static final String resourceField = "resource";
     private static final String dataField = "data";
+    private static final String clientField = "client";
 
     public Slime toSlime(AuditLog log) {
         Slime slime = new Slime();
@@ -39,6 +41,7 @@ public class AuditLogSerializer {
         log.entries().forEach(entry -> {
             Cursor entryObject = entryArray.addObject();
             entryObject.setLong(atField, entry.at().toEpochMilli());
+            entryObject.setString(clientField, asString(entry.client()));
             entryObject.setString(principalField, entry.principal());
             entryObject.setString(methodField, asString(entry.method()));
             entryObject.setString(resourceField, entry.resource());
@@ -46,40 +49,62 @@ public class AuditLogSerializer {
         });
         return slime;
     }
-
     public AuditLog fromSlime(Slime slime) {
         List<AuditLog.Entry> entries = new ArrayList<>();
         Cursor root = slime.get();
         root.field(entriesField).traverse((ArrayTraverser) (i, entryObject) -> {
             entries.add(new AuditLog.Entry(
                     SlimeUtils.instant(entryObject.field(atField)),
+                    SlimeUtils.optionalString(entryObject.field(clientField))
+                              .map(AuditLogSerializer::clientFrom)
+                              .orElse(AuditLog.Entry.Client.other),
                     entryObject.field(principalField).asString(),
                     methodFrom(entryObject.field(methodField)),
                     entryObject.field(resourceField).asString(),
                     SlimeUtils.optionalString(entryObject.field(dataField))
+                              .map(s -> s.getBytes(StandardCharsets.UTF_8))
+                              .orElseGet(() -> new byte[0])
             ));
         });
         return new AuditLog(entries);
     }
 
     private static String asString(AuditLog.Entry.Method method) {
-        switch (method) {
-            case POST: return "POST";
-            case PATCH: return "PATCH";
-            case PUT: return "PUT";
-            case DELETE: return "DELETE";
-            default: throw new IllegalArgumentException("No serialization defined for method " + method);
-        }
+        return switch (method) {
+            case POST -> "POST";
+            case PATCH -> "PATCH";
+            case PUT -> "PUT";
+            case DELETE -> "DELETE";
+        };
     }
 
     private static AuditLog.Entry.Method methodFrom(Inspector field) {
-        switch (field.asString()) {
-            case "POST": return AuditLog.Entry.Method.POST;
-            case "PATCH": return AuditLog.Entry.Method.PATCH;
-            case "PUT": return AuditLog.Entry.Method.PUT;
-            case "DELETE": return AuditLog.Entry.Method.DELETE;
-            default: throw new IllegalArgumentException("Unknown serialized value '" + field.asString() + "'");
-        }
+        return switch (field.asString()) {
+            case "POST" -> AuditLog.Entry.Method.POST;
+            case "PATCH" -> AuditLog.Entry.Method.PATCH;
+            case "PUT" -> AuditLog.Entry.Method.PUT;
+            case "DELETE" -> AuditLog.Entry.Method.DELETE;
+            default -> throw new IllegalArgumentException("Unknown serialized value '" + field.asString() + "'");
+        };
+    }
+
+    private static String asString(AuditLog.Entry.Client client) {
+        return switch (client) {
+            case console -> "console";
+            case cli -> "cli";
+            case hv -> "hv";
+            case other -> "other";
+        };
+    }
+
+    private static AuditLog.Entry.Client clientFrom(String s) {
+        return switch (s) {
+            case "console" -> AuditLog.Entry.Client.console;
+            case "cli" -> AuditLog.Entry.Client.cli;
+            case "hv" -> AuditLog.Entry.Client.hv;
+            case "other" -> AuditLog.Entry.Client.other;
+            default -> throw new IllegalArgumentException("Unknown serialized value '" + s + "'");
+        };
     }
 
 }

@@ -1,9 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.security.tls;
 
-import com.yahoo.security.tls.json.TransportSecurityOptionsJsonSerializer;
-import com.yahoo.security.tls.policy.AuthorizedPeers;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -55,9 +52,7 @@ public class TransportSecurityOptions {
         return Optional.ofNullable(caCertificatesFile);
     }
 
-    public Optional<AuthorizedPeers> getAuthorizedPeers() {
-        return Optional.ofNullable(authorizedPeers);
-    }
+    public AuthorizedPeers getAuthorizedPeers() { return authorizedPeers; }
 
     public List<String> getAcceptedCiphers() { return acceptedCiphers; }
 
@@ -96,7 +91,7 @@ public class TransportSecurityOptions {
         private Path privateKeyFile;
         private Path certificatesFile;
         private Path caCertificatesFile;
-        private AuthorizedPeers authorizedPeers;
+        private AuthorizedPeers authorizedPeers = AuthorizedPeers.empty();
         private List<String> acceptedCiphers = new ArrayList<>();
         private boolean isHostnameValidationDisabled;
         private List<String> acceptedProtocols = new ArrayList<>();

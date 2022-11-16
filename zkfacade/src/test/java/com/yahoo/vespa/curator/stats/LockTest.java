@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.curator.stats;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.vespa.curator.Lock;
 import org.apache.curator.framework.recipes.locks.InterProcessLock;
 import org.junit.Before;
@@ -200,8 +200,46 @@ public class LockTest {
         assertEquals(lock2Path, lockAttempts.get(1).getLockPath());
         assertEquals(LockAttempt.LockState.ACQUIRED, lockAttempts.get(1).getLockState());
 
+        lock2.close();
         lock.close();
+    }
+
+    @Test
+    public void locksReleaseOutOfOrder() throws Exception {
+        when(mutex.acquire(anyLong(), any())).thenReturn(true);
+
+        lock.acquire(acquireTimeout);
+        assertLockMetricsIs(new LockMetrics().setAcquireCount(1)
+                                             .setCumulativeAcquireCount(1)
+                                             .setAcquireSucceededCount(1)
+                                             .setCumulativeAcquireSucceededCount(1));
+        lock2.acquire(acquireTimeout);
+        assertLock2MetricsIs(new LockMetrics().setAcquireCount(1)
+                                              .setCumulativeAcquireCount(1)
+                                              .setAcquireSucceededCount(1)
+                                              .setCumulativeAcquireSucceededCount(1));
         lock.close();
+        assertLockMetricsIs(new LockMetrics().setAcquireCount(0)
+                                             .setCumulativeAcquireCount(1)
+                                             .setAcquireSucceededCount(0)
+                                             .setCumulativeAcquireSucceededCount(1)
+                                             .setReleaseCount(1)
+                                             .setCumulativeReleaseCount(1));
+
+        List<ThreadLockStats> threadLockStats = LockStats.getGlobal().getThreadLockStats();
+        assertEquals(1, threadLockStats.size());
+        List<LockAttempt> lockAttempts = threadLockStats.get(0).getOngoingLockAttempts();
+        assertEquals(1, lockAttempts.size());
+        assertEquals(lock2Path, lockAttempts.get(0).getLockPath());
+        assertEquals(LockAttempt.LockState.ACQUIRED, lockAttempts.get(0).getLockState());
+
+        lock2.close();
+        assertLock2MetricsIs(new LockMetrics().setAcquireCount(0)
+                                              .setCumulativeAcquireCount(1)
+                                              .setAcquireSucceededCount(0)
+                                              .setCumulativeAcquireSucceededCount(1)
+                                              .setReleaseCount(1)
+                                              .setCumulativeReleaseCount(1));
     }
 
     @Test

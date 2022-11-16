@@ -1,11 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.session;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
 import com.yahoo.component.Vtag;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.config.FileReference;
+import com.yahoo.config.application.ValidationProcessor;
+import com.yahoo.config.application.XmlPreProcessor;
+import com.yahoo.config.application.api.ApplicationMetaData;
 import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.application.api.FileRegistry;
@@ -14,27 +17,29 @@ import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.EndpointCertificateMetadata;
 import com.yahoo.config.model.api.EndpointCertificateSecrets;
 import com.yahoo.config.model.api.FileDistribution;
-import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.api.Quota;
 import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.provision.AllocatedHosts;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.AthenzDomain;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.DockerImage;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.container.jdisc.secretstore.SecretStore;
-import com.yahoo.lang.SettableOptional;
 import com.yahoo.net.HostName;
 import com.yahoo.path.Path;
+import com.yahoo.text.XML;
+import com.yahoo.vespa.config.server.ConfigServerSpec;
 import com.yahoo.vespa.config.server.TimeoutBudget;
 import com.yahoo.vespa.config.server.application.ApplicationSet;
 import com.yahoo.vespa.config.server.application.PermanentApplicationPackage;
 import com.yahoo.vespa.config.server.configchange.ConfigChangeActions;
-import com.yahoo.vespa.config.server.deploy.ModelContextImpl;
 import com.yahoo.vespa.config.server.deploy.ZooKeeperDeployer;
 import com.yahoo.vespa.config.server.filedistribution.FileDistributionFactory;
 import com.yahoo.vespa.config.server.host.HostValidator;
 import com.yahoo.vespa.config.server.http.InvalidApplicationException;
+import com.yahoo.vespa.config.server.modelfactory.AllocatedHostsFromAllModels;
 import com.yahoo.vespa.config.server.modelfactory.ModelFactoryRegistry;
 import com.yahoo.vespa.config.server.modelfactory.PreparedModelsBuilder;
 import com.yahoo.vespa.config.server.provision.HostProvisionerProvider;
@@ -44,9 +49,14 @@ import com.yahoo.vespa.config.server.tenant.EndpointCertificateRetriever;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.flags.FlagSource;
+import com.yahoo.vespa.model.application.validation.BundleValidator;
+import org.xml.sax.SAXException;
 
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.transform.TransformerException;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.Collection;
@@ -55,9 +65,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.jar.JarFile;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+import java.util.zip.ZipException;
 
 /**
  * A SessionPreparer is responsible for preparing a session given an application package.
@@ -127,7 +139,8 @@ public class SessionPreparer {
             AllocatedHosts allocatedHosts = preparation.buildModels(now);
             preparation.makeResult(allocatedHosts);
             if ( ! params.isDryRun()) {
-                preparation.writeStateZK();
+                FileReference fileReference = preparation.startDistributionOfApplicationPackage();
+                preparation.writeStateZK(fileReference);
                 preparation.writeEndpointCertificateMetadataZK();
                 preparation.writeContainerEndpointsZK();
             }
@@ -145,6 +158,7 @@ public class SessionPreparer {
         final PrepareParams params;
 
         final ApplicationId applicationId;
+        final Tags tags;
 
         /** The repository part of docker image to be used for this deployment */
         final Optional<DockerImage> dockerImageRepository;
@@ -154,7 +168,6 @@ public class SessionPreparer {
 
         final ContainerEndpointsCache containerEndpointsCache;
         final List<ContainerEndpoint> containerEndpoints;
-        final ModelContext.Properties properties;
         private final EndpointCertificateMetadataStore endpointCertificateMetadataStore;
         private final Optional<EndpointCertificateMetadata> endpointCertificateMetadata;
         private final Optional<AthenzDomain> athenzDomain;
@@ -177,6 +190,7 @@ public class SessionPreparer {
             this.applicationPackage = applicationPackage;
             this.sessionZooKeeperClient = sessionZooKeeperClient;
             this.applicationId = params.getApplicationId();
+            this.tags = params.tags();
             this.dockerImageRepository = params.dockerImageRepository();
             this.vespaVersion = params.vespaVersion().orElse(Vtag.currentVersion);
             this.containerEndpointsCache = new ContainerEndpointsCache(tenantPath, curator);
@@ -188,22 +202,13 @@ public class SessionPreparer {
                     .flatMap(endpointCertificateRetriever::readEndpointCertificateSecrets);
             this.containerEndpoints = readEndpointsIfNull(params.containerEndpoints());
             this.athenzDomain = params.athenzDomain();
-            this.properties = new ModelContextImpl.Properties(params.getApplicationId(),
-                                                              configserverConfig,
-                                                              zone,
-                                                              Set.copyOf(containerEndpoints),
-                                                              params.isBootstrap(),
-                                                              currentActiveApplicationSet.isEmpty(),
-                                                              flagSource,
-                                                              endpointCertificateSecrets,
-                                                              athenzDomain,
-                                                              params.quota(),
-                                                              params.tenantSecretStores(),
-                                                              secretStore,
-                                                              params.operatorCertificates());
             this.fileRegistry = fileDistributionFactory.createFileRegistry(serverDbSessionDir);
             this.preparedModelsBuilder = new PreparedModelsBuilder(modelFactoryRegistry,
                                                                    permanentApplicationPackage,
+                                                                   flagSource,
+                                                                   secretStore,
+                                                                   containerEndpoints,
+                                                                   endpointCertificateSecrets,
                                                                    configDefinitionRepo,
                                                                    fileRegistry,
                                                                    executor,
@@ -213,8 +218,8 @@ public class SessionPreparer {
                                                                    logger,
                                                                    params,
                                                                    currentActiveApplicationSet,
-                                                                   properties,
-                                                                   configserverConfig);
+                                                                   configserverConfig,
+                                                                   zone);
         }
 
         void checkTimeout(String step) {
@@ -222,37 +227,117 @@ public class SessionPreparer {
             if (! timeoutBudget.hasTimeLeft(step)) {
                 String used = timeoutBudget.timesUsed();
                 throw new UncheckedTimeoutException("prepare timed out " + used + " after " + step +
-                        " step (timeout " + timeoutBudget.timeout() + "): " + applicationId);
+                                                    " step (timeout " + timeoutBudget.timeout() + "): " + applicationId);
             }
         }
 
-        Optional<FileReference> distributedApplicationPackage() {
+        FileReference startDistributionOfApplicationPackage() {
             FileReference fileReference = fileRegistry.addApplicationPackage();
             FileDistribution fileDistribution = fileDistributionFactory.createFileDistribution();
-            log.log(Level.FINE, () -> "Distribute application package for " + applicationId + " ("  + fileReference + ") to other config servers");
-            properties.configServerSpecs().stream()
-                    .filter(spec -> ! spec.getHostName().equals(HostName.getLocalhost()))
-                    .forEach(spec -> fileDistribution.startDownload(spec.getHostName(), spec.getConfigServerPort(), Set.of(fileReference)));
+            log.log(Level.FINE, () -> "Ask other config servers to download application package for " +
+                    applicationId + " (" + fileReference + ")");
+            ConfigServerSpec.fromConfig(configserverConfig)
+                      .stream()
+                      .filter(spec -> !spec.getHostName().equals(HostName.getLocalhost()))
+                      .forEach(spec -> fileDistribution.startDownload(spec.getHostName(), spec.getConfigServerPort(), Set.of(fileReference)));
 
-            checkTimeout("distributeApplicationPackage");
-            return Optional.of(fileReference);
+            checkTimeout("startDistributionOfApplicationPackage");
+            return fileReference;
         }
 
         void preprocess() {
             try {
-                this.preprocessedApplicationPackage = applicationPackage.preprocess(properties.zone(), logger);
+                validateXmlFeatures(applicationPackage, logger);
+                this.preprocessedApplicationPackage = applicationPackage.preprocess(zone, logger);
             } catch (IOException | RuntimeException e) {
-                throw new IllegalArgumentException("Error preprocessing application package for " + applicationId, e);
+                throw new IllegalArgumentException("Error preprocessing application package for " + applicationId +
+                                                   ", session " + sessionZooKeeperClient.sessionId(), e);
             }
             checkTimeout("preprocess");
         }
 
+        /**
+         * Warn on use of deprecated XML features
+         */
+        private void validateXmlFeatures(ApplicationPackage applicationPackage, DeployLogger logger) {
+            // TODO: Validate no use of XInclude, datatype definitions or external entities
+            //       in any xml file we parse, such as services.xml, deployment.xml, hosts.xml,
+            //       validation-overrides.xml and any pom.xml files in OSGi bundles
+            //       services.xml and hosts.xml will need to be preprocessed by our own processors first
+
+            File applicationPackageDir = applicationPackage.getFileReference(Path.fromString("."));
+            File servicesXml = applicationPackage.getFileReference(Path.fromString("services.xml"));
+            File hostsXml = applicationPackage.getFileReference(Path.fromString("hosts.xml"));
+
+            // Validate after doing our own preprocessing on these two files
+            if(servicesXml.exists()) {
+                vespaPreprocess(applicationPackageDir.getAbsoluteFile(), servicesXml, applicationPackage.getMetaData());
+            }
+            if(hostsXml.exists()) {
+                vespaPreprocess(applicationPackageDir.getAbsoluteFile(), hostsXml, applicationPackage.getMetaData());
+            }
+
+            if (zone.system().isPublic()) {
+                // Validate all other XML files
+                try (var paths = Files.find(applicationPackageDir.getAbsoluteFile().toPath(), Integer.MAX_VALUE,
+                        (path, attr) -> attr.isRegularFile() && path.getFileName().toString().matches(".*\\.[Xx][Mm][Ll]"))) {
+                    paths.filter(p -> !(p.equals(servicesXml.getAbsoluteFile().toPath()) || p.equals(hostsXml.getAbsoluteFile().toPath())))
+                            .forEach(xmlPath -> {
+                                try {
+                                    new ValidationProcessor().process(XML.getDocument(xmlPath.toFile()));
+                                } catch (IOException | TransformerException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+
+            // Validate pom.xml files in OSGi bundles
+            try (var paths = Files.find(applicationPackageDir.getAbsoluteFile().toPath(), Integer.MAX_VALUE,
+                    (path, attr) -> attr.isRegularFile() && path.getFileName().toString().matches(".*\\.[Jj][Aa][Rr]"))) {
+                        paths.forEach(jarPath -> {
+                            try {
+                                new BundleValidator().getPomXmlContent(logger, new JarFile(jarPath.toFile())).ifPresent(pom -> {
+                                    try {
+                                        new ValidationProcessor().process(pom);
+                                    }
+                                    catch (IOException | TransformerException e) {
+                                        throw new RuntimeException(e);
+                                    }
+                                });
+                            } catch (ZipException e) {
+                                // ignore for tests
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        void vespaPreprocess(File appDir, File inputXml, ApplicationMetaData metaData) {
+            try {
+                new XmlPreProcessor(appDir,
+                                    inputXml,
+                                    metaData.getApplicationId().instance(),
+                                    zone.environment(),
+                                    zone.region(),
+                                    metaData.getTags())
+                        .run();
+            } catch (ParserConfigurationException | IOException | SAXException | TransformerException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
         AllocatedHosts buildModels(Instant now) {
-            SettableOptional<AllocatedHosts> allocatedHosts = new SettableOptional<>();
+            var allocatedHosts = new AllocatedHostsFromAllModels();
             this.modelResultList = preparedModelsBuilder.buildModels(applicationId, dockerImageRepository, vespaVersion,
                                                                      preprocessedApplicationPackage, allocatedHosts, now);
             checkTimeout("build models");
-            return allocatedHosts.get();
+            return allocatedHosts.toAllocatedHosts();
         }
 
         void makeResult(AllocatedHosts allocatedHosts) {
@@ -260,12 +345,13 @@ public class SessionPreparer {
             checkTimeout("making result from models");
         }
 
-        void writeStateZK() {
+        void writeStateZK(FileReference filereference) {
             log.log(Level.FINE, "Writing application package state to zookeeper");
             writeStateToZooKeeper(sessionZooKeeperClient,
                                   preprocessedApplicationPackage,
                                   applicationId,
-                                  distributedApplicationPackage(),
+                                  tags,
+                                  filereference,
                                   dockerImageRepository,
                                   vespaVersion,
                                   logger,
@@ -274,7 +360,8 @@ public class SessionPreparer {
                                   athenzDomain,
                                   params.quota(),
                                   params.tenantSecretStores(),
-                                  params.operatorCertificates());
+                                  params.operatorCertificates(),
+                                  params.cloudAccount());
             checkTimeout("write state to zookeeper");
         }
 
@@ -305,7 +392,8 @@ public class SessionPreparer {
     private void writeStateToZooKeeper(SessionZooKeeperClient zooKeeperClient,
                                        ApplicationPackage applicationPackage,
                                        ApplicationId applicationId,
-                                       Optional<FileReference> distributedApplicationPackage,
+                                       Tags tags,
+                                       FileReference fileReference,
                                        Optional<DockerImage> dockerImageRepository,
                                        Version vespaVersion,
                                        DeployLogger deployLogger,
@@ -314,19 +402,22 @@ public class SessionPreparer {
                                        Optional<AthenzDomain> athenzDomain,
                                        Optional<Quota> quota,
                                        List<TenantSecretStore> tenantSecretStores,
-                                       List<X509Certificate> operatorCertificates) {
+                                       List<X509Certificate> operatorCertificates,
+                                       Optional<CloudAccount> cloudAccount) {
         ZooKeeperDeployer zkDeployer = zooKeeperClient.createDeployer(deployLogger);
         try {
             zkDeployer.deploy(applicationPackage, fileRegistryMap, allocatedHosts);
             // Note: When changing the below you need to also change similar calls in SessionRepository.createSessionFromExisting()
             zooKeeperClient.writeApplicationId(applicationId);
-            zooKeeperClient.writeApplicationPackageReference(distributedApplicationPackage);
+            zooKeeperClient.writeTags(tags);
+            zooKeeperClient.writeApplicationPackageReference(Optional.of(fileReference));
             zooKeeperClient.writeVespaVersion(vespaVersion);
             zooKeeperClient.writeDockerImageRepository(dockerImageRepository);
             zooKeeperClient.writeAthenzDomain(athenzDomain);
             zooKeeperClient.writeQuota(quota);
             zooKeeperClient.writeTenantSecretStores(tenantSecretStores);
             zooKeeperClient.writeOperatorCertificates(operatorCertificates);
+            zooKeeperClient.writeCloudAccount(cloudAccount);
         } catch (RuntimeException | IOException e) {
             zkDeployer.cleanup();
             throw new RuntimeException("Error preparing session", e);

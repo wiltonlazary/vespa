@@ -9,13 +9,16 @@
 #include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/common/hw_info.h>
 #include <vespa/searchcore/proton/common/subdbtype.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/searchcore/config/config-ranking-constants.h>
 #include <vespa/searchcore/config/config-ranking-expressions.h>
 #include <vespa/searchcore/config/config-onnx-models.h>
 #include <vespa/searchsummary/config/config-juniperrc.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/fileacquirer/config-filedistributorrpc.h>
 #include <vespa/vespalib/util/varholder.h>
+#include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/config/common/configcontext.h>
 #include <vespa/config-bucketspaces.h>
@@ -24,7 +27,6 @@
 #include <vespa/config-indexschema.h>
 #include <vespa/config-rank-profiles.h>
 #include <vespa/config-summary.h>
-#include <vespa/config-summarymap.h>
 #include <map>
 #include <thread>
 
@@ -40,13 +42,11 @@ using vespa::config::content::core::BucketspacesConfigBuilder;
 
 using config::ConfigUri;
 using document::DocumentTypeRepo;
-using document::DocumenttypesConfig;
-using document::DocumenttypesConfigBuilder;
 using search::TuneFileDocumentDB;
 using std::map;
 using vespalib::VarHolder;
 using search::GrowStrategy;
-using search::CompactionStrategy;
+using vespalib::datastore::CompactionStrategy;
 
 struct DoctypeFixture {
     using UP = std::unique_ptr<DoctypeFixture>;
@@ -57,20 +57,20 @@ struct DoctypeFixture {
     OnnxModelsConfigBuilder onnxModelsBuilder;
     IndexschemaConfigBuilder indexschemaBuilder;
     SummaryConfigBuilder summaryBuilder;
-    SummarymapConfigBuilder summarymapBuilder;
     JuniperrcConfigBuilder juniperrcBuilder;
     ImportedFieldsConfigBuilder importedFieldsBuilder;
 };
 
 struct ConfigTestFixture {
-    const std::string configId;
+    const std::string   configId;
+    Transport           transport;
     ProtonConfigBuilder protonBuilder;
     DocumenttypesConfigBuilder documenttypesBuilder;
     FiledistributorrpcConfigBuilder filedistBuilder;
     BucketspacesConfigBuilder bucketspacesBuilder;
     map<std::string, DoctypeFixture::UP> dbConfig;
     ConfigSet set;
-    IConfigContext::SP context;
+    std::shared_ptr<IConfigContext> context;
     int idcounter;
 
     ConfigTestFixture(const std::string & id)
@@ -90,6 +90,8 @@ struct ConfigTestFixture {
         set.addBuilder(configId, &bucketspacesBuilder);
         addDocType("_alwaysthere_");
     }
+
+    ~ConfigTestFixture() = default;
 
     DoctypeFixture *addDocType(const std::string &name, bool isGlobal = false) {
         DocumenttypesConfigBuilder::Documenttype dt;
@@ -114,7 +116,6 @@ struct ConfigTestFixture {
         set.addBuilder(db.configid, &fixture->onnxModelsBuilder);
         set.addBuilder(db.configid, &fixture->indexschemaBuilder);
         set.addBuilder(db.configid, &fixture->summaryBuilder);
-        set.addBuilder(db.configid, &fixture->summarymapBuilder);
         set.addBuilder(db.configid, &fixture->juniperrcBuilder);
         set.addBuilder(db.configid, &fixture->importedFieldsBuilder);
         return dbConfig.emplace(std::make_pair(name, std::move(fixture))).first->second.get();
@@ -151,7 +152,6 @@ struct ConfigTestFixture {
                 fixture->rankProfilesBuilder == dbc->getRankProfilesConfig() &&
                 fixture->indexschemaBuilder == dbc->getIndexschemaConfig() &&
                 fixture->summaryBuilder == dbc->getSummaryConfig() &&
-                fixture->summarymapBuilder == dbc->getSummarymapConfig() &&
                 fixture->juniperrcBuilder == dbc->getJuniperrcConfig());
     }
 
@@ -181,6 +181,7 @@ struct ProtonConfigOwner : public proton::IProtonConfigurer
     VarHolder<std::shared_ptr<ProtonConfigSnapshot>> _config;
 
     ProtonConfigOwner() : _configured(false), _config() { }
+    ~ProtonConfigOwner() override;
     bool waitUntilConfigured(vespalib::duration timeout) {
         vespalib::Timer timer;
         while (timer.elapsed() < timeout) {
@@ -216,6 +217,8 @@ struct ProtonConfigOwner : public proton::IProtonConfigurer
     }
 };
 
+ProtonConfigOwner::~ProtonConfigOwner() = default;
+
 TEST_F("require that bootstrap config manager creats correct key set", BootstrapConfigManager("foo")) {
     const ConfigKeySet set(f1.createConfigKeySet());
     ASSERT_EQUAL(4u, set.size());
@@ -250,7 +253,7 @@ getDocumentDBConfig(ConfigTestFixture &f, DocumentDBConfigManager &mgr, const Hw
 {
     ConfigRetriever retriever(mgr.createConfigKeySet(), f.context);
     mgr.forwardConfig(f.getBootstrapConfig(1, hwInfo));
-    mgr.update(retriever.getBootstrapConfigs()); // Cheating, but we only need the configs
+    mgr.update(f.transport.transport(), retriever.getBootstrapConfigs()); // Cheating, but we only need the configs
     return mgr.getConfig();
 }
 
@@ -265,7 +268,7 @@ TEST_FF("require that documentdb config manager subscribes for config",
         DocumentDBConfigManager(f1.configId + "/typea", "typea")) {
     f1.addDocType("typea");
     const ConfigKeySet keySet(f2.createConfigKeySet());
-    ASSERT_EQUAL(10u, keySet.size());
+    ASSERT_EQUAL(9u, keySet.size());
     ASSERT_TRUE(f1.configEqual("typea", getDocumentDBConfig(f1, f2)));
 }
 
@@ -301,8 +304,8 @@ TEST_FF("require that documentdb config manager builds schema with imported attr
 TEST_FFF("require that proton config fetcher follows changes to bootstrap",
          ConfigTestFixture("search"),
          ProtonConfigOwner(),
-         ProtonConfigFetcher(ConfigUri(f1.configId, f1.context), f2, 60s)) {
-    f3.start();
+         ProtonConfigFetcher(f1.transport.transport(), ConfigUri(f1.configId, f1.context), f2, 60s)) {
+    f3.start(f1.transport.threadPool());
     ASSERT_TRUE(f2._configured);
     ASSERT_TRUE(f1.configEqual(f2.getBootstrapConfig()));
     f2._configured = false;
@@ -316,8 +319,8 @@ TEST_FFF("require that proton config fetcher follows changes to bootstrap",
 TEST_FFF("require that proton config fetcher follows changes to doctypes",
          ConfigTestFixture("search"),
          ProtonConfigOwner(),
-         ProtonConfigFetcher(ConfigUri(f1.configId, f1.context), f2, 60s)) {
-    f3.start();
+         ProtonConfigFetcher(f1.transport.transport(), ConfigUri(f1.configId, f1.context), f2, 60s)) {
+    f3.start(f1.transport.threadPool());
 
     f2._configured = false;
     f1.addDocType("typea");
@@ -336,8 +339,8 @@ TEST_FFF("require that proton config fetcher follows changes to doctypes",
 TEST_FFF("require that proton config fetcher reconfigures dbowners",
          ConfigTestFixture("search"),
          ProtonConfigOwner(),
-         ProtonConfigFetcher(ConfigUri(f1.configId, f1.context), f2, 60s)) {
-    f3.start();
+         ProtonConfigFetcher(f1.transport.transport(), ConfigUri(f1.configId, f1.context), f2, 60s)) {
+    f3.start(f1.transport.threadPool());
     ASSERT_FALSE(f2.getDocumentDBConfig("typea"));
 
     // Add db and verify that config for db is provided
@@ -397,6 +400,10 @@ TEST_FF("require that docstore config computes cachesize automatically if unset"
     EXPECT_EQUAL(500000ul, config->getStoreConfig().getMaxCacheBytes());
 }
 
+GrowStrategy
+growStrategy(uint32_t initial) {
+    return GrowStrategy(initial, 0.1, 1, initial, 0.15);
+}
 TEST_FF("require that allocation config is propagated",
         ConfigTestFixture("test"),
         DocumentDBConfigManager(f1.configId + "/test", "test"))
@@ -417,9 +424,9 @@ TEST_FF("require that allocation config is propagated",
     auto config = getDocumentDBConfig(f1, f2);
     {
         auto& alloc_config = config->get_alloc_config();
-        EXPECT_EQUAL(AllocStrategy(GrowStrategy(20000000, 0.1, 1, 0.15), CompactionStrategy(0.25, 0.3), 10000), alloc_config.make_alloc_strategy(SubDbType::READY));
-        EXPECT_EQUAL(AllocStrategy(GrowStrategy(100000, 0.1, 1, 0.15), CompactionStrategy(0.25, 0.3), 10000), alloc_config.make_alloc_strategy(SubDbType::REMOVED));
-        EXPECT_EQUAL(AllocStrategy(GrowStrategy(30000000, 0.1, 1, 0.15), CompactionStrategy(0.25, 0.3), 10000), alloc_config.make_alloc_strategy(SubDbType::NOTREADY));
+        EXPECT_EQUAL(AllocStrategy(growStrategy(20000000), CompactionStrategy(0.25, 0.3), 10000), alloc_config.make_alloc_strategy(SubDbType::READY));
+        EXPECT_EQUAL(AllocStrategy(growStrategy(100000), CompactionStrategy(0.25, 0.3), 10000), alloc_config.make_alloc_strategy(SubDbType::REMOVED));
+        EXPECT_EQUAL(AllocStrategy(growStrategy(30000000), CompactionStrategy(0.25, 0.3), 10000), alloc_config.make_alloc_strategy(SubDbType::NOTREADY));
     }
 }
 

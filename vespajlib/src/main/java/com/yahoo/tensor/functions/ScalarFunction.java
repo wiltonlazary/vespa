@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.tensor.functions;
 
 import com.yahoo.tensor.evaluation.EvaluationContext;
@@ -20,6 +20,6 @@ public interface ScalarFunction<NAMETYPE extends Name> extends Function<Evaluati
     /** Returns this as a tensor function, or empty if it cannot be represented as a tensor function */
     default Optional<TensorFunction<NAMETYPE>> asTensorFunction() { return Optional.empty(); }
 
-    default String toString(ToStringContext context) { return toString(); }
+    default String toString(ToStringContext<NAMETYPE> context) { return toString(); }
 
 }

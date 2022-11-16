@@ -2,12 +2,9 @@
 
 #include "floatbase.hpp"
 #include "attributevector.hpp"
-#include <vespa/searchlib/common/sort.h>
 #include <vespa/document/fieldvalue/fieldvalue.h>
 
 namespace search {
-
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(FloatingPointAttribute, NumericAttribute);
 
 FloatingPointAttribute::FloatingPointAttribute(const vespalib::string & name, const Config & c) :
     NumericAttribute(name, c),

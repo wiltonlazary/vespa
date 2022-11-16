@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.integration.dns;
 
-import com.yahoo.config.provision.HostName;
+import ai.vespa.http.DomainName;
 import com.yahoo.config.provision.zone.ZoneId;
 
 import java.util.Objects;
@@ -9,16 +9,18 @@ import java.util.Objects;
 /**
  * An implementation of {@link AliasTarget} where is requests are answered based on the weight assigned to the
  * record, as a proportion of the total weight for all records having the same DNS name.
- *
+ * <p>
  * The portion of received traffic is calculated as follows: (record weight / sum of the weights of all records).
  *
  * @author mpolden
  */
-public class WeightedAliasTarget extends AliasTarget {
+public final class WeightedAliasTarget extends AliasTarget {
+
+    static final String TARGET_TYPE = "weighted";
 
     private final long weight;
 
-    public WeightedAliasTarget(HostName name, String dnsZone, ZoneId zone, long weight) {
+    public WeightedAliasTarget(DomainName name, String dnsZone, ZoneId zone, long weight) {
         super(name, dnsZone, zone.value());
         this.weight = weight;
         if (weight < 0) throw new IllegalArgumentException("Weight cannot be negative");
@@ -31,7 +33,7 @@ public class WeightedAliasTarget extends AliasTarget {
 
     @Override
     public RecordData pack() {
-        return RecordData.from("weighted/" + name().value() + "/" + dnsZone() + "/" + id() + "/" + weight);
+        return RecordData.from(String.join("/", TARGET_TYPE, name().value(), dnsZone(), id(), Long.toString(weight)));
     }
 
     @Override
@@ -60,10 +62,10 @@ public class WeightedAliasTarget extends AliasTarget {
             throw new IllegalArgumentException("Expected data to be on format type/name/DNS-zone/zone-id/weight, " +
                                                "but got " + data.asString());
         }
-        if (!"weighted".equals(parts[0])) {
+        if (!TARGET_TYPE.equals(parts[0])) {
             throw new IllegalArgumentException("Unexpected type '" + parts[0] + "'");
         }
-        return new WeightedAliasTarget(HostName.from(parts[1]), parts[2], ZoneId.from(parts[3]),
+        return new WeightedAliasTarget(DomainName.of(parts[1]), parts[2], ZoneId.from(parts[3]),
                                        Long.parseLong(parts[4]));
     }
 

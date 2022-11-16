@@ -8,12 +8,10 @@
 #include <vespa/log/log.h>
 LOG_SETUP(".config.common.configmanager");
 
-using namespace std::chrono_literals;
-using namespace std::chrono;
 
 namespace config {
 
-ConfigManager::ConfigManager(SourceFactory::UP sourceFactory, int64_t initialGeneration)
+ConfigManager::ConfigManager(std::unique_ptr<SourceFactory> sourceFactory, int64_t initialGeneration)
     : _idGenerator(0),
       _sourceFactory(std::move(sourceFactory)),
       _generation(initialGeneration),
@@ -24,21 +22,21 @@ ConfigManager::ConfigManager(SourceFactory::UP sourceFactory, int64_t initialGen
 ConfigManager::~ConfigManager() = default;
 
 ConfigSubscription::SP
-ConfigManager::subscribe(const ConfigKey & key, milliseconds timeoutInMillis)
+ConfigManager::subscribe(const ConfigKey & key, vespalib::duration timeout)
 {
     LOG(debug, "subscribing on def %s, configid %s", key.getDefName().c_str(), key.getConfigId().c_str());
 
     SubscriptionId id(_idGenerator.fetch_add(1));
 
     auto holder = std::make_shared<ConfigHolder>();
-    Source::UP source = _sourceFactory->createSource(holder, key);
+    std::unique_ptr<Source> source = _sourceFactory->createSource(holder, key);
     source->reload(_generation);
 
     source->getConfig();
-    ConfigSubscription::SP subscription(new ConfigSubscription(id, key, holder, std::move(source)));
+    auto subscription = std::make_shared<ConfigSubscription>(id, key, holder, std::move(source));
 
-    steady_clock::time_point endTime = steady_clock::now() + timeoutInMillis;
-    while (steady_clock::now() < endTime) {
+    vespalib::steady_time endTime = vespalib::steady_clock::now() + timeout;
+    while (vespalib::steady_clock::now() < endTime) {
         if (holder->poll())
             break;
         std::this_thread::sleep_for(10ms);
@@ -55,10 +53,10 @@ ConfigManager::subscribe(const ConfigKey & key, milliseconds timeoutInMillis)
 }
 
 void
-ConfigManager::unsubscribe(const ConfigSubscription::SP & subscription)
+ConfigManager::unsubscribe(const ConfigSubscription & subscription)
 {
     std::lock_guard guard(_lock);
-    const SubscriptionId id(subscription->getSubscriptionId());
+    const SubscriptionId id(subscription.getSubscriptionId());
     if (_subscriptionMap.find(id) != _subscriptionMap.end())
         _subscriptionMap.erase(id);
 }

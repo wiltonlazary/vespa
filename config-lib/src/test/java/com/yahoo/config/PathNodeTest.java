@@ -1,26 +1,28 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * @author gjoranv
- * @since 5.1.28
  */
 public class PathNodeTest {
 
     @Test
-    public void testSetValue() {
+    void testSetValue() {
         PathNode n = new PathNode();
-        assertThat(n.toString(), is("(null)"));
+        assertEquals("(null)", n.toString());
 
         n = new PathNode(new FileReference("foo.txt"));
-        assertThat(n.value(), is(new File("foo.txt").toPath()));
+        assertEquals(new File("foo.txt").toPath(), n.value());
+
+        assertEquals("Path may not start with '..' but got 'foo/../../boo'",
+                assertThrows(IllegalArgumentException.class, () -> new PathNode(new FileReference("foo/../../boo"))).getMessage());
     }
 
 }

@@ -1,12 +1,12 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.client.dsl;
 
 import java.util.Map;
 
 public class WeightedSet extends QueryChain {
 
-    private String fieldName;
-    private Map<String, Integer> weightedSet;
+    private final String fieldName;
+    private final Map<String, Integer> weightedSet;
 
     WeightedSet(String fieldName, Map<String, Integer> weightedSet) {
         this.fieldName = fieldName;
@@ -21,7 +21,7 @@ public class WeightedSet extends QueryChain {
 
     @Override
     public String toString() {
-        return "weightedSet(" + fieldName + ", " + Q.gson.toJson(weightedSet) + ")";
+        return "weightedSet(" + fieldName + ", " + Q.toJson(weightedSet) + ")";
     }
 
     @Override
@@ -47,4 +47,5 @@ public class WeightedSet extends QueryChain {
         // TODO: implementation
         throw new UnsupportedOperationException("method not implemented");
     }
+
 }

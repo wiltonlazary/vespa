@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.time;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -14,6 +14,7 @@ import java.util.Optional;
  * @author hakon
  */
 public class TimeBudget {
+
     private final Clock clock;
     private final Instant start;
     private final Optional<Duration> timeout;
@@ -59,7 +60,7 @@ public class TimeBudget {
             Duration passed = timePassed();
             Duration left = timeout.minus(passed);
             if (left.toMillis() <= 0) {
-                throw new UncheckedTimeoutException("Time since start " + passed + " exceeds timeout " + this.timeout);
+                throw new UncheckedTimeoutException("Time since start " + passed + " exceeds timeout " + timeout);
             }
 
             return left;
@@ -74,13 +75,17 @@ public class TimeBudget {
     /** Returns the time left as a new TimeBudget. */
     public TimeBudget timeLeftAsTimeBudget() {
         Instant now = clock.instant();
-        Optional<Instant> deadline = deadline();
-        return new TimeBudget(clock, now, deadline.map(d -> Duration.between(now, d)));
+        return new TimeBudget(clock, now, deadline().map(d -> Duration.between(now, d)));
     }
 
     /** Returns a new TimeBudget with the same clock and start, but with this deadline. */
     public TimeBudget withDeadline(Instant deadline) {
         return new TimeBudget(clock, start, Optional.of(Duration.between(start, deadline)));
+    }
+
+    /** Returns a new TimeBudget with the given duration chopped off, reserved for something else. */
+    public TimeBudget withReserved(Duration chunk) {
+        return timeout.isEmpty() ? this : new TimeBudget(clock, start, Optional.of(timeout.get().minus(chunk)));
     }
 
     private static Duration nonNegativeBetween(Instant start, Instant end) {
@@ -90,4 +95,5 @@ public class TimeBudget {
     private static Duration makeNonNegative(Duration duration) {
         return duration.isNegative() ? Duration.ZERO : duration;
     }
+
 }

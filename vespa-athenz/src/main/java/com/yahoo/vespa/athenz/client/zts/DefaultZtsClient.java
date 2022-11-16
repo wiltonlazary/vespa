@@ -38,7 +38,6 @@ import java.security.KeyPair;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -94,12 +93,17 @@ public class DefaultZtsClient extends ClientBase implements ZtsClient {
 
     @Override
     public Identity getServiceIdentity(AthenzIdentity identity, String keyId, Pkcs10Csr csr) {
+        return getServiceIdentity(identity, keyId, csr, Optional.empty());
+    }
+
+    public Identity getServiceIdentity(AthenzIdentity identity, String keyId, Pkcs10Csr csr, Optional<NToken> nToken) {
         URI uri = ztsUrl.resolve(String.format("instance/%s/%s/refresh", identity.getDomainName(), identity.getName()));
-        HttpUriRequest request = RequestBuilder.post()
-                .setUri(uri)
-                .setEntity(toJsonStringEntity(new IdentityRefreshRequestEntity(csr, keyId)))
-                .build();
-        return execute(request, response -> {
+        RequestBuilder builder = RequestBuilder.post()
+                                               .setUri(uri)
+                                               .setEntity(toJsonStringEntity(new IdentityRefreshRequestEntity(csr, keyId)));
+        nToken.ifPresent(n -> builder.setHeader("Athenz-Principal-Auth", n.getRawToken()));
+
+        return execute(builder.build(), response -> {
             IdentityResponseEntity entity = readEntity(response, IdentityResponseEntity.class);
             return new Identity(entity.certificate(), entity.caCertificateBundle());
         });
@@ -112,22 +116,23 @@ public class DefaultZtsClient extends ClientBase implements ZtsClient {
     }
 
     @Override
-    public ZToken getRoleToken(AthenzDomain domain) {
-        return getRoleToken(domain, null);
+    public ZToken getRoleToken(AthenzDomain domain, Duration expiry) {
+        return getRoleToken(domain, null, expiry);
     }
 
     @Override
-    public ZToken getRoleToken(AthenzRole athenzRole) {
-        return getRoleToken(athenzRole.domain(), athenzRole.roleName());
+    public ZToken getRoleToken(AthenzRole athenzRole, Duration expiry) {
+        return getRoleToken(athenzRole.domain(), athenzRole.roleName(), expiry);
     }
 
-    private ZToken getRoleToken(AthenzDomain domain, String roleName) {
+    private ZToken getRoleToken(AthenzDomain domain, String roleName, Duration expiry) {
         URI uri = ztsUrl.resolve(String.format("domain/%s/token", domain.getName()));
         RequestBuilder requestBuilder = RequestBuilder.get(uri)
                 .addHeader("Content-Type", "application/json");
         if (roleName != null) {
             requestBuilder.addParameter("role", roleName);
         }
+        requestBuilder.addParameter("maxExpiryTime", Long.toString(expiry.getSeconds()));
         HttpUriRequest request = requestBuilder.build();
         return execute(request, response -> {
             RoleTokenResponseEntity roleTokenResponseEntity = readEntity(response, RoleTokenResponseEntity.class);
@@ -136,8 +141,8 @@ public class DefaultZtsClient extends ClientBase implements ZtsClient {
     }
 
     @Override
-    public AthenzAccessToken getAccessToken(AthenzDomain domain) {
-        return this.getAccessTokenImpl(List.of(new AthenzResourceName(domain, "domain")));
+    public AthenzAccessToken getAccessToken(AthenzDomain domain,  List<AthenzIdentity> proxyPrincipals) {
+        return this.getAccessTokenImpl(List.of(new AthenzResourceName(domain, "domain")), proxyPrincipals);
     }
 
     @Override
@@ -145,16 +150,22 @@ public class DefaultZtsClient extends ClientBase implements ZtsClient {
         List<AthenzResourceName> athenzResourceNames = athenzRole.stream()
                 .map(AthenzRole::toResourceName)
                 .collect(toList());
-        return this.getAccessTokenImpl(athenzResourceNames);
+        return this.getAccessTokenImpl(athenzResourceNames, List.of());
     }
 
-    private AthenzAccessToken getAccessTokenImpl(List<AthenzResourceName> resources) {
+    private AthenzAccessToken getAccessTokenImpl(List<AthenzResourceName> resources, List<AthenzIdentity> proxyPrincipals) {
         URI uri = ztsUrl.resolve("oauth2/token");
         RequestBuilder requestBuilder = RequestBuilder.post(uri)
                 .addHeader("Content-Type", "application/x-www-form-urlencoded")
                 .addParameter("grant_type", "client_credentials")
                 .addParameter("scope", resources.stream().map(AthenzResourceName::toResourceNameString).collect(Collectors.joining(" ")));
-
+        if (proxyPrincipals.size()>0) {
+            String proxyPrincipalString = proxyPrincipals.stream()
+                    .map(AthenzIdentity::spiffeUri)
+                    .map(URI::toString)
+                    .collect(Collectors.joining(","));
+            requestBuilder.addParameter("proxy_principal_spiffe_uris", proxyPrincipalString);
+        }
         HttpUriRequest request = requestBuilder.build();
         return execute(request, response -> {
             AccessTokenResponseEntity accessTokenResponseEntity = readEntity(response, AccessTokenResponseEntity.class);
@@ -225,7 +236,7 @@ public class DefaultZtsClient extends ClientBase implements ZtsClient {
             return URI.create(ztsUrl.toString() + '/');
     }
     public static class Builder {
-        private URI ztsUrl;
+        private final URI ztsUrl;
         private ErrorHandler errorHandler = ErrorHandler.empty();
         private HostnameVerifier hostnameVerifier = null;
         private Supplier<SSLContext> sslContextSupplier = null;
@@ -255,9 +266,8 @@ public class DefaultZtsClient extends ClientBase implements ZtsClient {
         }
 
         public DefaultZtsClient build() {
-            if (Objects.isNull(sslContextSupplier)) {
-                throw new IllegalArgumentException("No ssl context or identity provider available to set up zts client");
-            }
+            if (sslContextSupplier == null)
+                throw new IllegalArgumentException("No SSL context or identity provider available to set up ZTS client");
             return new DefaultZtsClient(ztsUrl, sslContextSupplier, hostnameVerifier, errorHandler);
         }
     }

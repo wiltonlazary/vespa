@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.dns;
 
 import com.yahoo.vespa.hosted.controller.api.integration.dns.NameService;
@@ -19,7 +19,7 @@ public class CreateRecord implements NameServiceRequest {
     /** DO NOT USE. Public for serialization purposes */
     public CreateRecord(Record record) {
         this.record = Objects.requireNonNull(record, "record must be non-null");
-        if (record.type() != Record.Type.CNAME) {
+        if (record.type() != Record.Type.CNAME && record.type() != Record.Type.A) {
             throw new IllegalArgumentException("Record of type " + record.type() + " is not supported: " + record);
         }
     }
@@ -38,7 +38,7 @@ public class CreateRecord implements NameServiceRequest {
             }
         });
         if (records.isEmpty()) {
-            nameService.createCname(record.name(), record.data());
+            nameService.createRecord(record.type(), record.name(), record.data());
         }
     }
 

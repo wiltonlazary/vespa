@@ -60,7 +60,9 @@ Array<T>::Array(const Array & rhs)
     : _array(rhs._array.create(rhs.size() * sizeof(T))),
       _sz(rhs.size())
 {
-    construct(array(0), rhs.array(0), _sz, std::is_trivially_copyable<T>());
+    if (_sz > 0) [[likely]] {
+        construct(array(0), rhs.array(0), _sz, std::is_trivially_copyable<T>());
+    }
 }
 
 template <typename T>
@@ -203,6 +205,21 @@ void Array<T>::cleanup()
     std::destroy(array(0), array(_sz));
     _sz = 0;
     Alloc().swap(_array);
+}
+
+template <typename T>
+void Array<T>::reset()
+{
+    std::destroy(array(0), array(_sz));
+    _sz = 0;
+    _array.reset();
+}
+
+template <typename T>
+Array<T>
+Array<T>::create() const
+{
+    return Array<T>(_array); // Use same memory allocator
 }
 
 }

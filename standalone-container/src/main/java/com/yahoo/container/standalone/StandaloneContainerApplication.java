@@ -67,7 +67,7 @@ public class StandaloneContainerApplication implements Application {
     public static final Named APPLICATION_PATH_NAME = Names.named(APPLICATION_LOCATION_INSTALL_VARIABLE);
     public static final Named CONFIG_MODEL_REPO_NAME = Names.named("ConfigModelRepo");
 
-    private static final String DEFAULT_TMP_BASE_DIR = Defaults.getDefaults().underVespaHome("tmp");
+    private static final String DEFAULT_TMP_BASE_DIR = Defaults.getDefaults().underVespaHome("var/tmp");
     private static final String TMP_DIR_NAME = "standalone_container";
 
     private static final StaticConfigDefinitionRepo configDefinitionRepo = new StaticConfigDefinitionRepo();
@@ -154,6 +154,7 @@ public class StandaloneContainerApplication implements Application {
     public void start() {
         try {
             com.yahoo.container.Container.get().setCustomFileAcquirer(distributedFiles);
+            com.yahoo.container.Container.get().disableUrlDownloader();
             configuredApplication.start();
         } catch (Exception e) {
             com.yahoo.container.Container.resetInstance();
@@ -256,7 +257,7 @@ public class StandaloneContainerApplication implements Application {
         // such that the above and below code to finalize the container can be
         // replaced by root.finalize();
 
-        initializeContainer(deployState.getDeployLogger(), container, spec);
+        initializeContainer(deployState, container, spec);
 
         root.freezeModelTopology();
         return new Pair<>(root, container);
@@ -287,12 +288,12 @@ public class StandaloneContainerApplication implements Application {
         return builder.build();
     }
 
-    private static void initializeContainer(DeployLogger deployLogger, Container container, Element spec) {
+    private static void initializeContainer(DeployState deployState, Container container, Element spec) {
         HostResource host = container.getRoot().hostSystem().getHost(Container.SINGLENODE_CONTAINER_SERVICESPEC);
 
         container.setBasePort(VespaDomBuilder.getXmlWantedPort(spec));
         container.setHostResource(host);
-        container.initService(deployLogger);
+        container.initService(deployState);
     }
 
     private static Element getJDiscInServices(Element element) {

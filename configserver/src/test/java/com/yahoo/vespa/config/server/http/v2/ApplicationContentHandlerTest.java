@@ -25,9 +25,8 @@ import org.junit.rules.TemporaryFolder;
 import java.io.File;
 import java.io.IOException;
 
-import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
 
 /**
  * @author Ulf Lilleengen
@@ -70,7 +69,7 @@ public class ApplicationContentHandlerTest extends ContentHandlerTestBase {
                 .build();
 
         applicationRepository.deploy(testApp, prepareParams(appId1));
-        handler = new ApplicationHandler(ApplicationHandler.testOnlyContext(),
+        handler = new ApplicationHandler(ApplicationHandler.testContext(),
                                          Zone.defaultZone(),
                                          applicationRepository);
         pathPrefix = createPath(appId1, Zone.defaultZone());
@@ -106,15 +105,15 @@ public class ApplicationContentHandlerTest extends ContentHandlerTestBase {
     @Test
     public void require_that_get_does_not_set_write_flag() throws IOException {
         Tenant tenant1 = applicationRepository.getTenant(appId1);
-        Session session = applicationRepository.getActiveLocalSession(tenant1, appId1);
+        Session session = applicationRepository.getActiveLocalSession(tenant1, appId1).get();
         assertContent("/test.txt", "foo\n");
-        assertThat(session.getStatus(), is(Session.Status.ACTIVATE));
+        assertEquals(Session.Status.ACTIVATE, session.getStatus());
     }
 
     private void assertNotFound(HttpRequest request) {
         HttpResponse response = handler.handle(request);
         assertNotNull(response);
-        assertThat(response.getStatus(), is(Response.Status.NOT_FOUND));
+        assertEquals(Response.Status.NOT_FOUND, response.getStatus());
     }
 
     @Override

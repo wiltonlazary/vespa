@@ -2,15 +2,15 @@
 package com.yahoo.vespa.model.container.search.searchchain;
 
 import com.yahoo.test.SimpletypesConfig;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.w3c.dom.Element;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author bratseth
  */
-public class Federation2Test extends SearchChainsTestBase {
+public class Federation2Test extends SchemaChainsTestBase {
     @Override
     Element servicesXml() {
         return parse(
@@ -55,15 +55,15 @@ public class Federation2Test extends SearchChainsTestBase {
 
 
     @Test
-    public void testProviderConfigs() {
+    void testProviderConfigs() {
         //SimpletypesConfig testConfig = root.getConfig(SimpletypesConfig.class, "test/searchchains/chain/chain1/component/com.yahoo.example.TestSearcher");
         //assertEquals("testSearcher",testConfig.stringval());
         
         SimpletypesConfig configA = root.getConfig(SimpletypesConfig.class, "searchchains/chain/providerA/source/commonSource/component/com.yahoo.example.AddHitSearcher");
-        assertEquals("providerA",configA.stringval());
+        assertEquals("providerA", configA.stringval());
 
         SimpletypesConfig configB = root.getConfig(SimpletypesConfig.class, "searchchains/chain/providerB/source/commonSource/component/com.yahoo.example.AddHitSearcher");
-        assertEquals("providerB",configB.stringval());
+        assertEquals("providerB", configB.stringval());
     }
 
 }

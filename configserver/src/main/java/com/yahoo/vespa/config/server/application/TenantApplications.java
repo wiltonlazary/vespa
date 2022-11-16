@@ -3,6 +3,7 @@ package com.yahoo.vespa.config.server.application;
 
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
+import com.yahoo.component.VersionCompatibility;
 import com.yahoo.concurrent.StripedExecutor;
 import com.yahoo.config.FileReference;
 import com.yahoo.config.provision.ApplicationId;
@@ -13,7 +14,7 @@ import com.yahoo.vespa.config.ConfigKey;
 import com.yahoo.vespa.config.GetConfigRequest;
 import com.yahoo.vespa.config.protocol.ConfigResponse;
 import com.yahoo.vespa.config.server.NotFoundException;
-import com.yahoo.vespa.config.server.ReloadListener;
+import com.yahoo.vespa.config.server.ConfigActivationListener;
 import com.yahoo.vespa.config.server.RequestHandler;
 import com.yahoo.vespa.config.server.deploy.TenantFileSystemDirs;
 import com.yahoo.vespa.config.server.host.HostRegistry;
@@ -26,9 +27,11 @@ import com.yahoo.vespa.curator.CompletionTimeoutException;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.Lock;
 import com.yahoo.vespa.curator.transaction.CuratorTransaction;
+import com.yahoo.vespa.flags.FlagSource;
+import com.yahoo.vespa.flags.ListFlag;
+import com.yahoo.vespa.flags.PermanentFlags;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
-
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.Clock;
@@ -45,6 +48,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static com.yahoo.vespa.curator.Curator.CompletionWaiter;
+import static com.yahoo.vespa.flags.FetchVector.Dimension.APPLICATION_ID;
 import static java.util.stream.Collectors.toSet;
 
 /**
@@ -63,7 +67,7 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
     private final Executor zkWatcherExecutor;
     private final Metrics metrics;
     private final TenantName tenant;
-    private final ReloadListener reloadListener;
+    private final ConfigActivationListener configActivationListener;
     private final ConfigResponseFactory responseFactory;
     private final HostRegistry hostRegistry;
     private final ApplicationMapper applicationMapper = new ApplicationMapper();
@@ -71,11 +75,12 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
     private final Clock clock;
     private final TenantFileSystemDirs tenantFileSystemDirs;
     private final ConfigserverConfig configserverConfig;
+    private final ListFlag<String> incompatibleVersions;
 
     public TenantApplications(TenantName tenant, Curator curator, StripedExecutor<TenantName> zkWatcherExecutor,
-                              ExecutorService zkCacheExecutor, Metrics metrics, ReloadListener reloadListener,
+                              ExecutorService zkCacheExecutor, Metrics metrics, ConfigActivationListener configActivationListener,
                               ConfigserverConfig configserverConfig, HostRegistry hostRegistry,
-                              TenantFileSystemDirs tenantFileSystemDirs, Clock clock) {
+                              TenantFileSystemDirs tenantFileSystemDirs, Clock clock, FlagSource flagSource) {
         this.curator = curator;
         this.database = new ApplicationCuratorDatabase(tenant, curator);
         this.tenant = tenant;
@@ -84,13 +89,14 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
         this.directoryCache.addListener(this::childEvent);
         this.directoryCache.start();
         this.metrics = metrics;
-        this.reloadListener = reloadListener;
+        this.configActivationListener = configActivationListener;
         this.responseFactory = ConfigResponseFactory.create(configserverConfig);
         this.tenantMetricUpdater = metrics.getOrCreateMetricUpdater(Metrics.createDimensions(tenant));
         this.hostRegistry = hostRegistry;
         this.tenantFileSystemDirs = tenantFileSystemDirs;
         this.clock = clock;
         this.configserverConfig = configserverConfig;
+        this.incompatibleVersions = PermanentFlags.INCOMPATIBLE_VERSIONS.bindTo(flagSource);
     }
 
     /** The curator backed ZK storage of this. */
@@ -205,23 +211,22 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
     @Override
     public ConfigResponse resolveConfig(ApplicationId appId, GetConfigRequest req, Optional<Version> vespaVersion) {
         Application application = getApplication(appId, vespaVersion);
-        log.log(Level.FINE, () -> TenantRepository.logPre(appId) + "Resolving for tenant '" + tenant +
-                                  "' with handler for application '" + application + "'");
+        log.log(Level.FINE, () -> TenantRepository.logPre(appId) + "Resolving config");
         return application.resolveConfig(req, responseFactory);
     }
 
-    private void notifyReloadListeners(ApplicationSet applicationSet) {
+    private void notifyConfigActivationListeners(ApplicationSet applicationSet) {
         if (applicationSet.getAllApplications().isEmpty()) throw new IllegalArgumentException("application set cannot be empty");
 
-        reloadListener.hostsUpdated(applicationSet.getAllApplications().get(0).toApplicationInfo().getApplicationId(),
-                                    applicationSet.getAllHosts());
-        reloadListener.configActivated(applicationSet);
+        configActivationListener.hostsUpdated(applicationSet.getAllApplications().get(0).toApplicationInfo().getApplicationId(),
+                                              applicationSet.getAllHosts());
+        configActivationListener.configActivated(applicationSet);
     }
 
     /**
      * Activates the config of the given app. Notifies listeners
      *
-     * @param applicationSet the {@link ApplicationSet} to be reloaded
+     * @param applicationSet the {@link ApplicationSet} to be activated
      */
     public void activateApplication(ApplicationSet applicationSet, long activeSessionId) {
         ApplicationId id = applicationSet.getId();
@@ -231,8 +236,8 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
             if (applicationSet.getApplicationGeneration() != activeSessionId)
                 return; // Application activated a new session before we got here.
 
-            setLiveApp(applicationSet);
-            notifyReloadListeners(applicationSet);
+            setActiveApp(applicationSet);
+            notifyConfigActivationListeners(applicationSet);
         }
     }
 
@@ -249,7 +254,7 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
         if (hasApplication(applicationId)) {
             applicationMapper.remove(applicationId);
             hostRegistry.removeHostsForKey(applicationId);
-            reloadListenersOnRemove(applicationId);
+            configActivationListenersOnRemove(applicationId);
             tenantMetricUpdater.setApplications(applicationMapper.numApplications());
             metrics.removeMetricUpdater(Metrics.createDimensions(applicationId));
             getRemoveApplicationWaiter(applicationId).notifyCompletion();
@@ -271,12 +276,12 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
         }
     }
 
-    private void reloadListenersOnRemove(ApplicationId applicationId) {
-        reloadListener.hostsUpdated(applicationId, hostRegistry.getHostsForKey(applicationId));
-        reloadListener.applicationRemoved(applicationId);
+    private void configActivationListenersOnRemove(ApplicationId applicationId) {
+        configActivationListener.hostsUpdated(applicationId, hostRegistry.getHostsForKey(applicationId));
+        configActivationListener.applicationRemoved(applicationId);
     }
 
-    private void setLiveApp(ApplicationSet applicationSet) {
+    private void setActiveApp(ApplicationSet applicationSet) {
         ApplicationId id = applicationSet.getId();
         Collection<String> hostsForApp = applicationSet.getAllHosts();
         hostRegistry.update(id, hostsForApp);
@@ -329,7 +334,7 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
     }
 
     /**
-     * Given baseIdSegment search/ and id search/qrservers/default.0, return search/qrservers
+     * Given baseIdSegment search/ and id search/container/default.0, return search/container
      * @return id segment with one extra level from the id appended
      */
     String appendOneLevelOfId(String baseIdSegment, String id) {
@@ -383,9 +388,18 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
     }
 
     @Override
+    public boolean compatibleWith(Optional<Version> vespaVersion, ApplicationId application) {
+        if (vespaVersion.isEmpty()) return true;
+        Version wantedVersion = applicationMapper.getForVersion(application, Optional.empty(), clock.instant())
+                                                 .getModel().wantedNodeVersion();
+        return VersionCompatibility.fromVersionList(incompatibleVersions.with(APPLICATION_ID, application.serializedForm()).value())
+                                   .accept(vespaVersion.get(), wantedVersion);
+    }
+
+    @Override
     public void verifyHosts(ApplicationId applicationId, Collection<String> newHosts) {
         hostRegistry.verifyHosts(applicationId, newHosts);
-        reloadListener.verifyHostsAreAvailable(applicationId, newHosts);
+        configActivationListener.verifyHostsAreAvailable(applicationId, newHosts);
     }
 
     public HostValidator<ApplicationId> getHostValidator() {
@@ -472,7 +486,7 @@ public class TenantApplications implements RequestHandler, HostValidator<Applica
                 // If some are missing, quorum is enough, but wait for all up to 5 seconds before returning
                 if (respondents.size() >= barrierMemberCount()) {
                     if (gotQuorumTime.isBefore(startTime))
-                        gotQuorumTime = Instant.now();
+                        gotQuorumTime = clock.instant();
 
                     // Give up if more than some time has passed since we got quorum, otherwise continue
                     if (Duration.between(Instant.now(), gotQuorumTime.plus(waitForAll)).isNegative()) {

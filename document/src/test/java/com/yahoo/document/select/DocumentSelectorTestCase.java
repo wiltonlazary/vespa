@@ -17,6 +17,7 @@ import com.yahoo.document.MapDataType;
 import com.yahoo.document.StructDataType;
 import com.yahoo.document.WeightedSetDataType;
 import com.yahoo.document.datatypes.Array;
+import com.yahoo.document.datatypes.BoolFieldValue;
 import com.yahoo.document.datatypes.FloatFieldValue;
 import com.yahoo.document.datatypes.IntegerFieldValue;
 import com.yahoo.document.datatypes.MapFieldValue;
@@ -28,9 +29,7 @@ import com.yahoo.document.select.parser.ParseException;
 import com.yahoo.document.select.parser.TokenMgrException;
 import com.yahoo.yolean.Exceptions;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -49,15 +48,16 @@ import static org.junit.Assert.fail;
  */
 public class DocumentSelectorTestCase {
 
-    @Rule
-    public final ExpectedException exceptionRule = ExpectedException.none();
-
     private static final DocumentTypeManager manager = new DocumentTypeManager();
 
     @Before
     public void setUp() {
+        DocumentType parent = new DocumentType("parent");
+        parent.addField("parentField", DataType.STRING);
+
         var importedFields = new HashSet<>(List.of("my_imported_field"));
         DocumentType type = new DocumentType("test", importedFields);
+        type.inherit(parent);
         type.addField("hint", DataType.INT);
         type.addField("hfloat", DataType.FLOAT);
         type.addField("hstring", DataType.STRING);
@@ -79,6 +79,7 @@ public class DocumentSelectorTestCase {
         ArrayDataType intarray = new ArrayDataType(DataType.INT);
         type.addField("intarray", intarray);
 
+        manager.registerDocumentType(parent);
         manager.registerDocumentType(type);
 
         // Create strange doctypes using identifiers within them, which we
@@ -373,6 +374,8 @@ public class DocumentSelectorTestCase {
         documents.add(createDocument("id:myspace:test:g=mygroup:qux", 15, 1.0f, "quux", "corge"));
         documents.add(createDocument("id:myspace:test::missingint", null, 2.0f, null, "bar"));
         documents.add(createDocument("id:myspace:test::ampersand", null, 2.0f, null, "&"));
+        documents.add(createDocument("id:foo:test::withtruefield", null, 0.0f, null, ""));
+        documents.add(createDocument("id:foo:test::withfalsefield", null, 0.0f, null, ""));
 
         // Add some array/struct info to doc 1
         Struct sval = new Struct(documents.get(1).getDocument().getField("mystruct").getDataType());
@@ -446,6 +449,9 @@ public class DocumentSelectorTestCase {
         intvals2.add(new IntegerFieldValue(9));
         documents.get(1).getDocument().setFieldValue("intarray", intvals2);
 
+        documents.get(8).getDocument().setFieldValue("truth", new BoolFieldValue(true));
+        documents.get(9).getDocument().setFieldValue("truth", new BoolFieldValue(false));
+
         return documents;
     }
 
@@ -500,6 +506,16 @@ public class DocumentSelectorTestCase {
         assertEquals(Result.FALSE, evaluate("null == \"bar\"", documents.get(0)));
         assertEquals(Result.FALSE, evaluate("14.3 == null", documents.get(0)));
         assertEquals(Result.FALSE, evaluate("null = 0", documents.get(0)));
+
+        // Boolean literals in comparisons
+        assertEquals(Result.TRUE, evaluate("true = true", documents.get(0)));
+        assertEquals(Result.TRUE, evaluate("true == true", documents.get(0)));
+        assertEquals(Result.FALSE, evaluate("true == false", documents.get(0)));
+        assertEquals(Result.TRUE, evaluate("false == false", documents.get(0)));
+        assertEquals(Result.TRUE, evaluate("true == 1", documents.get(0)));
+        assertEquals(Result.FALSE, evaluate("true == 0", documents.get(0)));
+        assertEquals(Result.FALSE, evaluate("false == 1", documents.get(0)));
+        assertEquals(Result.TRUE, evaluate("false == 0", documents.get(0)));
 
         // Field values
         assertEquals(Result.TRUE, evaluate("test.hint = 24", documents.get(0)));
@@ -740,6 +756,35 @@ public class DocumentSelectorTestCase {
     }
 
     @Test
+    public void boolean_fields_can_be_used_for_equality_comparisons() throws ParseException {
+        var documents = createDocs();
+        // Doc 8 has bool field set explicitly to true, doc 9 has field explicitly set to false
+        assertEquals(Result.TRUE, evaluate("test.truth == 1", documents.get(8)));
+        assertEquals(Result.TRUE, evaluate("test.truth == true", documents.get(8)));
+        assertEquals(Result.FALSE, evaluate("test.truth == 1", documents.get(9)));
+        assertEquals(Result.FALSE, evaluate("test.truth == true", documents.get(9)));
+        assertEquals(Result.TRUE, evaluate("test.truth == 0", documents.get(9)));
+        assertEquals(Result.TRUE, evaluate("test.truth == false", documents.get(9)));
+        // FIXME very un-intuitive behavior when nulls are implicitly returned:
+        // Doc 1 does not have the bool field set, but the implicit null value is neither true nor false
+        assertEquals(Result.FALSE, evaluate("test.truth == 1", documents.get(0)));
+        assertEquals(Result.FALSE, evaluate("test.truth == true", documents.get(0)));
+        assertEquals(Result.FALSE, evaluate("test.truth == 0", documents.get(0)));
+        assertEquals(Result.FALSE, evaluate("test.truth == false", documents.get(0)));
+    }
+
+    @Test
+    public void testInheritance() throws ParseException {
+        var s=new DocumentSelector("parent.parentField = \"parentValue\"");
+        List<DocumentPut> documents = createDocs();
+        assertEquals(Result.TRUE, evaluate("test", documents.get(0)));
+        assertEquals("Matching on type is exact", Result.FALSE, evaluate("parent", documents.get(0)));
+        assertEquals(Result.TRUE, evaluate("test.parentField = \"parentValue\"", documents.get(0)));
+        assertEquals("Fields may be accessed by parent type",
+                     Result.TRUE, evaluate("parent.parentField = \"parentValue\"", documents.get(0)));
+    }
+
+    @Test
     public void using_non_commutative_comparison_operator_with_field_value_is_well_defined() throws ParseException {
         var documents = createDocs();
         // Doc 0 contains 24 in `hint` field.
@@ -768,13 +813,15 @@ public class DocumentSelectorTestCase {
 
     @Test
     public void imported_fields_only_supported_for_simple_expressions() throws ParseException {
-        exceptionRule.expect(IllegalArgumentException.class);
         // TODO we should probably handle this case specially and give a better exception message
-        exceptionRule.expectMessage("Field 'my_imported_field' not found in type datatype test");
-
         var documents = createDocs();
-        // Nested field access is NOT considered a simple expression.
-        evaluate("test.my_imported_field.foo", documents.get(0));
+        try {
+            // Nested field access is NOT considered a simple expression.
+            evaluate("test.my_imported_field.foo", documents.get(0));
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage().startsWith("Field 'my_imported_field' not found in type datatype test"));
+        }
     }
 
     @Test
@@ -871,6 +918,7 @@ public class DocumentSelectorTestCase {
         if (hString != null)
             doc.setFieldValue("hstring", new StringFieldValue(hString));
         doc.setFieldValue("content", new StringFieldValue(content));
+        doc.setFieldValue("parentField", new StringFieldValue("parentValue"));
         return new DocumentPut(doc);
     }
 

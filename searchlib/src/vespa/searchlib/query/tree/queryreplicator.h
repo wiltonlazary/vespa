@@ -185,6 +185,21 @@ private:
                                                            node.get_allow_approximate(), node.get_explore_additional_hits(),
                                                            node.get_distance_threshold()));
     }
+
+    void visit(TrueQueryNode &) override {
+        _builder.add_true_node();
+    }
+
+    void visit(FalseQueryNode &) override {
+        _builder.add_false_node();
+    }
+
+    void visit(FuzzyTerm &node) override {
+        replicate(node, _builder.addFuzzyTerm(
+                node.getTerm(), node.getView(),
+                node.getId(), node.getWeight(),
+                node.getMaxEditDistance(), node.getPrefixLength()));
+    }
 };
 
 }

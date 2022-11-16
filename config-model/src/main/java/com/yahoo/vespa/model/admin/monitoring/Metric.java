@@ -1,9 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.admin.monitoring;
 
-import javax.annotation.concurrent.Immutable;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -13,7 +10,6 @@ import java.util.Map;
  * @author trygve
  * @author gjoranv
  */
-@Immutable
 public class Metric {
 
     public final String name;
@@ -25,11 +21,11 @@ public class Metric {
         this.name = name;
         this.outputName = outputName;
         this.description = description;
-        this.dimensions = Collections.unmodifiableMap(dimensions);
+        this.dimensions = Map.copyOf(dimensions);
     }
 
     public Metric(String name, String outputName, String description) {
-        this(name, outputName, description, new HashMap<>());
+        this(name, outputName, description, new LinkedHashMap<>());
     }
 
     /**

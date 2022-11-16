@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/config/helper/configgetter.hpp>
+#include <vespa/document/config/documenttypes_config_fwd.h>
 #include <vespa/document/config/config-documenttypes.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/fieldvalue/document.h>
@@ -29,7 +30,6 @@
 LOG_SETUP(".test.bucketdb.bucketmanager");
 
 using config::ConfigGetter;
-using document::DocumenttypesConfig;
 using config::FileSpec;
 using document::DocumentType;
 using document::DocumentTypeRepo;
@@ -156,7 +156,7 @@ void BucketManagerTest::setupTestEnvironment(bool fakePersistenceLayer,
     _node->setTypeRepo(repo);
     _node->setupDummyPersistence();
     // Set up the 3 links
-    auto manager = std::make_unique<BucketManager>(config.getConfigId(), _node->getComponentRegister());
+    auto manager = std::make_unique<BucketManager>(config::ConfigUri(config.getConfigId()), _node->getComponentRegister());
     _manager = manager.get();
     _top->push_back(std::move(manager));
     if (fakePersistenceLayer) {
@@ -165,8 +165,8 @@ void BucketManagerTest::setupTestEnvironment(bool fakePersistenceLayer,
         _top->push_back(std::move(bottom));
     } else {
         auto bottom = std::make_unique<FileStorManager>(
-                    config.getConfigId(),
-                    _node->getPersistenceProvider(), _node->getComponentRegister(), *_node, _node->get_host_info());
+                config::ConfigUri(config.getConfigId()),
+                _node->getPersistenceProvider(), _node->getComponentRegister(), *_node, _node->get_host_info());
         _top->push_back(std::move(bottom));
     }
     // Generate a doc to use for testing..
@@ -566,7 +566,7 @@ public:
 
         // Need a cluster state to work with initially, so that processing
         // bucket requests can calculate a target distributor.
-        updater_internal_cluster_state_with_current();
+        update_internal_cluster_state_with_current();
     }
 
     void setUp(const WithBuckets& buckets) {
@@ -575,14 +575,24 @@ public:
         }
     }
 
-    void updater_internal_cluster_state_with_current() {
+    void update_internal_cluster_state_with_current() {
         _self._node->setClusterState(*_state);
-        _self._manager->onDown(std::make_shared<api::SetSystemStateCommand>(*_state));
+        auto cmd = std::make_shared<api::SetSystemStateCommand>(*_state);
+        _self._manager->onDown(cmd);
+        // Also send up reply to release internal state transition barrier.
+        // We expect there to be no other pending messages at this point.
+        std::shared_ptr<api::StorageReply> reply(cmd->makeReply());
+        auto as_state_reply = std::dynamic_pointer_cast<api::SetSystemStateReply>(reply);
+        assert(as_state_reply);
+        assert(_self._top->getNumReplies() == 0);
+        _self._manager->onUp(as_state_reply);
+        assert(_self._top->getNumReplies() == 1);
+        (void)_self._top->getRepliesOnce(); // Clear state reply sent up chain
     }
 
     void update_cluster_state(const lib::ClusterState& state) {
         _state = std::make_shared<lib::ClusterState>(state);
-        updater_internal_cluster_state_with_current();
+        update_internal_cluster_state_with_current();
     }
 
     auto acquireBucketLock(const document::BucketId& bucket) {
@@ -619,6 +629,10 @@ public:
 
     auto createFullFetchCommand() const {
         return std::make_shared<api::RequestBucketInfoCommand>(makeBucketSpace(), 0, *_state);
+    }
+
+    auto createFullFetchCommand(const lib::ClusterState& explicit_state) const {
+        return std::make_shared<api::RequestBucketInfoCommand>(makeBucketSpace(), 0, explicit_state);
     }
 
     auto createFullFetchCommandWithHash(vespalib::stringref hash) const {
@@ -693,8 +707,7 @@ public:
         _self._top->getRepliesOnce();
     }
 
-    // TODO remove on Vespa 8 - this is a workaround for https://github.com/vespa-engine/vespa/issues/8475
-    std::unique_ptr<lib::Distribution> default_grouped_distribution() {
+    static std::unique_ptr<lib::Distribution> default_grouped_distribution() {
         return std::make_unique<lib::Distribution>(
                 GlobalBucketSpaceDistributionConverter::string_to_config(vespalib::string(
 R"(redundancy 2
@@ -718,16 +731,16 @@ group[2].nodes[2].index 5
 )")));
     }
 
-    std::shared_ptr<lib::Distribution> derived_global_grouped_distribution(bool use_legacy) {
+    static std::shared_ptr<lib::Distribution> derived_global_grouped_distribution() {
         auto default_distr = default_grouped_distribution();
-        return  GlobalBucketSpaceDistributionConverter::convert_to_global(*default_distr, use_legacy);
+        return  GlobalBucketSpaceDistributionConverter::convert_to_global(*default_distr);
     }
 
     void set_grouped_distribution_configs() {
         auto default_distr = default_grouped_distribution();
         _self._node->getComponentRegister().getBucketSpaceRepo()
                 .get(document::FixedBucketSpaces::default_space()).setDistribution(std::move(default_distr));
-        auto global_distr = derived_global_grouped_distribution(false);
+        auto global_distr = derived_global_grouped_distribution();
         _self._node->getComponentRegister().getBucketSpaceRepo()
                 .get(document::FixedBucketSpaces::global_space()).setDistribution(std::move(global_distr));
     }
@@ -1207,21 +1220,6 @@ TEST_F(BucketManagerTest, db_not_iterated_when_all_requests_rejected) {
     auto replies = fixture.awaitAndGetReplies(1);
 }
 
-// TODO remove on Vespa 8 - this is a workaround for https://github.com/vespa-engine/vespa/issues/8475
-TEST_F(BucketManagerTest, fall_back_to_legacy_global_distribution_hash_on_mismatch) {
-    ConcurrentOperationFixture f(*this);
-
-    f.set_grouped_distribution_configs();
-
-    auto legacy_hash = f.derived_global_grouped_distribution(true)->getNodeGraph().getDistributionConfigHash();
-
-    auto infoCmd = f.createFullFetchCommandWithHash(document::FixedBucketSpaces::global_space(), legacy_hash);
-    _top->sendDown(infoCmd);
-    auto replies = f.awaitAndGetReplies(1);
-    auto& reply = dynamic_cast<api::RequestBucketInfoReply&>(*replies[0]);
-    EXPECT_EQ(api::ReturnCode::OK, reply.getResult().getResult()); // _not_ REJECTED
-}
-
 // It's possible for the request processing thread and onSetSystemState (which use
 // the same mutex) to race with the actual internal component cluster state switch-over.
 // Ensure we detect and handle this by bouncing the request back to the distributor.
@@ -1241,6 +1239,48 @@ TEST_F(BucketManagerTest, bounce_request_on_internal_cluster_state_version_misma
     auto replies = f.awaitAndGetReplies(1);
     auto& reply = dynamic_cast<api::RequestBucketInfoReply&>(*replies[0]);
     EXPECT_EQ(api::ReturnCode::REJECTED, reply.getResult().getResult());
+}
+
+// This tests a slightly different inconsistency than the above test; the node has
+// locally enabled the cluster state (i.e. initially observed version == enabled version),
+// but is not yet done processing side effects from doing so.
+// See comments in BucketManager::onSetSystemState[Reply]() for rationale
+TEST_F(BucketManagerTest, bounce_request_on_state_change_barrier_not_reached) {
+    ConcurrentOperationFixture f(*this);
+
+    // Make manager-internal and component-internal version state inconsistent
+    f.update_cluster_state(lib::ClusterState("version:2 distributor:1 storage:1"));
+    auto new_state = lib::ClusterState("version:3 distributor:1 storage:1");
+    auto state_cmd = std::make_shared<api::SetSystemStateCommand>(new_state);
+    _top->sendDown(state_cmd);
+    _bottom->waitForMessage(api::MessageType::SETSYSTEMSTATE, MESSAGE_WAIT_TIME);
+    (void)_bottom->getCommandsOnce();
+    _node->setClusterState(new_state);
+
+    // At this point, the node's internal cluster state matches that of the state command
+    // which was observed on the way down. But there may still be side effects pending from
+    // enabling the cluster state. So we must still reject requests until we have observed
+    // the reply for the state command (which must order after any and all side effects).
+
+    _top->sendDown(f.createFullFetchCommand());
+    auto replies = f.awaitAndGetReplies(1);
+    {
+        auto& reply = dynamic_cast<api::RequestBucketInfoReply&>(*replies[0]);
+        EXPECT_EQ(api::ReturnCode::REJECTED, reply.getResult().getResult());
+    }
+    (void)_top->getRepliesOnce();
+
+    // Once the cluster state reply has been observed, requests can go through as expected.
+    _manager->onUp(std::shared_ptr<api::StorageReply>(state_cmd->makeReply()));
+    _top->waitForMessage(api::MessageType::SETSYSTEMSTATE_REPLY, MESSAGE_WAIT_TIME);
+    (void)_top->getRepliesOnce();
+
+    _top->sendDown(f.createFullFetchCommand(new_state));
+    replies = f.awaitAndGetReplies(1);
+    {
+        auto& reply = dynamic_cast<api::RequestBucketInfoReply&>(*replies[0]);
+        EXPECT_EQ(api::ReturnCode::OK, reply.getResult().getResult());
+    }
 }
 
 } // storage

@@ -3,20 +3,21 @@ package cmd
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/vespa-engine/vespa/client/go/mock"
 	"github.com/vespa-engine/vespa/client/go/util"
+	"github.com/vespa-engine/vespa/client/go/vespa"
 )
 
 func TestProdInit(t *testing.T) {
-	homeDir := filepath.Join(t.TempDir(), ".vespa")
 	pkgDir := filepath.Join(t.TempDir(), "app")
-	createApplication(t, pkgDir)
+	createApplication(t, pkgDir, false)
 
 	answers := []string{
 		// Regions
@@ -41,13 +42,16 @@ func TestProdInit(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	buf.WriteString(strings.Join(answers, "\n") + "\n")
-	execute(command{stdin: &buf, homeDir: homeDir, args: []string{"prod", "init", pkgDir}}, t, nil)
+
+	cli, _, _ := newTestCLI(t)
+	cli.Stdin = &buf
+	assert.Nil(t, cli.Run("prod", "init", pkgDir))
 
 	// Verify contents
 	deploymentPath := filepath.Join(pkgDir, "src", "main", "application", "deployment.xml")
 	deploymentXML := readFileString(t, deploymentPath)
-	assert.Contains(t, deploymentXML, `<region active="true">aws-us-west-2a</region>`)
-	assert.Contains(t, deploymentXML, `<region active="true">aws-eu-west-1a</region>`)
+	assert.Contains(t, deploymentXML, `<region>aws-us-west-2a</region>`)
+	assert.Contains(t, deploymentXML, `<region>aws-eu-west-1a</region>`)
 
 	servicesPath := filepath.Join(pkgDir, "src", "main", "application", "services.xml")
 	servicesXML := readFileString(t, servicesPath)
@@ -74,14 +78,14 @@ func TestProdInit(t *testing.T) {
 }
 
 func readFileString(t *testing.T, filename string) string {
-	content, err := ioutil.ReadFile(filename)
+	content, err := os.ReadFile(filename)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return string(content)
 }
 
-func createApplication(t *testing.T, pkgDir string) {
+func createApplication(t *testing.T, pkgDir string, java bool) {
 	appDir := filepath.Join(pkgDir, "src", "main", "application")
 	targetDir := filepath.Join(pkgDir, "target")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
@@ -90,10 +94,10 @@ func createApplication(t *testing.T, pkgDir string) {
 
 	deploymentXML := `<deployment version="1.0">
   <prod>
-    <region active="true">aws-us-east-1c</region>
+    <region>aws-us-east-1c</region>
   </prod>
 </deployment>`
-	if err := ioutil.WriteFile(filepath.Join(appDir, "deployment.xml"), []byte(deploymentXML), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(appDir, "deployment.xml"), []byte(deploymentXML), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,39 +118,127 @@ func createApplication(t *testing.T, pkgDir string) {
   </content>
 </services>`
 
-	if err := ioutil.WriteFile(filepath.Join(appDir, "services.xml"), []byte(servicesXML), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(appDir, "services.xml"), []byte(servicesXML), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := ioutil.WriteFile(filepath.Join(pkgDir, "pom.xml"), []byte(""), 0644); err != nil {
+	if java {
+		if err := os.WriteFile(filepath.Join(pkgDir, "pom.xml"), []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		testsDir := filepath.Join(pkgDir, "src", "test", "application", "tests")
+		testBytes, _ := io.ReadAll(strings.NewReader("{\"steps\":[{}]}"))
+		writeTest(filepath.Join(testsDir, "system-test", "test.json"), testBytes, t)
+		writeTest(filepath.Join(testsDir, "staging-setup", "test.json"), testBytes, t)
+		writeTest(filepath.Join(testsDir, "staging-test", "test.json"), testBytes, t)
+	}
+}
+
+func writeTest(path string, content []byte, t *testing.T) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0644); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestProdSubmit(t *testing.T) {
-	homeDir := filepath.Join(t.TempDir(), ".vespa")
 	pkgDir := filepath.Join(t.TempDir(), "app")
-	createApplication(t, pkgDir)
+	createApplication(t, pkgDir, false)
 
-	httpClient := &mockHttpClient{}
-	httpClient.NextResponse(200, `ok`)
-	execute(command{homeDir: homeDir, args: []string{"config", "set", "application", "t1.a1.i1"}}, t, httpClient)
-	execute(command{homeDir: homeDir, args: []string{"config", "set", "target", "cloud"}}, t, httpClient)
-	execute(command{homeDir: homeDir, args: []string{"api-key"}}, t, httpClient)
-	execute(command{homeDir: homeDir, args: []string{"cert", pkgDir}}, t, httpClient)
+	httpClient := &mock.HTTPClient{}
+	httpClient.NextResponseString(200, `ok`)
 
-	// Copy an application package pre-assambled with mvn package
+	cli, stdout, _ := newTestCLI(t, "CI=true")
+	cli.httpClient = httpClient
+	app := vespa.ApplicationID{Tenant: "t1", Application: "a1", Instance: "i1"}
+	assert.Nil(t, cli.Run("config", "set", "application", app.String()))
+	assert.Nil(t, cli.Run("config", "set", "target", "cloud"))
+	assert.Nil(t, cli.Run("auth", "api-key"))
+	assert.Nil(t, cli.Run("auth", "cert", pkgDir))
+
+	// Remove certificate as it's not required for submission (but it must be part of the application package)
+	if path, err := cli.config.privateKeyPath(app, vespa.TargetCloud); err == nil {
+		os.RemoveAll(path)
+	} else {
+		require.Nil(t, err)
+	}
+	if path, err := cli.config.certificatePath(app, vespa.TargetCloud); err == nil {
+		os.RemoveAll(path)
+	} else {
+		require.Nil(t, err)
+	}
+
+	// Zipping requires relative paths, so must let command run from pkgDir, then reset cwd for subsequent tests.
+	if cwd, err := os.Getwd(); err != nil {
+		t.Fatal(err)
+	} else {
+		defer os.Chdir(cwd)
+	}
+	if err := os.Chdir(pkgDir); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	cli.Environment["VESPA_CLI_API_KEY_FILE"] = filepath.Join(cli.config.homeDir, "t1.api-key.pem")
+	assert.Nil(t, cli.Run("prod", "submit"))
+	assert.Contains(t, stdout.String(), "Success: Submitted")
+	assert.Contains(t, stdout.String(), "See https://console.vespa-cloud.com/tenant/t1/application/a1/prod/deployment for deployment progress")
+}
+
+func TestProdSubmitWithJava(t *testing.T) {
+	pkgDir := filepath.Join(t.TempDir(), "app")
+	createApplication(t, pkgDir, true)
+
+	httpClient := &mock.HTTPClient{}
+	httpClient.NextResponseString(200, `ok`)
+	cli, stdout, _ := newTestCLI(t, "CI=true")
+	cli.httpClient = httpClient
+	assert.Nil(t, cli.Run("config", "set", "application", "t1.a1.i1"))
+	assert.Nil(t, cli.Run("config", "set", "target", "cloud"))
+	assert.Nil(t, cli.Run("auth", "api-key"))
+	assert.Nil(t, cli.Run("auth", "cert", pkgDir))
+
+	// Copy an application package pre-assembled with mvn package
 	testAppDir := filepath.Join("testdata", "applications", "withDeployment", "target")
 	zipFile := filepath.Join(testAppDir, "application.zip")
 	copyFile(t, filepath.Join(pkgDir, "target", "application.zip"), zipFile)
 	testZipFile := filepath.Join(testAppDir, "application-test.zip")
 	copyFile(t, filepath.Join(pkgDir, "target", "application-test.zip"), testZipFile)
 
-	out, _ := execute(command{homeDir: homeDir, args: []string{"prod", "submit", pkgDir}}, t, httpClient)
-	assert.Contains(t, out, "Success: Submitted")
-	assert.Contains(t, out, "See https://console.vespa.oath.cloud/tenant/t1/application/a1/prod/deployment for deployment progress")
+	stdout.Reset()
+	cli.Environment["VESPA_CLI_API_KEY_FILE"] = filepath.Join(cli.config.homeDir, "t1.api-key.pem")
+	assert.Nil(t, cli.Run("prod", "submit", pkgDir))
+	assert.Contains(t, stdout.String(), "Success: Submitted")
+	assert.Contains(t, stdout.String(), "See https://console.vespa-cloud.com/tenant/t1/application/a1/prod/deployment for deployment progress")
+}
+
+func TestProdSubmitInvalidZip(t *testing.T) {
+	pkgDir := filepath.Join(t.TempDir(), "app")
+	createApplication(t, pkgDir, true)
+
+	httpClient := &mock.HTTPClient{}
+	httpClient.NextResponseString(200, `ok`)
+	cli, _, stderr := newTestCLI(t, "CI=true")
+	cli.httpClient = httpClient
+	assert.Nil(t, cli.Run("config", "set", "application", "t1.a1.i1"))
+	assert.Nil(t, cli.Run("config", "set", "target", "cloud"))
+	assert.Nil(t, cli.Run("auth", "api-key"))
+	assert.Nil(t, cli.Run("auth", "cert", pkgDir))
+
+	// Copy an invalid application package containing relative file names
+	testAppDir := filepath.Join("testdata", "applications", "withInvalidEntries", "target")
+	zipFile := filepath.Join(testAppDir, "application.zip")
+	copyFile(t, filepath.Join(pkgDir, "target", "application.zip"), zipFile)
+	testZipFile := filepath.Join(testAppDir, "application-test.zip")
+	copyFile(t, filepath.Join(pkgDir, "target", "application-test.zip"), testZipFile)
+
+	assert.NotNil(t, cli.Run("prod", "submit", pkgDir))
+	assert.Equal(t, "Error: found invalid path inside zip: ../../../../../../../tmp/foo\n", stderr.String())
 }
 
 func copyFile(t *testing.T, dstFilename, srcFilename string) {

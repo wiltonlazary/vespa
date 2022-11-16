@@ -3,7 +3,7 @@
 #pragma once
 
 #include <vespa/searchcommon/common/undefinedvalues.h>
-#include <vespa/vespalib/stllike/allocator.h>
+#include <vespa/vespalib/util/memoryusage.h>
 #include <vector>
 
 namespace vespalib { class MemoryUsage; }
@@ -26,47 +26,48 @@ struct ChangeBase {
         DIV,
         CLEARDOC
     };
-    enum {UNSET_ENUM = 0xffffffffu};
+    enum {UNSET_ENTRY_REF = 0};
 
     ChangeBase() :
         _type(NOOP),
         _doc(0),
         _weight(1),
-        _enumScratchPad(UNSET_ENUM),
-        _arithOperand(0)
+        _cached_entry_ref(UNSET_ENTRY_REF)
     { }
 
     ChangeBase(Type type, uint32_t d, int32_t w = 1) :
         _type(type),
         _doc(d),
         _weight(w),
-        _enumScratchPad(UNSET_ENUM),
-        _arithOperand(0)
+        _cached_entry_ref(UNSET_ENTRY_REF)
     { }
 
     int cmp(const ChangeBase &b) const { int diff(_doc - b._doc); return diff; }
     bool operator <(const ChangeBase & b) const { return cmp(b) < 0; }
-    uint32_t getEnum() const { return _enumScratchPad; }
-    void setEnum(uint32_t value) const { _enumScratchPad = value; }
-    bool isEnumValid() const { return _enumScratchPad != UNSET_ENUM; }
+    uint32_t get_entry_ref() const { return _cached_entry_ref; }
+    void set_entry_ref(uint32_t entry_ref) const { _cached_entry_ref = entry_ref; }
+    bool has_entry_ref() const { return _cached_entry_ref != UNSET_ENTRY_REF; }
+    void clear_entry_ref() const { _cached_entry_ref = UNSET_ENTRY_REF; }
 
     Type               _type;
     uint32_t           _doc;
     int32_t            _weight;
-    mutable uint32_t   _enumScratchPad;
-    double             _arithOperand;
+    mutable uint32_t   _cached_entry_ref;
 };
 
 template <typename T>
 class NumericChangeData {
 private:
-    T _v;
+    double  _arithOperand;
+    T       _v;
 public:
     typedef T DataType;
 
-    NumericChangeData(T v) : _v(v) { }
-    NumericChangeData() : _v(T()) { }
+    NumericChangeData(T v) : _arithOperand(0), _v(v) { }
+    NumericChangeData() : _arithOperand(0), _v(T()) { }
 
+    double getArithOperand() const { return _arithOperand; }
+    void setArithOperand(double operand)  { _arithOperand = operand; }
     T get() const { return _v; }
     T raw() const { return _v; }
     operator T() const { return _v; }
@@ -130,7 +131,7 @@ NumericChangeData<double>::operator<(const NumericChangeData<double> &rhs) const
 template <typename T>
 class ChangeVectorT {
 private:
-    using Vector = std::vector<T, vespalib::allocator_large<T>>;
+    using Vector = std::vector<T>;
 public:
     using const_iterator = typename Vector::const_iterator;
     ChangeVectorT();
@@ -152,7 +153,7 @@ public:
         const Vector &_v;
     };
     class DocIdInsertOrder {
-        using AdjacentDocIds = std::vector<uint64_t, vespalib::allocator_large<uint64_t>>;
+        using AdjacentDocIds = std::vector<uint64_t>;
     public:
         class const_iterator {
         public:

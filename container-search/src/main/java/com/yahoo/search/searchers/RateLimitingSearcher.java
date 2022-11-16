@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.searchers;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ClusterInfoConfig;
 
 import com.yahoo.metrics.simple.MetricReceiver;
@@ -18,7 +18,6 @@ import com.yahoo.search.searchchain.Execution;
 import com.yahoo.yolean.chain.Provides;
 
 import java.time.Clock;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;

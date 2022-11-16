@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.maintenance;
 
 import com.yahoo.config.provision.ApplicationId;
@@ -24,8 +24,6 @@ import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import static com.yahoo.vespa.flags.Flags.USE_APPLICATION_LOCK_IN_MAINTENANCE_DEPLOYMENT;
-
 /**
  * A wrapper of a deployment suitable for maintenance.
  * This is a single-use, single-thread object.
@@ -50,10 +48,7 @@ class MaintenanceDeployment implements Closeable {
         this.application = application;
         this.metric = metric;
 
-        Optional<Mutex> lock = USE_APPLICATION_LOCK_IN_MAINTENANCE_DEPLOYMENT.bindTo(nodeRepository.flagSource()).value()
-                ? tryLock(application, nodeRepository)
-                : Optional.of(() -> { });
-
+        Optional<Mutex> lock = tryLock(application, nodeRepository);
         try {
             deployment = tryDeployment(lock, application, deployer, nodeRepository);
             this.lock = lock;
@@ -112,10 +107,10 @@ class MaintenanceDeployment implements Closeable {
         Duration timeout = Duration.ofSeconds(3);
         try {
             // Use a short lock to avoid interfering with change deployments
-            return Optional.of(nodeRepository.nodes().lock(application, timeout));
+            return Optional.of(nodeRepository.applications().lock(application, timeout));
         }
         catch (ApplicationLockException e) {
-            log.log(Level.WARNING, () -> "Could not lock " + application + " for maintenance deployment within " + timeout);
+            log.log(Level.INFO, () -> "Could not lock " + application + " for maintenance deployment within " + timeout);
             return Optional.empty();
         }
     }
@@ -210,6 +205,9 @@ class MaintenanceDeployment implements Closeable {
                 if (nodeLock.node().state() != Node.State.active) return false;
 
                 if (nodeLock.node().status().preferToRetire() == preferToRetire) return false;
+
+                // Node is retiring, keep preferToRetire
+                if (nodeLock.node().allocation().get().membership().retired() && !preferToRetire) return false;
 
                 nodeRepository.nodes().write(nodeLock.node().withPreferToRetire(preferToRetire, agent, nodeRepository.clock().instant()), nodeLock);
                 return true;

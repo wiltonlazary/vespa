@@ -4,9 +4,6 @@ package com.yahoo.config.subscription.impl;
 import com.yahoo.config.ConfigInstance;
 import com.yahoo.config.ConfigurationRuntimeException;
 import com.yahoo.config.subscription.ConfigInterruptedException;
-import com.yahoo.config.subscription.ConfigSource;
-import com.yahoo.config.subscription.ConfigSourceSet;
-import com.yahoo.config.subscription.ConfigSubscriber;
 import com.yahoo.vespa.config.ConfigKey;
 import com.yahoo.vespa.config.ConfigPayload;
 import com.yahoo.vespa.config.TimingValues;
@@ -25,59 +22,64 @@ import static java.util.logging.Level.FINE;
 import static java.util.logging.Level.INFO;
 
 /**
- * A config subscription for a config instance, gets config using Vespa RPC from a config source
+ * A config subscription for a config instance, gets config using RPC from a config source
  * (config proxy or config server).
  *
  * @author vegardh
  */
 public class JRTConfigSubscription<T extends ConfigInstance> extends ConfigSubscription<T> {
 
-    private JRTConfigRequester requester;
+    private final JRTConfigRequester requester;
     private final TimingValues timingValues;
 
     // Last time we got an OK JRT callback
     private Instant lastOK = Instant.MIN;
 
     /**
-     * A queue containing either zero or one (the newest) request that got a callback from JRT,
-     * but has not yet been handled.
+     * A queue containing responses (requests that got a callback from JRT) that has not yet been handled.
      */
-    private BlockingQueue<JRTClientConfigRequest> reqQueue = new LinkedBlockingQueue<>();
-    private ConfigSourceSet sources;
+    private BlockingQueue<JRTClientConfigRequest> responseQueue = new LinkedBlockingQueue<>();
 
-    public JRTConfigSubscription(ConfigKey<T> key, ConfigSubscriber subscriber, ConfigSource source, TimingValues timingValues) {
-        super(key, subscriber);
+    public JRTConfigSubscription(ConfigKey<T> key, JRTConfigRequester requester, TimingValues timingValues) {
+        super(key);
         this.timingValues = timingValues;
-        if (source instanceof ConfigSourceSet) {
-            this.sources = (ConfigSourceSet) source;
-        }
+        this.requester = requester;
     }
 
     @Override
     public boolean nextConfig(long timeoutMillis) {
-        // Note: since the JRT callback thread will clear the queue first when it inserts a brand new element,
-        // (see #updateConfig()) there is a race here. However: the caller will handle it no matter what it gets
-        // from the queue here, the important part is that local state on the subscription objects is preserved.
+        JRTClientConfigRequest response = pollForNewConfig(timeoutMillis);
+        if (response == null) return newConfigOrException();
 
-        // Poll the queue for a next config until timeout
-        JRTClientConfigRequest jrtReq = pollQueue(timeoutMillis);
-        if (jrtReq == null) return newConfigOrException();
-
-        log.log(FINE, () -> "Polled queue and found config " + jrtReq);
+        log.log(FINE, () -> "Polled queue and found config " + response);
         // Might set the following (caller must check):
         // generation, generation changed, config, config changed
         // Important: it never <em>resets</em> those flags, we must persist that state until the
         // ConfigSubscriber clears it
-        if (jrtReq.hasUpdatedGeneration()) {
-            setApplyOnRestart(jrtReq.responseIsApplyOnRestart());
-            if (jrtReq.hasUpdatedConfig()) {
-                setNewConfig(jrtReq);
+        if (response.hasUpdatedGeneration()) {
+            setApplyOnRestart(response.responseIsApplyOnRestart());
+            if (response.hasUpdatedConfig()) {
+                setNewConfig(response);
             } else {
-                setGeneration(jrtReq.getNewGeneration());
+                setNewConfigAndGeneration(response);
             }
         }
 
         return newConfigOrException();
+    }
+
+    private synchronized JRTClientConfigRequest pollForNewConfig(long timeoutMillis) {
+        JRTClientConfigRequest response = pollQueue(timeoutMillis);
+        // There might be more than one response on the queue, so empty queue by polling with
+        // 0 timeout until queue is empty (returned value is null)
+        JRTClientConfigRequest temp = response;
+        while (temp != null) {
+            temp = pollQueue(0);
+            if (temp != null)
+                response = temp;
+        }
+
+        return response;
     }
 
     private boolean newConfigOrException() {
@@ -95,7 +97,7 @@ public class JRTConfigSubscription<T extends ConfigInstance> extends ConfigSubsc
     private JRTClientConfigRequest pollQueue(long timeoutMillis) {
         try {
             // Only valid responses are on queue, no need to validate
-            return reqQueue.poll(timeoutMillis, TimeUnit.MILLISECONDS);
+            return responseQueue.poll(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e1) {
             throw new ConfigInterruptedException(e1);
         }
@@ -105,6 +107,18 @@ public class JRTConfigSubscription<T extends ConfigInstance> extends ConfigSubsc
         try {
             T configInstance = toConfigInstance(jrtReq);
             setConfig(jrtReq.getNewGeneration(), jrtReq.responseIsApplyOnRestart(), configInstance, jrtReq.getNewChecksums());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Bad config in response", e);
+        }
+    }
+
+    protected void setNewConfigAndGeneration(JRTClientConfigRequest jrtReq) {
+        try {
+            T configInstance = toConfigInstance(jrtReq);
+            setConfigAndGeneration(jrtReq.getNewGeneration(),
+                                   jrtReq.responseIsApplyOnRestart(),
+                                   configInstance,
+                                   jrtReq.getNewChecksums());
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("Bad config in response", e);
         }
@@ -122,53 +136,39 @@ public class JRTConfigSubscription<T extends ConfigInstance> extends ConfigSubsc
         Payload payload = jrtRequest.getNewPayload();
         ConfigPayload configPayload = ConfigPayload.fromUtf8Array(payload.withCompression(CompressionType.UNCOMPRESSED).getData());
         T configInstance = configPayload.toInstance(configClass, jrtRequest.getConfigKey().getConfigId());
-        configInstance.setConfigMd5(jrtRequest.getNewChecksums().getForType(MD5).asString()); // Note: Sets configmd5 in ConfigInstance
         return configInstance;
     }
 
-    // Will be called by JRTConfigRequester when there is a config with new generation for this subscription
+    // Called by JRTConfigRequester when there is a config response for this subscription
     void updateConfig(JRTClientConfigRequest jrtReq) {
-        // We only want this latest generation to be in the queue, we do not preserve history in this system
-        reqQueue.clear();
-        if ( ! reqQueue.offer(jrtReq))
+        if ( ! responseQueue.offer(jrtReq))
             setException(new ConfigurationRuntimeException("Failed offering returned request to queue of subscription " + this));
     }
 
     @Override
     public boolean subscribe(long timeout) {
         lastOK = Instant.now();
-        requester = getRequester();
         requester.request(this);
-        JRTClientConfigRequest req = reqQueue.peek();
+        JRTClientConfigRequest req = responseQueue.peek();
         while (req == null && (Instant.now().isBefore(lastOK.plus(Duration.ofMillis(timeout))))) {
             try {
                 Thread.sleep(10);
             } catch (InterruptedException e) {
                 throw new ConfigInterruptedException(e);
             }
-            req = reqQueue.peek();
+            req = responseQueue.peek();
         }
         return req != null;
     }
 
-    private JRTConfigRequester getRequester() {
-        JRTConfigRequester requester = subscriber.requesters().get(sources);
-        if (requester == null) {
-            requester = JRTConfigRequester.create(sources, timingValues);
-            subscriber.requesters().put(sources, requester);
-        }
-        return requester;
-    }
-
     @Override
-    @SuppressWarnings("serial")
     public void close() {
         super.close();
-        reqQueue = new LinkedBlockingQueue<>() {
+        responseQueue = new LinkedBlockingQueue<>() {
             @SuppressWarnings("NullableProblems")
             @Override
             public void put(JRTClientConfigRequest e) {
-                // When closed, throw away all requests that callbacks try to put
+                // When closed, throw away all responses that callbacks try to put on queue
             }
         };
     }

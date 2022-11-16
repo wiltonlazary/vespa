@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/searchlib/memoryindex/feature_store.h>
+#include <vespa/searchcommon/common/schema.h>
 #include <vespa/vespalib/gtest/gtest.h>
 
 #include <vespa/log/log.h>
@@ -89,8 +90,7 @@ TEST_F(FeatureStoreTest, features_can_be_added_and_retrieved)
         r = fs.addFeatures(0, f);
         r1 = r.first;
         EXPECT_TRUE(r.second > 0);
-        EXPECT_EQ(FeatureStore::RefType::align(1u),
-                  FeatureStore::RefType(r1).offset());
+        EXPECT_EQ(1u, FeatureStore::RefType(r1).offset());
         EXPECT_EQ(0u, FeatureStore::RefType(r1).bufferId());
         LOG(info,
             "bits(%" PRIu64 "), ref.offset(%zu), ref.bufferId(%u)",
@@ -130,8 +130,7 @@ TEST_F(FeatureStoreTest, next_words_are_working)
         r = fs.addFeatures(0, f);
         r1 = r.first;
         EXPECT_TRUE(r.second > 0);
-        EXPECT_EQ(FeatureStore::RefType::align(1u),
-                  FeatureStore::RefType(r1).offset());
+        EXPECT_EQ(1u, FeatureStore::RefType(r1).offset());
         EXPECT_EQ(0u, FeatureStore::RefType(r1).bufferId());
         LOG(info,
             "bits(%" PRIu64 "), ref.offset(%zu), ref.bufferId(%u)",

@@ -9,7 +9,6 @@
 #include <vespa/searchlib/query/weight.h>
 #include <vespa/vespalib/objects/objectvisitor.h>
 #include <vespa/vespalib/stllike/string.h>
-#include <vespa/vespalib/util/memory.h>
 
 namespace search::streaming {
 
@@ -39,7 +38,7 @@ public:
     };
     class FieldInfo {
     public:
-        FieldInfo() : _hitListOffset(0), _hitCount(0), _fieldLength(0) { }
+        FieldInfo() noexcept : _hitListOffset(0), _hitCount(0), _fieldLength(0) { }
         FieldInfo(uint32_t hitListOffset, uint32_t hitCount, uint32_t fieldLength) :
             _hitListOffset(hitListOffset), _hitCount(hitCount), _fieldLength(fieldLength) { }
         size_t getHitOffset()     const { return _hitListOffset; }
@@ -86,8 +85,10 @@ public:
     void visitMembers(vespalib::ObjectVisitor &visitor) const override;
     void setIndex(const string & index_) override { _index = index_; }
     const string & getIndex() const override { return _index; }
+    void setFuzzyMaxEditDistance(uint32_t fuzzyMaxEditDistance) { _fuzzyMaxEditDistance = fuzzyMaxEditDistance; }
+    void setFuzzyPrefixLength(uint32_t fuzzyPrefixLength) { _fuzzyPrefixLength = fuzzyPrefixLength; }
 protected:
-    using QueryNodeResultBaseContainer = vespalib::CloneablePtr<QueryNodeResultBase>;
+    using QueryNodeResultBaseContainer = std::unique_ptr<QueryNodeResultBase>;
     string                       _index;
     EncodingBitMap               _encoding;
     QueryNodeResultBaseContainer _result;

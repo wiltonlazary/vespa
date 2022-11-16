@@ -6,12 +6,13 @@ import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.io.IOUtils;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.MessageResponse;
 import com.yahoo.restapi.Path;
 import com.yahoo.restapi.ResourceResponse;
+import com.yahoo.restapi.RestApiException;
 import com.yahoo.security.X509CertificateUtils;
 import com.yahoo.slime.Inspector;
 import com.yahoo.slime.SlimeUtils;
@@ -23,11 +24,11 @@ import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobId;
 import com.yahoo.vespa.hosted.controller.auditlog.AuditLoggingRequestHandler;
 import com.yahoo.vespa.hosted.controller.maintenance.ControllerMaintenance;
 import com.yahoo.vespa.hosted.controller.maintenance.Upgrader;
+import com.yahoo.vespa.hosted.controller.restapi.ErrorResponses;
 import com.yahoo.vespa.hosted.controller.support.access.SupportAccess;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence;
 import com.yahoo.yolean.Exceptions;
 
-import javax.ws.rs.InternalServerErrorException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -35,9 +36,9 @@ import java.security.Principal;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Scanner;
 import java.util.function.Function;
-import java.util.logging.Level;
 
 /**
  * This implements the controller/v1 API which provides operators with information about,
@@ -51,7 +52,7 @@ public class ControllerApiHandler extends AuditLoggingRequestHandler {
     private final ControllerMaintenance maintenance;
     private final Controller controller;
 
-    public ControllerApiHandler(LoggingRequestHandler.Context parentCtx, Controller controller, ControllerMaintenance maintenance) {
+    public ControllerApiHandler(ThreadedHttpRequestHandler.Context parentCtx, Controller controller, ControllerMaintenance maintenance) {
         super(parentCtx, controller.auditLogger());
         this.controller = controller;
         this.maintenance = maintenance;
@@ -60,20 +61,19 @@ public class ControllerApiHandler extends AuditLoggingRequestHandler {
     @Override
     public HttpResponse auditAndHandle(HttpRequest request) {
         try {
-            switch (request.getMethod()) {
-                case GET: return get(request);
-                case POST: return post(request);
-                case DELETE: return delete(request);
-                case PATCH: return patch(request);
-                default: return ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is not supported");
-            }
+            return switch (request.getMethod()) {
+                case GET -> get(request);
+                case POST -> post(request);
+                case DELETE -> delete(request);
+                case PATCH -> patch(request);
+                default -> ErrorResponse.methodNotAllowed("Method '" + request.getMethod() + "' is not supported");
+            };
         }
         catch (IllegalArgumentException e) {
             return ErrorResponse.badRequest(Exceptions.toMessageString(e));
         }
         catch (RuntimeException e) {
-            log.log(Level.WARNING, "Unexpected error handling '" + request.getUri() + "'", e);
-            return ErrorResponse.internalServerError(Exceptions.toMessageString(e));
+            return ErrorResponses.logThrowing(request, log, e);
         }
     }
     
@@ -84,7 +84,7 @@ public class ControllerApiHandler extends AuditLoggingRequestHandler {
         if (path.matches("/controller/v1/maintenance/")) return new JobsResponse(controller.jobControl());
         if (path.matches("/controller/v1/stats")) return new StatsResponse(controller);
         if (path.matches("/controller/v1/jobs/upgrader")) return new UpgraderResponse(maintenance.upgrader());
-        if (path.matches("/controller/v1/metering/tenant/{tenant}/month/{month}")) return new MeteringResponse(controller.serviceRegistry().meteringService(), path.get("tenant"), path.get("month"));
+        if (path.matches("/controller/v1/metering/tenant/{tenant}/month/{month}")) return new MeteringResponse(controller.serviceRegistry().resourceDatabase(), path.get("tenant"), path.get("month"));
         return notFound(path);
     }
 
@@ -124,7 +124,7 @@ public class ControllerApiHandler extends AuditLoggingRequestHandler {
         SupportAccess supportAccess = controller.supportAccess().registerGrant(deployment, principal.getName(), certificate);
 
         // Trigger deployment to include operator cert
-        Optional<JobId> jobId = controller.applications().deploymentTrigger().reTriggerOrAddToQueue(deployment);
+        Optional<JobId> jobId = controller.applications().deploymentTrigger().reTriggerOrAddToQueue(deployment, "re-triggered to grant access, by " + request.getJDiscRequest().getUserPrincipal().getName());
         return new MessageResponse(
                 jobId.map(id -> Text.format("Operator %s granted access and job %s triggered", principal.getName(), id.type().jobName()))
                         .orElseGet(() -> Text.format("Operator %s granted access and job trigger queued", principal.getName())));
@@ -156,7 +156,6 @@ public class ControllerApiHandler extends AuditLoggingRequestHandler {
 
     private HttpResponse configureUpgrader(HttpRequest request) {
         String upgradesPerMinuteField = "upgradesPerMinute";
-        String targetMajorVersionField = "targetMajorVersion";
 
         byte[] jsonBytes = toJsonBytes(request.getData());
         Inspector inspect = SlimeUtils.jsonToSlime(jsonBytes).get();
@@ -164,9 +163,6 @@ public class ControllerApiHandler extends AuditLoggingRequestHandler {
 
         if (inspect.field(upgradesPerMinuteField).valid()) {
             upgrader.setUpgradesPerMinute(inspect.field(upgradesPerMinuteField).asDouble());
-        } else if (inspect.field(targetMajorVersionField).valid()) {
-            int target = (int)inspect.field(targetMajorVersionField).asLong();
-            upgrader.setTargetMajorVersion(Optional.ofNullable(target == 0 ? null : target)); // 0 is the default value
         } else {
             return ErrorResponse.badRequest("No such modifiable field(s)");
         }
@@ -203,7 +199,7 @@ public class ControllerApiHandler extends AuditLoggingRequestHandler {
 
     private static Principal requireUserPrincipal(HttpRequest request) {
         Principal principal = request.getJDiscRequest().getUserPrincipal();
-        if (principal == null) throw new InternalServerErrorException("Expected a user principal");
+        if (principal == null) throw new RestApiException.InternalServerError("Expected a user principal");
         return principal;
     }
 }

@@ -12,18 +12,23 @@ import com.yahoo.vespa.hosted.controller.tenant.Tenant;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
+import java.util.function.Predicate;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 /**
  * Expires unused tenants from Vespa Cloud.
+ * <p>
+ * TODO: Should support sending notifications some time before the various expiry events happen.
  *
  * @author ogronnesby
  */
 public class CloudTrialExpirer extends ControllerMaintainer {
     private static final Logger log = Logger.getLogger(CloudTrialExpirer.class.getName());
 
-    private static final Duration loginExpiry = Duration.ofDays(14);
+    private static final Duration nonePlanAfter = Duration.ofDays(14);
+    private static final Duration tombstoneAfter = Duration.ofDays(183);
     private final ListFlag<String> extendedTrialTenants;
 
     public CloudTrialExpirer(Controller controller, Duration interval) {
@@ -33,39 +38,57 @@ public class CloudTrialExpirer extends ControllerMaintainer {
 
     @Override
     protected double maintain() {
-        var expiredTenants = controller().tenants().asList().stream()
-                .filter(this::tenantIsCloudTenant)           // only valid for cloud tenants
-                .filter(this::tenantHasTrialPlan)            // only valid to expire actual trial tenants
-                .filter(this::tenantIsNotExemptFromExpiry)   // feature flag might exempt tenant from expiry
-                .filter(this::tenantReadersNotLoggedIn)      // no user logged in last 14 days
-                .filter(this::tenantHasNoDeployments)        // no running deployments active
-                .collect(Collectors.toList());
+        var a = tombstoneNonePlanTenants();
+        var b = moveInactiveTenantsToNonePlan();
+        return (a ? 0.5 : 0.0) + (b ? 0.5 : 0.0);
+    }
 
-        if (! expiredTenants.isEmpty()) {
-            var expiredTenantNames = expiredTenants.stream()
-                    .map(Tenant::name)
-                    .map(TenantName::value)
-                    .collect(Collectors.joining(", "));
+    private boolean moveInactiveTenantsToNonePlan() {
+        var idleTrialTenants = controller().tenants().asList().stream()
+                .filter(this::tenantIsCloudTenant)
+                .filter(this::tenantIsNotExemptFromExpiry)
+                .filter(this::tenantHasNoDeployments)
+                .filter(this::tenantHasTrialPlan)
+                .filter(tenantReadersNotLoggedIn(nonePlanAfter))
+                .toList();
 
-            log.info("Moving expired tenants to 'none' plan: " + expiredTenantNames);
+        if (! idleTrialTenants.isEmpty()) {
+            var tenants = idleTrialTenants.stream().map(Tenant::name).map(TenantName::value).collect(Collectors.joining(", "));
+            log.info("Setting tenants to 'none' plan: " + tenants);
         }
 
-        expireTenants(expiredTenants);
+        return setPlanNone(idleTrialTenants);
+    }
 
-        return 1;
+    private boolean tombstoneNonePlanTenants() {
+        var idleOldPlanTenants = controller().tenants().asList().stream()
+                .filter(this::tenantIsCloudTenant)
+                .filter(this::tenantIsNotExemptFromExpiry)
+                .filter(this::tenantHasNoDeployments)
+                .filter(this::tenantHasNonePlan)
+                .filter(tenantReadersNotLoggedIn(tombstoneAfter))
+                .toList();
+
+        if (! idleOldPlanTenants.isEmpty()) {
+            var tenants = idleOldPlanTenants.stream().map(Tenant::name).map(TenantName::value).collect(Collectors.joining(", "));
+            log.info("Setting tenants as tombstoned: " + tenants);
+        }
+
+        return tombstoneTenants(idleOldPlanTenants);
     }
 
     private boolean tenantIsCloudTenant(Tenant tenant) {
         return tenant.type() == Tenant.Type.cloud;
     }
 
-    private boolean tenantReadersNotLoggedIn(Tenant tenant) {
-        return tenant.lastLoginInfo().get(LastLoginInfo.UserLevel.user)
-                .map(instant -> {
-                    var sinceLastLogin = Duration.between(instant, controller().clock().instant());
-                    return sinceLastLogin.compareTo(loginExpiry) > 0;
-                })
-                .orElse(false);
+    private Predicate<Tenant> tenantReadersNotLoggedIn(Duration duration) {
+        // returns true if no user has logged in to the tenant after (now - duration)
+        return (Tenant tenant) -> {
+            var timeLimit = controller().clock().instant().minus(duration);
+            return tenant.lastLoginInfo().get(LastLoginInfo.UserLevel.user)
+                    .map(instant -> instant.isBefore(timeLimit))
+                    .orElse(false);
+        };
     }
 
     private boolean tenantHasTrialPlan(Tenant tenant) {
@@ -73,8 +96,13 @@ public class CloudTrialExpirer extends ControllerMaintainer {
         return "trial".equals(planId.value());
     }
 
+    private boolean tenantHasNonePlan(Tenant tenant) {
+        var planId = controller().serviceRegistry().billingController().getPlan(tenant.name());
+        return "none".equals(planId.value());
+    }
+
     private boolean tenantIsNotExemptFromExpiry(Tenant tenant) {
-        return ! extendedTrialTenants.value().contains(tenant.name().value());
+        return !extendedTrialTenants.value().contains(tenant.name().value());
     }
 
     private boolean tenantHasNoDeployments(Tenant tenant) {
@@ -84,9 +112,46 @@ public class CloudTrialExpirer extends ControllerMaintainer {
                 .sum() == 0;
     }
 
-    private void expireTenants(List<Tenant> tenants) {
-        tenants.forEach(tenant -> {
-            controller().serviceRegistry().billingController().setPlan(tenant.name(), PlanId.from("none"), false);
-        });
+    private boolean setPlanNone(List<Tenant> tenants) {
+        var success = true;
+        for (var tenant : tenants) {
+            try {
+                controller().serviceRegistry().billingController().setPlan(tenant.name(), PlanId.from("none"), false, false);
+            } catch (RuntimeException e) {
+                log.info("Could not change plan for " + tenant.name() + ": " + e.getMessage());
+                success = false;
+            }
+        }
+        return success;
+    }
+
+    private boolean tombstoneTenants(List<Tenant> tenants) {
+        var success = true;
+        for (var tenant : tenants) {
+            success &= deleteApplicationsWithNoDeployments(tenant);
+            log.fine("Tombstoning empty tenant: " + tenant.name());
+            try {
+                controller().tenants().delete(tenant.name(), Optional.empty(), false);
+            } catch (RuntimeException e) {
+                log.info("Could not tombstone tenant " + tenant.name() + ": " + e.getMessage());
+                success = false;
+            }
+        }
+        return success;
+    }
+
+    private boolean deleteApplicationsWithNoDeployments(Tenant tenant) {
+        // this method only removes applications with no active deployments in them
+        var success = true;
+        for (var application : controller().applications().asList(tenant.name())) {
+            try {
+                log.fine("Removing empty application: " + application.id());
+                controller().applications().deleteApplication(application.id(), Optional.empty());
+            } catch (RuntimeException e) {
+                log.info("Could not removing application " + application.id() + ": " + e.getMessage());
+                success = false;
+            }
+        }
+        return success;
     }
 }

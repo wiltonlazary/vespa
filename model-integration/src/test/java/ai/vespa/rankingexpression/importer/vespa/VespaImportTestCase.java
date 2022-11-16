@@ -1,10 +1,9 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.rankingexpression.importer.vespa;
 
 import ai.vespa.rankingexpression.importer.ImportedModel;
 import ai.vespa.rankingexpression.importer.configmodelview.ImportedMlFunction;
 import com.yahoo.searchlib.rankingexpression.RankingExpression;
-import com.yahoo.searchlib.rankingexpression.evaluation.Context;
 import com.yahoo.searchlib.rankingexpression.evaluation.MapContext;
 import com.yahoo.searchlib.rankingexpression.evaluation.TensorValue;
 import com.yahoo.searchlib.rankingexpression.parser.ParseException;
@@ -25,17 +24,26 @@ public class VespaImportTestCase {
     @Test
     public void testExample() {
         ImportedModel model = importModel("example");
+        assertModel(model);
+    }
 
+    @Test
+    public void testLegacySyntax() {
+        ImportedModel model = importModel("legacy_syntax");
+        assertModel(model);
+    }
+
+    private void assertModel(ImportedModel model) {
         assertEquals(2, model.inputs().size());
         assertEquals("tensor(name{},x[3])", model.inputs().get("input1").toString());
         assertEquals("tensor(x[3])", model.inputs().get("input2").toString());
 
-        assertEquals(2, model.smallConstants().size());
-        assertEquals("tensor(x[3]):[0.5, 1.5, 2.5]", model.smallConstants().get("constant1"));
-        assertEquals("tensor():{3.0}", model.smallConstants().get("constant2"));
+        assertEquals(2, model.smallConstantTensors().size());
+        assertEquals("tensor(x[3]):[0.5, 1.5, 2.5]", model.smallConstantTensors().get("constant1").toString());
+        assertEquals("tensor():{3.0}", model.smallConstantTensors().get("constant2").toString());
 
-        assertEquals(1, model.largeConstants().size());
-        assertEquals("tensor(x[3]):[0.5, 1.5, 2.5]", model.largeConstants().get("constant1asLarge"));
+        assertEquals(1, model.largeConstantTensors().size());
+        assertEquals("tensor(x[3]):[0.5, 1.5, 2.5]", model.largeConstantTensors().get("constant1asLarge").toString());
 
         assertEquals(2, model.expressions().size());
         assertEquals("reduce(reduce(input1 * input2, sum, name) * constant1, max, x) * constant2",
@@ -63,8 +71,8 @@ public class VespaImportTestCase {
         assertTrue(model.expressions().isEmpty());
         assertTrue(model.functions().isEmpty());
         assertTrue(model.inputs().isEmpty());
-        assertTrue(model.largeConstants().isEmpty());
-        assertTrue(model.smallConstants().isEmpty());
+        assertTrue(model.largeConstantTensors().isEmpty());
+        assertTrue(model.smallConstantTensors().isEmpty());
     }
 
     @Test

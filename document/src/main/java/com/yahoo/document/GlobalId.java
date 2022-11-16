@@ -16,7 +16,7 @@ import java.util.Arrays;
  *
  * @author Simon Thoresen Hult
  */
-public class GlobalId implements Comparable {
+public class GlobalId implements Comparable<GlobalId> {
 
     /**
      * The number of bytes in a global id. This must match the C++ constant in "document/base/globalid.h".
@@ -40,10 +40,10 @@ public class GlobalId implements Comparable {
     /**
      * Constructs a new global id from a document id string.
      *
-     * @param id The document id to derive from.
+     * @param id the document id to derive from
      */
     public GlobalId(IdString id) {
-        byte [] raw = MD5.md5.get().digest(id.toUtf8().wrap().array());
+        byte[] raw = MD5.md5.get().digest(id.toUtf8().wrap().array());
         long location = id.getLocation();
         this.raw = new byte [LENGTH];
         for (int i = 0; i < 4; ++i) {
@@ -57,7 +57,7 @@ public class GlobalId implements Comparable {
     /**
      * Constructs a global id by deserializing content from the given byte buffer.
      *
-     * @param buf The buffer to deserialize from.
+     * @param buf the buffer to deserialize from
      */
     public GlobalId(Deserializer buf) {
         raw = buf.getBytes(null, LENGTH);
@@ -66,7 +66,7 @@ public class GlobalId implements Comparable {
     /**
      * Serializes the content of this global id into the given byte buffer.
      *
-     * @param buf The buffer to serialize to.
+     * @param buf the buffer to serialize to
      */
     public void serialize(Serializer buf) {
         buf.put(null, raw);
@@ -119,9 +119,8 @@ public class GlobalId implements Comparable {
         return Arrays.equals(raw, rhs.raw);
     }
 
-    public int compareTo(Object o) {
-        GlobalId other = (GlobalId) o;
-
+    @Override
+    public int compareTo(GlobalId other) {
         for (int i=0 ; i<LENGTH; i++) {
             int thisByte = 0xF & (int) raw[i];
             int otherByte = 0xF & (int) other.raw[i];

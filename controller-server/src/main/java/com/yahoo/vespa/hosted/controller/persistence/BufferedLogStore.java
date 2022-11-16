@@ -2,10 +2,10 @@
 package com.yahoo.vespa.hosted.controller.persistence;
 
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.vespa.hosted.controller.api.integration.LogEntry;
 import com.yahoo.vespa.hosted.controller.api.integration.RunDataStore;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.RunId;
-import com.yahoo.vespa.hosted.controller.api.integration.LogEntry;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TestReport;
 import com.yahoo.vespa.hosted.controller.deployment.RunLog;
 import com.yahoo.vespa.hosted.controller.deployment.Step;
@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * Stores logs in bite-sized chunks using a {@link CuratorDb}, and flushes to a
@@ -47,7 +49,7 @@ public class BufferedLogStore {
     }
 
     /** Appends to the log of the given, active run, reassigning IDs as counted here, and converting to Vespa log levels. */
-    public void append(ApplicationId id, JobType type, Step step, List<LogEntry> entries) {
+    public void append(ApplicationId id, JobType type, Step step, List<LogEntry> entries, boolean forceLog) {
         if (entries.isEmpty())
             return;
 
@@ -56,7 +58,7 @@ public class BufferedLogStore {
         long lastEntryId = buffer.readLastLogEntryId(id, type).orElse(-1L);
         long lastChunkId = buffer.getLogChunkIds(id, type).max().orElse(0);
         long numberOfChunks = Math.max(1, buffer.getLogChunkIds(id, type).count());
-        if (numberOfChunks > maxLogSize / chunkSize)
+        if (numberOfChunks > maxLogSize / chunkSize && ! forceLog)
             return; // Max size exceeded — store no more.
 
         byte[] emptyChunk = "[]".getBytes();
@@ -67,11 +69,15 @@ public class BufferedLogStore {
         List<LogEntry> stepEntries = log.computeIfAbsent(step, __ -> new ArrayList<>());
         for (LogEntry entry : entries) {
             if (sizeLowerBound > chunkSize) {
-                buffer.writeLastLogEntryId(id, type, lastEntryId);
                 buffer.writeLog(id, type, lastChunkId, logSerializer.toJson(log));
+                buffer.writeLastLogEntryId(id, type, lastEntryId);
                 lastChunkId = lastEntryId + 1;
-                if (++numberOfChunks > maxLogSize / chunkSize) {
-                    log = Map.of(step, List.of(new LogEntry(++lastEntryId, entry.at(), LogEntry.Type.warning, "Max log size of " + (maxLogSize >> 20) + "Mb exceeded; further entries are discarded.")));
+                if (++numberOfChunks > maxLogSize / chunkSize && ! forceLog) {
+                    log = Map.of(step, List.of(new LogEntry(++lastEntryId,
+                                                            entry.at(),
+                                                            LogEntry.Type.warning,
+                                                            "Max log size of " + (maxLogSize >> 20) +
+                                                            "Mb exceeded; further user entries are discarded.")));
                     break;
                 }
                 log = new HashMap<>();
@@ -81,8 +87,8 @@ public class BufferedLogStore {
             stepEntries.add(new LogEntry(++lastEntryId, entry.at(), entry.type(), entry.message()));
             sizeLowerBound += entry.message().length();
         }
-        buffer.writeLastLogEntryId(id, type, lastEntryId);
         buffer.writeLog(id, type, lastChunkId, logSerializer.toJson(log));
+        buffer.writeLastLogEntryId(id, type, lastEntryId);
     }
 
     /** Reads all log entries after the given threshold, from the buffered log, i.e., for an active run. */
@@ -108,10 +114,8 @@ public class BufferedLogStore {
         store.delete(id);
     }
 
-    /** Deletes all logs for the given application. */
+    /** Deletes all logs in permanent storage for the given application. */
     public void delete(ApplicationId id) {
-        for (JobType type : JobType.values())
-            buffer.deleteLog(id, type);
         store.delete(id);
     }
 
@@ -126,11 +130,21 @@ public class BufferedLogStore {
                                       after);
     }
 
-    public Optional<String> readTestReport(RunId id) {
-        return store.getTestReport(id).map(String::new);
+    public Optional<String> readTestReports(RunId id) {
+        return store.getTestReport(id).map(bytes -> "[" + new String(bytes, UTF_8) + "]");
     }
 
     public void writeTestReport(RunId id, TestReport report) {
-        store.putTestReport(id, report.toJson().getBytes());
+        byte[] bytes = report.toJson().getBytes(UTF_8);
+        Optional<byte[]> existing = store.getTestReport(id);
+        if (existing.isPresent()) {
+            byte[] aggregate = new byte[existing.get().length + 1 + bytes.length];
+            System.arraycopy(existing.get(), 0, aggregate, 0, existing.get().length);
+            aggregate[existing.get().length] = ',';
+            System.arraycopy(bytes, 0, aggregate, existing.get().length + 1, bytes.length);
+            bytes = aggregate;
+        }
+        store.putTestReport(id, bytes);
     }
+
 }

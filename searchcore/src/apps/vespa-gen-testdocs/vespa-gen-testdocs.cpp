@@ -6,30 +6,41 @@
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/fastlib/io/bufferedfile.h>
-#include <vespa/fastos/app.h>
+#include <vespa/vespalib/util/signalhandler.h>
 #include <iostream>
 #include <sstream>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <cassert>
 #include <getopt.h>
+#include <vector>
+#include <limits>
+#include <unistd.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP("vespa-gen-testdocs");
 
 typedef vespalib::hash_set<vespalib::string> StringSet;
 typedef std::vector<vespalib::string> StringArray;
-typedef std::shared_ptr<StringArray> StringArraySP;
 using namespace vespalib::alloc;
 using vespalib::string;
+
+namespace {
+
+struct EvpMdCtxDeleter {
+    void operator()(EVP_MD_CTX* evp_md_ctx) const noexcept {
+        EVP_MD_CTX_free(evp_md_ctx);
+    }
+};
+
+using EvpMdCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
+
+}
 
 void
 usageHeader()
 {
     using std::cerr;
-    cerr <<
-        "vespa-gen-testdocs version 0.0\n"
-        "\n"
-        "USAGE:\n";
+    cerr << "vespa-gen-testdocs version 0.0\n\nUSAGE:\n";
 }
 
 string
@@ -59,11 +70,10 @@ splitArg(const string &arg)
 }
 
 void
-shafile(const string &baseDir,
-        const string &file)
+shafile(const string &baseDir, const string &file)
 {
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256_CTX c; 
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
     string fullFile(prependBaseDir(baseDir, file));
     FastOS_File f;
     std::ostringstream os;
@@ -76,25 +86,24 @@ shafile(const string &baseDir,
     }
     int64_t flen = f.GetSize();
     int64_t remainder = flen;
-    SHA256_Init(&c);
+    EvpMdCtxPtr md_ctx(EVP_MD_CTX_new());
+    const EVP_MD* md = EVP_get_digestbyname("SHA256");
+    EVP_DigestInit_ex(md_ctx.get(), md, nullptr);
     while (remainder > 0) {
         int64_t thistime =
             std::min(remainder, static_cast<int64_t>(buf.size()));
         f.ReadBuf(buf.get(), thistime);
-        SHA256_Update(&c, buf.get(), thistime);
+        EVP_DigestUpdate(md_ctx.get(), buf.get(), thistime);
         remainder -= thistime;
     }
-    f.Close();
-    SHA256_Final(digest, &c);
-    for (unsigned int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+    EVP_DigestFinal_ex(md_ctx.get(), &digest[0], &digest_len);
+    assert(digest_len > 0u && digest_len <= EVP_MAX_MD_SIZE);
+    for (unsigned int i = 0; i < digest_len; ++i) {
         os.width(2);
         os.fill('0');
         os << std::hex << static_cast<unsigned int>(digest[i]);
     }
-    LOG(info,
-        "SHA256(%s)= %s",
-        file.c_str(),
-        os.str().c_str());
+    LOG(info, "SHA256(%s)= %s", file.c_str(), os.str().c_str());
 }
 
 class StringGenerator
@@ -104,14 +113,9 @@ class StringGenerator
 public:
     StringGenerator(vespalib::Rand48 &rnd);
 
-    void
-    rand_string(string &res, uint32_t minLen, uint32_t maxLen);
+    void rand_string(string &res, uint32_t minLen, uint32_t maxLen);
 
-    void
-    rand_unique_array(StringArray &res,
-                      uint32_t minLen,
-                      uint32_t maxLen,
-                      uint32_t size);
+    void rand_unique_array(StringArray &res, uint32_t minLen, uint32_t maxLen, uint32_t size);
 };
 
 
@@ -575,7 +579,8 @@ DocumentGenerator::generate(uint32_t docMin, uint32_t docIdLimit,
         }
     }
     f.Flush();
-    f.Close();
+    bool close_ok = f.Close();
+    assert(close_ok);
     LOG(info, "Calculating sha256 for %s", feedFileName.c_str());
     shafile(baseDir, feedFileName);
 }
@@ -583,28 +588,11 @@ DocumentGenerator::generate(uint32_t docMin, uint32_t docIdLimit,
 
 class SubApp
 {
-protected:
-    FastOS_Application &_app;
-
 public:
-    SubApp(FastOS_Application &app)
-        : _app(app)
-    {
-    }
-
-    virtual
-    ~SubApp()
-    {
-    }
-
-    virtual void
-    usage(bool showHeader) = 0;
-
-    virtual bool
-    getOptions() = 0;
-
-    virtual int
-    run() = 0;
+    virtual void usage(bool showHeader) = 0;
+    virtual bool getOptions(int argc, char **argv) = 0;
+    virtual int run() = 0;
+    virtual ~SubApp() = default;
 };
 
 class GenTestDocsApp : public SubApp
@@ -624,9 +612,8 @@ class GenTestDocsApp : public SubApp
     bool _json;
     
 public:
-    GenTestDocsApp(FastOS_Application &app)
-        : SubApp(app),
-          _baseDir(""),
+    GenTestDocsApp()
+        : _baseDir(""),
           _docType("testdoc"),
           _minDocId(0u),
           _docIdLimit(5u),
@@ -648,19 +635,13 @@ public:
         _rnd.srand48(42);
     }
 
-    virtual
-    ~GenTestDocsApp()
+    ~GenTestDocsApp() override
     {
     }
 
-    virtual void
-    usage(bool showHeader) override;
-
-    virtual bool
-    getOptions() override;
-
-    virtual int
-    run() override;
+    virtual void usage(bool showHeader) override;
+    virtual bool getOptions(int argc, char **argv) override;
+    virtual int run() override;
 };
 
 
@@ -689,10 +670,9 @@ GenTestDocsApp::usage(bool showHeader)
 }
 
 bool
-GenTestDocsApp::getOptions()
+GenTestDocsApp::getOptions(int argc, char **argv)
 {
     int c;
-    const char *optArgument = NULL;
     int longopt_index = 0;
     static struct option longopts[] = {
         { "basedir", 1, NULL, 0 },
@@ -725,28 +705,25 @@ GenTestDocsApp::getOptions()
         LONGOPT_HEADERS,
         LONGOPT_JSON
     };
-    int optIndex = 2;
-    _app.resetOptIndex(optIndex);
-    while ((c = _app.GetOptLong("v",
-                                optArgument,
-                                optIndex,
-                                longopts,
-                                &longopt_index)) != -1) {
+    optind = 2;
+    while ((c = getopt_long(argc, argv, "v",
+                            longopts,
+                            &longopt_index)) != -1) {
         FieldGenerator::SP g;
         switch (c) {
         case 0:
             switch (longopt_index) {
             case LONGOPT_BASEDIR:
-                _baseDir = optArgument;
+                _baseDir = optarg;
                 break;
             case LONGOPT_CONSTTEXTFIELD:
-                _fields.emplace_back(std::make_shared<ConstTextFieldGenerator>(splitArg(optArgument)));
+                _fields.emplace_back(std::make_shared<ConstTextFieldGenerator>(splitArg(optarg)));
                 break;
             case LONGOPT_PREFIXTEXTFIELD:
-                _fields.emplace_back(std::make_shared<PrefixTextFieldGenerator>(splitArg(optArgument)));
+                _fields.emplace_back(std::make_shared<PrefixTextFieldGenerator>(splitArg(optarg)));
                 break;
             case LONGOPT_RANDTEXTFIELD:
-                g.reset(new RandTextFieldGenerator(optArgument,
+                g.reset(new RandTextFieldGenerator(optarg,
                                                    _rnd,
                                                    _numWords,
                                                    20,
@@ -754,33 +731,33 @@ GenTestDocsApp::getOptions()
                 _fields.push_back(g);
                 break;
             case LONGOPT_MODTEXTFIELD:
-                g.reset(new ModTextFieldGenerator(optArgument,
+                g.reset(new ModTextFieldGenerator(optarg,
                                                   _rnd,
                                                   _mods));
                 _fields.push_back(g);
                 break;
             case LONGOPT_IDTEXTFIELD:
-                g.reset(new IdTextFieldGenerator(optArgument));
+                g.reset(new IdTextFieldGenerator(optarg));
                 _fields.push_back(g);
                 break;
             case LONGOPT_RANDINTFIELD:
-                g.reset(new RandIntFieldGenerator(optArgument,
+                g.reset(new RandIntFieldGenerator(optarg,
                                                   _rnd,
                                                   0,
                                                   100000));
                 _fields.push_back(g);
                 break;
             case LONGOPT_DOCIDLIMIT:
-                _docIdLimit = atoi(optArgument);
+                _docIdLimit = atoi(optarg);
                 break;
             case LONGOPT_MINDOCID:
-                _minDocId = atoi(optArgument);
+                _minDocId = atoi(optarg);
                 break;
             case LONGOPT_NUMWORDS:
-                _numWords = atoi(optArgument);
+                _numWords = atoi(optarg);
                 break;
             case LONGOPT_DOCTYPE:
-                _docType = optArgument;
+                _docType = optarg;
                 break;
             case LONGOPT_HEADERS:
                 _headers = true;
@@ -789,10 +766,10 @@ GenTestDocsApp::getOptions()
                 _json = true;
                 break;
             default:
-                if (optArgument != NULL) {
+                if (optarg != NULL) {
                     LOG(error,
                         "longopt %s with arg %s",
-                        longopts[longopt_index].name, optArgument);
+                        longopts[longopt_index].name, optarg);
                 } else {
                     LOG(error,
                         "longopt %s",
@@ -807,11 +784,11 @@ GenTestDocsApp::getOptions()
             return false;
         }
     }
-    _optIndex = optIndex;
-    if (_optIndex >= _app._argc) {
+    _optIndex = optind;
+    if (_optIndex >= argc) {
         return false;
     }
-    _outFile = _app._argv[optIndex];
+    _outFile = argv[optind];
     return true;
 }
 
@@ -833,35 +810,32 @@ GenTestDocsApp::run()
 }
 
 
-class App : public FastOS_Application
+class App
 {
 public:
-    void
-    usage();
-
-    int
-    Main() override;
+    void usage();
+    int main(int argc, char **argv);
 };
 
 
 void
 App::usage()
 {
-    GenTestDocsApp(*this).usage(true);
+    GenTestDocsApp().usage(true);
 }
 
 int
-App::Main()
+App::main(int argc, char **argv)
 {
-    if (_argc < 2) {
+    if (argc < 2) {
         usage();
         return 1;
     }
     std::unique_ptr<SubApp> subApp;
-    if (strcmp(_argv[1], "gentestdocs") == 0)
-        subApp.reset(new GenTestDocsApp(*this));
-    if (subApp.get() != NULL) {
-        if (!subApp->getOptions()) {
+    if (strcmp(argv[1], "gentestdocs") == 0)
+        subApp = std::make_unique<GenTestDocsApp>();
+    if (subApp.get() != nullptr) {
+        if (!subApp->getOptions(argc, argv)) {
             subApp->usage(true);
             return 1;
         }
@@ -872,9 +846,8 @@ App::Main()
 }
 
 
-int
-main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
+    vespalib::SignalHandler::PIPE.ignore();
     App app;
-    return app.Entry(argc, argv);
+    return app.main(argc, argv);
 }

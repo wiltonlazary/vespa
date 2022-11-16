@@ -8,25 +8,22 @@ import com.yahoo.search.query.profile.QueryProfile;
 import com.yahoo.search.query.profile.QueryProfileRegistry;
 import com.yahoo.search.query.profile.QueryProfileVariant;
 import com.yahoo.search.query.profile.compiled.CompiledQueryProfile;
-import com.yahoo.search.query.profile.compiled.CompiledQueryProfileRegistry;
 import com.yahoo.search.query.profile.config.QueryProfileConfigurer;
 import com.yahoo.search.query.profile.config.QueryProfileXMLReader;
 import com.yahoo.search.query.profile.types.FieldDescription;
 import com.yahoo.search.query.profile.types.FieldType;
 import com.yahoo.search.query.profile.types.QueryProfileType;
 import com.yahoo.search.query.profile.types.QueryProfileTypeRegistry;
-import com.yahoo.searchdefinition.derived.TestableDeployLogger;
+import com.yahoo.schema.derived.TestableDeployLogger;
 import com.yahoo.vespa.model.container.search.QueryProfiles;
 import com.yahoo.vespa.model.test.utils.DeployLoggerStub;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.logging.Level;
 
 import static helpers.CompareConfigTestHelper.assertSerializedConfigFileEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests generation of config from query profiles (XML reading is tested elsewhere)
@@ -35,10 +32,10 @@ import static org.junit.Assert.assertTrue;
  */
 public class QueryProfilesTestCase {
 
-    private final static String root="src/test/java/com/yahoo/vespa/model/container/search/test/";
+    private final static String root = "src/test/java/com/yahoo/vespa/model/container/search/test/";
 
     @Test
-    public void testVariantReference() {
+    void testVariantReference() {
         QueryProfileRegistry registry = new QueryProfileRegistry();
 
         QueryProfile parent = new QueryProfile("parent");
@@ -47,31 +44,31 @@ public class QueryProfilesTestCase {
 
         QueryProfile referenced = new QueryProfile("referenced");
         referenced.addInherited(parent);
-        referenced.setDimensions(new String[] { "d2", "d3" });
+        referenced.setDimensions(new String[]{"d2", "d3"});
         registry.register(referenced);
 
         QueryProfile base = new QueryProfile("base");
-        base.setDimensions(new String[] { "d1", "d2", "d3" });
-        base.set("a", referenced, new String[] {  null, null, "d3-val" }, registry);
-        base.set("a.b", 1, new String[] {  null, null, "d3-val" }, registry);
+        base.setDimensions(new String[]{"d1", "d2", "d3"});
+        base.set("a", referenced, new String[]{  null, null, "d3-val"}, registry);
+        base.set("a.b", 1, new String[]{  null, null, "d3-val"}, registry);
         QueryProfileVariant aVariants = base.getVariants().getVariants().get(0);
-        QueryProfile a = (QueryProfile)aVariants.values().get("a");
+        QueryProfile a = (QueryProfile) aVariants.values().get("a");
         assertEquals("[d1, d2, d3]", a.getDimensions().toString());
         registry.register(base);
 
         QueryProfiles profiles = new QueryProfiles(registry, new TestableDeployLogger());
         QueryProfileRegistry registryFromConfig = QueryProfileConfigurer.createFromConfig(profiles.getConfig());
         var directValue = registry.findQueryProfile("base")
-                                  .get("a.b",
-                                       new String[] { "default", null, "d3-val"});
+                .get("a.b",
+                        new String[]{"default", null, "d3-val"});
         var throughConfigValue = registryFromConfig.findQueryProfile("base")
-                                                   .get("a.b",
-                                                        new String[] { "default", null, "d3-val"});
+                .get("a.b",
+                        new String[]{"default", null, "d3-val"});
         assertEquals(directValue.toString(), throughConfigValue.toString());
     }
 
     @Test
-    public void testVariants() {
+    void testVariants() {
         QueryProfileRegistry registry = new QueryProfileXMLReader().read(root + "variants");
         QueryProfiles profiles = new QueryProfiles(registry, new TestableDeployLogger());
         QueryProfileRegistry registryFromConfig = QueryProfileConfigurer.createFromConfig(profiles.getConfig());
@@ -85,13 +82,13 @@ public class QueryProfilesTestCase {
     }
 
     @Test
-    public void testEmpty() throws IOException {
+    void testEmpty() throws IOException {
         QueryProfileRegistry reg = new QueryProfileRegistry();
         assertConfig("empty.cfg", reg);
     }
 
     @Test
-    public void testQueryProfiles() throws IOException {
+    void testQueryProfiles() throws IOException {
         final boolean mandatory = true;
         final boolean overridable = true;
         QueryProfileRegistry registry = new QueryProfileRegistry();
@@ -119,13 +116,13 @@ public class QueryProfilesTestCase {
         typeRegistry.register(marketType);
 
         QueryProfile defaultProfile = new QueryProfile("default");
-        defaultProfile.set("ranking","production23", registry);
+        defaultProfile.set("ranking", "production23", registry);
         defaultProfile.set("representation.defaultIndex", "title", registry);
         defaultProfile.setOverridable("representation.defaultIndex", false, DimensionValues.empty);
         registry.register(defaultProfile);
 
         QueryProfile test = new QueryProfile("test");
-        test.set("tracelevel",2, registry);
+        test.set("tracelevel", 2, registry);
         registry.register(test);
 
         QueryProfile genericUser = new QueryProfile("genericUser");
@@ -148,8 +145,8 @@ public class QueryProfilesTestCase {
         QueryProfile marketUser = new QueryProfile("marketUser");
         marketUser.setType(userType);
         marketUser.addInherited(genericUser);
-        marketUser.set("ads","none", registry);
-        marketUser.set("age",25, registry);
+        marketUser.set("ads", "none", registry);
+        marketUser.set("age", 25, registry);
         registry.register(marketUser);
 
         QueryProfile market = new QueryProfile("root/market");
@@ -174,7 +171,7 @@ public class QueryProfilesTestCase {
     }
 
     @Test
-    public void testValidation() {
+    void testValidation() {
         QueryProfileRegistry registry = new QueryProfileRegistry();
         QueryProfileTypeRegistry typeRegistry = registry.getTypeRegistry();
 
@@ -185,13 +182,13 @@ public class QueryProfilesTestCase {
         new QueryProfiles(registry, logger);
         assertEquals(1, logger.entries.size());
         assertEquals("This application define query profile types, but has no query profiles referencing them " +
-                     "so they have no effect. " +
-                     "See https://docs.vespa.ai/en/query-profiles.html",
-                     logger.entries.get(0).message);
+                "so they have no effect. " +
+                "See https://docs.vespa.ai/en/query-profiles.html",
+                logger.entries.get(0).message);
     }
 
     @Test
-    public void testValidationWithTensorFields() {
+    void testValidationWithTensorFields() {
         QueryProfileRegistry registry = new QueryProfileRegistry();
         QueryProfileTypeRegistry typeRegistry = registry.getTypeRegistry();
 
@@ -204,19 +201,15 @@ public class QueryProfilesTestCase {
         new QueryProfiles(registry, logger);
         assertEquals(1, logger.entries.size());
         assertEquals("This application define query profile types, but has no query profiles referencing them " +
-                     "so they have no effect. " +
-                     "In particular, the tensors (vector, matrix) will be interpreted as strings, not tensors if sent in requests. " +
-                     "See https://docs.vespa.ai/en/query-profiles.html",
-                     logger.entries.get(0).message);
+                "so they have no effect. " +
+                "In particular, the tensors (vector, matrix) will be interpreted as strings, not tensors if sent in requests. " +
+                "See https://docs.vespa.ai/en/query-profiles.html",
+                logger.entries.get(0).message);
     }
 
     protected void assertConfig(String correctFileName, QueryProfileRegistry check) throws IOException {
         assertSerializedConfigFileEquals(root + "/" + correctFileName,
                 com.yahoo.text.StringUtilities.implodeMultiline(com.yahoo.config.ConfigInstance.serialize(new QueryProfiles(check, new SilentDeployLogger()).getConfig())));
-
-        // Also assert that the correct config config can actually be read as a config source
-        QueryProfileConfigurer configurer = new QueryProfileConfigurer("file:" + root + "empty.cfg");
-        configurer.shutdown();
     }
 
     private static class SilentDeployLogger implements DeployLogger {

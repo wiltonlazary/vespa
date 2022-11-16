@@ -22,6 +22,8 @@ namespace storage {
 
 namespace {
 
+VESPA_THREAD_STACK_TAG(test_thread);
+
 // Exploit the fact that PersistenceProviderWrapper already provides a forwarding
 // implementation of all SPI calls, so we can selectively override.
 class BlockingMockProvider : public PersistenceProviderWrapper
@@ -46,14 +48,15 @@ public:
           _deleteBucketInvocations(0)
     {}
 
-    spi::Result put(const spi::Bucket&, spi::Timestamp, document::Document::SP, spi::Context&) override
+    void
+    putAsync(const spi::Bucket&, spi::Timestamp, document::Document::SP, spi::OperationComplete::UP onComplete) override
     {
         _queueBarrier.await();
         // message abort stage with active opertion in disk queue
         std::this_thread::sleep_for(75ms);
         _completionBarrier.await();
         // test finished
-        return spi::Result();
+        onComplete->onComplete(std::make_unique<spi::Result>());
     }
 
     spi::BucketInfoResult getBucketInfo(const spi::Bucket& bucket) const override {
@@ -61,14 +64,15 @@ public:
         return PersistenceProviderWrapper::getBucketInfo(bucket);
     }
 
-    spi::Result createBucket(const spi::Bucket& bucket, spi::Context& ctx) override {
+    void createBucketAsync(const spi::Bucket& bucket, spi::OperationComplete::UP onComplete) noexcept override {
         ++_createBucketInvocations;
-        return PersistenceProviderWrapper::createBucket(bucket, ctx);
+        PersistenceProviderWrapper::createBucketAsync(bucket, std::move(onComplete));
     }
 
-    spi::Result deleteBucket(const spi::Bucket& bucket, spi::Context& ctx) override {
+    void
+    deleteBucketAsync(const spi::Bucket& bucket, spi::OperationComplete::UP onComplete) noexcept override {
         ++_deleteBucketInvocations;
-        return PersistenceProviderWrapper::deleteBucket(bucket, ctx);
+        PersistenceProviderWrapper::deleteBucketAsync(bucket, std::move(onComplete));
     }
 };
 
@@ -292,7 +296,7 @@ TEST_F(OperationAbortingTest, wait_for_current_operation_completion_for_aborted_
     auto abortCmd = makeAbortCmd(abortSet);
 
     SendTask sendTask(abortCmd, *_queueBarrier, c.top);
-    vespalib::Thread thread(sendTask);
+    vespalib::Thread thread(sendTask, test_thread);
     thread.start();
 
     LOG(debug, "waiting for threads to reach barriers");

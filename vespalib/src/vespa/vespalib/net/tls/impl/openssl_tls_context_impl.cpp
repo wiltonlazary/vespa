@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-#include "iana_cipher_map.h"
+
 #include "openssl_tls_context_impl.h"
+#include "iana_cipher_map.h"
 #include "openssl_crypto_codec_impl.h"
 #include <vespa/vespalib/crypto/crypto_exception.h>
 #include <vespa/vespalib/crypto/openssl_typedefs.h>
@@ -451,14 +452,14 @@ int OpenSslTlsContextImpl::verify_cb_wrapper(int preverified_ok, ::X509_STORE_CT
     auto* self = static_cast<OpenSslTlsContextImpl*>(SSL_CTX_get_app_data(ssl_ctx));
     LOG_ASSERT(self != nullptr);
 
-    if (self->verify_trusted_certificate(store_ctx, codec_impl->peer_address())) {
+    if (self->verify_trusted_certificate(store_ctx, *codec_impl)) {
         return 1;
     }
     ConnectionStatistics::get(SSL_in_accept_init(ssl) != 0).inc_invalid_peer_credentials();
     return 0;
 }
 
-bool OpenSslTlsContextImpl::verify_trusted_certificate(::X509_STORE_CTX* store_ctx, const SocketAddress& peer_address) {
+bool OpenSslTlsContextImpl::verify_trusted_certificate(::X509_STORE_CTX* store_ctx, OpenSslCryptoCodecImpl& codec_impl) {
     const auto authz_mode = authorization_mode();
     // TODO consider if we want to fill in peer credentials even if authorization is disabled
     if (authz_mode == AuthorizationMode::Disable) {
@@ -477,18 +478,22 @@ bool OpenSslTlsContextImpl::verify_trusted_certificate(::X509_STORE_CTX* store_c
         return false;
     }
     try {
-        const bool verified_by_cb = _cert_verify_callback->verify(creds);
-        if (!verified_by_cb) {
+        auto authz_result = _cert_verify_callback->verify(creds);
+        if (!authz_result.success()) {
             // Buffer warnings on peer IP address to avoid log flooding.
-            LOGBT(warning, peer_address.ip_address(),
+            LOGBT(warning, codec_impl.peer_address().ip_address(),
                   "Certificate verification of peer '%s' failed with %s",
-                  peer_address.spec().c_str(), to_string(creds).c_str());
+                  codec_impl.peer_address().spec().c_str(), creds.to_string().c_str());
             return (authz_mode != AuthorizationMode::Enforce);
         }
+        // Store away credentials and role set for later use by requests that arrive over this connection.
+        // TODO encapsulate as const shared_ptr to immutable object to better facilitate sharing?
+        codec_impl.set_peer_credentials(std::move(creds));
+        codec_impl.set_granted_capabilities(authz_result.granted_capabilities());
     } catch (std::exception& e) {
-        LOGBT(error, peer_address.ip_address(),
+        LOGBT(error, codec_impl.peer_address().ip_address(),
               "Got exception during certificate verification callback for peer '%s': %s",
-              peer_address.spec().c_str(), e.what());
+              codec_impl.peer_address().spec().c_str(), e.what());
         return false;
     } // we don't expect any non-std::exception derived exceptions, so let them terminate the process.
     return true;

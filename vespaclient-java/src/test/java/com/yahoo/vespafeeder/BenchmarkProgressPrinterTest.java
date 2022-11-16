@@ -2,30 +2,23 @@
 package com.yahoo.vespafeeder;
 
 import com.yahoo.clientmetrics.RouteMetricSet;
-import com.yahoo.concurrent.Timer;
+import com.yahoo.concurrent.ManualTimer;
 import com.yahoo.documentapi.messagebus.protocol.PutDocumentMessage;
 import com.yahoo.documentapi.messagebus.protocol.UpdateDocumentMessage;
 import com.yahoo.messagebus.EmptyReply;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class BenchmarkProgressPrinterTest {
 
-    class DummyTimer implements Timer {
-        long ms;
-
-        public long milliTime() { return ms; }
-    }
-
     @Test
-    public void testSimple() {
+    void testSimple() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        DummyTimer timer = new DummyTimer();
-        timer.ms = 0;
+        ManualTimer timer = new ManualTimer();
         BenchmarkProgressPrinter printer = new BenchmarkProgressPrinter(timer, new PrintStream(output));
         RouteMetricSet metrics = new RouteMetricSet("foobar", printer);
 
@@ -35,7 +28,7 @@ public class BenchmarkProgressPrinterTest {
             metrics.addReply(reply);
         }
 
-        timer.ms = 1200;
+        timer.set(1200);
 
         {
             EmptyReply reply = new EmptyReply();
@@ -49,7 +42,7 @@ public class BenchmarkProgressPrinterTest {
             metrics.addReply(reply);
         }
 
-        timer.ms = 2400;
+        timer.set(2400);
 
         {
             EmptyReply reply = new EmptyReply();
@@ -58,7 +51,7 @@ public class BenchmarkProgressPrinterTest {
             metrics.addReply(reply);
         }
 
-        timer.ms = 62000;
+        timer.set(62000);
 
         {
             EmptyReply reply = new EmptyReply();
@@ -72,7 +65,7 @@ public class BenchmarkProgressPrinterTest {
         String val = output.toString().split("\n")[1];
 
         String correctPattern = "62000, \\d+, \\d+, \\d+, \\d+, \\d+$";
-        assertTrue("Value '" + val + "' does not match pattern '" + correctPattern + "'", val.matches(correctPattern));
+        assertTrue(val.matches(correctPattern), "Value '" + val + "' does not match pattern '" + correctPattern + "'");
     }
 
 }

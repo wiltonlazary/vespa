@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.ca;
 
 import com.yahoo.security.KeyAlgorithm;
@@ -68,10 +68,10 @@ public class CertificateTester {
         KeyPair keyPair = KeyUtils.generateKeypair(KeyAlgorithm.EC, 256);
         var builder = Pkcs10CsrBuilder.fromKeypair(subject, keyPair, SignatureAlgorithm.SHA512_WITH_ECDSA);
         for (var dnsName : dnsNames) {
-            builder = builder.addSubjectAlternativeName(SubjectAlternativeName.Type.DNS_NAME, dnsName);
+            builder = builder.addSubjectAlternativeName(SubjectAlternativeName.Type.DNS, dnsName);
         }
         for (var ipAddress : ipAddresses) {
-            builder = builder.addSubjectAlternativeName(SubjectAlternativeName.Type.IP_ADDRESS, ipAddress);
+            builder = builder.addSubjectAlternativeName(SubjectAlternativeName.Type.IP, ipAddress);
         }
         return builder.build();
     }

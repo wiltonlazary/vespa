@@ -1,20 +1,52 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.testrunner;
 
-import ai.vespa.hosted.api.TestDescriptor;
-import com.yahoo.vespa.testrunner.legacy.LegacyTestRunner;
+import java.util.Collection;
+import java.util.concurrent.CompletableFuture;
+import java.util.logging.LogRecord;
 
 /**
+ * @author jonmv
  * @author mortent
  */
 public interface TestRunner {
-    void executeTests(TestDescriptor.TestCategory category, byte[] testConfig);
 
-    boolean isSupported();
+    Collection<LogRecord> getLog(long after);
 
-    LegacyTestRunner.Status getStatus();
+    Status getStatus();
 
-    TestReport getReport();
+    CompletableFuture<?> test(Suite suite, byte[] config);
 
-    String getReportAsJson();
+    default TestReport getReport() { return null; }
+
+    /** Test run status, ordered from most to least specific; the most specific result is chosen when combining multiple. */
+    enum Status {
+
+        /** Tests are currently running. */
+        RUNNING,
+
+        /** Framework exception; never got to run the tests, or failed parsing their output. */
+        ERROR,
+
+        /** Test code failed. */
+        FAILURE,
+
+        /** Tests should be re-run at a later time. */
+        INCONCLUSIVE,
+
+        /** All tests passed. */
+        SUCCESS,
+
+        /** No tests found. */
+        NO_TESTS,
+
+        /** Tests have not yet started. */
+        NOT_STARTED
+
+        }
+
+    enum Suite {
+        SYSTEM_TEST, STAGING_SETUP_TEST, STAGING_TEST, PRODUCTION_TEST
+    }
+
 }

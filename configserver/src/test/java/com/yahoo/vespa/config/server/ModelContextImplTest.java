@@ -5,6 +5,7 @@ import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.component.Version;
 import com.yahoo.concurrent.InThreadExecutorService;
 import com.yahoo.config.application.api.ApplicationPackage;
+import com.yahoo.config.model.api.ApplicationClusterEndpoint;
 import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.HostProvisioner;
 import com.yahoo.config.model.api.ModelContext;
@@ -25,12 +26,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -41,7 +39,7 @@ public class ModelContextImplTest {
     @Test
     public void testModelContextTest() {
 
-        ContainerEndpoint endpoint = new ContainerEndpoint("foo", List.of("a", "b"));
+        ContainerEndpoint endpoint = new ContainerEndpoint("foo", ApplicationClusterEndpoint.Scope.global, List.of("a", "b"));
         Set<ContainerEndpoint> endpoints = Collections.singleton(endpoint);
         InMemoryFlagSource flagSource = new InMemoryFlagSource();
 
@@ -65,6 +63,7 @@ public class ModelContextImplTest {
                 new Provisioned(),
                 new ModelContextImpl.Properties(
                         ApplicationId.defaultId(),
+                        Version.emptyVersion,
                         configserverConfig,
                         Zone.defaultZone(),
                         endpoints,
@@ -76,7 +75,8 @@ public class ModelContextImplTest {
                         Optional.empty(),
                         List.of(),
                         new SecretStoreProvider().get(),
-                        List.of()),
+                        List.of(),
+                        Optional.empty()),
                 Optional.empty(),
                 Optional.empty(),
                 new Version(7),
@@ -87,13 +87,13 @@ public class ModelContextImplTest {
         assertFalse(context.previousModel().isPresent());
         assertTrue(context.getFileRegistry() instanceof MockFileRegistry);
         assertTrue(context.configDefinitionRepo() instanceof StaticConfigDefinitionRepo);
-        assertThat(context.properties().applicationId(), is(ApplicationId.defaultId()));
+        assertEquals(ApplicationId.defaultId(), context.properties().applicationId());
         assertTrue(context.properties().configServerSpecs().isEmpty());
         assertTrue(context.properties().multitenant());
         assertNotNull(context.properties().zone());
         assertFalse(context.properties().hostedVespa());
-        assertThat(context.properties().endpoints(), equalTo(endpoints));
-        assertThat(context.properties().isFirstTimeDeployment(), equalTo(false));
+        assertEquals(endpoints, context.properties().endpoints());
+        assertFalse(context.properties().isFirstTimeDeployment());
 
         assertEquals(Optional.empty(), context.wantedDockerImageRepo());
         assertEquals(new Version(7), context.modelVespaVersion());
@@ -101,6 +101,7 @@ public class ModelContextImplTest {
         assertEquals(1.0, context.properties().featureFlags().defaultTermwiseLimit(), 0.0);
         assertFalse(context.properties().featureFlags().useAsyncMessageHandlingOnSchedule());
         assertEquals(0.5, context.properties().featureFlags().feedConcurrency(), 0.0);
+        assertEquals(1, context.properties().featureFlags().maxCompactBuffers());
     }
 
 }

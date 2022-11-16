@@ -3,18 +3,21 @@
 #pragma once
 
 #include "document_db_maintenance_config.h"
-#include <vespa/searchlib/common/tunefileinfo.h>
-#include <vespa/searchcommon/common/schema.h>
+#include "threading_service_config.h"
+#include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/matching/ranking_constants.h>
 #include <vespa/searchcore/proton/matching/ranking_expressions.h>
 #include <vespa/searchcore/proton/matching/onnx_models.h>
+#include <vespa/searchlib/common/tunefileinfo.h>
+#include <vespa/searchlib/docstore/logdocumentstore.h>
+#include <vespa/searchcommon/common/schema.h>
+#include <vespa/document/config/documenttypes_config_fwd.h>
+
 #include <vespa/config/retriever/configkeyset.h>
 #include <vespa/config/retriever/configsnapshot.h>
-#include <vespa/searchlib/docstore/logdocumentstore.h>
 
 namespace vespa::config::search::internal {
     class InternalSummaryType;
-    class InternalSummarymapType;
     class InternalRankProfilesType;
     class InternalAttributesType;
     class InternalIndexschemaType;
@@ -26,12 +29,8 @@ namespace document {
     class DocumentTypeRepo;
     class DocumentType;
 }
-namespace document::internal { class InternalDocumenttypesType; }
 
 namespace proton {
-
-class ThreadingServiceConfig;
-class AllocConfig;
 
 class DocumentDBConfig
 {
@@ -46,7 +45,6 @@ public:
         bool indexschemaChanged;
         bool attributesChanged;
         bool summaryChanged;
-        bool summarymapChanged;
         bool juniperrcChanged;
         bool documenttypesChanged;
         bool documentTypeRepoChanged;
@@ -57,7 +55,6 @@ public:
         bool storeChanged;
         bool visibilityDelayChanged;
         bool flushChanged;
-        bool threading_service_config_changed;
         bool alloc_config_changed;
 
         ComparisonResult();
@@ -68,7 +65,6 @@ public:
         ComparisonResult &setIndexschemaChanged(bool val) { indexschemaChanged = val; return *this; }
         ComparisonResult &setAttributesChanged(bool val) { attributesChanged = val; return *this; }
         ComparisonResult &setSummaryChanged(bool val) { summaryChanged = val; return *this; }
-        ComparisonResult &setSummarymapChanged(bool val) { summarymapChanged = val; return *this; }
         ComparisonResult &setJuniperrcChanged(bool val) { juniperrcChanged = val; return *this; }
         ComparisonResult &setDocumenttypesChanged(bool val) { documenttypesChanged = val; return *this; }
         ComparisonResult &setDocumentTypeRepoChanged(bool val) { documentTypeRepoChanged = val; return *this; }
@@ -92,7 +88,6 @@ public:
             }
             return *this;
         }
-        ComparisonResult &set_threading_service_config_changed(bool val) { threading_service_config_changed = val; return *this; }
         ComparisonResult &set_alloc_config_changed(bool val) { alloc_config_changed = val; return *this; }
     };
 
@@ -108,11 +103,8 @@ public:
     using OnnxModels = matching::OnnxModels;
     using SummaryConfig = const vespa::config::search::internal::InternalSummaryType;
     using SummaryConfigSP = std::shared_ptr<SummaryConfig>;
-    using SummarymapConfig = const vespa::config::search::internal::InternalSummarymapType;
-    using SummarymapConfigSP = std::shared_ptr<SummarymapConfig>;
     using JuniperrcConfig = const vespa::config::search::summary::internal::InternalJuniperrcType;
     using JuniperrcConfigSP = std::shared_ptr<JuniperrcConfig>;
-    using DocumenttypesConfig = const document::internal::InternalDocumenttypesType;
     using DocumenttypesConfigSP = std::shared_ptr<DocumenttypesConfig>;
     using MaintenanceConfigSP = DocumentDBMaintenanceConfig::SP;
     using ImportedFieldsConfig = const vespa::config::search::internal::InternalImportedFieldsType;
@@ -129,7 +121,6 @@ private:
     IndexschemaConfigSP              _indexschema;
     AttributesConfigSP               _attributes;
     SummaryConfigSP                  _summary;
-    SummarymapConfigSP               _summarymap;
     JuniperrcConfigSP                _juniperrc;
     DocumenttypesConfigSP            _documenttypes;
     std::shared_ptr<const document::DocumentTypeRepo>   _repo;
@@ -138,8 +129,8 @@ private:
     search::index::Schema::SP        _schema;
     MaintenanceConfigSP              _maintenance;
     search::LogDocumentStore::Config _storeConfig;
-    std::shared_ptr<const ThreadingServiceConfig> _threading_service_config;
-    std::shared_ptr<const AllocConfig> _alloc_config;
+    const ThreadingServiceConfig     _threading_service_config;
+    const AllocConfig                _alloc_config;
     SP                               _orig;
     bool                             _delayedAttributeAspects;
 
@@ -147,18 +138,18 @@ private:
     template <typename T>
     bool equals(const T * lhs, const T * rhs) const
     {
-        if (lhs == NULL) {
-            return rhs == NULL;
+        if (lhs == nullptr) {
+            return rhs == nullptr;
         }
-        return rhs != NULL && *lhs == *rhs;
+        return rhs != nullptr && *lhs == *rhs;
     }
     template <typename T, typename Func>
     bool equals(const T *lhs, const T *rhs, Func isEqual) const
     {
-        if (lhs == NULL) {
-            return rhs == NULL;
+        if (lhs == nullptr) {
+            return rhs == nullptr;
         }
-        return rhs != NULL && isEqual(*lhs, *rhs);
+        return rhs != nullptr && isEqual(*lhs, *rhs);
     }
 public:
     DocumentDBConfig(int64_t generation,
@@ -169,7 +160,6 @@ public:
                      const IndexschemaConfigSP &indexschema,
                      const AttributesConfigSP &attributes,
                      const SummaryConfigSP &summary,
-                     const SummarymapConfigSP &summarymap,
                      const JuniperrcConfigSP &juniperrc,
                      const DocumenttypesConfigSP &documenttypesConfig,
                      const std::shared_ptr<const document::DocumentTypeRepo> &repo,
@@ -178,8 +168,8 @@ public:
                      const search::index::Schema::SP &schema,
                      const DocumentDBMaintenanceConfig::SP &maintenance,
                      const search::LogDocumentStore::Config & storeConfig,
-                     std::shared_ptr<const ThreadingServiceConfig> threading_service_config,
-                     std::shared_ptr<const AllocConfig> alloc_config,
+                     const ThreadingServiceConfig & threading_service_config,
+                     const AllocConfig & alloc_config,
                      const vespalib::string &configId,
                      const vespalib::string &docTypeName) noexcept;
 
@@ -200,7 +190,6 @@ public:
     const IndexschemaConfig &getIndexschemaConfig() const { return *_indexschema; }
     const AttributesConfig &getAttributesConfig() const { return *_attributes; }
     const SummaryConfig &getSummaryConfig() const { return *_summary; }
-    const SummarymapConfig &getSummarymapConfig() const { return *_summarymap; }
     const JuniperrcConfig &getJuniperrcConfig() const { return *_juniperrc; }
     const DocumenttypesConfig &getDocumenttypesConfig() const { return *_documenttypes; }
     const RankProfilesConfigSP &getRankProfilesConfigSP() const { return _rankProfiles; }
@@ -210,7 +199,6 @@ public:
     const IndexschemaConfigSP &getIndexschemaConfigSP() const { return _indexschema; }
     const AttributesConfigSP &getAttributesConfigSP() const { return _attributes; }
     const SummaryConfigSP &getSummaryConfigSP() const { return _summary; }
-    const SummarymapConfigSP &getSummarymapConfigSP() const { return _summarymap; }
     const JuniperrcConfigSP &getJuniperrcConfigSP() const { return _juniperrc; }
     const DocumenttypesConfigSP &getDocumenttypesConfigSP() const { return _documenttypes; }
     const std::shared_ptr<const document::DocumentTypeRepo> &getDocumentTypeRepoSP() const { return _repo; }
@@ -221,10 +209,8 @@ public:
     const MaintenanceConfigSP &getMaintenanceConfigSP() const { return _maintenance; }
     const search::TuneFileDocumentDB::SP &getTuneFileDocumentDBSP() const { return _tuneFileDocumentDB; }
     bool getDelayedAttributeAspects() const { return _delayedAttributeAspects; }
-    const ThreadingServiceConfig& get_threading_service_config() const { return *_threading_service_config; }
-    const std::shared_ptr<const ThreadingServiceConfig>& get_threading_service_config_shared_ptr() const { return _threading_service_config; }
-    const AllocConfig& get_alloc_config() const { return *_alloc_config; }
-    const std::shared_ptr<const AllocConfig>& get_alloc_config_shared_ptr() const { return _alloc_config; }
+    const ThreadingServiceConfig& get_threading_service_config() const { return _threading_service_config; }
+    const AllocConfig& get_alloc_config() const { return _alloc_config; }
 
     bool operator==(const DocumentDBConfig &rhs) const;
 
@@ -264,6 +250,10 @@ public:
      * reprocessing.
      */
     static SP makeDelayedAttributeAspectConfig(const SP &newCfg, const DocumentDBConfig &oldCfg);
+
+    static std::shared_ptr<search::index::Schema>
+    build_schema(const AttributesConfig& attributes_config,
+                 const IndexschemaConfig &indexschema_config);
 };
 
 } // namespace proton

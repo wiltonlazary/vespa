@@ -67,6 +67,9 @@ struct DumpQuery : QueryVisitor {
     void visit(PredicateQuery &) override {}
     void visit(RegExpTerm &) override {}
     void visit(NearestNeighborTerm &) override {}
+    void visit(TrueQueryNode &) override {}
+    void visit(FalseQueryNode &) override {}
+    void visit(FuzzyTerm &) override {}
 };
 
 std::string dump_query(Node &root) {
@@ -121,8 +124,14 @@ Node::UP make_query_tree() {
     builder.addOr(3);
     builder.addStringTerm("t2", view, id, weight);
     add_phrase(builder);
+#if ENABLE_SAME_ELEMENT_SPLIT
+    //TODO Enable once matched-elements-only and artificial terms are handled
     add_same_element(builder);
     add_same_element(builder);
+#else
+    builder.addStringTerm("x1", view, id, weight);
+    builder.addStringTerm("x2", view, id, weight);
+#endif
     add_phrase(builder);
     builder.addStringTerm("t1", view, id, weight);
     return builder.build();
@@ -132,12 +141,6 @@ Node::UP make_query_tree() {
 
 std::string plain_phrase_dump =
     "Phrase 3\n"
-    "  Term a\n"
-    "  Term b\n"
-    "  Term c\n";
-
-std::string delayed_phrase_dump =
-    "Phrase 3 expensive\n"
     "  Term a\n"
     "  Term b\n"
     "  Term c\n";
@@ -159,11 +162,6 @@ std::string plain_same_element_dump =
     "  Term x\n"
     "  Term y\n";
 
-std::string delayed_same_element_dump =
-    "SameElement 2 expensive\n"
-    "  Term x\n"
-    "  Term y\n";
-
 std::string split_same_element_dump =
     "And 3\n"
     "  SameElement 2 expensive\n"
@@ -174,6 +172,7 @@ std::string split_same_element_dump =
 
 //-----------------------------------------------------------------------------
 
+#if ENABLE_SAME_ELEMENT_SPLIT
 std::string plain_query_tree_dump =
     "And 4\n"
     "  Or 3\n"
@@ -193,27 +192,25 @@ std::string plain_query_tree_dump =
     "    Term b\n"
     "    Term c\n"
     "  Term t1\n";
+#else
+std::string plain_query_tree_dump =
+        "And 4\n"
+        "  Or 3\n"
+        "    Term t2\n"
+        "    Phrase 3\n"
+        "      Term a\n"
+        "      Term b\n"
+        "      Term c\n"
+        "    Term x1\n"
+        "  Term x2\n"
+        "  Phrase 3\n"
+        "    Term a\n"
+        "    Term b\n"
+        "    Term c\n"
+        "  Term t1\n";
+#endif
 
-std::string delayed_query_tree_dump =
-    "And 4\n"
-    "  Or 3\n"
-    "    Term t2\n"
-    "    Phrase 3 expensive\n"
-    "      Term a\n"
-    "      Term b\n"
-    "      Term c\n"
-    "    SameElement 2 expensive\n"
-    "      Term x\n"
-    "      Term y\n"
-    "  SameElement 2 expensive\n"
-    "    Term x\n"
-    "    Term y\n"
-    "  Phrase 3 expensive\n"
-    "    Term a\n"
-    "    Term b\n"
-    "    Term c\n"
-    "  Term t1\n";
-
+#if ENABLE_SAME_ELEMENT_SPLIT
 std::string split_query_tree_dump =
     "And 9\n"
     "  Or 3\n"
@@ -238,126 +235,84 @@ std::string split_query_tree_dump =
     "  Term a cheap\n"
     "  Term b cheap\n"
     "  Term c cheap\n";
-
-std::string delayed_split_query_tree_dump =
-    "And 9\n"
-    "  Or 3\n"
-    "    Term t2\n"
-    "    Phrase 3 expensive\n"
-    "      Term a\n"
-    "      Term b\n"
-    "      Term c\n"
-    "    SameElement 2 expensive\n"
-    "      Term x\n"
-    "      Term y\n"
-    "  SameElement 2 expensive\n"
-    "    Term x\n"
-    "    Term y\n"
-    "  Phrase 3 expensive\n"
-    "    Term a\n"
-    "    Term b\n"
-    "    Term c\n"
-    "  Term t1\n"
-    "  Term x cheap\n"
-    "  Term y cheap\n"
-    "  Term a cheap\n"
-    "  Term b cheap\n"
-    "  Term c cheap\n";
+#else
+std::string split_query_tree_dump =
+        "And 7\n"
+        "  Or 3\n"
+        "    Term t2\n"
+        "    Phrase 3\n"
+        "      Term a\n"
+        "      Term b\n"
+        "      Term c\n"
+        "    Term x1\n"
+        "  Term x2\n"
+        "  Phrase 3 expensive\n"
+        "    Term a\n"
+        "    Term b\n"
+        "    Term c\n"
+        "  Term t1\n"
+        "  Term a cheap\n"
+        "  Term b cheap\n"
+        "  Term c cheap\n";
+#endif
 
 //-----------------------------------------------------------------------------
 
-Node::UP optimize(Node::UP root, bool white_list, bool split, bool delay) {
-    return UnpackingIteratorsOptimizer::optimize(std::move(root), white_list, split, delay);
+Node::UP optimize(Node::UP root, bool white_list, bool split) {
+    return UnpackingIteratorsOptimizer::optimize(std::move(root), white_list, split);
 }
 
 TEST(UnpackingIteratorsOptimizerTest, require_that_root_phrase_node_can_be_left_alone) {
-    std::string actual1 = dump_query(*optimize(make_phrase(), false, false, false));
-    std::string actual2 = dump_query(*optimize(make_phrase(), false, true, false));
-    std::string actual3 = dump_query(*optimize(make_phrase(), true, false, false));
+    std::string actual1 = dump_query(*optimize(make_phrase(), false, false));
+    std::string actual2 = dump_query(*optimize(make_phrase(), false, true));
+    std::string actual3 = dump_query(*optimize(make_phrase(), true, false));
     std::string expect = plain_phrase_dump;
     EXPECT_EQ(actual1, expect);
     EXPECT_EQ(actual2, expect);
     EXPECT_EQ(actual3, expect);
 }
 
-TEST(UnpackingIteratorsOptimizerTest, require_that_root_phrase_node_can_be_delayed) {
-    std::string actual1 = dump_query(*optimize(make_phrase(), false, false, true));
-    std::string actual2 = dump_query(*optimize(make_phrase(), false, true, true));
-    std::string actual3 = dump_query(*optimize(make_phrase(), true, false, true));
-    std::string expect = delayed_phrase_dump;
-    EXPECT_EQ(actual1, expect);
-    EXPECT_EQ(actual2, expect);
-    EXPECT_EQ(actual3, expect);
-}
-
 TEST(UnpackingIteratorsOptimizerTest, require_that_root_phrase_node_can_be_split) {
-    std::string actual1 = dump_query(*optimize(make_phrase(), true, true, true));
-    std::string actual2 = dump_query(*optimize(make_phrase(), true, true, false));
+    std::string actual1 = dump_query(*optimize(make_phrase(), true, true));
     std::string expect = split_phrase_dump;
     EXPECT_EQ(actual1, expect);
-    EXPECT_EQ(actual2, expect);
 }
 
 //-----------------------------------------------------------------------------
 
 TEST(UnpackingIteratorsOptimizerTest, require_that_root_same_element_node_can_be_left_alone) {
-    std::string actual1 = dump_query(*optimize(make_same_element(), false, false, false));
-    std::string actual2 = dump_query(*optimize(make_same_element(), false, true, false));
-    std::string actual3 = dump_query(*optimize(make_same_element(), true, false, false));
+    std::string actual1 = dump_query(*optimize(make_same_element(), false, false));
+    std::string actual2 = dump_query(*optimize(make_same_element(), false, true));
+    std::string actual3 = dump_query(*optimize(make_same_element(), true, false));
     std::string expect = plain_same_element_dump;
     EXPECT_EQ(actual1, expect);
     EXPECT_EQ(actual2, expect);
     EXPECT_EQ(actual3, expect);
 }
 
-TEST(UnpackingIteratorsOptimizerTest, require_that_root_same_element_node_can_be_delayed) {
-    std::string actual1 = dump_query(*optimize(make_same_element(), false, false, true));
-    std::string actual2 = dump_query(*optimize(make_same_element(), false, true, true));
-    std::string actual3 = dump_query(*optimize(make_same_element(), true, false, true));
-    std::string expect = delayed_same_element_dump;
-    EXPECT_EQ(actual1, expect);
-    EXPECT_EQ(actual2, expect);
-    EXPECT_EQ(actual3, expect);
-}
-
+#if ENABLE_SAME_ELEMENT_SPLIT
+//TODO Enable once matched-elements-only and artificial terms are handled
 TEST(UnpackingIteratorsOptimizerTest, require_that_root_same_element_node_can_be_split) {
-    std::string actual1 = dump_query(*optimize(make_same_element(), true, true, true));
-    std::string actual2 = dump_query(*optimize(make_same_element(), true, true, false));
+    std::string actual1 = dump_query(*optimize(make_same_element(), true, true));
     std::string expect = split_same_element_dump;
     EXPECT_EQ(actual1, expect);
-    EXPECT_EQ(actual2, expect);
 }
+#endif
 
 //-----------------------------------------------------------------------------
 
 TEST(UnpackingIteratorsOptimizerTest, require_that_query_tree_can_be_left_alone) {
-    std::string actual1 = dump_query(*optimize(make_query_tree(), false, false, false));
-    std::string actual2 = dump_query(*optimize(make_query_tree(), true, false, false));
+    std::string actual1 = dump_query(*optimize(make_query_tree(), false, false));
+    std::string actual2 = dump_query(*optimize(make_query_tree(), true, false));
     std::string expect = plain_query_tree_dump;
     EXPECT_EQ(actual1, expect);
     EXPECT_EQ(actual2, expect);
 }
 
-TEST(UnpackingIteratorsOptimizerTest, require_that_query_tree_can_be_delayed) {
-    std::string actual1 = dump_query(*optimize(make_query_tree(), false, false, true));
-    std::string actual2 = dump_query(*optimize(make_query_tree(), true, false, true));
-    std::string expect = delayed_query_tree_dump;
-    EXPECT_EQ(actual1, expect);
-    EXPECT_EQ(actual2, expect);
-}
-
 TEST(UnpackingIteratorsOptimizerTest, require_that_query_tree_can_be_split) {
-    std::string actual1 = dump_query(*optimize(make_query_tree(), false, true, false));
-    std::string actual2 = dump_query(*optimize(make_query_tree(), true, true, false));
+    std::string actual1 = dump_query(*optimize(make_query_tree(), false, true));
+    std::string actual2 = dump_query(*optimize(make_query_tree(), true, true));
     std::string expect = split_query_tree_dump;
-    EXPECT_EQ(actual1, expect);
-    EXPECT_EQ(actual2, expect);
-}
-
-TEST(UnpackingIteratorsOptimizerTest, require_that_query_tree_can_be_delayed_and_split) {
-    std::string actual1 = dump_query(*optimize(make_query_tree(), false, true, true));
-    std::string actual2 = dump_query(*optimize(make_query_tree(), true, true, true));
-    std::string expect = delayed_split_query_tree_dump;
     EXPECT_EQ(actual1, expect);
     EXPECT_EQ(actual2, expect);
 }

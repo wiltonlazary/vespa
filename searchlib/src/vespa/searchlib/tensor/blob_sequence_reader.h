@@ -1,8 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/fastlib/io/bufferedfile.h>
+#pragma once
+
 #include <vespa/searchlib/attribute/readerbase.h>
-#include <vespa/searchlib/util/fileutil.h>
 
 namespace search::tensor {
 
@@ -17,10 +17,10 @@ private:
 public:
     BlobSequenceReader(AttributeVector &attr)
         : ReaderBase(attr),
-          _sizeReader(_datFile.file())
+          _sizeReader(&_datFile.file())
     { }
     uint32_t getNextSize() { return _sizeReader.readHostOrder(); }
-    void readBlob(void *buf, size_t len) { _datFile.file().ReadBuf(buf, len); }
+    void readBlob(void *buf, size_t len);
 };
 
 } // namespace

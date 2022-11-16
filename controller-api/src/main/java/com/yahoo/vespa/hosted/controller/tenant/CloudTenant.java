@@ -1,11 +1,11 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.tenant;
 
 import com.google.common.collect.BiMap;
 import com.google.common.collect.ImmutableBiMap;
 import com.yahoo.config.provision.TenantName;
-import com.yahoo.text.Text;
 import com.yahoo.vespa.hosted.controller.api.integration.secrets.TenantSecretStore;
+import com.yahoo.vespa.hosted.controller.api.role.SimplePrincipal;
 
 import java.security.Principal;
 import java.security.PublicKey;
@@ -13,7 +13,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.regex.Pattern;
 
 /**
  * A paying tenant in a Vespa cloud service.
@@ -22,29 +21,24 @@ import java.util.regex.Pattern;
  */
 public class CloudTenant extends Tenant {
 
-    private static final Pattern VALID_ARCHIVE_ACCESS_ROLE_PATTERN = Pattern.compile("arn:aws:iam::\\d{12}:.+");
-
-    private final Optional<Principal> creator;
-    private final BiMap<PublicKey, Principal> developerKeys;
+    private final Optional<SimplePrincipal> creator;
+    private final BiMap<PublicKey, SimplePrincipal> developerKeys;
     private final TenantInfo info;
     private final List<TenantSecretStore> tenantSecretStores;
-    private final Optional<String> archiveAccessRole;
+    private final ArchiveAccess archiveAccess;
+    private final Optional<Instant> invalidateUserSessionsBefore;
 
     /** Public for the serialization layer — do not use! */
-    public CloudTenant(TenantName name, Instant createdAt, LastLoginInfo lastLoginInfo, Optional<Principal> creator,
-                       BiMap<PublicKey, Principal> developerKeys, TenantInfo info,
-                       List<TenantSecretStore> tenantSecretStores, Optional<String> archiveAccessRole) {
+    public CloudTenant(TenantName name, Instant createdAt, LastLoginInfo lastLoginInfo, Optional<SimplePrincipal> creator,
+                       BiMap<PublicKey, SimplePrincipal> developerKeys, TenantInfo info,
+                       List<TenantSecretStore> tenantSecretStores, ArchiveAccess archiveAccess, Optional<Instant> invalidateUserSessionsBefore) {
         super(name, createdAt, lastLoginInfo, Optional.empty());
         this.creator = creator;
         this.developerKeys = developerKeys;
         this.info = Objects.requireNonNull(info);
         this.tenantSecretStores = tenantSecretStores;
-        this.archiveAccessRole = archiveAccessRole;
-        if (!archiveAccessRole.map(role -> VALID_ARCHIVE_ACCESS_ROLE_PATTERN.matcher(role).matches()).orElse(true))
-            throw new IllegalArgumentException(Text.format("Invalid archive access role '%s': Must match expected pattern: '%s'",
-                    archiveAccessRole.get(), VALID_ARCHIVE_ACCESS_ROLE_PATTERN.pattern()));
-        if (archiveAccessRole.map(role -> role.length() > 100).orElse(false))
-            throw new IllegalArgumentException("Invalid archive access role too long, must be 100 or less characters");
+        this.archiveAccess = Objects.requireNonNull(archiveAccess);
+        this.invalidateUserSessionsBefore = invalidateUserSessionsBefore;
     }
 
     /** Creates a tenant with the given name, provided it passes validation. */
@@ -52,12 +46,12 @@ public class CloudTenant extends Tenant {
         return new CloudTenant(requireName(tenantName),
                                createdAt,
                                LastLoginInfo.EMPTY,
-                               Optional.ofNullable(creator),
-                               ImmutableBiMap.of(), TenantInfo.EMPTY, List.of(), Optional.empty());
+                               Optional.ofNullable(creator).map(SimplePrincipal::of),
+                               ImmutableBiMap.of(), TenantInfo.empty(), List.of(), new ArchiveAccess(), Optional.empty());
     }
 
     /** The user that created the tenant */
-    public Optional<Principal> creator() {
+    public Optional<SimplePrincipal> creator() {
         return creator;
     }
 
@@ -66,17 +60,27 @@ public class CloudTenant extends Tenant {
         return info;
     }
 
-    /** An iam role which is allowed to access the S3 (log, dump) archive) */
-    public Optional<String> archiveAccessRole() {
-        return archiveAccessRole;
-    }
-
     /** Returns the set of developer keys and their corresponding developers for this tenant. */
-    public BiMap<PublicKey, Principal> developerKeys() { return developerKeys; }
+    public BiMap<PublicKey, SimplePrincipal> developerKeys() { return developerKeys; }
 
     /** List of configured secret stores */
     public List<TenantSecretStore> tenantSecretStores() {
         return tenantSecretStores;
+    }
+
+    /**
+     * Role or member that is allowed to access archive bucket (log, dump)
+     *
+     * For AWS is this the IAM role
+     * For GCP it is a GCP member
+     */
+    public ArchiveAccess archiveAccess() {
+        return archiveAccess;
+    }
+
+    /** Returns instant before which all user sessions that have access to this tenant must be refreshed */
+    public Optional<Instant> invalidateUserSessionsBefore() {
+        return invalidateUserSessionsBefore;
     }
 
     @Override

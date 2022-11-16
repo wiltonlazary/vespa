@@ -10,7 +10,6 @@
 #include <vespa/vespalib/objects/nbostream.h>
 #include <vespa/document/util/serializableexceptions.h>
 #include <vespa/document/fieldset/fieldsets.h>
-#include <vespa/document/util/bytebuffer.h>
 #include <vespa/vespalib/data/databuffer.h>
 #include <vespa/vespalib/util/xmlstream.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
@@ -46,7 +45,7 @@ const DataType &
 Document::verifyDocumentType(const DataType *type) {
     if (!type) {
         documentTypeError("null");
-    } else if ( ! type->getClass().inherits(DocumentType::classId)) {
+    } else if ( ! type->isDocument()) {
         documentTypeError(type->toString());
     }
     return *type;
@@ -66,10 +65,8 @@ Document::setType(const DataType & type) {
     _fields.setType(getType().getFieldsType());
 }
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(Document, StructuredFieldValue);
-
 Document::Document()
-    : StructuredFieldValue(*DataType::DOCUMENT),
+    : StructuredFieldValue(Type::DOCUMENT, *DataType::DOCUMENT),
       _id(),
       _fields(getType().getFieldsType()),
       _backingBuffer(),
@@ -87,7 +84,7 @@ Document::Document(const Document& rhs)
 {}
 
 Document::Document(const DataType &type, DocumentId documentId)
-    : StructuredFieldValue(verifyDocumentType(&type)),
+    : StructuredFieldValue(Type::DOCUMENT, verifyDocumentType(&type)),
       _id(std::move(documentId)),
       _fields(getType().getFieldsType()),
       _backingBuffer(),
@@ -105,7 +102,7 @@ void Document::setRepo(const DocumentTypeRepo& repo)
 }
 
 Document::Document(const DocumentTypeRepo& repo, vespalib::nbostream & is)
-    : StructuredFieldValue(*DataType::DOCUMENT),
+    : StructuredFieldValue(Type::DOCUMENT, *DataType::DOCUMENT),
       _id(),
       _fields(static_cast<const DocumentType &>(getType()).getFieldsType()),
       _backingBuffer(),
@@ -115,7 +112,7 @@ Document::Document(const DocumentTypeRepo& repo, vespalib::nbostream & is)
 }
 
 Document::Document(const DocumentTypeRepo& repo, vespalib::DataBuffer && backingBuffer)
-    : StructuredFieldValue(*DataType::DOCUMENT),
+    : StructuredFieldValue(Type::DOCUMENT, *DataType::DOCUMENT),
       _id(),
       _fields(static_cast<const DocumentType &>(getType()).getFieldsType()),
       _backingBuffer(),
@@ -172,12 +169,6 @@ void
 Document::setFieldValue(const Field& field, FieldValue::UP data)
 {
     _fields.setFieldValue(field, std::move(data));
-}
-
-bool
-Document::hasChanged() const
-{
-    return _fields.hasChanged();
 }
 
 FieldValue&

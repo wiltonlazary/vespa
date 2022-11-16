@@ -9,6 +9,7 @@
 #include "transport.h"
 #include <vespa/vespalib/net/socket_spec.h>
 #include <vespa/vespalib/net/server_socket.h>
+#include <vespa/vespalib/util/atomic.h>
 #include <vespa/vespalib/util/gate.h>
 #include <csignal>
 
@@ -19,6 +20,7 @@ using vespalib::ServerSocket;
 using vespalib::SocketHandle;
 using vespalib::SocketSpec;
 using vespalib::steady_clock;
+using namespace vespalib::atomic;
 
 namespace {
 
@@ -46,7 +48,7 @@ FNET_TransportThread::AddComponent(FNET_IOComponent *comp)
         _componentsTail = comp;
         if (_timeOutHead == nullptr)
             _timeOutHead = comp;
-        _componentCnt++;
+        store_relaxed(_componentCnt, load_relaxed(_componentCnt) + 1);
     } else {
         comp->_ioc_prev = nullptr;
         comp->_ioc_next = _componentsHead;
@@ -56,7 +58,7 @@ FNET_TransportThread::AddComponent(FNET_IOComponent *comp)
             _componentsHead->_ioc_prev = comp;
         }
         _componentsHead = comp;
-        _componentCnt++;
+        store_relaxed(_componentCnt, load_relaxed(_componentCnt) + 1);
     }
 }
 
@@ -74,7 +76,7 @@ FNET_TransportThread::RemoveComponent(FNET_IOComponent *comp)
         comp->_ioc_prev->_ioc_next = comp->_ioc_next;
     if (comp->_ioc_next != nullptr)
         comp->_ioc_next->_ioc_prev = comp->_ioc_prev;
-    _componentCnt--;
+    store_relaxed(_componentCnt, load_relaxed(_componentCnt) - 1);
 }
 
 
@@ -160,7 +162,7 @@ FNET_TransportThread::SafeDiscardEvent(FNET_ControlPacket *cpacket,
 void
 FNET_TransportThread::handle_add_cmd(FNET_IOComponent *ioc)
 {
-    if (ioc->handle_add_event()) {
+    if ((_detaching.count(ioc->server_adapter()) == 0) && ioc->handle_add_event()) {
         AddComponent(ioc);
         ioc->_flags._ioc_added = true;
         ioc->attach_selector(_selector);
@@ -182,6 +184,29 @@ FNET_TransportThread::handle_close_cmd(FNET_IOComponent *ioc)
     AddDeleteComponent(ioc);
 }
 
+
+void
+FNET_TransportThread::handle_detach_server_adapter_init_cmd(FNET_IServerAdapter *server_adapter)
+{
+    _detaching.insert(server_adapter);
+    FNET_IOComponent *component = _componentsHead;
+    while (component != nullptr) {
+        FNET_IOComponent *tmp = component;
+        component = component->_ioc_next;
+        if (tmp->server_adapter() == server_adapter) {
+            RemoveComponent(tmp);
+            tmp->Close();
+            AddDeleteComponent(tmp);
+        }
+    }
+}
+
+
+void
+FNET_TransportThread::handle_detach_server_adapter_fini_cmd(FNET_IServerAdapter *server_adapter)
+{
+    _detaching.erase(server_adapter);
+}
 
 extern "C" {
 
@@ -223,7 +248,8 @@ FNET_TransportThread::FNET_TransportThread(FNET_Transport &owner_in)
       _pseudo_thread(),
       _started(false),
       _shutdown(false),
-      _finished(false)
+      _finished(false),
+      _detaching()
 {
     trapsigpipe();
 }
@@ -234,7 +260,7 @@ FNET_TransportThread::~FNET_TransportThread()
     {
         std::lock_guard<std::mutex> guard(_shutdownLock);
     }
-    if (_started.load() && !_finished) {
+    if (_started.load() && !is_finished()) {
         LOG(error, "Transport: delete called on active object!");
     } else {
         std::lock_guard guard(_pseudo_thread);
@@ -280,13 +306,11 @@ FNET_TransportThread::Listen(const char *spec, FNET_IPacketStreamer *streamer,
 
 FNET_Connection*
 FNET_TransportThread::Connect(const char *spec, FNET_IPacketStreamer *streamer,
-                              FNET_IPacketHandler *adminHandler,
-                              FNET_Context adminContext,
                               FNET_IServerAdapter *serverAdapter,
                               FNET_Context connContext)
 {
     std::unique_ptr<FNET_Connection> conn = std::make_unique<FNET_Connection>(this, streamer, serverAdapter,
-            adminHandler, adminContext, connContext, spec);
+                                                                              connContext, spec);
     if (conn->Init()) {
         return conn.release();
     }
@@ -300,8 +324,7 @@ FNET_TransportThread::Add(FNET_IOComponent *comp, bool needRef)
     if (needRef) {
         comp->AddRef();
     }
-    PostEvent(&FNET_ControlPacket::IOCAdd,
-              FNET_Context(comp));
+    PostEvent(&FNET_ControlPacket::IOCAdd, FNET_Context(comp));
 }
 
 
@@ -311,8 +334,7 @@ FNET_TransportThread::EnableWrite(FNET_IOComponent *comp, bool needRef)
     if (needRef) {
         comp->AddRef();
     }
-    PostEvent(&FNET_ControlPacket::IOCEnableWrite,
-              FNET_Context(comp));
+    PostEvent(&FNET_ControlPacket::IOCEnableWrite, FNET_Context(comp));
 }
 
 void
@@ -321,8 +343,7 @@ FNET_TransportThread::handshake_act(FNET_IOComponent *comp, bool needRef)
     if (needRef) {
         comp->AddRef();
     }
-    PostEvent(&FNET_ControlPacket::IOCHandshakeACT,
-              FNET_Context(comp));
+    PostEvent(&FNET_ControlPacket::IOCHandshakeACT, FNET_Context(comp));
 }
 
 void
@@ -331,10 +352,20 @@ FNET_TransportThread::Close(FNET_IOComponent *comp, bool needRef)
     if (needRef) {
         comp->AddRef();
     }
-    PostEvent(&FNET_ControlPacket::IOCClose,
-              FNET_Context(comp));
+    PostEvent(&FNET_ControlPacket::IOCClose, FNET_Context(comp));
 }
 
+void
+FNET_TransportThread::init_detach(FNET_IServerAdapter *server_adapter)
+{
+    PostEvent(&FNET_ControlPacket::DetachServerAdapterInit, FNET_Context(server_adapter));
+}
+
+void
+FNET_TransportThread::fini_detach(FNET_IServerAdapter *server_adapter)
+{
+    PostEvent(&FNET_ControlPacket::DetachServerAdapterFini, FNET_Context(server_adapter));
+}
 
 bool
 FNET_TransportThread::execute(FNET_IExecutable *exe)
@@ -378,11 +409,11 @@ FNET_TransportThread::ShutDown(bool waitFinished)
 void
 FNET_TransportThread::WaitFinished()
 {
-    if (_finished)
+    if (is_finished())
         return;
 
     std::unique_lock<std::mutex> guard(_shutdownLock);
-    while (!_finished)
+    while (!is_finished())
         _shutdownCond.wait(guard);
 }
 
@@ -412,6 +443,16 @@ FNET_TransportThread::handle_wakeup()
 
         if (packet->GetCommand() == FNET_ControlPacket::FNET_CMD_EXECUTE) {
             context._value.EXECUTABLE->execute();
+            continue;
+        }
+
+        if (packet->GetCommand() == FNET_ControlPacket::FNET_CMD_DETACH_SERVER_ADAPTER_INIT) {
+            handle_detach_server_adapter_init_cmd(context._value.SERVER_ADAPTER);
+            continue;
+        }
+
+        if (packet->GetCommand() == FNET_ControlPacket::FNET_CMD_DETACH_SERVER_ADAPTER_FINI) {
+            handle_detach_server_adapter_fini_cmd(context._value.SERVER_ADAPTER);
             continue;
         }
 
@@ -499,7 +540,7 @@ FNET_TransportThread::EventLoopIteration() {
 
     if (!IsShutDown())
         return true;
-    if (_finished)
+    if (is_finished())
         return false;
 
     endEventLoop();
@@ -549,13 +590,13 @@ FNET_TransportThread::endEventLoop() {
     assert(_componentsHead == nullptr &&
            _componentsTail == nullptr &&
            _timeOutHead    == nullptr &&
-           _componentCnt   == 0    &&
+           load_relaxed(_componentCnt) == 0 &&
            _queue.IsEmpty_NoLock() &&
            _myQueue.IsEmpty_NoLock());
 
     {
         std::lock_guard<std::mutex> guard(_shutdownLock);
-        _finished = true;
+        _finished.store(true, std::memory_order_relaxed);
         _shutdownCond.notify_all();
     }
 

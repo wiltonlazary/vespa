@@ -4,7 +4,9 @@
 
 #include "multienumattribute.h"
 #include "numericbase.h"
+#include "numeric_range_matcher.h"
 #include "primitivereader.h"
+#include "search_context.h"
 
 namespace search {
 
@@ -38,116 +40,6 @@ protected:
     using WeightedInt = typename B::BaseClass::WeightedInt;
     using largeint_t = typename B::BaseClass::largeint_t;
 
-    /*
-     * Specialization of SearchContext for weighted set type
-     */
-    class SetSearchContext : public NumericAttribute::Range<T>, public AttributeVector::SearchContext
-    {
-    protected:
-        const MultiValueNumericEnumAttribute<B, M> & _toBeSearched;
-
-        int32_t onFind(DocId docId, int32_t elemId, int32_t & weight) const override {
-            return find(docId, elemId, weight);
-        }
-
-        int32_t onFind(DocId docId, int32_t elemId) const override {
-            return find(docId, elemId);
-        }
-
-        bool valid() const override { return this->isValid(); }
-
-    public:
-        SetSearchContext(QueryTermSimpleUP qTerm, const NumericAttribute & toBeSearched);
-
-        int32_t
-        find(DocId doc, int32_t elemId, int32_t & weight) const
-        {
-            WeightedIndexArrayRef indices(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < indices.size(); i++) {
-                T v = _toBeSearched._enumStore.get_value(indices[i].value());
-                if (this->match(v)) {
-                    weight = indices[i].weight();
-                    return i;
-                }
-            }
-            return -1;
-        }
-
-        int32_t
-        find(DocId doc, int32_t elemId) const
-        {
-            WeightedIndexArrayRef indices(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < indices.size(); i++) {
-                T v = _toBeSearched._enumStore.get_value(indices[i].value());
-                if (this->match(v)) {
-                    return i;
-                }
-            }
-            return -1;
-        }
-        Int64Range getAsIntegerTerm() const override;
-
-        std::unique_ptr<queryeval::SearchIterator>
-        createFilterIterator(fef::TermFieldMatchData * matchData, bool strict) override;
-    };
-
-    /*
-     * Specialization of SearchContext for array type
-     */
-    class ArraySearchContext : public NumericAttribute::Range<T>, public AttributeVector::SearchContext
-    {
-    protected:
-        const MultiValueNumericEnumAttribute<B, M> & _toBeSearched;
-
-        int32_t onFind(DocId docId, int32_t elemId, int32_t & weight) const override {
-            return find(docId, elemId, weight);
-        }
-
-        int32_t onFind(DocId docId, int32_t elemId) const override {
-            return find(docId, elemId);
-        }
-
-        bool valid() const override { return this->isValid(); }
-
-    public:
-        ArraySearchContext(QueryTermSimpleUP qTerm, const NumericAttribute & toBeSearched);
-        Int64Range getAsIntegerTerm() const override;
-
-        int32_t
-        find(DocId doc, int32_t elemId, int32_t & weight) const
-        {
-            WeightedIndexArrayRef indices(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < indices.size(); i++) {
-                T v = _toBeSearched._enumStore.get_value(indices[i].value());
-                if (this->match(v)) {
-                    weight = 1;
-                    return i;
-                }
-            }
-            weight = 0;
-
-            return -1;
-        }
-
-        int32_t
-        find(DocId doc, int32_t elemId) const
-        {
-            WeightedIndexArrayRef indices(_toBeSearched._mvMapping.get(doc));
-            for (uint32_t i(elemId); i < indices.size(); i++) {
-                T v = _toBeSearched._enumStore.get_value(indices[i].value());
-                if (this->match(v)) {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-        std::unique_ptr<queryeval::SearchIterator>
-        createFilterIterator(fef::TermFieldMatchData * matchData, bool strict) override;
-    };
-
-
 public:
     MultiValueNumericEnumAttribute(const vespalib::string & baseFileName, const AttributeVector::Config & cfg);
 
@@ -155,7 +47,7 @@ public:
 
     bool onLoadEnumerated(ReaderBase &attrReader);
 
-    AttributeVector::SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams & params) const override;
 
     //-------------------------------------------------------------------------
@@ -166,7 +58,7 @@ public:
         if (indices.size() == 0) {
             return T();
         } else {
-            return this->_enumStore.get_value(indices[0].value());
+            return this->_enumStore.get_value(multivalue::get_value_ref(indices[0]).load_acquire());
         }
     }
     largeint_t getInt(DocId doc) const override {
@@ -181,12 +73,9 @@ public:
         WeightedIndexArrayRef indices(this->_mvMapping.get(doc));
         uint32_t valueCount = indices.size();
         for(uint32_t i = 0, m = std::min(sz, valueCount); i < m; i++) {
-            buffer[i] = static_cast<BufferType>(this->_enumStore.get_value(indices[i].value()));
+            buffer[i] = static_cast<BufferType>(this->_enumStore.get_value(multivalue::get_value_ref(indices[i]).load_acquire()));
         }
         return valueCount;
-    }
-    uint32_t getAll(DocId doc, T * v, uint32_t sz) const override {
-        return getHelper(doc, v, sz);
     }
     uint32_t get(DocId doc, largeint_t * v, uint32_t sz) const override {
         return getHelper(doc, v, sz);
@@ -200,12 +89,9 @@ public:
         WeightedIndexArrayRef indices(this->_mvMapping.get(doc));
         uint32_t valueCount = indices.size();
         for (uint32_t i = 0, m = std::min(sz, valueCount); i < m; ++i) {
-            buffer[i] = WeightedType(static_cast<ValueType>(this->_enumStore.get_value(indices[i].value())), indices[i].weight());
+            buffer[i] = WeightedType(static_cast<ValueType>(this->_enumStore.get_value(multivalue::get_value_ref(indices[i]).load_acquire())), multivalue::get_weight(indices[i]));
         }
         return valueCount;
-    }
-    uint32_t getAll(DocId doc, Weighted * v, uint32_t sz) const override {
-        return getWeightedHelper<Weighted, T>(doc, v, sz);
     }
     uint32_t get(DocId doc, WeightedInt * v, uint32_t sz) const override {
         return getWeightedHelper<WeightedInt, largeint_t>(doc, v, sz);
@@ -213,6 +99,10 @@ public:
     uint32_t get(DocId doc, WeightedFloat * v, uint32_t sz) const override {
         return getWeightedHelper<WeightedFloat, double>(doc, v, sz);
     }
+
+    // Implements attribute::IMultiValueAttribute
+    const attribute::IArrayReadView<T>* make_read_view(attribute::IMultiValueAttribute::ArrayTag<T>, vespalib::Stash& stash) const override;
+    const attribute::IWeightedSetReadView<T>* make_read_view(attribute::IMultiValueAttribute::WeightedSetTag<T>, vespalib::Stash& stash) const override;
 
 private:
     using AttributeReader = PrimitiveReader<typename B::LoadedValueType>;

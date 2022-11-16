@@ -17,10 +17,9 @@ class Domain : public Writer
 {
 public:
     using SP = std::shared_ptr<Domain>;
-    using Executor = vespalib::SyncableThreadExecutor;
     using DomainPartSP = std::shared_ptr<DomainPart>;
     using FileHeaderContext = common::FileHeaderContext;
-    Domain(const vespalib::string &name, const vespalib::string &baseDir, Executor & executor,
+    Domain(const vespalib::string &name, const vespalib::string &baseDir, vespalib::Executor & executor,
            const DomainConfig & cfg, const FileHeaderContext &fileHeaderContext);
 
     ~Domain() override;
@@ -36,7 +35,7 @@ public:
     SerialNum begin() const;
     SerialNum end() const;
     SerialNum getSynced() const;
-    void triggerSyncNow(std::unique_ptr<vespalib::Executor::Task> done_sync_task);
+    void triggerSyncNow(std::unique_ptr<vespalib::IDestructorCallback> after_sync);
     bool getMarkedDeleted() const { return _markedDeleted; }
     void markDeleted() { _markedDeleted = true; }
 
@@ -53,7 +52,6 @@ public:
     getDir(const vespalib::string & base, const vespalib::string & domain) {
         return base + "/" + domain;
     }
-    vespalib::Executor::Task::UP execute(vespalib::Executor::Task::UP task);
     uint64_t size() const;
     Domain & setConfig(const DomainConfig & cfg);
 private:
@@ -65,7 +63,7 @@ private:
 
     std::unique_ptr<CommitChunk> grabCurrentChunk(const UniqueLock & guard);
     void commitChunk(std::unique_ptr<CommitChunk> chunk, const UniqueLock & chunkOrderGuard);
-    void doCommit(std::unique_ptr<CommitChunk> chunk);
+    void doCommit(const SerializedChunk & serialized);
     SerialNum begin(const UniqueLock & guard) const;
     SerialNum end(const UniqueLock & guard) const;
     size_t byteSize(const UniqueLock & guard) const;
@@ -82,6 +80,7 @@ private:
     using SessionList = std::map<int, std::shared_ptr<Session>>;
     using DomainPartList = std::map<SerialNum, DomainPartSP>;
     using DurationSeconds = std::chrono::duration<double>;
+    using Executor = vespalib::Executor;
 
     DomainConfig                 _config;
     std::unique_ptr<CommitChunk> _currentChunk;
@@ -89,16 +88,11 @@ private:
     std::unique_ptr<Executor>    _singleCommitter;
     Executor                    &_executor;
     std::atomic<int>             _sessionId;
-    std::mutex                   _syncMonitor;
-    std::condition_variable      _syncCond;
-    bool                         _pendingSync;
-    std::vector<std::unique_ptr<vespalib::Executor::Task>> _done_sync_tasks;
     vespalib::string             _name;
     DomainPartList               _parts;
-    mutable std::mutex           _lock;
-    std::mutex                   _currentChunkMonitor;
-    std::condition_variable      _currentChunkCond;
-    mutable std::mutex           _sessionLock;
+    mutable std::mutex           _partsMutex;
+    std::mutex                   _currentChunkMutex;
+    mutable std::mutex           _sessionMutex;
     SessionList                  _sessions;
     DurationSeconds              _maxSessionRunTime;
     vespalib::string             _baseDir;

@@ -1,12 +1,17 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include <vespa/searchcommon/common/compaction_strategy.h>
+#include <vespa/eval/eval/value_type.h>
 #include <vespa/searchlib/common/bitvector.h>
 #include <vespa/searchlib/tensor/distance_functions.h>
 #include <vespa/searchlib/tensor/doc_vector_access.h>
 #include <vespa/searchlib/tensor/hnsw_index.h>
 #include <vespa/searchlib/tensor/random_level_generator.h>
 #include <vespa/searchlib/tensor/inv_log_level_generator.h>
+#include <vespa/searchlib/tensor/subspace_type.h>
+#include <vespa/searchlib/tensor/vector_bundle.h>
+#include <vespa/searchlib/queryeval/global_filter.h>
+#include <vespa/vespalib/datastore/compaction_spec.h>
+#include <vespa/vespalib/datastore/compaction_strategy.h>
 #include <vespa/vespalib/gtest/gtest.h>
 #include <vespa/vespalib/util/generationhandler.h>
 #include <vespa/vespalib/data/slime/slime.h>
@@ -21,7 +26,11 @@ using namespace search::tensor;
 using namespace vespalib::slime;
 using vespalib::Slime;
 using search::BitVector;
-using search::CompactionStrategy;
+using vespalib::eval::get_cell_type;
+using vespalib::eval::ValueType;
+using vespalib::datastore::CompactionSpec;
+using vespalib::datastore::CompactionStrategy;
+using search::queryeval::GlobalFilter;
 
 template <typename FloatType>
 class MyDocVectorAccess : public DocVectorAccess {
@@ -29,9 +38,14 @@ private:
     using Vector = std::vector<FloatType>;
     using ArrayRef = vespalib::ConstArrayRef<FloatType>;
     std::vector<Vector> _vectors;
+    SubspaceType        _subspace_type;
 
 public:
-    MyDocVectorAccess() : _vectors() {}
+    MyDocVectorAccess()
+        : _vectors(),
+          _subspace_type(ValueType::make_type(get_cell_type<FloatType>(), {{"dims", 2}}))
+    {
+    }
     MyDocVectorAccess& set(uint32_t docid, const Vector& vec) {
         if (docid >= _vectors.size()) {
             _vectors.resize(docid + 1);
@@ -39,9 +53,15 @@ public:
         _vectors[docid] = vec;
         return *this;
     }
-    vespalib::eval::TypedCells get_vector(uint32_t docid) const override {
+    vespalib::eval::TypedCells get_vector(uint32_t docid, uint32_t subspace) const override {
+        (void) subspace;
         ArrayRef ref(_vectors[docid]);
         return vespalib::eval::TypedCells(ref);
+    }
+    VectorBundle get_vectors(uint32_t docid) const override {
+        ArrayRef ref(_vectors[docid]);
+        assert(_subspace_type.size() == ref.size());
+        return VectorBundle(ref.data(), 1, _subspace_type);
     }
 
     void clear() { _vectors.clear(); }
@@ -59,14 +79,14 @@ using HnswIndexUP = std::unique_ptr<HnswIndex>;
 class HnswIndexTest : public ::testing::Test {
 public:
     FloatVectors vectors;
-    std::unique_ptr<BitVector> global_filter;
+    std::shared_ptr<GlobalFilter> global_filter;
     LevelGenerator* level_generator;
     GenerationHandler gen_handler;
     HnswIndexUP index;
 
     HnswIndexTest()
         : vectors(),
-          global_filter(),
+          global_filter(GlobalFilter::create()),
           level_generator(),
           gen_handler(),
           index()
@@ -83,7 +103,7 @@ public:
         level_generator = generator.get();
         index = std::make_unique<HnswIndex>(vectors, std::make_unique<SquaredEuclideanDistance>(vespalib::eval::CellType::FLOAT),
                                             std::move(generator),
-                                            HnswIndex::Config(5, 2, 10, 0, heuristic_select_neighbors));
+                                            HnswIndexConfig(5, 2, 10, 0, heuristic_select_neighbors));
     }
     void add_document(uint32_t docid, uint32_t max_level = 0) {
         level_generator->level = max_level;
@@ -95,18 +115,13 @@ public:
         commit();
     }
     void commit() {
-        index->transfer_hold_lists(gen_handler.getCurrentGeneration());
+        index->assign_generation(gen_handler.getCurrentGeneration());
         gen_handler.incGeneration();
-        gen_handler.updateFirstUsedGeneration();
-        index->trim_hold_lists(gen_handler.getFirstUsedGeneration());
+        index->reclaim_memory(gen_handler.get_oldest_used_generation());
     }
     void set_filter(std::vector<uint32_t> docids) {
         uint32_t sz = 10;
-        global_filter = BitVector::create(sz);
-        for (uint32_t id : docids) {
-            EXPECT_LT(id, sz);
-            global_filter->setBit(id);
-        }
+        global_filter = GlobalFilter::create(docids, sz);
     }
     GenerationHandler::Guard take_read_guard() {
         return gen_handler.takeGuard();
@@ -116,35 +131,36 @@ public:
     }
     MemoryUsage commit_and_update_stat() {
         commit();
-        return index->update_stat();
+        CompactionStrategy compaction_strategy;
+        return index->update_stat(compaction_strategy);
     }
-    void expect_entry_point(uint32_t exp_docid, uint32_t exp_level) {
-        EXPECT_EQ(exp_docid, index->get_entry_docid());
+    void expect_entry_point(uint32_t exp_nodeid, uint32_t exp_level) {
+        EXPECT_EQ(exp_nodeid, index->get_entry_nodeid());
         EXPECT_EQ(exp_level, index->get_entry_level());
     }
-    void expect_level_0(uint32_t docid, const HnswNode::LinkArray& exp_links) {
-        auto node = index->get_node(docid);
+    void expect_level_0(uint32_t nodeid, const HnswTestNode::LinkArray& exp_links) {
+        auto node = index->get_node(nodeid);
         ASSERT_EQ(1, node.size());
         EXPECT_EQ(exp_links, node.level(0));
     }
-    void expect_empty_level_0(uint32_t docid) {
-        auto node = index->get_node(docid);
+    void expect_empty_level_0(uint32_t nodeid) {
+        auto node = index->get_node(nodeid);
         EXPECT_TRUE(node.empty());
     }
-    void expect_levels(uint32_t docid, const HnswNode::LevelArray& exp_levels) {
-        auto act_node = index->get_node(docid);
+    void expect_levels(uint32_t nodeid, const HnswTestNode::LevelArray& exp_levels) {
+        auto act_node = index->get_node(nodeid);
         ASSERT_EQ(exp_levels.size(), act_node.size());
         EXPECT_EQ(exp_levels, act_node.levels());
     }
     void expect_top_3(uint32_t docid, std::vector<uint32_t> exp_hits) {
         uint32_t k = 3;
-        auto qv = vectors.get_vector(docid);
-        auto rv = index->top_k_candidates(qv, k, global_filter.get()).peek();
+        auto qv = vectors.get_vector(docid, 0);
+        auto rv = index->top_k_candidates(qv, k, global_filter->ptr_if_active()).peek();
         std::sort(rv.begin(), rv.end(), LesserDistance());
         size_t idx = 0;
         for (const auto & hit : rv) {
             if (idx < exp_hits.size()) {
-                EXPECT_EQ(hit.docid, exp_hits[idx++]);
+                EXPECT_EQ(index->get_docid(hit.nodeid), exp_hits[idx++]);
             }
         }
         if (exp_hits.size() == k) {
@@ -158,16 +174,18 @@ public:
         check_with_distance_threshold(docid);
     }
     void check_with_distance_threshold(uint32_t docid) {
-        auto qv = vectors.get_vector(docid);
+        auto qv = vectors.get_vector(docid, 0);
         uint32_t k = 3;
-        auto rv = index->top_k_candidates(qv, k, global_filter.get()).peek();
+        auto rv = index->top_k_candidates(qv, k, global_filter->ptr_if_active()).peek();
         std::sort(rv.begin(), rv.end(), LesserDistance());
         EXPECT_EQ(rv.size(), 3);
         EXPECT_LE(rv[0].distance, rv[1].distance);
         double thr = (rv[0].distance + rv[1].distance) * 0.5;
-        auto got_by_docid = index->find_top_k_with_filter(k, qv, *global_filter, k, thr);
+        auto got_by_docid = (global_filter->is_active())
+            ? index->find_top_k_with_filter(k, qv, *global_filter, k, thr)
+            : index->find_top_k(k, qv, k, thr);
         EXPECT_EQ(got_by_docid.size(), 1);
-        EXPECT_EQ(got_by_docid[0].docid, rv[0].docid);
+        EXPECT_EQ(got_by_docid[0].docid, index->get_docid(rv[0].nodeid));
         for (const auto & hit : got_by_docid) {
             LOG(debug, "from docid=%u found docid=%u dist=%g (threshold %g)\n",
                 docid, hit.docid, hit.distance, thr);
@@ -395,11 +413,11 @@ TEST_F(HnswIndexTest, manual_insert)
     init(false);
 
     std::vector<uint32_t> nbl;
-    HnswNode empty{nbl};
+    HnswTestNode empty{nbl};
     index->set_node(1, empty);
     index->set_node(2, empty);
 
-    HnswNode three{{1,2}};
+    HnswTestNode three{{1,2}};
     index->set_node(3, three);
     expect_level_0(1, {3});
     expect_level_0(2, {3});
@@ -407,13 +425,13 @@ TEST_F(HnswIndexTest, manual_insert)
 
     expect_entry_point(1, 0);
 
-    HnswNode twolevels{{{1},nbl}};
+    HnswTestNode twolevels{{{1},nbl}};
     index->set_node(4, twolevels);
 
     expect_entry_point(4, 1);
     expect_level_0(1, {3,4});
 
-    HnswNode five{{{1,2}, {4}}};
+    HnswTestNode five{{{1,2}, {4}}};
     index->set_node(5, five);
 
     expect_levels(1, {{3,4,5}});
@@ -472,10 +490,10 @@ TEST_F(HnswIndexTest, shrink_called_simple)
 {
     init(false);
     std::vector<uint32_t> nbl;
-    HnswNode empty{nbl};
+    HnswTestNode empty{nbl};
     index->set_node(1, empty);
     nbl.push_back(1);
-    HnswNode nb1{nbl};
+    HnswTestNode nb1{nbl};
     index->set_node(2, nb1);
     index->set_node(3, nb1);
     index->set_node(4, nb1);
@@ -512,10 +530,10 @@ TEST_F(HnswIndexTest, shrink_called_heuristic)
 {
     init(true);
     std::vector<uint32_t> nbl;
-    HnswNode empty{nbl};
+    HnswTestNode empty{nbl};
     index->set_node(1, empty);
     nbl.push_back(1);
-    HnswNode nb1{nbl};
+    HnswTestNode nb1{nbl};
     index->set_node(2, nb1);
     index->set_node(3, nb1);
     index->set_node(4, nb1);
@@ -628,10 +646,12 @@ TEST_F(HnswIndexTest, hnsw_graph_is_compacted)
     for (uint32_t i = 0; i < 10; ++i) {
         mem_1 = mem_2;
         // Forced compaction to move things around
-        index->compact_link_arrays(true, false);
-        index->compact_level_arrays(true, false);
+        CompactionSpec compaction_spec(true, false);
+        CompactionStrategy compaction_strategy;
+        index->compact_link_arrays(compaction_spec, compaction_strategy);
+        index->compact_level_arrays(compaction_spec, compaction_strategy);
         commit();
-        index->update_stat();
+        index->update_stat(compaction_strategy);
         mem_2 = commit_and_update_stat();
         EXPECT_LE(mem_2.usedBytes(), mem_1.usedBytes());
         if (mem_2.usedBytes() == mem_1.usedBytes()) {
@@ -708,8 +728,8 @@ public:
     UP prepare_add(uint32_t docid, uint32_t max_level = 0) {
         level_generator->level = max_level;
         vespalib::GenerationHandler::Guard dummy;
-        auto vector = vectors.get_vector(docid);
-        return index->prepare_add_document(docid, vector, dummy);
+        auto vectors_to_add = vectors.get_vectors(docid);
+        return index->prepare_add_document(docid, vectors_to_add, dummy);
     }
     void complete_add(uint32_t docid, UP up) {
         index->complete_add_document(docid, std::move(up));

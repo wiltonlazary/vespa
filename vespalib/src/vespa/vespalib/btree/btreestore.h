@@ -49,6 +49,8 @@ public:
                          TraitsT::INTERNAL_SLOTS,
                          TraitsT::LEAF_SLOTS,
                          AggrCalcT> Builder;
+    using CompactionSpec = datastore::CompactionSpec;
+    using CompactionStrategy = datastore::CompactionStrategy;
     using EntryRef = datastore::EntryRef;
     template <typename EntryType>
     using BufferType = datastore::BufferType<EntryType>;
@@ -146,13 +148,6 @@ public:
 
     KeyDataTypeRefPair
     allocKeyDataCopy(const KeyDataType *rhs, uint32_t clusterSize);
-
-    std::vector<uint32_t>
-    startCompact();
-
-    void
-    finishCompact(const std::vector<uint32_t> &toHold);
-
 
     const KeyDataType *
     lower_bound(const KeyDataType *b, const KeyDataType *e,
@@ -298,6 +293,9 @@ public:
     bool
     isSmallArray(const EntryRef ref) const;
 
+    static bool isBTree(uint32_t typeId) { return typeId == BUFFERTYPE_BTREE; }
+    bool isBTree(RefType ref) const { return isBTree(getTypeId(ref)); }
+
     /**
      * Returns the cluster size for the type id.
      * Cluster size == 0 means we have a tree for the given reference.
@@ -334,25 +332,25 @@ public:
 
     // Inherit doc from DataStoreBase
     void
-    trimHoldLists(generation_t usedGen)
+    reclaim_memory(generation_t oldest_used_gen)
     {
-        _allocator.trimHoldLists(usedGen);
-        _store.trimHoldLists(usedGen);
+        _allocator.reclaim_memory(oldest_used_gen);
+        _store.reclaim_memory(oldest_used_gen);
     }
 
     // Inherit doc from DataStoreBase
     void
-    transferHoldLists(generation_t generation)
+    assign_generation(generation_t current_gen)
     {
-        _allocator.transferHoldLists(generation);
-        _store.transferHoldLists(generation);
+        _allocator.assign_generation(current_gen);
+        _store.assign_generation(current_gen);
     }
 
     void
-    clearHoldLists()
+    reclaim_all_memory()
     {
-        _allocator.clearHoldLists();
-        _store.clearHoldLists();
+        _allocator.reclaim_all_memory();
+        _store.reclaim_all_memory();
     }
 
 
@@ -389,12 +387,11 @@ public:
     void
     foreach_frozen(EntryRef ref, FunctionType func) const;
 
-    std::vector<uint32_t> start_compact_worst_btree_nodes();
-    void finish_compact_worst_btree_nodes(const std::vector<uint32_t>& to_hold);
-    void move_btree_nodes(EntryRef ref);
+    std::unique_ptr<vespalib::datastore::CompactingBuffers> start_compact_worst_btree_nodes(const CompactionStrategy& compaction_strategy);
+    void move_btree_nodes(const std::vector<EntryRef>& refs);
 
-    std::vector<uint32_t> start_compact_worst_buffers();
-    EntryRef move(EntryRef ref);
+    std::unique_ptr<vespalib::datastore::CompactingBuffers> start_compact_worst_buffers(CompactionSpec compaction_spec, const CompactionStrategy& compaction_strategy);
+    void move(std::vector<EntryRef>& refs);
 
 private:
     static constexpr size_t MIN_BUFFER_ARRAYS = 128u;

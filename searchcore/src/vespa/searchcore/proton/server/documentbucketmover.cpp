@@ -6,10 +6,8 @@
 #include "maintenancedocumentsubdb.h"
 #include <vespa/searchcore/proton/documentmetastore/i_document_meta_store.h>
 #include <vespa/searchcore/proton/feedoperation/moveoperation.h>
-#include <vespa/searchcore/proton/persistenceengine/i_document_retriever.h>
 #include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/document/fieldvalue/document.h>
-#include <vespa/vespalib/util/destructor_callbacks.h>
 
 using document::BucketId;
 using document::Document;
@@ -81,6 +79,7 @@ BucketMover::BucketMover(const BucketId &bucket, const MaintenanceDocumentSubDB 
       _started(0),
       _completed(0),
       _needReschedule(false),
+      _cancelled(false),
       _allScheduled(false),
       _lastGidValid(false),
       _lastGid()
@@ -140,6 +139,7 @@ BucketMover::moveDocuments(std::vector<GuardedMoveOp> moveOps, IDestructorCallba
 
 void
 BucketMover::cancel() {
+    _cancelled = true;
     setAllScheduled();
     _needReschedule.store(true, std::memory_order_relaxed);
 }

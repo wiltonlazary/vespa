@@ -2,15 +2,13 @@
 
 #pragma once
 
-#include "attributeiterators.hpp"
+#include "singlenumericenumattribute.h"
 #include "load_utils.h"
 #include "loadednumericvalue.h"
 #include "primitivereader.h"
 #include "singleenumattribute.hpp"
-#include "singlenumericenumattribute.h"
-#include <vespa/searchlib/common/sort.h>
+#include "single_numeric_enum_search_context.h"
 #include <vespa/searchlib/query/query_term_simple.h>
-#include <vespa/searchlib/queryeval/emptysearch.h>
 #include <vespa/searchlib/util/fileutil.hpp>
 
 namespace search {
@@ -34,13 +32,13 @@ SingleValueNumericEnumAttribute<B>::considerArithmeticAttributeChange(const Chan
         oldValue = get(c._doc);
     }
 
-    T newValue = this->applyArithmetic(oldValue, c);
+    T newValue = this->template applyArithmetic<T, typename Change::DataType>(oldValue, c._data.getArithOperand(), c._type);
 
     EnumIndex idx;
     if (!this->_enumStore.find_index(newValue, idx)) {
-        c.setEnum(inserter.insert(newValue).ref());
+        c.set_entry_ref(inserter.insert(newValue).ref());
     } else {
-        c.setEnum(idx.ref());
+        c.set_entry_ref(idx.ref());
     }
 
     _currDocValues[c._doc] = newValue;
@@ -50,9 +48,9 @@ template <typename B>
 void
 SingleValueNumericEnumAttribute<B>::applyArithmeticValueChange(const Change& c, EnumStoreBatchUpdater& updater)
 {
-    EnumIndex oldIdx = this->_enumIndices[c._doc];
+    EnumIndex oldIdx = this->_enumIndices[c._doc].load_relaxed();
     EnumIndex newIdx;
-    T newValue = this->applyArithmetic(get(c._doc), c);
+    T newValue = this->template applyArithmetic<T, typename Change::DataType>(get(c._doc), c._data.getArithOperand(), c._type);
     this->_enumStore.find_index(newValue, newIdx);
 
     this->updateEnumRefCounts(c, newIdx, oldIdx, updater);
@@ -153,56 +151,12 @@ SingleValueNumericEnumAttribute<B>::onLoad(vespalib::Executor *)
 
 
 template <typename B>
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 SingleValueNumericEnumAttribute<B>::getSearch(QueryTermSimple::UP qTerm,
                                               const attribute::SearchContextParams & params) const
 {
     (void) params;
-    QueryTermSimple::RangeResult<T> res = qTerm->getRange<T>();
-    if (res.isEqual()) {
-        return std::make_unique<SingleSearchContext>(std::move(qTerm), *this);
-    } else {
-        return std::make_unique<SingleSearchContext>(std::move(qTerm), *this);
-    }
-}
-
-template <typename B>
-bool
-SingleValueNumericEnumAttribute<B>::SingleSearchContext::valid() const
-{
-    return this->isValid();
-}
-
-template <typename B>
-SingleValueNumericEnumAttribute<B>::SingleSearchContext::SingleSearchContext(QueryTermSimpleUP qTerm, const NumericAttribute & toBeSearched) :
-    NumericAttribute::Range<T>(*qTerm, true),
-    AttributeVector::SearchContext(toBeSearched),
-    _toBeSearched(static_cast<const SingleValueNumericEnumAttribute<B> &>(toBeSearched))
-{ }
-
-template <typename B>
-Int64Range
-SingleValueNumericEnumAttribute<B>::SingleSearchContext::getAsIntegerTerm() const
-{
-    return this->getRange();
-}
-
-template <typename B>
-std::unique_ptr<queryeval::SearchIterator>
-SingleValueNumericEnumAttribute<B>::SingleSearchContext::createFilterIterator(fef::TermFieldMatchData * matchData,
-                                                                              bool strict)
-{
-    if (!valid()) {
-        return std::make_unique<queryeval::EmptySearch>();
-    }
-    if (getIsFilter()) {
-        return strict
-               ? std::make_unique<FilterAttributeIteratorStrict<SingleSearchContext>>(*this, matchData)
-               : std::make_unique<FilterAttributeIteratorT<SingleSearchContext>>(*this, matchData);
-    }
-    return strict
-           ? std::make_unique<AttributeIteratorStrict<SingleSearchContext>>(*this, matchData)
-           : std::make_unique<AttributeIteratorT<SingleSearchContext>>(*this, matchData);
+    return std::make_unique<attribute::SingleNumericEnumSearchContext<T>>(std::move(qTerm), *this, &this->_enumIndices.acquire_elem_ref(0), this->_enumStore);
 }
 
 }

@@ -1,14 +1,13 @@
 {
   "url": "http://localhost:8080/nodes/v2/node/dockerhost2.yahoo.com",
-  "id": "dockerhost2.yahoo.com",
+  "id": "dockerhost2",
   "state": "active",
   "type": "host",
   "hostname": "dockerhost2.yahoo.com",
-  "openStackId": "dockerhost2",
   "flavor": "large",
   "cpuCores": 4.0,
-  "resources":{"vcpu":4.0,"memoryGb":32.0,"diskGb":1600.0,"bandwidthGbps":20.0,"diskSpeed":"fast","storageType":"remote"},
-  "realResources":{"vcpu":4.0,"memoryGb":32.0,"diskGb":1600.0,"bandwidthGbps":20.0,"diskSpeed":"fast","storageType":"remote"},
+  "resources":{"vcpu":4.0,"memoryGb":32.0,"diskGb":1600.0,"bandwidthGbps":20.0,"diskSpeed":"fast","storageType":"remote","architecture":"x86_64"},
+  "realResources":{"vcpu":4.0,"memoryGb":32.0,"diskGb":1600.0,"bandwidthGbps":20.0,"diskSpeed":"fast","storageType":"remote","architecture":"x86_64"},
   "environment": "BARE_METAL",
   "owner": {
     "tenant": "zoneapp",
@@ -26,14 +25,16 @@
   "currentRestartGeneration": 0,
   "wantedDockerImage": "docker-registry.domain.tld:8080/dist/vespa:6.42.0",
   "wantedVespaVersion": "6.42.0",
-  "requestedResources": { "vcpu":4.0, "memoryGb":32.0, "diskGb":1600.0, "bandwidthGbps":20.0, "diskSpeed":"fast", "storageType":"remote" },
+  "requestedResources": { "vcpu":4.0, "memoryGb":32.0, "diskGb":1600.0, "bandwidthGbps":20.0, "diskSpeed":"fast", "storageType":"remote","architecture":"x86_64" },
   "rebootGeneration": 0,
   "currentRebootGeneration": 0,
+  "deferOsUpgrade": false,
   "failCount": 0,
   "wantToRetire": false,
   "preferToRetire": false,
   "wantToDeprovision": false,
   "wantToRebuild": false,
+  "down": false,
   "history": [
     {
       "event": "provisioned",
@@ -44,6 +45,38 @@
       "event": "readied",
       "at": 123,
       "agent": "system"
+    },
+    {
+      "event": "reserved",
+      "at": 123,
+      "agent": "application"
+    },
+    {
+      "event": "activated",
+      "at": 123,
+      "agent": "application"
+    }
+  ],
+  "log": [
+    {
+      "event": "provisioned",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "deallocated",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "readied",
+      "at": 123,
+      "agent": "system"
+    },
+    {
+      "event": "reserved",
+      "at": 123,
+      "agent": "application"
     },
     {
       "event": "reserved",

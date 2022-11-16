@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -65,7 +65,7 @@ public:
         }
     };
 
-    using PostingListPtr = uint32_t;
+    using PostingListPtr = vespalib::datastore::AtomicEntryRef;
     using DictionaryTree = vespalib::btree::BTree<WordKey, PostingListPtr,
                                         vespalib::btree::NoAggregated,
                                         const KeyComp>;
@@ -96,6 +96,8 @@ public:
     vespalib::datastore::EntryRef addFeatures(const index::DocIdAndFeatures& features) {
         return _featureStore.addFeatures(_fieldId, features).first;
     }
+
+    void add_features_guard_bytes() { _featureStore.add_features_guard_bytes(); }
 
     FieldIndexBase(const index::Schema& schema, uint32_t fieldId);
     FieldIndexBase(const index::Schema& schema, uint32_t fieldId, const index::FieldLengthInfo& info);

@@ -34,28 +34,10 @@ SearchableFeedView::SearchableFeedView(StoreOnlyFeedView::Context storeOnlyCtx, 
                                        const FastAccessFeedView::Context &fastUpdateCtx, Context ctx)
     : Parent(std::move(storeOnlyCtx), params, fastUpdateCtx),
       _indexWriter(ctx._indexWriter),
-      _hasIndexedFields(_schema->getNumIndexFields() > 0)
+      _hasIndexedFields(getSchema()->getNumIndexFields() > 0)
 { }
 
 SearchableFeedView::~SearchableFeedView() = default;
-
-void
-SearchableFeedView::performSync()
-{
-    // Called by index write thread, delays when sync() method on it completes.
-    assert(_writeService.index().isCurrentThread());
-    _writeService.indexFieldInverter().sync();
-    _writeService.indexFieldWriter().sync();
-}
-
-void
-SearchableFeedView::sync()
-{
-    assert(_writeService.master().isCurrentThread());
-    Parent::sync();
-    _writeService.index().execute(makeLambdaTask([this]() { performSync(); }));
-    _writeService.index().sync();
-}
 
 void
 SearchableFeedView::putIndexedFields(SerialNum serialNum, search::DocumentIdT lid, const DocumentSP &newDoc,
@@ -79,7 +61,7 @@ SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid
          "database(%s): performIndexPut: serialNum(%" PRIu64 "), docId(%s), lid(%d)",
          _params._docTypeName.toString().c_str(), serialNum, doc.getId().toString().c_str(), lid);
 
-    _indexWriter->put(serialNum, doc, lid);
+    _indexWriter->put(serialNum, doc, lid, onWriteDone);
 }
 
 void
@@ -98,9 +80,12 @@ SearchableFeedView::performIndexPut(SerialNum serialNum, search::DocumentIdT lid
 }
 
 void
-SearchableFeedView::heartBeatIndexedFields(SerialNum serialNum)
+SearchableFeedView::heartBeatIndexedFields(SerialNum serialNum, DoneCallback onDone)
 {
-    _writeService.index().execute(makeLambdaTask([this, serialNum] { performIndexHeartBeat(serialNum); }));
+    _writeService.index().execute(makeLambdaTask([this, serialNum, onDone] {
+        (void) onDone;
+        performIndexHeartBeat(serialNum);
+    }));
 }
 
 void
@@ -114,8 +99,8 @@ SearchableFeedView::updateIndexedFields(SerialNum serialNum, search::DocumentIdT
 {
     _writeService.index().execute(
             makeLambdaTask([serialNum, lid, futureDoc = std::move(futureDoc),
-                            onWriteDone = std::move(onWriteDone), this]() mutable {
-                performIndexPut(serialNum, lid, std::move(futureDoc), std::move(onWriteDone));
+                            onWriteDone, this]() mutable {
+                performIndexPut(serialNum, lid, std::move(futureDoc), onWriteDone);
             }));
 }
 
@@ -153,9 +138,9 @@ SearchableFeedView::performIndexRemove(SerialNum serialNum, const LidVector &lid
         VLOG(getDebugLevel(lid, nullptr),
              "database(%s): performIndexRemove: serialNum(%" PRIu64 "), lid(%d)",
              _params._docTypeName.toString().c_str(), serialNum, lid);
-
-        _indexWriter->remove(serialNum, lid);
     }
+
+    _indexWriter->removeDocs(serialNum, lidsToRemove);
 }
 
 void
@@ -172,9 +157,9 @@ SearchableFeedView::removeIndexedFields(SerialNum serialNum, const LidVector &li
 }
 
 void
-SearchableFeedView::internalDeleteBucket(const DeleteBucketOperation &delOp)
+SearchableFeedView::internalDeleteBucket(const DeleteBucketOperation &delOp, DoneCallback onDone)
 {
-    Parent::internalDeleteBucket(delOp);
+    Parent::internalDeleteBucket(delOp, onDone);
 }
 
 void
@@ -185,14 +170,16 @@ SearchableFeedView::performIndexForceCommit(SerialNum serialNum, OnForceCommitDo
 }
 
 void
-SearchableFeedView::handleCompactLidSpace(const CompactLidSpaceOperation &op)
+SearchableFeedView::handleCompactLidSpace(const CompactLidSpaceOperation &op, DoneCallback onDone)
 {
-    Parent::handleCompactLidSpace(op);
+    Parent::handleCompactLidSpace(op, onDone);
+    vespalib::Gate gate;
     _writeService.index().execute(
-            makeLambdaTask([this, &op]() {
+            makeLambdaTask([this, &op, &gate]() {
                 _indexWriter->compactLidSpace(op.getSerialNum(), op.getLidLimit());
+                gate.countDown();
             }));
-    _writeService.index().sync();
+    gate.await();
 }
 
 void

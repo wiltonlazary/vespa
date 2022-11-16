@@ -8,13 +8,14 @@ ifeq ($(VERSION),)
 	VERSION = $(DEVEL_VERSION)
 endif
 
-BIN ?= $(CURDIR)/bin
-SHARE ?= $(CURDIR)/share
+PREFIX ?= $(CURDIR)
+BIN ?= $(PREFIX)/bin
+SHARE ?= $(PREFIX)/share
 DIST ?= $(CURDIR)/dist
 
 GO_FLAGS := -ldflags "-X github.com/vespa-engine/vespa/client/go/build.Version=$(VERSION)"
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
-DIST_TARGETS := dist-mac dist-mac-arm64 dist-linux dist-win32 dist-win64
+DIST_TARGETS := dist-mac dist-mac-arm64 dist-linux dist-linux-arm64 dist-win32 dist-win64
 
 all: test checkfmt install
 
@@ -24,12 +25,18 @@ all: test checkfmt install
 
 # Bump the version of the vespa-cli formula and create a pull request to Homebrew repository.
 #
+# Homebrew's automated BrewTestBot must do the merge for the bottles to be published. When
+# the PR has been merged check that the merge was done by their bot, and that installing
+# the new version works by running: `brew update && brew install vespa-cli`.
+#
 # Example:
 #
-# $ git checkout vX.Y.Z
 # $ make dist-homebrew
-dist-homebrew: dist-version
-	brew bump-formula-pr --version $(VERSION) vespa-cli
+--dist-homebrew: dist-version
+	brew bump-formula-pr --version $(VERSION) --no-browse vespa-cli
+
+dist-homebrew:
+	go run cond_make.go --dist-homebrew
 
 # Create a GitHub release draft for all platforms. Note that this only creates a
 # draft, which is not publicly visible until it's explicitly published.
@@ -40,12 +47,15 @@ dist-homebrew: dist-version
 #
 # Example:
 #
-# $ git checkout vX.Y.Z
 # $ make dist-github
-dist-github: dist
-	gh release create v$(VERSION) --repo vespa-engine/vespa --notes-file $(CURDIR)/README.md --draft --title "Vespa CLI $(VERSION)" \
+--dist-github: dist
+	gh release create v$(VERSION) --repo vespa-engine/vespa --notes-file $(CURDIR)/README.md --title "Vespa CLI $(VERSION)" \
 		$(DIST)/vespa-cli_$(VERSION)_sha256sums.txt \
-		$(DIST)/vespa-cli_$(VERSION)_*.{zip,tar.gz}
+		$(DIST)/vespa-cli_$(VERSION)_*.zip \
+		$(DIST)/vespa-cli_$(VERSION)_*.tar.gz
+
+dist-github:
+	go run cond_make.go --dist-github
 
 #
 # Cross-platform build targets
@@ -62,6 +72,9 @@ dist-mac-arm64: GOARCH=arm64
 dist-linux: GOOS=linux
 dist-linux: GOARCH=amd64
 
+dist-linux-arm64: GOOS=linux
+dist-linux-arm64: GOARCH=arm64
+
 dist-win32: GOOS=windows
 dist-win32: GOARCH=386
 
@@ -69,10 +82,10 @@ dist-win64: GOOS=windows
 dist-win64: GOARCH=amd64
 
 $(DIST_TARGETS): DIST_NAME=vespa-cli_$(VERSION)_$(GOOS)_$(GOARCH)
-$(DIST_TARGETS): dist-version manpages
+$(DIST_TARGETS): dist-version ci manpages
 $(DIST_TARGETS):
 	mkdir -p $(DIST)/$(DIST_NAME)/bin
-	env GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(DIST)/$(DIST_NAME)/bin $(GO_FLAGS) ./...
+	env CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(DIST)/$(DIST_NAME)/bin $(GO_FLAGS) ./...
 	cp -a $(GIT_ROOT)/LICENSE $(DIST)/$(DIST_NAME)
 	if [ "$(GOOS)" = "windows" ]; then \
 		cd $(DIST) && zip -r $(DIST)/$(DIST_NAME).zip $(DIST_NAME); \
@@ -82,18 +95,30 @@ $(DIST_TARGETS):
 	fi
 
 dist-sha256sums:
-	cd $(DIST) && sha256sum vespa-cli_$(VERSION)_*.{zip,tar.gz} > vespa-cli_$(VERSION)_sha256sums.txt
+	sha256sum $(DIST)/vespa-cli_$(VERSION)_*.zip $(DIST)/vespa-cli_$(VERSION)_*.tar.gz | sed 's|$(DIST)/||' > $(DIST)/vespa-cli_$(VERSION)_sha256sums.txt
 
 dist-version:
 ifeq ($(VERSION),$(DEVEL_VERSION))
 	$(error Invalid release version: $(VERSION). Try 'git checkout vX.Y.Z' or 'env VERSION=X.Y.Z make ...')
 endif
 
+install-all: all manpages
+
 #
 # Development targets
 #
 
-install:
+ci:
+ifdef CI
+# Ensure that CI systems use a proxy for downloading dependencies
+	go env -w GOPROXY="https://proxy.golang.org,direct"
+	go env
+endif
+
+install-brew:
+	brew install vespa-cli
+
+install: ci
 	env GOBIN=$(BIN) go install $(GO_FLAGS) ./...
 
 manpages: install
@@ -101,13 +126,16 @@ manpages: install
 	$(BIN)/vespa man $(SHARE)/man/man1
 
 clean:
-	rm -rf $(BIN) $(SHARE) $(DIST)
+	rm -rf $(DIST)
+	rm -f $(BIN)/vespa $(BIN)/script-utils $(SHARE)/man/man1/vespa.1 $(SHARE)/man/man1/vespa-*.1
+	rmdir -p $(BIN) $(SHARE)/man/man1 > /dev/null 2>&1 || true
 
-test:
-	go test ./...
+test: ci
+	mkdir -p mytmp
+	TMPDIR=`/bin/pwd`/mytmp go test ./...
 
 checkfmt:
-	@bash -c "diff --line-format='%L' <(echo -n) <(gofmt -l .)" || { echo "one or more files need to be formatted: try make fmt to fix this automatically"; exit 1; }
+	@sh -c "test -z $$(gofmt -l .)" || { echo "one or more files need to be formatted: try make fmt to fix this automatically"; exit 1; }
 
 fmt:
 	gofmt -w .

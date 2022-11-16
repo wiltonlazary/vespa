@@ -33,10 +33,10 @@ import java.util.concurrent.Executors;
  * Not for public use.
  *
  * If possible, please avoid using this class and HandlersConfigurer in your tests
+ *
  * @author Tony Vaagenes
  * @author gjoranv
- *
-*/
+ */
 public class HandlersConfigurerTestWrapper {
 
     private final ConfigSourceSet configSources =
@@ -56,6 +56,7 @@ public class HandlersConfigurerTestWrapper {
             "qr-templates.cfg",
             "documentmanager.cfg",
             "schemamapping.cfg",
+            "schema-info.cfg",
             "chains.cfg",
             "container-mbus.cfg",
             "container-mbus.cfg",
@@ -109,7 +110,7 @@ public class HandlersConfigurerTestWrapper {
     }
 
     private ComponentDeconstructor getTestDeconstructor() {
-        return (components, bundles) -> components.forEach(component -> {
+        return (generation, components, bundles) -> components.forEach(component -> {
             if (component instanceof AbstractComponent) {
                 AbstractComponent abstractComponent = (AbstractComponent) component;
                 if (abstractComponent.isDeconstructable()) abstractComponent.deconstruct();
@@ -120,11 +121,12 @@ public class HandlersConfigurerTestWrapper {
 
     public void reloadConfig() {
         configurer.reloadConfig(++lastGeneration);
-        configurer.getNewComponentGraph(guiceInjector(), false);
+        Runnable cleanupTask = configurer.waitForNextGraphGeneration(guiceInjector(), false);
+        cleanupTask.run();
     }
 
     public void shutdown() {
-        configurer.shutdown(getTestDeconstructor());
+        configurer.shutdown();
         // TODO: Remove once tests use ConfigSet rather than dir:
         for (File f : createdFiles) {
             f.delete();
@@ -142,6 +144,7 @@ public class HandlersConfigurerTestWrapper {
                 // Needed by e.g. SearchHandler
                 bind(Linguistics.class).to(SimpleLinguistics.class).in(Scopes.SINGLETON);
                 bind(Embedder.class).to(Embedder.FailingEmbedder.class).in(Scopes.SINGLETON);
+                bind(ai.vespa.cloud.ZoneInfo.class).to(MockZoneInfo.class);
                 bind(ContainerThreadPool.class).to(SimpleContainerThreadpool.class);
                 bind(Metric.class).to(MockMetric.class);
             }

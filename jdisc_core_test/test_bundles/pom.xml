@@ -8,10 +8,10 @@
     <parent>
         <groupId>com.yahoo.vespa.jdisc_core</groupId>
         <artifactId>integration-test-parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
     </parent>
     <artifactId>test_bundles</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>${project.artifactId}</name>
     <dependencies>
@@ -21,6 +21,12 @@
             <version>${project.version}</version>
 	    <scope>provided</scope>
 	</dependency>
+    <dependency>
+        <groupId>com.yahoo.vespa</groupId>
+        <artifactId>annotations</artifactId>
+        <version>${project.version}</version>
+        <scope>provided</scope>
+    </dependency>
     </dependencies>
     <build>
         <plugins>

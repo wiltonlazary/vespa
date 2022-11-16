@@ -2,10 +2,17 @@
 
 #include "fixed_size_hash_map.h"
 #include "entry_comparator.h"
+#include "entry_ref_filter.h"
+#include "i_compactable.h"
 #include <vespa/vespalib/util/array.hpp>
+#include <vespa/vespalib/util/generation_hold_list.hpp>
 #include <vespa/vespalib/util/memoryusage.h>
 #include <cassert>
 #include <stdexcept>
+
+namespace vespalib {
+template class GenerationHoldList<uint32_t, false, true>;
+}
 
 namespace vespalib::datastore {
 
@@ -28,8 +35,7 @@ FixedSizeHashMap::FixedSizeHashMap(uint32_t modulo, uint32_t capacity, uint32_t 
       _free_head(no_node_idx),
       _free_count(0u),
       _hold_count(0u),
-      _hold_1_list(),
-      _hold_2_list(),
+      _hold_list(),
       _num_shards(num_shards)
 {
     _nodes.reserve(capacity);
@@ -47,7 +53,10 @@ FixedSizeHashMap::FixedSizeHashMap(uint32_t modulo, uint32_t capacity, uint32_t 
     }
 }
 
-FixedSizeHashMap::~FixedSizeHashMap() = default;
+FixedSizeHashMap::~FixedSizeHashMap()
+{
+    _hold_list.reclaim_all();
+}
 
 void
 FixedSizeHashMap::force_add(const EntryComparator& comp, const KvType& kv)
@@ -94,37 +103,6 @@ FixedSizeHashMap::add(const ShardedHashComparator & comp, std::function<EntryRef
     return _nodes[node_idx].get_kv();
 }
 
-void
-FixedSizeHashMap::transfer_hold_lists_slow(generation_t generation)
-{
-    auto &hold_2_list = _hold_2_list;
-    for (uint32_t node_idx : _hold_1_list) {
-        hold_2_list.push_back(std::make_pair(generation, node_idx));
-    }
-    _hold_1_list.clear();
-
-}
-
-
-void
-FixedSizeHashMap::trim_hold_lists_slow(generation_t first_used)
-{
-    while (!_hold_2_list.empty()) {
-        auto& first = _hold_2_list.front();
-        if (static_cast<sgeneration_t>(first.first - first_used) >= 0) {
-            break;
-        }
-        uint32_t node_idx = first.second;
-        auto& node = _nodes[node_idx];
-        node.get_next_node_idx().store(_free_head, std::memory_order_relaxed);
-        _free_head = node_idx;
-        ++_free_count;
-        --_hold_count;
-        node.on_free();
-        _hold_2_list.erase(_hold_2_list.begin());
-    }
-}
-
 FixedSizeHashMap::KvType*
 FixedSizeHashMap::remove(const ShardedHashComparator & comp)
 {
@@ -143,13 +121,26 @@ FixedSizeHashMap::remove(const ShardedHashComparator & comp)
             }
             --_count;
             ++_hold_count;
-            _hold_1_list.push_back(node_idx);
+            _hold_list.insert(node_idx);
             return &_nodes[node_idx].get_kv();
         }
         prev_node_idx = node_idx;
         node_idx = next_node_idx;
     }
     return nullptr;
+}
+
+void
+FixedSizeHashMap::reclaim_memory(generation_t oldest_used_gen)
+{
+    _hold_list.reclaim(oldest_used_gen, [this](uint32_t node_idx) {
+        auto& node = _nodes[node_idx];
+        node.get_next_node_idx().store(_free_head, std::memory_order_relaxed);
+        _free_head = node_idx;
+        ++_free_count;
+        --_hold_count;
+        node.on_free();
+    });
 }
 
 MemoryUsage
@@ -181,15 +172,16 @@ FixedSizeHashMap::foreach_key(const std::function<void(EntryRef)>& callback) con
 }
 
 void
-FixedSizeHashMap::move_keys(const std::function<EntryRef(EntryRef)>& callback)
+FixedSizeHashMap::move_keys_on_compact(ICompactable& compactable, const EntryRefFilter &compacting_buffers)
 {
     for (auto& chain_head : _chain_heads) {
         uint32_t node_idx = chain_head.load_relaxed();
         while (node_idx != no_node_idx) {
             auto& node = _nodes[node_idx];
             EntryRef old_ref = node.get_kv().first.load_relaxed();
-            EntryRef new_ref = callback(old_ref);
-            if (new_ref != old_ref) {
+            assert(old_ref.valid());
+            if (compacting_buffers.has(old_ref)) {
+                EntryRef new_ref = compactable.move_on_compact(old_ref);
                 node.get_kv().first.store_release(new_ref);
             }
             node_idx = node.get_next_node_idx().load(std::memory_order_relaxed);
@@ -215,6 +207,106 @@ FixedSizeHashMap::normalize_values(const std::function<EntryRef(EntryRef)>& norm
         }
     }
     return changed;
+}
+
+namespace {
+
+class ChangeWriter {
+    std::vector<AtomicEntryRef*> _atomic_refs;
+public:
+    ChangeWriter(uint32_t capacity);
+    ~ChangeWriter();
+    bool write(const std::vector<EntryRef> &refs);
+    void emplace_back(AtomicEntryRef &atomic_ref) { _atomic_refs.emplace_back(&atomic_ref); }
+};
+
+ChangeWriter::ChangeWriter(uint32_t capacity)
+    : _atomic_refs()
+{
+    _atomic_refs.reserve(capacity);
+}
+
+ChangeWriter::~ChangeWriter() = default;
+
+bool
+ChangeWriter::write(const std::vector<EntryRef> &refs)
+{
+    bool changed = false;
+    assert(refs.size() == _atomic_refs.size());
+    auto atomic_ref = _atomic_refs.begin();
+    for (auto ref : refs) {
+        EntryRef old_ref = (*atomic_ref)->load_relaxed();
+        if (ref != old_ref) {
+            (*atomic_ref)->store_release(ref);
+            changed = true;
+        }
+        ++atomic_ref;
+    }
+    assert(atomic_ref == _atomic_refs.end());
+    _atomic_refs.clear();
+    return changed;
+}
+
+}
+
+bool
+FixedSizeHashMap::normalize_values(const std::function<void(std::vector<EntryRef>&)>& normalize, const EntryRefFilter& filter)
+{
+    std::vector<EntryRef> refs;
+    refs.reserve(1024);
+    bool changed = false;
+    ChangeWriter change_writer(refs.capacity());
+    for (auto& chain_head : _chain_heads) {
+        uint32_t node_idx = chain_head.load_relaxed();
+        while (node_idx != no_node_idx) {
+            auto& node = _nodes[node_idx];
+            EntryRef ref = node.get_kv().second.load_relaxed();
+            if (ref.valid()) {
+                if (filter.has(ref)) {
+                    refs.emplace_back(ref);
+                    change_writer.emplace_back(node.get_kv().second);
+                    if (refs.size() >= refs.capacity()) {
+                        normalize(refs);
+                        changed |= change_writer.write(refs);
+                        refs.clear();
+                    }
+                }
+            }
+            node_idx = node.get_next_node_idx().load(std::memory_order_relaxed);
+        }
+    }
+    if (!refs.empty()) {
+        normalize(refs);
+        changed |= change_writer.write(refs);
+    }
+    return changed;
+}
+
+void
+FixedSizeHashMap::foreach_value(const std::function<void(const std::vector<EntryRef>&)>& callback, const EntryRefFilter& filter)
+{
+    std::vector<EntryRef> refs;
+    refs.reserve(1024);
+    for (auto& chain_head : _chain_heads) {
+        uint32_t node_idx = chain_head.load_relaxed();
+        while (node_idx != no_node_idx) {
+            auto& node = _nodes[node_idx];
+            EntryRef ref = node.get_kv().second.load_relaxed();
+            if (ref.valid()) {
+                if (filter.has(ref)) {
+                    refs.emplace_back(ref);
+                    if (refs.size() >= refs.capacity()) {
+                        callback(refs);
+                        refs.clear();
+                    }
+                }
+            }
+            node_idx = node.get_next_node_idx().load(std::memory_order_relaxed);
+        }
+    }
+    if (!refs.empty()) {
+        callback(refs);
+    }
 }
 
 }

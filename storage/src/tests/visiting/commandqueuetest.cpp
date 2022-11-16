@@ -51,14 +51,19 @@ TEST(CommandQueueTest, fifo) {
     queue.add(getCommand("seventh",   7ms));
 
     ASSERT_FALSE(queue.empty());
+    EXPECT_EQ(7, queue.size());
+    EXPECT_EQ(7, queue.relaxed_atomic_size());
     std::vector<std::shared_ptr<api::CreateVisitorCommand>> commands;
     for (;;) {
-        std::shared_ptr<api::CreateVisitorCommand> cmd(
-                queue.releaseNextCommand().first);
-        if (cmd.get() == 0) break;
-        commands.push_back(cmd);
+        auto cmd = queue.releaseNextCommand().first;
+        if (!cmd) {
+            break;
+        }
+        commands.emplace_back(std::move(cmd));
     }
     ASSERT_EQ(7, commands.size());
+    EXPECT_EQ(0, queue.size());
+    EXPECT_EQ(0, queue.relaxed_atomic_size());
     EXPECT_EQ("first t=1 p=0",   getCommandString(commands[0]));
     EXPECT_EQ("second t=10 p=0", getCommandString(commands[1]));
     EXPECT_EQ("third t=5 p=0",   getCommandString(commands[2]));
@@ -87,16 +92,20 @@ TEST(CommandQueueTest, fifo_with_priorities) {
     EXPECT_EQ("sixth t=14 p=50", getCommandString(queue.peekLowestPriorityCommand()));
 
     ASSERT_FALSE(queue.empty());
+    EXPECT_EQ(7, queue.size());
+    EXPECT_EQ(7, queue.relaxed_atomic_size());
     std::vector<std::shared_ptr<api::CreateVisitorCommand>> commands;
     for (;;) {
-        std::shared_ptr<api::CreateVisitorCommand> cmdPeek(queue.peekNextCommand());
-        std::shared_ptr<api::CreateVisitorCommand> cmd(queue.releaseNextCommand().first);
-        if (cmd.get() == 0 || cmdPeek != cmd) {
+        auto cmdPeek = queue.peekNextCommand();
+        auto cmd = queue.releaseNextCommand().first;
+        if (!cmd || cmdPeek != cmd) {
             break;
         }
-        commands.push_back(cmd);
+        commands.emplace_back(std::move(cmd));
     }
     ASSERT_EQ(7, commands.size());
+    EXPECT_EQ(0, queue.size());
+    EXPECT_EQ(0, queue.relaxed_atomic_size());
     EXPECT_EQ("seventh t=7 p=0",  getCommandString(commands[0]));
     EXPECT_EQ("third t=5 p=9",    getCommandString(commands[1]));
     EXPECT_EQ("first t=1 p=10",   getCommandString(commands[2]));
@@ -119,23 +128,21 @@ TEST(CommandQueueTest, release_oldest) {
     queue.add(getCommand("seventh", 700ms));
     ASSERT_EQ(7u, queue.size());
 
-    using CommandEntry = CommandQueue<api::CreateVisitorCommand>::CommandEntry;
-    std::list<CommandEntry> timedOut(queue.releaseTimedOut());
+    auto timedOut = queue.releaseTimedOut();
     ASSERT_TRUE(timedOut.empty());
     clock.addMilliSecondsToTime(400);
     timedOut = queue.releaseTimedOut();
     ASSERT_EQ(4, timedOut.size());
     std::ostringstream ost;
-    for (std::list<CommandEntry>::const_iterator it = timedOut.begin();
-         it != timedOut.end(); ++it)
-    {
-        ost << getCommandString(it->_command) << "\n";
+    for (const auto& timed_out_entry : timedOut) {
+        ost << getCommandString(timed_out_entry._command) << "\n";
     }
     EXPECT_EQ("fourth t=5 p=0\n"
               "first t=10 p=0\n"
               "second t=100 p=0\n"
               "sixth t=400 p=0\n", ost.str());
     EXPECT_EQ(3u, queue.size());
+    EXPECT_EQ(3u, queue.relaxed_atomic_size());
 }
 
 TEST(CommandQueueTest, release_lowest_priority) {
@@ -151,16 +158,16 @@ TEST(CommandQueueTest, release_lowest_priority) {
     queue.add(getCommand("sixth",    14ms, 50));
     queue.add(getCommand("seventh",   7ms, 0));
     ASSERT_EQ(7u, queue.size());
+    EXPECT_EQ(7u, queue.relaxed_atomic_size());
 
     std::vector<std::shared_ptr<api::CreateVisitorCommand>> commands;
     for (;;) {
-        std::shared_ptr<api::CreateVisitorCommand> cmdPeek(queue.peekLowestPriorityCommand());
-        std::pair<std::shared_ptr<api::CreateVisitorCommand>, uint64_t> cmd(
-                queue.releaseLowestPriorityCommand());
-        if (cmd.first.get() == 0 || cmdPeek != cmd.first) {
+        auto cmdPeek = queue.peekLowestPriorityCommand();
+        auto cmd = queue.releaseLowestPriorityCommand().first;
+        if (!cmd || cmdPeek != cmd) {
             break;
         }
-        commands.push_back(cmd.first);
+        commands.emplace_back(std::move(cmd));
     }
     ASSERT_EQ(7, commands.size());
     EXPECT_EQ("sixth t=14 p=50",  getCommandString(commands[0]));
@@ -185,20 +192,19 @@ TEST(CommandQueueTest, delete_iterator) {
     queue.add(getCommand("seventh", 700ms));
     ASSERT_EQ(7u, queue.size());
 
-    CommandQueue<api::CreateVisitorCommand>::iterator it = queue.begin();
+    auto it = queue.begin();
     ++it; ++it;
     queue.erase(it);
     ASSERT_EQ(6u, queue.size());
+    ASSERT_EQ(6u, queue.relaxed_atomic_size());
 
     std::vector<std::shared_ptr<api::CreateVisitorCommand>> cmds;
     for (;;) {
-        std::shared_ptr<api::CreateVisitorCommand> cmd(
-                std::dynamic_pointer_cast<api::CreateVisitorCommand>(
-                    queue.releaseNextCommand().first));
-        if (cmd.get() == 0) {
+        auto cmd = queue.releaseNextCommand().first;
+        if (!cmd) {
             break;
         }
-        cmds.push_back(cmd);
+        cmds.emplace_back(std::move(cmd));
     }
     ASSERT_EQ(6, cmds.size());
     EXPECT_EQ("first t=10 p=0",    getCommandString(cmds[0]));

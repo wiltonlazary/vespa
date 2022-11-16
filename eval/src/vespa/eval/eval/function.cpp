@@ -8,6 +8,7 @@
 #include "delete_node.h"
 #include "aggr.h"
 #include <vespa/vespalib/locale/c.h>
+#include <vespa/vespalib/util/stringfmt.h>
 #include <cctype>
 #include <map>
 #include <set>
@@ -886,6 +887,10 @@ void parse_symbol_or_call(ParseContext &ctx) {
         ctx.extract_symbol(name, before_name);
         if (name.empty()) {
             ctx.fail("missing value");
+        } else if (name == "true") {
+            ctx.push_expression(Node_UP(new nodes::Number(1.0)));
+        } else if (name == "false") {
+            ctx.push_expression(Node_UP(new nodes::Number(0.0)));
         } else {
             size_t id = ctx.resolve_parameter(name);
             if (id == Params::UNDEF) {

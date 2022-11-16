@@ -7,11 +7,12 @@ import com.yahoo.vespa.athenz.api.AthenzIdentity;
 import com.yahoo.vespa.athenz.api.AthenzPolicy;
 import com.yahoo.vespa.athenz.api.AthenzResourceName;
 import com.yahoo.vespa.athenz.api.AthenzRole;
+import com.yahoo.vespa.athenz.api.AthenzRoleInformation;
 import com.yahoo.vespa.athenz.api.AthenzService;
-import com.yahoo.vespa.athenz.api.AthenzUser;
-import com.yahoo.vespa.athenz.api.OktaAccessToken;
-import com.yahoo.vespa.athenz.api.OktaIdentityToken;
+import com.yahoo.vespa.athenz.api.OAuthCredentials;
 
+import java.io.Closeable;
+import java.security.PublicKey;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -21,19 +22,17 @@ import java.util.Set;
 /**
  * @author bjorncs
  */
-public interface ZmsClient extends AutoCloseable {
+public interface ZmsClient extends Closeable {
 
-    void createTenancy(AthenzDomain tenantDomain, AthenzIdentity providerService,
-                       OktaIdentityToken identityToken, OktaAccessToken accessToken);
+    void createTenancy(AthenzDomain tenantDomain, AthenzIdentity providerService, OAuthCredentials oAuthCredentials);
 
-    void deleteTenancy(AthenzDomain tenantDomain, AthenzIdentity providerService,
-                       OktaIdentityToken identityToken, OktaAccessToken accessToken);
+    void deleteTenancy(AthenzDomain tenantDomain, AthenzIdentity providerService, OAuthCredentials oAuthCredentials);
 
     void createProviderResourceGroup(AthenzDomain tenantDomain, AthenzIdentity providerService, String resourceGroup,
-                                     Set<RoleAction> roleActions, OktaIdentityToken identityToken, OktaAccessToken accessToken);
+                                     Set<RoleAction> roleActions, OAuthCredentials oAuthCredentials);
 
     void deleteProviderResourceGroup(AthenzDomain tenantDomain, AthenzIdentity providerService, String resourceGroup,
-                                     OktaIdentityToken identityToken, OktaAccessToken accessToken);
+                                     OAuthCredentials oAuthCredentials);
 
     /** For manual tenancy provisioning - only creates roles/policies on provider domain */
     void createTenantResourceGroup(AthenzDomain tenantDomain, AthenzIdentity provider, String resourceGroup,
@@ -51,6 +50,8 @@ public interface ZmsClient extends AutoCloseable {
 
     List<AthenzDomain> getDomainList(String prefix);
 
+    List<AthenzDomain> getDomainListByAccount(String id);
+
     boolean hasAccess(AthenzResourceName resource, String action, AthenzIdentity identity);
 
     void createPolicy(AthenzDomain athenzDomain, String athenzPolicy);
@@ -61,15 +62,18 @@ public interface ZmsClient extends AutoCloseable {
 
     Optional<AthenzPolicy> getPolicy(AthenzDomain domain, String name);
 
-    Map<AthenzUser, String> listPendingRoleApprovals(AthenzRole athenzRole);
+    Map<AthenzIdentity, String> listPendingRoleApprovals(AthenzRole athenzRole);
 
-    void approvePendingRoleMembership(AthenzRole athenzRole, AthenzUser athenzUser, Instant expiry, Optional<String> reason);
+    void decidePendingRoleMembership(AthenzRole athenzRole, AthenzIdentity athenzIdentity, Instant expiry,
+                                      Optional<String> reason, Optional<OAuthCredentials> oAuthCredentials, boolean approve);
 
     List<AthenzIdentity> listMembers(AthenzRole athenzRole);
 
     List<AthenzService> listServices(AthenzDomain athenzDomain);
 
     void createOrUpdateService(AthenzService athenzService);
+
+    void updateServicePublicKey(AthenzService athenzService, String publicKeyId, PublicKey publicKey);
 
     void deleteService(AthenzService athenzService);
 
@@ -78,6 +82,18 @@ public interface ZmsClient extends AutoCloseable {
     Set<AthenzRole> listRoles(AthenzDomain domain);
 
     Set<String> listPolicies(AthenzDomain domain);
+
+    void deleteRole(AthenzRole athenzRole);
+
+    void createSubdomain(AthenzDomain parent, String name);
+
+    AthenzRoleInformation getFullRoleInformation(AthenzRole role);
+
+    QuotaUsage getQuotaUsage();
+
+    void deleteSubdomain(AthenzDomain parent, String name);
+
+    void deletePolicy(AthenzDomain domain, String athenzPolicy);
 
     void close();
 }

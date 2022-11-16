@@ -1,14 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.handler;
 
-import com.google.inject.Inject;
+import ai.vespa.cloud.ZoneInfo;
 import com.yahoo.collections.Tuple2;
 import com.yahoo.component.ComponentSpecification;
 import com.yahoo.component.Vtag;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.chain.Chain;
 import com.yahoo.component.provider.ComponentRegistry;
-import com.yahoo.container.QrSearchersConfig;
-import com.yahoo.container.core.ChainsConfig;
 import com.yahoo.container.core.ContainerHttpConfig;
 import com.yahoo.container.handler.threadpool.ContainerThreadPool;
 import com.yahoo.container.jdisc.AclMapping;
@@ -18,12 +17,10 @@ import com.yahoo.container.jdisc.HttpResponse;
 import com.yahoo.container.jdisc.LoggingRequestHandler;
 import com.yahoo.container.jdisc.RequestHandlerSpec;
 import com.yahoo.container.jdisc.VespaHeaders;
-import com.yahoo.container.logging.AccessLog;
-import com.yahoo.io.IOUtils;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.Request;
-import com.yahoo.language.Linguistics;
 import com.yahoo.language.process.Embedder;
+import com.yahoo.language.provider.DefaultEmbedderProvider;
 import com.yahoo.net.HostName;
 import com.yahoo.net.UriTools;
 import com.yahoo.prelude.query.parser.ParseException;
@@ -33,12 +30,9 @@ import com.yahoo.processing.request.CompoundName;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.search.Searcher;
-import com.yahoo.search.config.IndexInfoConfig;
 import com.yahoo.search.query.context.QueryContext;
 import com.yahoo.search.query.profile.compiled.CompiledQueryProfile;
 import com.yahoo.search.query.profile.compiled.CompiledQueryProfileRegistry;
-import com.yahoo.search.query.profile.config.QueryProfileConfigurer;
-import com.yahoo.search.query.profile.config.QueryProfilesConfig;
 import com.yahoo.search.query.properties.DefaultProperties;
 import com.yahoo.search.query.ranking.SoftTimeout;
 import com.yahoo.search.result.ErrorMessage;
@@ -47,19 +41,13 @@ import com.yahoo.search.searchchain.ExecutionFactory;
 import com.yahoo.search.searchchain.SearchChainRegistry;
 import com.yahoo.search.statistics.ElapsedTime;
 import com.yahoo.slime.Inspector;
-import com.yahoo.slime.ObjectTraverser;
-import com.yahoo.slime.SlimeUtils;
-import com.yahoo.statistics.Callback;
-import com.yahoo.statistics.Handle;
-import com.yahoo.statistics.Statistics;
-import com.yahoo.statistics.Value;
-import com.yahoo.vespa.configdefinition.SpecialtokensConfig;
 import com.yahoo.yolean.Exceptions;
 import com.yahoo.yolean.trace.TraceNode;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executor;
@@ -68,12 +56,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 /**
  * Handles search request.
  *
  * @author Steinar Knutsen
+ * @author bratseth
  */
+@SuppressWarnings("deprecation") // super class is deprecated
 public class SearchHandler extends LoggingRequestHandler {
 
     private static final Logger log = Logger.getLogger(SearchHandler.class.getName());
@@ -93,9 +84,6 @@ public class SearchHandler extends LoggingRequestHandler {
     static final String RENDERER_DIMENSION = "renderer";
 
     private static final String JSON_CONTENT_TYPE = "application/json";
-
-    private final Value searchConnections;
-
     public static final String defaultSearchChainName = "default";
     private static final String fallbackSearchChain = "vespa";
 
@@ -105,163 +93,51 @@ public class SearchHandler extends LoggingRequestHandler {
     private final Optional<String> hostResponseHeaderKey;
     
     private final String selfHostname = HostName.getLocalhost();
-
-    private final Embedder embedder;
-
+    private final Map<String, Embedder> embedders;
     private final ExecutionFactory executionFactory;
-
     private final AtomicLong numRequestsLeftToTrace;
+
+    private final ZoneInfo zoneInfo;
 
     private final static RequestHandlerSpec REQUEST_HANDLER_SPEC = RequestHandlerSpec.builder()
             .withAclMapping(SearchHandler.aclRequestMapper()).build();
 
-    private final class MeanConnections implements Callback {
-
-        @Override
-        public void run(Handle h, boolean firstTime) {
-            if (firstTime) {
-                metric.set(SEARCH_CONNECTIONS, 0.0d, null);
-                return;
-            }
-            Value v = (Value) h;
-            metric.set(SEARCH_CONNECTIONS, v.getMean(), null);
-        }
-    }
 
     @Inject
-    public SearchHandler(Statistics statistics,
-                         Metric metric,
+    public SearchHandler(Metric metric,
                          ContainerThreadPool threadpool,
                          CompiledQueryProfileRegistry queryProfileRegistry,
                          ContainerHttpConfig config,
-                         Embedder embedder,
-                         ExecutionFactory executionFactory) {
-        this(statistics, metric, threadpool.executor(), queryProfileRegistry, embedder, executionFactory,
-             config.numQueriesToTraceOnDebugAfterConstruction(),
-             config.hostResponseHeaderKey().equals("") ? Optional.empty() : Optional.of(config.hostResponseHeaderKey()));
-    }
-
-    /**
-     * @deprecated Use the @Inject annotated constructor instead.
-     */
-    @Deprecated // Vespa 8
-    public SearchHandler(Statistics statistics,
-                         Metric metric,
-                         ContainerThreadPool threadpool,
-                         AccessLog ignored,
-                         CompiledQueryProfileRegistry queryProfileRegistry,
-                         ContainerHttpConfig config,
-                         ExecutionFactory executionFactory) {
-        this(statistics, metric, threadpool.executor(), ignored, queryProfileRegistry, config, executionFactory);
-    }
-
-    /**
-     * @deprecated Use the @Inject annotated constructor instead.
-     */
-    @Deprecated // Vespa 8
-    public SearchHandler(Statistics statistics,
-                         Metric metric,
-                         Executor executor,
-                         AccessLog ignored,
-                         CompiledQueryProfileRegistry queryProfileRegistry,
-                         ContainerHttpConfig containerHttpConfig,
-                         ExecutionFactory executionFactory) {
-        this(statistics,
-             metric,
-             executor,
-             queryProfileRegistry,
-             Embedder.throwsOnUse,
-             executionFactory,
-             containerHttpConfig.numQueriesToTraceOnDebugAfterConstruction(),
-             containerHttpConfig.hostResponseHeaderKey().equals("") ?
-                     Optional.empty() : Optional.of(containerHttpConfig.hostResponseHeaderKey()));
-    }
-
-    /**
-     * @deprecated Use the @Inject annotated constructor instead.
-     */
-    @Deprecated // Vespa 8
-    public SearchHandler(Statistics statistics,
-                         Metric metric,
-                         Executor executor,
-                         AccessLog ignored,
-                         QueryProfilesConfig queryProfileConfig,
-                         ContainerHttpConfig containerHttpConfig,
-                         ExecutionFactory executionFactory) {
-        this(statistics,
-             metric,
-             executor,
-             QueryProfileConfigurer.createFromConfig(queryProfileConfig).compile(),
-             Embedder.throwsOnUse,
-             executionFactory,
-             containerHttpConfig.numQueriesToTraceOnDebugAfterConstruction(),
-             containerHttpConfig.hostResponseHeaderKey().equals("") ?
-                     Optional.empty() : Optional.of( containerHttpConfig.hostResponseHeaderKey()));
-    }
-
-    /**
-     * @deprecated Use the @Inject annotated constructor instead.
-     */
-    @Deprecated // Vespa 8
-    public SearchHandler(Statistics statistics,
-                         Metric metric,
-                         Executor executor,
-                         AccessLog ignored,
-                         CompiledQueryProfileRegistry queryProfileRegistry,
+                         ComponentRegistry<Embedder> embedders,
                          ExecutionFactory executionFactory,
-                         Optional<String> hostResponseHeaderKey) {
-        this(statistics, metric, executor, queryProfileRegistry, Embedder.throwsOnUse,
-             executionFactory, 0, hostResponseHeaderKey);
+                         ZoneInfo zoneInfo) {
+        this(metric, threadpool.executor(), queryProfileRegistry, embedders, executionFactory,
+             config.numQueriesToTraceOnDebugAfterConstruction(),
+             config.hostResponseHeaderKey().equals("") ? Optional.empty() : Optional.of(config.hostResponseHeaderKey()),
+             zoneInfo);
     }
 
-    private SearchHandler(Statistics statistics,
-                          Metric metric,
+    private SearchHandler(Metric metric,
                           Executor executor,
                           CompiledQueryProfileRegistry queryProfileRegistry,
-                          Embedder embedder,
+                          ComponentRegistry<Embedder> embedders,
                           ExecutionFactory executionFactory,
                           long numQueriesToTraceOnDebugAfterStartup,
-                          Optional<String> hostResponseHeaderKey) {
+                          Optional<String> hostResponseHeaderKey,
+                          ZoneInfo zoneInfo) {
         super(executor, metric, true);
+
         log.log(Level.FINE, () -> "SearchHandler.init " + System.identityHashCode(this));
         this.queryProfileRegistry = queryProfileRegistry;
-        this.embedder = embedder;
+        this.embedders = toMap(embedders);
         this.executionFactory = executionFactory;
 
         this.maxThreads = examineExecutor(executor);
 
-        searchConnections = new Value(SEARCH_CONNECTIONS, statistics,
-                                      new Value.Parameters().setLogRaw(true).setLogMax(true)
-                                                            .setLogMean(true).setLogMin(true)
-                                                            .setNameExtension(true)
-                                                            .setCallback(new MeanConnections()));
-
         this.hostResponseHeaderKey = hostResponseHeaderKey;
         this.numRequestsLeftToTrace = new AtomicLong(numQueriesToTraceOnDebugAfterStartup);
-    }
-
-    /** @deprecated use the other constructor */
-    @Deprecated // TODO: Remove on Vespa 8
-    public SearchHandler(ChainsConfig chainsConfig,
-                         IndexInfoConfig indexInfo,
-                         QrSearchersConfig clusters,
-                         SpecialtokensConfig specialtokens,
-                         Statistics statistics,
-                         Linguistics linguistics,
-                         Metric metric,
-                         ComponentRegistry<Renderer> renderers,
-                         Executor executor,
-                         AccessLog accessLog,
-                         QueryProfilesConfig queryProfileConfig,
-                         ComponentRegistry<Searcher> searchers,
-                         ContainerHttpConfig containerHttpConfig) {
-        this(statistics,
-             metric,
-             executor,
-             accessLog,
-             queryProfileConfig,
-             containerHttpConfig,
-             new ExecutionFactory(chainsConfig, indexInfo, clusters, searchers, specialtokens, linguistics, renderers, executor));
+        metric.set(SEARCH_CONNECTIONS, 0.0d, null);
+        this.zoneInfo = zoneInfo;
     }
 
     Metric metric() { return metric; }
@@ -332,7 +208,9 @@ public class SearchHandler extends LoggingRequestHandler {
         Query query = new Query.Builder().setRequest(request)
                                          .setRequestMap(requestMap)
                                          .setQueryProfile(queryProfile)
-                                         .setEmbedder(embedder)
+                                         .setEmbedders(embedders)
+                                         .setZoneInfo(zoneInfo)
+                                         .setSchemaInfo(executionFactory.schemaInfo())
                                          .build();
 
         boolean benchmarking = VespaHeaders.benchmarkOutput(request);
@@ -487,13 +365,8 @@ public class SearchHandler extends LoggingRequestHandler {
             query.trace("Invoking " + searchChain, false, 2);
         }
 
-        if (searchConnections != null) {
-            connectionStatistics();
-        } else {
-            log.log(Level.WARNING,
-                    "searchConnections is a null reference, probably a known race condition during startup.",
-                    new IllegalStateException("searchConnections reference is null."));
-        }
+        connectionStatistics();
+
         try {
             return searchAndFill(query, searchChain);
         } catch (ParseException e) {
@@ -506,7 +379,7 @@ public class SearchHandler extends LoggingRequestHandler {
                                                                + Exceptions.toMessageString(e));
             log.log(Level.FINE, error::getDetailedMessage);
             return new Result(query, error);
-        } catch (IllegalArgumentException e) {
+        } catch (Exception e) {
             log(request, query, e);
             return new Result(query, ErrorMessage.createUnspecifiedError("Failed: " +
                                                                          Exceptions.toMessageString(e), e));
@@ -517,32 +390,28 @@ public class SearchHandler extends LoggingRequestHandler {
                                                                           Exceptions.toMessageString(e), e);
             log(request, query, e);
             return new Result(query, error);
-        } catch (Exception e) {
-            log(request, query, e);
-            return new Result(query, ErrorMessage.createUnspecifiedError("Failed: " +
-                                                                         Exceptions.toMessageString(e), e));
         }
     }
 
     private void connectionStatistics() {
+        if (maxThreads <= 3) return;
+
         int connections = requestsInFlight.intValue();
-        searchConnections.put(connections);
-        if (maxThreads > 3) {
-            // cast to long to avoid overflows if maxThreads is at no
-            // log value (maxint)
-            long maxThreadsAsLong = maxThreads;
-            long connectionsAsLong = connections;
-            // only log when exactly crossing the limit to avoid
-            // spamming the log
-            if (connectionsAsLong < maxThreadsAsLong * 9L / 10L) {
-                // NOP
-            } else if (connectionsAsLong == maxThreadsAsLong * 9L / 10L) {
-                log.log(Level.WARNING, threadConsumptionMessage(connections, maxThreads, "90"));
-            } else if (connectionsAsLong == maxThreadsAsLong * 95L / 100L) {
-                log.log(Level.WARNING, threadConsumptionMessage(connections, maxThreads, "95"));
-            } else if (connectionsAsLong == maxThreadsAsLong) {
-                log.log(Level.WARNING, threadConsumptionMessage(connections, maxThreads, "100"));
-            }
+        metric.set(SEARCH_CONNECTIONS, connections, null);
+        // cast to long to avoid overflows if maxThreads is at no
+        // log value (maxint)
+        long maxThreadsAsLong = maxThreads;
+        long connectionsAsLong = connections;
+        // only log when exactly crossing the limit to avoid
+        // spamming the log
+        if (connectionsAsLong < maxThreadsAsLong * 9L / 10L) {
+            // NOP
+        } else if (connectionsAsLong == maxThreadsAsLong * 9L / 10L) {
+            log.log(Level.WARNING, threadConsumptionMessage(connections, maxThreads, "90"));
+        } else if (connectionsAsLong == maxThreadsAsLong * 95L / 100L) {
+            log.log(Level.WARNING, threadConsumptionMessage(connections, maxThreads, "95"));
+        } else if (connectionsAsLong == maxThreadsAsLong) {
+            log.log(Level.WARNING, threadConsumptionMessage(connections, maxThreads, "100"));
         }
     }
 
@@ -562,11 +431,7 @@ public class SearchHandler extends LoggingRequestHandler {
     }
 
     private Result validateQuery(Query query) {
-        if (query.getHttpRequest().getProperty(DefaultProperties.MAX_HITS.toString()) != null)
-            throw new RuntimeException(DefaultProperties.MAX_HITS + " must be specified in a query profile.");
-
-        if (query.getHttpRequest().getProperty(DefaultProperties.MAX_OFFSET.toString()) != null)
-            throw new RuntimeException(DefaultProperties.MAX_OFFSET + " must be specified in a query profile.");
+        DefaultProperties.requireNotPresentIn(query.getHttpRequest().propertyMap());
 
         int maxHits = query.properties().getInteger(DefaultProperties.MAX_HITS);
         int maxOffset = query.properties().getInteger(DefaultProperties.MAX_OFFSET);
@@ -598,7 +463,7 @@ public class SearchHandler extends LoggingRequestHandler {
     }
 
     private void traceVespaVersion(Query query) {
-        query.trace("Vespa version: " + Vtag.currentVersion.toString(), false, 4);
+        query.trace("Vespa version: " + Vtag.currentVersion, false, 4);
     }
 
     public SearchChainRegistry getSearchChainRegistry() { return executionFactory.searchChainRegistry();
@@ -622,23 +487,9 @@ public class SearchHandler extends LoggingRequestHandler {
             ||  ! JSON_CONTENT_TYPE.equals(getMediaType(request)))
             return request.propertyMap();
 
-        Inspector inspector;
-        try {
-            // Use an 4k buffer, that should be plenty for most json requests to pass in a single chunk
-            byte[] byteArray = IOUtils.readBytes(request.getData(), 4096);
-            inspector = SlimeUtils.jsonToSlime(byteArray).get();
-            if (inspector.field("error_message").valid()) {
-                throw new IllegalInputException("Illegal query: " + inspector.field("error_message").asString() + " at: '" +
-                                                new String(inspector.field("offending_input").asData(), StandardCharsets.UTF_8) + "'");
-            }
-
-        } catch (IOException e) {
-            throw new RuntimeException("Problem reading POSTed data", e);
-        }
+        Map<String, String> requestMap = new Json2SingleLevelMap(request.getData()).parse();
 
         // Add fields from JSON to the request map
-        Map<String, String> requestMap = new HashMap<>();
-        createRequestMapping(inspector, requestMap, "");
         requestMap.putAll(request.propertyMap());
 
         if (requestMap.containsKey("yql") && (requestMap.containsKey("select.where") || requestMap.containsKey("select.grouping")) )
@@ -649,35 +500,13 @@ public class SearchHandler extends LoggingRequestHandler {
         return requestMap;
     }
 
+    @Deprecated // TODO: Remove on Vespa 9
     public void createRequestMapping(Inspector inspector, Map<String, String> map, String parent) {
-        inspector.traverse((ObjectTraverser) (key, value) -> {
-            String qualifiedKey = parent + key;
-            switch (value.type()) {
-                case BOOL:
-                    map.put(qualifiedKey, Boolean.toString(value.asBool()));
-                    break;
-                case DOUBLE:
-                    map.put(qualifiedKey, Double.toString(value.asDouble()));
-                    break;
-                case LONG:
-                    map.put(qualifiedKey, Long.toString(value.asLong()));
-                    break;
-                case STRING:
-                    map.put(qualifiedKey , value.asString());
-                    break;
-                case ARRAY:
-                    map.put(qualifiedKey, value.toString()); // XXX: Causes parsing the JSON twice (Query.setPropertiesFromRequestMap)
-                    break;
-                case OBJECT:
-                    if (qualifiedKey.equals("select.where") || qualifiedKey.equals("select.grouping")) {
-                        map.put(qualifiedKey, value.toString());  // XXX: Causes parsing the JSON twice (Query.setPropertiesFromRequestMap)
-                        break;
-                    }
-                    createRequestMapping(value, map, qualifiedKey + ".");
-                    break;
-            }
-
-        });
+        try {
+            new Json2SingleLevelMap(new ByteArrayInputStream(inspector.toString().getBytes(StandardCharsets.UTF_8))).parse(map, parent);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed creating request mapping for parent '" + parent + "'", e);
+        }
     }
 
     @Override
@@ -689,6 +518,16 @@ public class SearchHandler extends LoggingRequestHandler {
         return HttpMethodAclMapping.standard()
                 .override(com.yahoo.jdisc.http.HttpRequest.Method.POST, AclMapping.Action.READ)
                 .build();
+    }
+
+    private Map<String, Embedder> toMap(ComponentRegistry<Embedder> embedders) {
+        var map = embedders.allComponentsById().entrySet().stream()
+                    .collect(Collectors.toMap(e -> e.getKey().stringValue(), Map.Entry::getValue));
+        if (map.size() > 1) {
+            map.remove(DefaultEmbedderProvider.class.getName());
+            // Ideally, this should be handled by dependency injection, however for now this workaround is necessary.
+        }
+        return Collections.unmodifiableMap(map);
     }
 
 }

@@ -1,9 +1,10 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.versions;
 
 import com.google.common.collect.ImmutableMap;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.CloudName;
+import com.yahoo.config.provision.zone.UpgradePolicy;
 import com.yahoo.config.provision.zone.ZoneApi;
 import com.yahoo.vespa.hosted.controller.Controller;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeFilter;
@@ -26,20 +27,13 @@ import java.util.stream.Collectors;
  *
  * @author mpolden
  */
-public class OsVersionStatus {
+public record OsVersionStatus(Map<OsVersion, List<NodeVersion>> versions) {
 
     public static final OsVersionStatus empty = new OsVersionStatus(ImmutableMap.of());
-
-    private final Map<OsVersion, List<NodeVersion>> versions;
 
     /** Public for serialization purpose only. Use {@link OsVersionStatus#compute(Controller)} for an up-to-date status */
     public OsVersionStatus(Map<OsVersion, List<NodeVersion>> versions) {
         this.versions = ImmutableMap.copyOf(Objects.requireNonNull(versions, "versions must be non-null"));
-    }
-
-    /** All known OS versions and their nodes */
-    public Map<OsVersion, List<NodeVersion>> versions() {
-        return versions;
     }
 
     /** Returns nodes eligible for OS upgrades that exist in given cloud */
@@ -73,7 +67,7 @@ public class OsVersionStatus {
                                                     .orElse(Version.emptyVersion);
 
                 for (var node : controller.serviceRegistry().configServer().nodeRepository().list(zone.getVirtualId(), NodeFilter.all().applications(application.id()))) {
-                    if (!OsUpgrader.canUpgrade(node)) continue;
+                    if (!OsUpgrader.canUpgrade(node, true)) continue;
                     Optional<Instant> suspendedAt = node.suspendedSince();
                     NodeVersion nodeVersion = new NodeVersion(node.hostname(), zone.getVirtualId(), node.currentOsVersion(),
                                                               targetOsVersion, suspendedAt);
@@ -89,9 +83,10 @@ public class OsVersionStatus {
 
     private static List<ZoneApi> zonesToUpgrade(Controller controller) {
         return controller.zoneRegistry().osUpgradePolicies().stream()
-                         .flatMap(upgradePolicy -> upgradePolicy.asList().stream())
+                         .flatMap(upgradePolicy -> upgradePolicy.steps().stream())
+                         .map(UpgradePolicy.Step::zones)
                          .flatMap(Collection::stream)
-                         .collect(Collectors.toUnmodifiableList());
+                         .toList();
     }
 
 }

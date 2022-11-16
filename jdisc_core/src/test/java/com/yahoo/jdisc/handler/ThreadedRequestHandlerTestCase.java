@@ -1,29 +1,29 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.jdisc.handler;
 
-import com.google.common.util.concurrent.ListenableFuture;
 import com.yahoo.jdisc.Request;
 import com.yahoo.jdisc.Response;
 import com.yahoo.jdisc.application.ContainerBuilder;
 import com.yahoo.jdisc.service.CurrentContainer;
 import com.yahoo.jdisc.test.TestDriver;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.fail;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author Simon Thoresen Hult
@@ -31,7 +31,7 @@ import static org.junit.Assert.assertSame;
 public class ThreadedRequestHandlerTestCase {
 
     @Test
-    public void requireThatNullExecutorThrowsException() {
+    void requireThatNullExecutorThrowsException() {
         try {
             new ThreadedRequestHandler(null) {
 
@@ -47,7 +47,7 @@ public class ThreadedRequestHandlerTestCase {
     }
 
     @Test
-    public void requireThatAccessorWork() {
+    void requireThatAccessorWork() {
         MyRequestHandler requestHandler = new MyRequestHandler(newExecutor());
         requestHandler.setTimeout(1000, TimeUnit.MILLISECONDS);
         assertEquals(1000, requestHandler.getTimeout(TimeUnit.MILLISECONDS));
@@ -55,7 +55,7 @@ public class ThreadedRequestHandlerTestCase {
     }
 
     @Test
-    public void requireThatHandlerSetsRequestTimeout() throws InterruptedException {
+    void requireThatHandlerSetsRequestTimeout() throws InterruptedException {
         MyRequestHandler requestHandler = new MyRequestHandler(newExecutor());
         requestHandler.setTimeout(600, TimeUnit.SECONDS);
         TestDriver driver = newTestDriver("http://localhost/", requestHandler);
@@ -74,7 +74,7 @@ public class ThreadedRequestHandlerTestCase {
     }
 
     @Test
-    public void requireThatRequestAndResponseReachHandlers() throws InterruptedException {
+    void requireThatRequestAndResponseReachHandlers() throws InterruptedException {
         MyRequestHandler requestHandler = new MyRequestHandler(newExecutor());
         TestDriver driver = newTestDriver("http://localhost/", requestHandler);
 
@@ -99,18 +99,18 @@ public class ThreadedRequestHandlerTestCase {
     }
 
     @Test
-    public void requireThatNotImplementedHandlerDoesNotPreventShutdown() throws Exception {
+    void requireThatNotImplementedHandlerDoesNotPreventShutdown() throws Exception {
         TestDriver driver = newTestDriver("http://localhost/", new ThreadedRequestHandler(newExecutor()) {
 
         });
         assertEquals(Response.Status.NOT_IMPLEMENTED,
-                     dispatchRequest(driver, "http://localhost/", ByteBuffer.wrap(new byte[] { 69 }))
-                             .get(600, TimeUnit.SECONDS).getStatus());
+                dispatchRequest(driver, "http://localhost/", ByteBuffer.wrap(new byte[]{69}))
+                        .get(600, TimeUnit.SECONDS).getStatus());
         assertTrue(driver.close());
     }
 
     @Test
-    public void requireThatThreadedRequestHandlerRetainsTheRequestUntilHandlerIsRun() throws Exception {
+    void requireThatThreadedRequestHandlerRetainsTheRequestUntilHandlerIsRun() throws Exception {
         final TestDriver driver = TestDriver.newSimpleApplicationInstanceWithoutOsgi();
         ContainerBuilder builder = driver.newContainerBuilder();
         final AtomicInteger baseRetainCount = new AtomicInteger();
@@ -130,7 +130,7 @@ public class ThreadedRequestHandlerTestCase {
 
             @Override
             public void handleRequest(Request request, ReadableContentChannel requestContent,
-                                      ResponseHandler responseHandler) {
+                    ResponseHandler responseHandler) {
                 try {
                     entryLatch.await(600, TimeUnit.SECONDS);
                 } catch (InterruptedException e) {
@@ -159,8 +159,8 @@ public class ThreadedRequestHandlerTestCase {
         return driver;
     }
 
-    private static ListenableFuture<Response> dispatchRequest(final CurrentContainer container, final String uri,
-                                                              final ByteBuffer... content) {
+    private static CompletableFuture<Response> dispatchRequest(final CurrentContainer container, final String uri,
+                                                               final ByteBuffer... content) {
         return new RequestDispatch() {
 
             @Override

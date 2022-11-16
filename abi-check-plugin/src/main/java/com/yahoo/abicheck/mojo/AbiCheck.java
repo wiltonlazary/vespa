@@ -1,9 +1,11 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.abicheck.mojo;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
+import com.fasterxml.jackson.core.util.DefaultIndenter;
+import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.yahoo.abicheck.classtree.ClassFileTree;
 import com.yahoo.abicheck.classtree.ClassFileTree.ClassFile;
 import com.yahoo.abicheck.classtree.ClassFileTree.Package;
@@ -11,19 +13,6 @@ import com.yahoo.abicheck.collector.AnnotationCollector;
 import com.yahoo.abicheck.collector.PublicSignatureCollector;
 import com.yahoo.abicheck.setmatcher.SetMatcher;
 import com.yahoo.abicheck.signature.JavaClassSignature;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Comparator;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.jar.JarFile;
-import java.util.stream.Collectors;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -36,6 +25,21 @@ import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 import org.objectweb.asm.ClassReader;
+
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.jar.JarFile;
+import java.util.stream.Collectors;
 
 @Mojo(
     name = "abicheck",
@@ -63,11 +67,9 @@ public class AbiCheck extends AbstractMojo {
   // Testing that Gson can read JSON files is not very useful
   private static Map<String, JavaClassSignature> readSpec(File file) throws IOException {
     try (FileReader reader = new FileReader(file)) {
-      TypeToken<Map<String, JavaClassSignature>> typeToken =
-          new TypeToken<Map<String, JavaClassSignature>>() {
-          };
-      Gson gson = new GsonBuilder().create();
-      return gson.fromJson(reader, typeToken.getType());
+      ObjectMapper mapper = new ObjectMapper();
+      JavaType typeToken = mapper.getTypeFactory().constructMapType(HashMap.class, String.class, JavaClassSignature.class);
+      return mapper.readValue(reader, typeToken);
     }
   }
   // CLOVER:ON
@@ -76,11 +78,12 @@ public class AbiCheck extends AbstractMojo {
   // Testing that Gson can write JSON files is not very useful
   private static void writeSpec(Map<String, JavaClassSignature> signatures, File file)
       throws IOException {
-    Gson gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
     try (FileWriter writer = new FileWriter(file)) {
-      gson.toJson(signatures, writer);
+      new ObjectMapper().writer(new DefaultPrettyPrinter().withArrayIndenter(DefaultIndenter.SYSTEM_LINEFEED_INSTANCE))
+                        .writeValue(writer, signatures);
     }
   }
+
   // CLOVER:ON
 
   private static boolean matchingClasses(String className, JavaClassSignature expected,
@@ -193,7 +196,7 @@ public class AbiCheck extends AbstractMojo {
       } else {
         Map<String, JavaClassSignature> abiSpec = readSpec(specFile);
         if (!compareSignatures(abiSpec, signatures, getLog())) {
-          throw new MojoFailureException("ABI spec mismatch. To update run 'mvn package -Dabicheck.writeSpec'");
+          throw new MojoFailureException("ABI spec mismatch.\nTo update run 'mvn package -Dabicheck.writeSpec'");
         }
       }
     } catch (IOException e) {

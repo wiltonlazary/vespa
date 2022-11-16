@@ -2,7 +2,6 @@
 package com.yahoo.prelude.fastsearch;
 
 import com.google.common.collect.ImmutableSet;
-import com.yahoo.config.subscription.ConfigGetter;
 import com.yahoo.data.access.slime.SlimeAdapter;
 import com.yahoo.prelude.hitfield.JSONString;
 import com.yahoo.prelude.hitfield.RawData;
@@ -10,12 +9,14 @@ import com.yahoo.prelude.hitfield.XMLString;
 import com.yahoo.search.result.FeatureData;
 import com.yahoo.search.result.Hit;
 import com.yahoo.search.result.StructuredData;
+import com.yahoo.search.schema.DocumentSummary;
+import com.yahoo.search.schema.Schema;
 import com.yahoo.slime.BinaryFormat;
 import com.yahoo.slime.Cursor;
 import com.yahoo.slime.Slime;
 import com.yahoo.tensor.Tensor;
 import com.yahoo.tensor.serialization.TypedBinaryFormat;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -26,12 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class SlimeSummaryTestCase {
 
@@ -42,8 +38,8 @@ public class SlimeSummaryTestCase {
     private static final String partial_summary3_cf = cf_pre + "partial-summary3.cfg";
 
     @Test
-    public void testDecodingEmpty() {
-        DocsumDefinitionSet docsum = createDocsumDefinitionSet(summary_cf);
+    void testDecodingEmpty() {
+        DocsumDefinitionSet docsum = createDocsumDefinitionSet();
         FastHit hit = new FastHit();
         assertNull(docsum.lazyDecode("default", emptySummary(), hit));
         assertNull(hit.getField("integer_field"));
@@ -68,23 +64,23 @@ public class SlimeSummaryTestCase {
     }
 
     @Test
-    public void testTimeout() {
-        DocsumDefinitionSet docsum = createDocsumDefinitionSet(summary_cf);
+    void testTimeout() {
+        DocsumDefinitionSet docsum = createDocsumDefinitionSet();
         FastHit hit = new FastHit();
         assertEquals("Hit hit index:null/0/000000000000000000000000 (relevance 0.0) [fasthit, globalid: 0 0 0 0 0 0 0 0 0 0 0 0, partId: 0, distributionkey: 0] failed: Timed out....",
-                     docsum.lazyDecode("default", timeoutSummary(), hit));
+                docsum.lazyDecode("default", timeoutSummary(), hit));
     }
 
     @Test
-    public void testDecoding() {
+    void testDecoding() {
         Tensor tensor1 = Tensor.from("tensor(x{},y{}):{{x:foo,y:bar}:0.1}");
         Tensor tensor2 = Tensor.from("tensor(x[1],y[1]):{{x:0,y:0}:-0.3}");
-        DocsumDefinitionSet docsum = createDocsumDefinitionSet(summary_cf);
+        DocsumDefinitionSet docsum = createDocsumDefinitionSet();
         FastHit hit = new FastHit();
         assertNull(docsum.lazyDecode("default", fullSummary(tensor1, tensor2), hit));
         assertEquals(4, hit.getField("integer_field"));
-        assertEquals((short)2, hit.getField("short_field"));
-        assertEquals((byte)1, hit.getField("byte_field"));
+        assertEquals((short) 2, hit.getField("short_field"));
+        assertEquals((byte) 1, hit.getField("byte_field"));
         assertEquals(4.5F, hit.getField("float_field"));
         assertEquals(8.75, hit.getField("double_field"));
         assertEquals(8L, hit.getField("int64_field"));
@@ -99,7 +95,7 @@ public class SlimeSummaryTestCase {
         if (hit.getField("jsonstring_field") instanceof JSONString) {
             JSONString jstr = (JSONString) hit.getField("jsonstring_field");
             assertEquals("{\"foo\":1,\"bar\":2}", jstr.getContent());
-            assertNotNull(getParsedJSON(jstr));
+            assertNotNull(jstr.getContent());
 
             com.yahoo.data.access.Inspector value = jstr.inspect();
             assertEquals(1L, value.field("foo").asLong());
@@ -116,21 +112,19 @@ public class SlimeSummaryTestCase {
         assertEquals(tensor2, hit.getField("tensor_field2"));
         FeatureData featureData = hit.features();
         assertEquals("double_feature,rankingExpression(tensor1_feature),tensor2_feature",
-                     featureData.featureNames().stream().sorted().collect(Collectors.joining(",")));
+                featureData.featureNames().stream().sorted().collect(Collectors.joining(",")));
         assertEquals(0.5, featureData.getDouble("double_feature"), 0.00000001);
         assertEquals(tensor1, featureData.getTensor("tensor1_feature"));
         assertEquals(tensor1, featureData.getTensor("rankingExpression(tensor1_feature)"));
         assertEquals(tensor2, featureData.getTensor("tensor2_feature"));
     }
 
-    @SuppressWarnings("removal") private static Object getParsedJSON(JSONString jstr) { return jstr.getParsedJSON(); }
-
     @Test
-    public void testFieldAccessAPI() {
-        DocsumDefinitionSet partialDocsum1 = createDocsumDefinitionSet(partial_summary1_cf);
-        DocsumDefinitionSet partialDocsum2 = createDocsumDefinitionSet(partial_summary2_cf);
-        DocsumDefinitionSet partialDocsum3 = createDocsumDefinitionSet(partial_summary3_cf);
-        DocsumDefinitionSet fullDocsum = createDocsumDefinitionSet(summary_cf);
+    void testFieldAccessAPI() {
+        DocsumDefinitionSet partialDocsum1 = createPartialDocsumDefinitionSet1();
+        DocsumDefinitionSet partialDocsum2 = createPartialDocsumDefinitionSet2();
+        DocsumDefinitionSet partialDocsum3 = createPartialDocsumDefinitionSet3();
+        DocsumDefinitionSet fullDocsum = createDocsumDefinitionSet();
         FastHit hit = new FastHit();
         Map<String, Object> expected = new HashMap<>();
 
@@ -254,8 +248,8 @@ public class SlimeSummaryTestCase {
         Tensor tensor2 = Tensor.from("tensor(x[1],y[1]):{{x:0,y:0}:-0.3}");
         assertNull(fullDocsum.lazyDecode("default", fullishSummary(tensor1, tensor2), hit));
         expected.put("integer_field", 4);
-        expected.put("short_field", (short)2);
-        expected.put("byte_field", (byte)1);
+        expected.put("short_field", (short) 2);
+        expected.put("byte_field", (byte) 1);
         expected.put("float_field", 4.5f);
         expected.put("double_field", 8.75d);
         expected.put("int64_field", 8L);
@@ -304,7 +298,7 @@ public class SlimeSummaryTestCase {
         for (Iterator<String> i = hit.fieldKeys().iterator(); i.hasNext(); ) {
             fieldNameIteratorFieldCount++;
             String name = i.next();
-            assertTrue("Expected field " + name, expected.containsKey(name));
+            assertTrue(expected.containsKey(name), "Expected field " + name);
         }
         assertEquals(expected.size(), fieldNameIteratorFieldCount);
         // fieldKeys
@@ -325,11 +319,10 @@ public class SlimeSummaryTestCase {
     }
 
     private void assertEqualMaps(Map<String, Object> expected, Map<String, Object> actual) {
-        assertEquals("Map sizes", expected.size(), actual.size());
-        assertEquals("Keys", expected.keySet(), actual.keySet());
+        assertEquals(expected.size(), actual.size(), "Map sizes");
+        assertEquals(expected.keySet(), actual.keySet(), "Keys");
         for (var expectedEntry : expected.entrySet()) {
-            assertEquals("Key '" + expectedEntry.getKey() + "'",
-                         expectedEntry.getValue(), actual.get(expectedEntry.getKey()));
+            assertEquals(expectedEntry.getValue(), actual.get(expectedEntry.getKey()), "Key '" + expectedEntry.getKey() + "'");
         }
     }
 
@@ -437,14 +430,59 @@ public class SlimeSummaryTestCase {
         return buf.array();
     }
 
-    private DocsumDefinitionSet createDocsumDefinitionSet(String configID) {
-        DocumentdbInfoConfig config = new ConfigGetter<>(DocumentdbInfoConfig.class).getConfig(configID);
-        return new DocsumDefinitionSet(config.documentdb(0));
+    private DocsumDefinitionSet createDocsumDefinitionSet() {
+        var schema = new Schema.Builder("test");
+        var summary = new DocumentSummary.Builder("default");
+        summary.add(new DocumentSummary.Field("integer_field", "integer"));
+        summary.add(new DocumentSummary.Field("short_field", "short"));
+        summary.add(new DocumentSummary.Field("byte_field", "byte"));
+        summary.add(new DocumentSummary.Field("float_field", "float"));
+        summary.add(new DocumentSummary.Field("double_field", "double"));
+        summary.add(new DocumentSummary.Field("int64_field", "int64"));
+        summary.add(new DocumentSummary.Field("string_field", "string"));
+        summary.add(new DocumentSummary.Field("data_field", "data"));
+        summary.add(new DocumentSummary.Field("longstring_field", "longstring"));
+        summary.add(new DocumentSummary.Field("longdata_field", "longdata"));
+        summary.add(new DocumentSummary.Field("xmlstring_field", "xmlstring"));
+        summary.add(new DocumentSummary.Field("jsonstring_field", "jsonstring"));
+        summary.add(new DocumentSummary.Field("tensor_field1", "tensor"));
+        summary.add(new DocumentSummary.Field("tensor_field2", "tensor"));
+        summary.add(new DocumentSummary.Field("summaryfeatures", "featuredata"));
+        schema.add(summary.build());
+        return new DocsumDefinitionSet(schema.build());
+    }
+
+    private DocsumDefinitionSet createPartialDocsumDefinitionSet1() {
+        var schema = new Schema.Builder("test");
+        var summary = new DocumentSummary.Builder("default");
+        summary.add(new DocumentSummary.Field("integer_field", "integer"));
+        summary.add(new DocumentSummary.Field("short_field", "short"));
+        schema.add(summary.build());
+        return new DocsumDefinitionSet(schema.build());
+    }
+
+    private DocsumDefinitionSet createPartialDocsumDefinitionSet2() {
+        var schema = new Schema.Builder("test");
+        var summary = new DocumentSummary.Builder("default");
+        summary.add(new DocumentSummary.Field("integer_field", "integer"));
+        summary.add(new DocumentSummary.Field("float_field", "float"));
+        summary.add(new DocumentSummary.Field("double_field", "double"));
+        schema.add(summary.build());
+        return new DocsumDefinitionSet(schema.build());
+    }
+
+    private DocsumDefinitionSet createPartialDocsumDefinitionSet3() {
+        var schema = new Schema.Builder("test");
+        var summary = new DocumentSummary.Builder("default");
+        summary.add(new DocumentSummary.Field("integer_field", "integer"));
+        summary.add(new DocumentSummary.Field("string_field", "string"));
+        schema.add(summary.build());
+        return new DocsumDefinitionSet(schema.build());
     }
 
     private static class Utf8FieldTraverser implements Hit.RawUtf8Consumer {
 
-        private Map<String, Object> traversed;
+        private final Map<String, Object> traversed;
 
         public Utf8FieldTraverser(Map<String, Object> traversed) {
             this.traversed = traversed;

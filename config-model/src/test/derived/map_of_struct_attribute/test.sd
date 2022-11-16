@@ -1,5 +1,5 @@
 # Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-search test {
+schema test {
   document test {
     struct elem {
       field name type string {}
@@ -28,5 +28,9 @@ search test {
         attribute: fast-search
       }
     }
+  }
+  document-summary rename {
+    summary new_str_elem_map type map<string,elem> { source: str_elem_map }
+    summary new_int_elem_map type map<int,elem> { source: int_elem_map }
   }
 }

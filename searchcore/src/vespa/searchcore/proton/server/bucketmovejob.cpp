@@ -6,10 +6,10 @@
 #include "iclusterstatechangednotifier.h"
 #include "i_disk_mem_usage_notifier.h"
 #include "ibucketmodifiedhandler.h"
-#include "move_operation_limiter.h"
 #include "document_db_maintenance_config.h"
 #include <vespa/searchcore/proton/metrics/documentdb_tagged_metrics.h>
 #include <vespa/searchcore/proton/bucketdb/i_bucket_create_notifier.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/feedoperation/moveoperation.h>
 #include <vespa/searchcore/proton/documentmetastore/i_document_meta_store.h>
 #include <vespa/searchcorespi/index/i_thread_service.h>
@@ -25,6 +25,7 @@ using document::BucketId;
 using storage::spi::BucketInfo;
 using storage::spi::Bucket;
 using proton::bucketdb::BucketMover;
+using vespalib::RetainGuard;
 using vespalib::makeLambdaTask;
 using vespalib::Trinary;
 
@@ -53,7 +54,7 @@ blockedDueToClusterState(const std::shared_ptr<IBucketStateCalculator> &calc)
 
 }
 
-BucketMoveJob::BucketMoveJob(const std::shared_ptr<IBucketStateCalculator> &calc,
+BucketMoveJob::BucketMoveJob(std::shared_ptr<IBucketStateCalculator> calc,
                              RetainGuard dbRetainer,
                              IDocumentMoveHandler &moveHandler,
                              IBucketModifiedHandler &modifiedHandler,
@@ -74,7 +75,7 @@ BucketMoveJob::BucketMoveJob(const std::shared_ptr<IBucketStateCalculator> &calc
       IBucketStateChangedHandler(),
       IDiskMemUsageListener(),
       std::enable_shared_from_this<BucketMoveJob>(),
-      _calc(calc),
+      _calc(std::move(calc)),
       _dbRetainer(std::move(dbRetainer)),
       _moveHandler(moveHandler),
       _modifiedHandler(modifiedHandler),
@@ -114,7 +115,7 @@ BucketMoveJob::~BucketMoveJob()
 }
 
 std::shared_ptr<BucketMoveJob>
-BucketMoveJob::create(const std::shared_ptr<IBucketStateCalculator> &calc,
+BucketMoveJob::create(std::shared_ptr<IBucketStateCalculator> calc,
                       RetainGuard dbRetainer,
                       IDocumentMoveHandler &moveHandler,
                       IBucketModifiedHandler &modifiedHandler,
@@ -130,44 +131,42 @@ BucketMoveJob::create(const std::shared_ptr<IBucketStateCalculator> &calc,
                       const vespalib::string &docTypeName,
                       document::BucketSpace bucketSpace)
 {
-    return std::shared_ptr<BucketMoveJob>(
-            new BucketMoveJob(calc, std::move(dbRetainer), moveHandler, modifiedHandler, master, bucketExecutor, ready, notReady,
+    return {new BucketMoveJob(std::move(calc), std::move(dbRetainer), moveHandler, modifiedHandler, master, bucketExecutor, ready, notReady,
                               bucketCreateNotifier, clusterStateChangedNotifier, bucketStateChangedNotifier,
                               diskMemUsageNotifier, blockableConfig, docTypeName, bucketSpace),
             [&master](auto job) {
                 auto failed = master.execute(makeLambdaTask([job]() { delete job; }));
                 assert(!failed);
-            });
+            }};
 }
 
 BucketMoveJob::NeedResult
-BucketMoveJob::needMove(const ScanIterator &itr) const {
+BucketMoveJob::needMove(BucketId bucketId, const BucketStateWrapper &itr) const {
     NeedResult noMove(false, false);
     const bool hasReadyDocs = itr.hasReadyBucketDocs();
     const bool hasNotReadyDocs = itr.hasNotReadyBucketDocs();
     if (!hasReadyDocs && !hasNotReadyDocs) {
         return noMove; // No documents for bucket in ready or notready subdbs
     }
-    const bool isActive = itr.isActive();
     // No point in moving buckets when node is retired and everything will be deleted soon.
-    // However, allow moving of explicitly activated buckets, as this implies a lack of other good replicas.
-    if (!_calc || (_calc->nodeRetired() && !isActive)) {
+    if (!_calc || _calc->nodeRetired()) {
         return noMove;
     }
-    const Trinary shouldBeReady = _calc->shouldBeReady(document::Bucket(_bucketSpace, itr.getBucket()));
+    const Trinary shouldBeReady = _calc->shouldBeReady(document::Bucket(_bucketSpace, bucketId));
     if (shouldBeReady == Trinary::Undefined) {
         return noMove;
     }
-    const bool wantReady = (shouldBeReady == Trinary::True) || isActive;
-    LOG(spam, "checkBucket(): bucket(%s), shouldBeReady(%s), active(%s)",
-        itr.getBucket().toString().c_str(), toStr(shouldBeReady), toStr(isActive));
+    const bool isActive = itr.isActive();
+    const bool wantReady = (shouldBeReady == Trinary::True);
+    LOG(spam, "needMove(): bucket(%s), shouldBeReady(%s), active(%s)",
+        bucketId.toString().c_str(), toStr(shouldBeReady), toStr(isActive));
     if (wantReady) {
         if (!hasNotReadyDocs) {
             return noMove; // No notready bucket to make ready
         }
     } else {
         if (isActive) {
-            return noMove; // Do not move rom ready to not ready when active
+            return noMove; // Do not move from ready to not ready when active
         }
         if (!hasReadyDocs) {
             return noMove; // No ready bucket to make notready
@@ -180,7 +179,7 @@ class BucketMoveJob::StartMove : public storage::spi::BucketTask {
 public:
     using IDestructorCallbackSP = std::shared_ptr<vespalib::IDestructorCallback>;
     StartMove(std::shared_ptr<BucketMoveJob> job, BucketMover::MoveKeys keys, IDestructorCallbackSP opsTracker)
-        : _job(job),
+        : _job(std::move(job)),
           _keys(std::move(keys)),
           _opsTracker(std::move(opsTracker))
     {}
@@ -197,9 +196,9 @@ public:
     }
 
 private:
-    std::shared_ptr<BucketMoveJob>  _job;
-    BucketMover::MoveKeys             _keys;
-    IDestructorCallbackSP             _opsTracker;
+    std::shared_ptr<BucketMoveJob> _job;
+    BucketMover::MoveKeys          _keys;
+    IDestructorCallbackSP          _opsTracker;
 };
 
 void
@@ -241,6 +240,11 @@ BucketMoveJob::prepareMove(std::shared_ptr<BucketMoveJob> job, BucketMover::Move
 void
 BucketMoveJob::completeMove(GuardedMoveOps ops, IDestructorCallbackSP onDone) {
     BucketMover & mover = ops.mover();
+    if (mover.cancelled()) {
+        LOG(spam, "completeMove(%s, mover@%p): mover already cancelled, not processing it further",
+            mover.getBucket().toString().c_str(), &mover);
+        return;
+    }
     mover.moveDocuments(std::move(ops.success()), std::move(onDone));
     ops.failed().clear();
     if (checkIfMoverComplete(mover)) {
@@ -280,6 +284,7 @@ void
 BucketMoveJob::cancelBucket(BucketId bucket) {
     auto inFlight = _bucketsInFlight.find(bucket);
     if (inFlight != _bucketsInFlight.end()) {
+        LOG(spam, "cancelBucket(%s): cancelling existing mover %p", bucket.toString().c_str(), inFlight->second.get());
         inFlight->second->cancel();
         checkIfMoverComplete(*inFlight->second);
     }
@@ -295,8 +300,7 @@ BucketMoveJob::considerBucket(const bucketdb::Guard & guard, BucketId bucket) {
 void
 BucketMoveJob::reconsiderBucket(const bucketdb::Guard & guard, BucketId bucket) {
     assert( ! _bucketsInFlight.contains(bucket));
-    ScanIterator itr(guard, bucket);
-    auto [mustMove, wantReady] = needMove(itr);
+    auto [mustMove, wantReady] = needMove(bucket, BucketStateWrapper(guard->get(bucket)));
     if (mustMove) {
         _buckets2Move[bucket] = wantReady;
     } else {
@@ -316,10 +320,11 @@ BucketMoveJob::BucketMoveSet
 BucketMoveJob::computeBuckets2Move(const bucketdb::Guard & guard)
 {
     BucketMoveJob::BucketMoveSet toMove;
-    for (ScanIterator itr(guard, BucketId()); itr.valid(); ++itr) {
-        auto [mustMove, wantReady] = needMove(itr);
+    BucketId::List buckets = guard->getBuckets();
+    for (BucketId bucketId : buckets) {
+        auto [mustMove, wantReady] = needMove(bucketId, BucketStateWrapper(guard->get(bucketId)));
         if (mustMove) {
-            toMove[itr.getBucket()] = wantReady;
+            toMove[bucketId] = wantReady;
         }
     }
     return toMove;
@@ -329,7 +334,7 @@ std::shared_ptr<BucketMover>
 BucketMoveJob::createMover(BucketId bucket, bool wantReady) {
     const MaintenanceDocumentSubDB &source(wantReady ? _notReady : _ready);
     const MaintenanceDocumentSubDB &target(wantReady ? _ready : _notReady);
-    LOG(debug, "checkBucket(): mover.setupForBucket(%s, source:%u, target:%u)",
+    LOG(debug, "createMover(): BucketMover::create(%s, source:%u, target:%u)",
         bucket.toString().c_str(), source.sub_db_id(), target.sub_db_id());
     return BucketMover::create(bucket, &source, target.sub_db_id(), _moveHandler);
 }

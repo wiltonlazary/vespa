@@ -6,6 +6,7 @@
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/util/exception.h>
 #include <vespa/vsm/common/document.h>
+#include <vespa/vsm/vsm/vsm-adapter.hpp>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".searchvisitor.rankmanager");
@@ -20,6 +21,7 @@ using search::fef::RankSetup;
 using vsm::VsmfieldsHandle;
 using vsm::VSMAdapter;
 using vsm::FieldIdTList;
+using vespalib::make_string_short::fmt;
 
 namespace streaming {
 
@@ -114,10 +116,10 @@ RankManager::Snapshot::initRankSetup(const BlueprintFactory & factory)
     for (uint32_t i = 0; i < _indexEnv.size(); ++i) {
         IndexEnvironment & ie = _indexEnv[i];
 
-        RankSetup::SP rs(new RankSetup(factory, ie));
+        auto rs = std::make_shared<RankSetup>(factory, ie);
         rs->configure(); // reads config values from the property map
         if (!rs->compile()) {
-            LOG(warning, "Could not compile rank setup for rank profile '%u'.", i);
+            LOG(warning, "Could not compile rank setup for rank profile '%u'. Errors = %s", i, rs->getJoinedWarnings().c_str());
             return false;
         }
         _rankSetup.push_back(rs);
@@ -126,7 +128,7 @@ RankManager::Snapshot::initRankSetup(const BlueprintFactory & factory)
     LOG(debug, "Number of index environments and rank setups: %u", (uint32_t)_indexEnv.size());
     LOG_ASSERT(_properties.size() == _rankSetup.size());
     for (uint32_t i = 0; i < _properties.size(); ++i) {
-        vespalib::string number = vespalib::make_string("%u", i);
+        vespalib::string number = fmt("%u", i);
         _rpmap[number] = i;
     }
     for (uint32_t i = 0; i < _properties.size(); ++i) {

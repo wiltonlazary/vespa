@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -44,5 +44,7 @@ public:
         return EntryRef(_ref.load(std::memory_order_relaxed));
     }
 };
+
+vespalib::asciistream& operator<<(vespalib::asciistream& os, const AtomicEntryRef& ref);
 
 }

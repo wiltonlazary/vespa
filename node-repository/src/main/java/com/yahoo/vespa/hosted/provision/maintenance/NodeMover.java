@@ -59,7 +59,7 @@ public abstract class NodeMover<MOVE> extends NodeRepositoryMaintainer {
     protected final MOVE findBestMove(NodesAndHosts<? extends NodeList> allNodes) {
         HostCapacity capacity = new HostCapacity(allNodes, nodeRepository().resourcesCalculator());
         MOVE bestMove = emptyMove;
-        // Shuffle nodes so we did not get stuck if the chosen move is consistently discarded. Node moves happen through
+        // Shuffle nodes to not get stuck if the chosen move is consistently discarded. Node moves happen through
         // a soft request to retire (preferToRetire), which node allocation can disregard
         NodeList activeNodes = allNodes.nodes().nodeType(NodeType.tenant)
                                        .state(Node.State.active)
@@ -74,6 +74,8 @@ public abstract class NodeMover<MOVE> extends NodeRepositoryMaintainer {
             if (deployedRecently(applicationId)) continue;
             for (HostWithResources toHost : hostResources) {
                 if (toHost.node.hostname().equals(node.parentHostname().get())) continue;
+                if (toHost.node.reservedTo().isPresent() &&
+                    !toHost.node.reservedTo().get().equals(applicationId.tenant())) continue; // Reserved to a different tenant
                 if (spares.contains(toHost.node)) continue; // Do not offer spares as a valid move as they are reserved for replacement of failed nodes
                 if ( ! toHost.hasCapacity(node.resources())) continue;
 

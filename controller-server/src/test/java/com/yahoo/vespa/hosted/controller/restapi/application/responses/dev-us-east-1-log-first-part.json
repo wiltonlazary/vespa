@@ -6,7 +6,12 @@
       {
         "at": 0,
         "type": "info",
-        "message": "Deploying platform version 6.1 and application version 1.0.1 ..."
+        "message": "Deploying platform version 6.1 and application dev build 1 for dev-us-east-1 of default ..."
+      },
+      {
+        "at": 0,
+        "type": "info",
+        "message": "Using CA signed certificate version 0"
       },
       {
         "at": 0,
@@ -28,7 +33,7 @@
       {
         "at": 0,
         "type": "info",
-        "message": "host-tenant:application:default-dev.us-east-1: unorchestrated"
+        "message": "host-tenant.application.default-dev.us-east-1: unorchestrated"
       },
       {
         "at": 0,
@@ -49,7 +54,7 @@
       }
     ]
   },
-  "lastId": 7,
+  "lastId": 8,
   "steps": {
     "deployReal": {
       "status": "succeeded",
@@ -77,5 +82,6 @@
     "copyVespaLogs": {
       "status": "unfinished"
     }
-  }
+  },
+  "vespaLogsActive": true
 }

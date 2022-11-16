@@ -1,13 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.processing.rendering;
 
-import com.google.common.util.concurrent.ListenableFuture;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.processing.Request;
 import com.yahoo.processing.Response;
 import com.yahoo.processing.execution.Execution;
 
 import java.io.OutputStream;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Renders a response to a stream. The renderers are cloned just before
@@ -50,9 +50,9 @@ public abstract class Renderer<RESPONSE extends Response> extends AbstractCompon
      * @param response the response to render
      * @param execution the execution which created this response
      * @param request the request matching the response
-     * @return a ListenableFuture containing a boolean where true indicates a successful rendering
+     * @return a {@link CompletableFuture} containing a boolean where true indicates a successful rendering
      */
-    public abstract ListenableFuture<Boolean> render(OutputStream stream, RESPONSE response,
+    public abstract CompletableFuture<Boolean> renderResponse(OutputStream stream, RESPONSE response,
                                                      Execution execution, Request request);
 
     /**

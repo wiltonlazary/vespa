@@ -3,8 +3,8 @@ package com.yahoo.vespa.hosted.controller;
 
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.text.Text;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.curator.Lock;
-import com.yahoo.vespa.flags.FlagSource;
 import com.yahoo.vespa.hosted.controller.api.identifiers.TenantId;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
 import com.yahoo.vespa.hosted.controller.concurrent.Once;
@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -43,11 +42,10 @@ public class TenantController {
     private final CuratorDb curator;
     private final AccessControl accessControl;
 
-    public TenantController(Controller controller, CuratorDb curator, AccessControl accessControl, FlagSource flagSource) {
+    public TenantController(Controller controller, CuratorDb curator, AccessControl accessControl) {
         this.controller = Objects.requireNonNull(controller, "controller must be non-null");
         this.curator = Objects.requireNonNull(curator, "curator must be non-null");
-        this.accessControl = accessControl;
-
+        this.accessControl = Objects.requireNonNull(accessControl, "accessControl must be non-null");
 
         // Update serialization format of all tenants
         Once.after(Duration.ofMinutes(1), () -> {
@@ -77,7 +75,7 @@ public class TenantController {
 
     /** Locks a tenant for modification and applies the given action. */
     public <T extends LockedTenant> void lockIfPresent(TenantName name, Class<T> token, Consumer<T> action) {
-        try (Lock lock = lock(name)) {
+        try (Mutex lock = lock(name)) {
             get(name).map(tenant -> LockedTenant.of(tenant, lock))
                      .map(token::cast)
                      .ifPresent(action);
@@ -86,7 +84,7 @@ public class TenantController {
 
     /** Lock a tenant for modification and apply action. Throws if the tenant does not exist */
     public <T extends LockedTenant> void lockOrThrow(TenantName name, Class<T> token, Consumer<T> action) {
-        try (Lock lock = lock(name)) {
+        try (Mutex lock = lock(name)) {
             action.accept(token.cast(LockedTenant.of(require(name), lock)));
         }
     }
@@ -114,7 +112,7 @@ public class TenantController {
 
     /** Create a tenant, provided the given credentials are valid. */
     public void create(TenantSpec tenantSpec, Credentials credentials) {
-        try (Lock lock = lock(tenantSpec.tenant())) {
+        try (Mutex lock = lock(tenantSpec.tenant())) {
             TenantId.validate(tenantSpec.tenant().value());
             requireNonExistent(tenantSpec.tenant());
             curator.writeTenant(accessControl.createTenant(tenantSpec, controller.clock().instant(), credentials, asList()));
@@ -140,7 +138,7 @@ public class TenantController {
 
     /** Updates the tenant contained in the given tenant spec with new data. */
     public void update(TenantSpec tenantSpec, Credentials credentials) {
-        try (Lock lock = lock(tenantSpec.tenant())) {
+        try (Mutex lock = lock(tenantSpec.tenant())) {
             curator.writeTenant(accessControl.updateTenant(tenantSpec, credentials, asList(),
                                                            controller.applications().asList(tenantSpec.tenant())));
         }
@@ -151,7 +149,7 @@ public class TenantController {
      * new instant is later
      */
     public void updateLastLogin(TenantName tenantName, List<LastLoginInfo.UserLevel> userLevels, Instant loggedInAt) {
-        try (Lock lock = lock(tenantName)) {
+        try (Mutex lock = lock(tenantName)) {
             Tenant tenant = require(tenantName);
             LastLoginInfo loginInfo = tenant.lastLoginInfo();
             for (LastLoginInfo.UserLevel userLevel : userLevels)
@@ -163,8 +161,8 @@ public class TenantController {
     }
 
     /** Deletes the given tenant. */
-    public void delete(TenantName tenant, Supplier<Credentials> credentials, boolean forget) {
-        try (Lock lock = lock(tenant)) {
+    public void delete(TenantName tenant, Optional<Credentials> credentials, boolean forget) {
+        try (Mutex lock = lock(tenant)) {
             Tenant oldTenant = get(tenant, true)
                     .orElseThrow(() -> new NotExistsException("Could not delete tenant '" + tenant + "': Tenant not found"));
 
@@ -173,7 +171,15 @@ public class TenantController {
                     throw new IllegalArgumentException("Could not delete tenant '" + tenant.value()
                             + "': This tenant has active applications");
 
-                accessControl.deleteTenant(tenant, credentials.get());
+                if (oldTenant.type() == Tenant.Type.athenz) {
+                    credentials.ifPresent(creds -> accessControl.deleteTenant(tenant, creds));
+                } else if (oldTenant.type() == Tenant.Type.cloud) {
+                    accessControl.deleteTenant(tenant, null);
+                } else {
+                    throw new IllegalArgumentException("Could not delete tenant '" + tenant.value()
+                            + ": This tenant is of unhandled type " + oldTenant.type());
+                }
+
                 controller.notificationsDb().removeNotifications(NotificationSource.from(tenant));
             }
 
@@ -183,8 +189,12 @@ public class TenantController {
     }
 
     private void requireNonExistent(TenantName name) {
+        var tenant = get(name, true);
+        if (tenant.isPresent() && tenant.get().type().equals(Tenant.Type.deleted)) {
+            throw new IllegalArgumentException("Tenant '" + name + "' cannot be created, try a different name");
+        }
         if (SystemApplication.TENANT.equals(name)
-            || get(name, true).isPresent()
+            || tenant.isPresent()
             // Underscores are allowed in existing tenant names, but tenants with - and _ cannot co-exist. E.g.
             // my-tenant cannot be created if my_tenant exists.
             || get(name.value().replace('-', '_')).isPresent()) {
@@ -197,7 +207,7 @@ public class TenantController {
      * Any operation which stores a tenant need to first acquire this lock, then read, modify
      * and store the tenant, and finally release (close) the lock.
      */
-    private Lock lock(TenantName tenant) {
+    private Mutex lock(TenantName tenant) {
         return curator.lock(tenant);
     }
 

@@ -5,16 +5,12 @@ import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.deploy.TestProperties;
 import com.yahoo.text.XML;
 import com.yahoo.vespa.model.builder.xml.dom.ModelElement;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
 
 import java.util.Optional;
 
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author geirst
@@ -22,7 +18,6 @@ import static org.junit.Assert.assertFalse;
 public class ClusterResourceLimitsTest {
 
     private static class Fixture {
-        private final boolean enableFeedBlockInDistributor;
         private final boolean hostedVespa;
         private final ResourceLimits.Builder ctrlBuilder = new ResourceLimits.Builder();
         private final ResourceLimits.Builder nodeBuilder = new ResourceLimits.Builder();
@@ -31,12 +26,7 @@ public class ClusterResourceLimitsTest {
             this(false);
         }
 
-        public Fixture(boolean enableFeedBlockInDistributor) {
-            this(enableFeedBlockInDistributor, false);
-        }
-
-        public Fixture(boolean enableFeedBlockInDistributor, boolean hostedVespa) {
-            this.enableFeedBlockInDistributor = enableFeedBlockInDistributor;
+        public Fixture(boolean hostedVespa) {
             this.hostedVespa = hostedVespa;
         }
 
@@ -58,8 +48,7 @@ public class ClusterResourceLimitsTest {
         }
         public ClusterResourceLimits build() {
             ModelContext.FeatureFlags featureFlags = new TestProperties();
-            var builder = new ClusterResourceLimits.Builder(enableFeedBlockInDistributor,
-                                                            hostedVespa,
+            var builder = new ClusterResourceLimits.Builder(hostedVespa,
                                                             featureFlags.resourceLimitDisk(),
                                                             featureFlags.resourceLimitMemory());
             builder.setClusterControllerBuilder(ctrlBuilder);
@@ -68,82 +57,64 @@ public class ClusterResourceLimitsTest {
         }
     }
 
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
-
     @Test
-    public void content_node_limits_are_derived_from_cluster_controller_limits_if_not_set() {
-        assertLimits(0.4, 0.7, 0.7, 0.85,
+    void content_node_limits_are_derived_from_cluster_controller_limits_if_not_set() {
+        assertLimits(0.4, 0.7, 0.76, 0.85,
                 new Fixture().ctrlDisk(0.4).ctrlMemory(0.7));
-        assertLimits(0.4, null, 0.7, null,
+        assertLimits(0.4, 0.8, 0.76, 0.9,
                 new Fixture().ctrlDisk(0.4));
-        assertLimits(null, 0.7, null, 0.85,
+        assertLimits(0.75, 0.7, 0.9, 0.85,
                 new Fixture().ctrlMemory(0.7));
-
-
-        assertLimits(0.4, 0.7, 0.7, 0.85,
-                new Fixture(true).ctrlDisk(0.4).ctrlMemory(0.7));
-        assertLimits(0.4, 0.8, 0.7, 0.9,
-                new Fixture(true).ctrlDisk(0.4));
-        assertLimits(0.8, 0.7, 0.9, 0.85,
-                new Fixture(true).ctrlMemory(0.7));
     }
 
     @Test
-    public void content_node_limits_can_be_set_explicit() {
+    void content_node_limits_can_be_set_explicit() {
         assertLimits(0.4, 0.7, 0.9, 0.95,
                 new Fixture().ctrlDisk(0.4).ctrlMemory(0.7).nodeDisk(0.9).nodeMemory(0.95));
-        assertLimits(0.4, null, 0.95, null,
-                new Fixture().ctrlDisk(0.4).nodeDisk(0.95));
-        assertLimits(null, 0.7, null, 0.95,
-                new Fixture().ctrlMemory(0.7).nodeMemory(0.95));
-
-        assertLimits(0.4, 0.7, 0.9, 0.95,
-                new Fixture(true).ctrlDisk(0.4).ctrlMemory(0.7).nodeDisk(0.9).nodeMemory(0.95));
         assertLimits(0.4, 0.8, 0.95, 0.9,
-                new Fixture(true).ctrlDisk(0.4).nodeDisk(0.95));
-        assertLimits(0.8, 0.7, 0.9, 0.95,
-                new Fixture(true).ctrlMemory(0.7).nodeMemory(0.95));
+                new Fixture().ctrlDisk(0.4).nodeDisk(0.95));
+        assertLimits(0.75, 0.7, 0.9, 0.95,
+                new Fixture().ctrlMemory(0.7).nodeMemory(0.95));
     }
 
     @Test
-    public void cluster_controller_limits_are_equal_to_content_node_limits_minus_one_percent_if_not_set() {
+    void cluster_controller_limits_are_equal_to_content_node_limits_minus_one_percent_if_not_set() {
         assertLimits(0.89, 0.94, 0.9, 0.95,
                 new Fixture().nodeDisk(0.9).nodeMemory(0.95));
-        assertLimits(0.89, null, 0.9, null,
+        assertLimits(0.89, 0.8, 0.9, 0.9,
                 new Fixture().nodeDisk(0.9));
-        assertLimits(null, 0.94, null, 0.95,
+        assertLimits(0.75, 0.94, 0.9, 0.95,
                 new Fixture().nodeMemory(0.95));
-        assertLimits(null, 0.0, null, 0.005,
+        assertLimits(0.75, 0.0, 0.9, 0.005,
                 new Fixture().nodeMemory(0.005));
-
-        assertLimits(0.89, 0.94, 0.9, 0.95,
-                new Fixture(true).nodeDisk(0.9).nodeMemory(0.95));
     }
 
     @Test
-    public void limits_are_derived_from_the_other_if_not_set() {
-        assertLimits(0.6, 0.94, 0.8, 0.95,
+    void limits_are_derived_from_the_other_if_not_set() {
+        assertLimits(0.6, 0.94, 0.84, 0.95,
                 new Fixture().ctrlDisk(0.6).nodeMemory(0.95));
         assertLimits(0.89, 0.7, 0.9, 0.85,
                 new Fixture().ctrlMemory(0.7).nodeDisk(0.9));
     }
 
     @Test
-    public void default_resource_limits_when_feed_block_is_enabled_in_distributor() {
-        assertLimits(0.8, 0.8, 0.9, 0.9,
+    void default_resource_limits_when_feed_block_is_enabled_in_distributor() {
+        assertLimits(0.75, 0.8, 0.9, 0.9,
                 new Fixture(true));
     }
 
     @Test
-    public void hosted_exception_is_thrown_when_resource_limits_are_specified() {
-        expectedException.expect(IllegalArgumentException.class);
-        expectedException.expectMessage(containsString("Element 'resource-limits' is not allowed to be set"));
-        hostedBuild();
+    void hosted_exception_is_thrown_when_resource_limits_are_specified() {
+        try {
+            hostedBuild();
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage().contains("Element 'resource-limits' is not allowed to be set"));
+        }
     }
 
     @Test
-    public void hosted_limits_from_feature_flag_are_used() {
+    void hosted_limits_from_feature_flag_are_used() {
         TestProperties featureFlags = new TestProperties();
         featureFlags.setResourceLimitDisk(0.85);
         featureFlags.setResourceLimitMemory(0.90);
@@ -151,21 +122,29 @@ public class ClusterResourceLimitsTest {
 
         // Verify that limits from feature flags are used
         assertLimits(0.85, 0.90, limits.getClusterControllerLimits());
-        assertLimits(0.925, 0.95, limits.getContentNodeLimits());
+        assertLimits(0.94, 0.95, limits.getContentNodeLimits());
     }
 
     @Test
-    public void exception_is_thrown_when_resource_limits_are_out_of_range() {
+    void exception_is_thrown_when_resource_limits_are_out_of_range() {
         TestProperties featureFlags = new TestProperties();
         featureFlags.setResourceLimitDisk(1.1);
-        expectedException.expect(IllegalArgumentException.class);
-        expectedException.expectMessage(containsString("Resource limit for disk is set to illegal value 1.1, but must be in the range [0.0, 1.0]"));
-        hostedBuild(featureFlags, false);
+
+        try {
+            hostedBuild(featureFlags, false);
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage().contains("Resource limit for disk is set to illegal value 1.1, but must be in the range [0.0, 1.0]"));
+        }
 
         featureFlags = new TestProperties();
         featureFlags.setResourceLimitDisk(-0.1);
-        expectedException.expectMessage(containsString("Resource limit for disk is set to illegal value -0.1, but must be in the range [0.0, 1.0]"));
-        hostedBuild(featureFlags, false);
+        try {
+            hostedBuild(featureFlags, false);
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage().contains("Resource limit for disk is set to illegal value -0.1, but must be in the range [0.0, 1.0]"));
+        }
     }
 
     private ClusterResourceLimits hostedBuild() {
@@ -186,7 +165,6 @@ public class ClusterResourceLimitsTest {
                                               "</cluster>");
 
         ClusterResourceLimits.Builder builder = new ClusterResourceLimits.Builder(true,
-                                                                                  true,
                                                                                   featureFlags.resourceLimitDisk(),
                                                                                   featureFlags.resourceLimitMemory());
         return builder.build(new ModelElement((limitsInXml ? clusterXml : noLimitsXml).getDocumentElement()));
@@ -207,7 +185,7 @@ public class ClusterResourceLimitsTest {
         if (expLimit == null) {
             assertFalse(actLimit.isPresent());
         } else {
-            assertEquals(limitType + " limit not as expected", expLimit, actLimit.get(), 0.00001);
+            assertEquals(expLimit, actLimit.get(), 0.00001, limitType + " limit not as expected");
         }
     }
 

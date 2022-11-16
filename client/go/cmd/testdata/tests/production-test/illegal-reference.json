@@ -1,0 +1,16 @@
+{
+    "steps": [
+        {
+            "request": {
+                "uri": "https://domain.tld",
+                "body": "foo/../../../empty.json"
+            }
+        },
+        {
+            "request": {
+                "uri": "https://domain.tld",
+                "body": "foo/../../../../this-is-not-ok.json"
+            }
+        }
+    ]
+}

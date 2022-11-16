@@ -6,7 +6,10 @@
 
 #include <vespa/eval/instruction/dense_dot_product_function.h>
 #include <vespa/eval/instruction/sparse_dot_product_function.h>
+#include <vespa/eval/instruction/sparse_112_dot_product.h>
+#include <vespa/eval/instruction/mixed_112_dot_product.h>
 #include <vespa/eval/instruction/sparse_merge_function.h>
+#include <vespa/eval/instruction/sparse_singledim_lookup.h>
 #include <vespa/eval/instruction/sparse_no_overlap_join_function.h>
 #include <vespa/eval/instruction/sparse_full_overlap_join_function.h>
 #include <vespa/eval/instruction/mixed_inner_product_function.h>
@@ -30,6 +33,9 @@
 #include <vespa/eval/instruction/dense_tensor_create_function.h>
 #include <vespa/eval/instruction/dense_tensor_peek_function.h>
 #include <vespa/eval/instruction/dense_hamming_distance.h>
+#include <vespa/eval/instruction/l2_distance.h>
+#include <vespa/eval/instruction/simple_join_count.h>
+#include <vespa/eval/instruction/mapped_lookup.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".eval.eval.optimize_tensor_function");
@@ -56,11 +62,18 @@ const TensorFunction &optimize_for_factory(const ValueBuilderFactory &, const Te
     Child root(expr);
     run_optimize_pass(root, [&stash](const Child &child)
                       {
+                          child.set(PowAsMapOptimizer::optimize(child.get(), stash));
+                      });
+    run_optimize_pass(root, [&stash](const Child &child)
+                      {
                           child.set(SumMaxDotProductFunction::optimize(child.get(), stash));
                       });
     run_optimize_pass(root, [&stash](const Child &child)
                       {
+                          child.set(Sparse112DotProduct::optimize(child.get(), stash));
+                          child.set(Mixed112DotProduct::optimize(child.get(), stash));
                           child.set(BestSimilarityFunction::optimize(child.get(), stash));
+                          child.set(L2Distance::optimize(child.get(), stash));                          
                       });
     run_optimize_pass(root, [&stash](const Child &child)
                       {
@@ -71,6 +84,8 @@ const TensorFunction &optimize_for_factory(const ValueBuilderFactory &, const Te
                           child.set(DenseMultiMatMulFunction::optimize(child.get(), stash));
                           child.set(MixedInnerProductFunction::optimize(child.get(), stash));
                           child.set(DenseHammingDistance::optimize(child.get(), stash));
+                          child.set(SimpleJoinCount::optimize(child.get(), stash));
+                          child.set(MappedLookup::optimize(child.get(), stash));
                       });
     run_optimize_pass(root, [&stash](const Child &child)
                       {
@@ -83,7 +98,6 @@ const TensorFunction &optimize_for_factory(const ValueBuilderFactory &, const Te
                           child.set(DenseLambdaPeekOptimizer::optimize(child.get(), stash));
                           child.set(UnpackBitsFunction::optimize(child.get(), stash));
                           child.set(FastRenameOptimizer::optimize(child.get(), stash));
-                          child.set(PowAsMapOptimizer::optimize(child.get(), stash));
                           child.set(InplaceMapFunction::optimize(child.get(), stash));
                           child.set(MixedSimpleJoinFunction::optimize(child.get(), stash));
                           child.set(JoinWithNumberFunction::optimize(child.get(), stash));
@@ -91,6 +105,7 @@ const TensorFunction &optimize_for_factory(const ValueBuilderFactory &, const Te
                           child.set(SparseMergeFunction::optimize(child.get(), stash));
                           child.set(SparseNoOverlapJoinFunction::optimize(child.get(), stash));
                           child.set(SparseFullOverlapJoinFunction::optimize(child.get(), stash));
+                          child.set(SparseSingledimLookup::optimize(child.get(), stash));
                       });
     return root.get();
 }

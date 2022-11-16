@@ -6,13 +6,14 @@ import com.yahoo.jdisc.handler.ContentChannel;
 import com.yahoo.jdisc.handler.ReadableContentChannel;
 import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.jdisc.http.filter.DiscFilterRequest;
+import com.yahoo.jdisc.http.filter.util.FilterTestUtils;
 import com.yahoo.security.KeyAlgorithm;
 import com.yahoo.security.KeyUtils;
 import com.yahoo.security.X509CertificateBuilder;
 import com.yahoo.vespa.athenz.api.AthenzIdentity;
 import com.yahoo.vespa.athenz.api.AthenzPrincipal;
 import com.yahoo.vespa.athenz.api.AthenzUser;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import javax.security.auth.x500.X500Principal;
 import java.io.BufferedReader;
@@ -28,17 +29,11 @@ import java.util.Objects;
 
 import static com.yahoo.jdisc.Response.Status.UNAUTHORIZED;
 import static com.yahoo.security.SignatureAlgorithm.SHA256_WITH_ECDSA;
-import static java.util.Collections.emptyList;
-import static java.util.Collections.singletonList;
 import static java.util.stream.Collectors.joining;
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.hamcrest.CoreMatchers.nullValue;
-import static org.junit.Assert.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author bjorncs
@@ -49,9 +44,8 @@ public class AthenzPrincipalFilterTest {
     private static final X509Certificate CERTIFICATE = createSelfSignedCertificate(IDENTITY);
 
     @Test
-    public void missing_certificate_is_unauthorized() {
-        DiscFilterRequest request = createRequestMock();
-        when(request.getClientCertificateChain()).thenReturn(emptyList());
+    void missing_certificate_is_unauthorized() {
+        DiscFilterRequest request = FilterTestUtils.newRequestBuilder().build();
 
         ResponseHandlerMock responseHandler = new ResponseHandlerMock();
 
@@ -62,9 +56,8 @@ public class AthenzPrincipalFilterTest {
     }
 
     @Test
-    public void certificate_is_accepted() {
-        DiscFilterRequest request = createRequestMock();
-        when(request.getClientCertificateChain()).thenReturn(singletonList(CERTIFICATE));
+    void certificate_is_accepted() {
+        DiscFilterRequest request = FilterTestUtils.newRequestBuilder().withClientCertificate(CERTIFICATE).build();
 
         ResponseHandlerMock responseHandler = new ResponseHandlerMock();
 
@@ -76,26 +69,21 @@ public class AthenzPrincipalFilterTest {
     }
 
     private void assertAuthenticated(DiscFilterRequest request, AthenzPrincipal expectedPrincipal) {
-        verify(request).setUserPrincipal(expectedPrincipal);
-        verify(request).setAttribute(AthenzPrincipalFilter.RESULT_PRINCIPAL, expectedPrincipal);
+        assertEquals(expectedPrincipal, request.getUserPrincipal());
+        assertEquals(expectedPrincipal, request.getAttribute(AthenzPrincipalFilter.RESULT_PRINCIPAL));
     }
 
 
     @Test
-    public void no_response_produced_when_passthrough_mode_is_enabled() {
-        DiscFilterRequest request = createRequestMock();
-        when(request.getClientCertificateChain()).thenReturn(emptyList());
+    void no_response_produced_when_passthrough_mode_is_enabled() {
+        DiscFilterRequest request = FilterTestUtils.newRequestBuilder().build();
 
         ResponseHandlerMock responseHandler = new ResponseHandlerMock();
 
         AthenzPrincipalFilter filter = createFilter(true);
         filter.filter(request, responseHandler);
 
-        assertThat(responseHandler.response, nullValue());
-    }
-
-    private DiscFilterRequest createRequestMock() {
-        return mock(DiscFilterRequest.class);
+        assertNull(responseHandler.response);
     }
 
     private AthenzPrincipalFilter createFilter(boolean passthroughModeEnabled) {
@@ -103,10 +91,10 @@ public class AthenzPrincipalFilterTest {
     }
 
     private static void assertUnauthorized(DiscFilterRequest request, ResponseHandlerMock responseHandler, String expectedMessageSubstring) {
-        assertThat(responseHandler.response, notNullValue());
-        assertThat(responseHandler.response.getStatus(), equalTo(UNAUTHORIZED));
-        assertThat(responseHandler.getResponseContent(), containsString(expectedMessageSubstring));
-        verify(request).setAttribute(AthenzPrincipalFilter.RESULT_ERROR_CODE_ATTRIBUTE, UNAUTHORIZED);
+        assertNotNull(responseHandler.response);
+        assertEquals(UNAUTHORIZED, responseHandler.response.getStatus());
+        assertTrue(responseHandler.getResponseContent().contains(expectedMessageSubstring));
+        assertEquals(UNAUTHORIZED, request.getAttribute(AthenzPrincipalFilter.RESULT_ERROR_CODE_ATTRIBUTE));
     }
 
     private static class ResponseHandlerMock implements ResponseHandler {

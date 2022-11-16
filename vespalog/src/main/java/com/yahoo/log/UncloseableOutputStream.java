@@ -7,6 +7,7 @@ import java.io.OutputStream;
 /**
  * @author Simon Thoresen Hult
  * @since 5.1.14
+ * Should only be used internally in the log library
  */
 class UncloseableOutputStream extends OutputStream {
 

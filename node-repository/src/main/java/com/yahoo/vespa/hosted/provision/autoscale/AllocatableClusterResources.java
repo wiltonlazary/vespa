@@ -37,31 +37,58 @@ public class AllocatableClusterResources {
                                        NodeRepository nodeRepository) {
         this.nodes = requested.nodes();
         this.groups = requested.groups();
-        this.realResources = nodeRepository.resourcesCalculator().requestToReal(requested.nodeResources(), clusterSpec.isExclusive());
+        this.realResources = nodeRepository.resourcesCalculator().requestToReal(requested.nodeResources(), nodeRepository.exclusiveAllocation(clusterSpec));
         this.advertisedResources = requested.nodeResources();
         this.clusterSpec = clusterSpec;
         this.fulfilment = 1;
     }
 
-    public AllocatableClusterResources(List<Node> nodes, NodeRepository nodeRepository) {
+    public AllocatableClusterResources(NodeList nodes, NodeRepository nodeRepository) {
         this.nodes = nodes.size();
         this.groups = (int)nodes.stream().map(node -> node.allocation().get().membership().cluster().group()).distinct().count();
-        this.realResources = averageRealResourcesOf(nodes, nodeRepository); // Average since we average metrics over nodes
-        this.advertisedResources = nodes.get(0).allocation().get().requestedResources();
-        this.clusterSpec = nodes.get(0).allocation().get().membership().cluster();
+        this.realResources = averageRealResourcesOf(nodes.asList(), nodeRepository); // Average since we average metrics over nodes
+        this.advertisedResources = nodes.requestedResources();
+        this.clusterSpec = nodes.clusterSpec();
         this.fulfilment = 1;
     }
 
     public AllocatableClusterResources(ClusterResources realResources,
                                        NodeResources advertisedResources,
-                                       NodeResources idealResources,
+                                       ClusterResources idealResources,
                                        ClusterSpec clusterSpec) {
         this.nodes = realResources.nodes();
         this.groups = realResources.groups();
         this.realResources = realResources.nodeResources();
         this.advertisedResources = advertisedResources;
         this.clusterSpec = clusterSpec;
-        this.fulfilment = fulfilment(realResources.nodeResources(), idealResources);
+        this.fulfilment = fulfilment(realResources, idealResources);
+    }
+
+    private AllocatableClusterResources(int nodes,
+                                        int groups,
+                                        NodeResources realResources,
+                                        NodeResources advertisedResources,
+                                        ClusterSpec clusterSpec,
+                                        double fulfilment) {
+        this.nodes = nodes;
+        this.groups = groups;
+        this.realResources = realResources;
+        this.advertisedResources = advertisedResources;
+        this.clusterSpec = clusterSpec;
+        this.fulfilment = fulfilment;
+    }
+
+    /** Returns this with the redundant node or group removed from counts. */
+    public AllocatableClusterResources withoutRedundancy() {
+        int groupSize = nodes / groups;
+        int nodesAdjustedForRedundancy   = nodes > 1 ? (groups == 1 ? nodes - 1 : nodes - groupSize) : nodes;
+        int groupsAdjustedForRedundancy  = nodes > 1 ? (groups == 1 ? 1 : groups - 1) : groups;
+        return new AllocatableClusterResources(nodesAdjustedForRedundancy,
+                                               groupsAdjustedForRedundancy,
+                                               realResources,
+                                               advertisedResources,
+                                               clusterSpec,
+                                               fulfilment);
     }
 
     /**
@@ -83,11 +110,6 @@ public class AllocatableClusterResources {
     public int nodes() { return nodes; }
     public int groups() { return groups; }
 
-    public int groupSize() {
-        // ceil: If the division does not produce a whole number we assume some node is missing
-        return (int)Math.ceil((double)nodes / groups);
-    }
-
     public ClusterSpec clusterSpec() { return clusterSpec; }
 
     public double cost() { return nodes * advertisedResources.cost(); }
@@ -99,20 +121,16 @@ public class AllocatableClusterResources {
      */
     public double fulfilment() { return fulfilment; }
 
-    private static double fulfilment(NodeResources realResources, NodeResources idealResources) {
-        double vcpuFulfilment     = Math.min(1, realResources.vcpu()     / idealResources.vcpu());
-        double memoryGbFulfilment = Math.min(1, realResources.memoryGb() / idealResources.memoryGb());
-        double diskGbFulfilment   = Math.min(1, realResources.diskGb()   / idealResources.diskGb());
+    private static double fulfilment(ClusterResources realResources, ClusterResources idealResources) {
+        double vcpuFulfilment     = Math.min(1, realResources.totalResources().vcpu()     / idealResources.totalResources().vcpu());
+        double memoryGbFulfilment = Math.min(1, realResources.totalResources().memoryGb() / idealResources.totalResources().memoryGb());
+        double diskGbFulfilment   = Math.min(1, realResources.totalResources().diskGb()   / idealResources.totalResources().diskGb());
         return (vcpuFulfilment + memoryGbFulfilment + diskGbFulfilment) / 3;
     }
 
     public boolean preferableTo(AllocatableClusterResources other) {
         if (this.fulfilment < 1 || other.fulfilment < 1) // always fulfil as much as possible
             return this.fulfilment > other.fulfilment;
-
-        if (clusterSpec.type().isContent() // always prefer local storage on content nodes
-            && this.realResources.storageType() != other.realResources().nodeResources().storageType())
-            return this.realResources.storageType() == NodeResources.StorageType.local;
 
         return this.cost() < other.cost(); // otherwise, prefer lower cost
     }
@@ -125,7 +143,7 @@ public class AllocatableClusterResources {
     }
 
     private static NodeResources averageRealResourcesOf(List<Node> nodes, NodeRepository nodeRepository) {
-        NodeResources sum = new NodeResources(0, 0, 0, 0);
+        NodeResources sum = new NodeResources(0, 0, 0, 0).justNumbers();
         for (Node node : nodes)
             sum = sum.add(nodeRepository.resourcesCalculator().realResourcesOf(node, nodeRepository).justNumbers());
         return nodes.get(0).allocation().get().requestedResources().justNonNumbers()
@@ -141,18 +159,20 @@ public class AllocatableClusterResources {
                                                              NodeList hosts,
                                                              NodeRepository nodeRepository) {
         var systemLimits = new NodeResourceLimits(nodeRepository);
-        boolean exclusive = clusterSpec.isExclusive();
-        if ( !clusterSpec.isExclusive() && !nodeRepository.zone().getCloud().dynamicProvisioning()) {
+        boolean exclusive = nodeRepository.exclusiveAllocation(clusterSpec);
+        if (! exclusive) {
             // We decide resources: Add overhead to what we'll request (advertised) to make sure real becomes (at least) cappedNodeResources
             var advertisedResources = nodeRepository.resourcesCalculator().realToRequest(wantedResources.nodeResources(), exclusive);
             advertisedResources = systemLimits.enlargeToLegal(advertisedResources, clusterSpec.type(), exclusive); // Ask for something legal
             advertisedResources = applicationLimits.cap(advertisedResources); // Overrides other conditions, even if it will then fail
             var realResources = nodeRepository.resourcesCalculator().requestToReal(advertisedResources, exclusive); // What we'll really get
-            if ( ! systemLimits.isWithinRealLimits(realResources, clusterSpec.type())) return Optional.empty();
+            if ( ! systemLimits.isWithinRealLimits(realResources, clusterSpec.type()))
+                return Optional.empty();
+
             if (matchesAny(hosts, advertisedResources))
                     return Optional.of(new AllocatableClusterResources(wantedResources.with(realResources),
                                                                        advertisedResources,
-                                                                       wantedResources.nodeResources(),
+                                                                       wantedResources,
                                                                        clusterSpec));
             else
                 return Optional.empty();
@@ -178,12 +198,14 @@ public class AllocatableClusterResources {
 
                 if ( ! between(applicationLimits.min().nodeResources(), applicationLimits.max().nodeResources(), advertisedResources)) continue;
                 if ( ! systemLimits.isWithinRealLimits(realResources, clusterSpec.type())) continue;
+
                 var candidate = new AllocatableClusterResources(wantedResources.with(realResources),
                                                                 advertisedResources,
-                                                                wantedResources.nodeResources(),
+                                                                wantedResources,
                                                                 clusterSpec);
-                if (best.isEmpty() || candidate.preferableTo(best.get()))
+                if (best.isEmpty() || candidate.preferableTo(best.get())) {
                     best = Optional.of(candidate);
+                }
             }
             return best;
         }

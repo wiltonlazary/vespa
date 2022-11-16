@@ -12,17 +12,18 @@ namespace document {
     class DocumentTypeRepo;
 }
 
-namespace vespalib { class nbostream; }
+namespace vespalib {
+struct CacheStats;
+class nbostream;
+}
 
 namespace search {
-
-struct CacheStats;
 
 class IDocumentStoreReadVisitor
 {
 public:
     using DocumentSP = std::shared_ptr<document::Document>;
-    virtual ~IDocumentStoreReadVisitor() { }
+    virtual ~IDocumentStoreReadVisitor() = default;
     virtual void visit(uint32_t lid, const DocumentSP &doc) = 0;
     virtual void visit(uint32_t lid) = 0;
 };
@@ -31,14 +32,14 @@ class IDocumentStoreRewriteVisitor
 {
 public:
     using DocumentSP = std::shared_ptr<document::Document>;
-    virtual ~IDocumentStoreRewriteVisitor() { }
+    virtual ~IDocumentStoreRewriteVisitor() = default;
     virtual void visit(uint32_t lid, const DocumentSP &doc) = 0;
 };
 
 class IDocumentStoreVisitorProgress
 {
 public:
-    virtual ~IDocumentStoreVisitorProgress() { }
+    virtual ~IDocumentStoreVisitorProgress() = default;
 
     virtual void updateProgress(double progress) = 0;
 };
@@ -47,7 +48,7 @@ class IDocumentVisitor
 {
 public:
     using DocumentUP = std::unique_ptr<document::Document>;
-    virtual ~IDocumentVisitor() { }
+    virtual ~IDocumentVisitor() = default;
     virtual void visit(uint32_t lid, DocumentUP doc) = 0;
     virtual bool allowVisitCaching() const = 0;
 private:
@@ -67,17 +68,6 @@ public:
     using SP = std::shared_ptr<IDocumentStore>;
     using LidVector = std::vector<uint32_t>;
     using DocumentUP = std::unique_ptr<document::Document>;
-
-
-    /**
-     * Construct a document store.
-     *
-     * @throws vespalib::IoException if the file is corrupt or other IO problems occur.
-     * @param docMan   The document type manager to use when deserializing.
-     * @param baseDir  The path to a directory where the implementaion specific files will reside.
-     **/
-    IDocumentStore();
-    virtual ~IDocumentStore();
 
     /**
      * Make a Document from a stored serialized data blob.
@@ -111,7 +101,8 @@ public:
     /**
      * If possible compact the disk.
      **/
-    virtual void compact(uint64_t syncToken) = 0;
+    virtual void compactBloat(uint64_t syncToken) = 0;
+    virtual void compactSpread(uint64_t syncToken) = 0;
 
     /**
      * The sync token used for the last successful flush() operation,
@@ -164,17 +155,16 @@ public:
     virtual size_t getDiskBloat() const = 0;
 
     /**
-     * Calculates how much diskspace can be compacted during a flush.
-     * default is to return th ebloat limit, but as some targets have some internal limits
-     * to avoid misuse we let the report a more conservative number here if necessary.
-     * @return diskspace to be gained.
+     * Calculates the gain from keeping buckets close. It is converted to diskbloat
+     * so it can be prioritized accordingly.
+     * @return spread as disk bloat.
      */
-    virtual size_t getMaxCompactGain() const { return getDiskBloat(); }
+    virtual size_t getMaxSpreadAsBloat() const = 0;
 
     /**
      * Returns statistics about the cache.
      */
-    virtual CacheStats getCacheStats() const = 0;
+    virtual vespalib::CacheStats getCacheStats() const = 0;
 
     /**
      * Returns the base directory from which all structures are stored.

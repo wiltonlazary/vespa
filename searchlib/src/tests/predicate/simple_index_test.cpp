@@ -10,6 +10,7 @@
 #include <vespa/vespalib/btree/btreestore.hpp>
 #include <vespa/vespalib/btree/btreenodeallocator.hpp>
 #include <vespa/vespalib/datastore/buffer_type.hpp>
+#include <vespa/vespalib/util/rcuvector.hpp>
 #include <map>
 
 #include <vespa/log/log.h>
@@ -73,7 +74,7 @@ struct Fixture {
     Fixture() : _generation_holder(), _limit_provider(),
                 _index(_generation_holder, _limit_provider, config) {}
     ~Fixture() {
-        _generation_holder.clearHoldLists();
+        _generation_holder.reclaim_all();
     }
     SimpleIndex<MyData> &index() {
         return _index;

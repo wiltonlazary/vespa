@@ -1,8 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.rankingexpression.importer.configmodelview;
 
-import com.yahoo.concurrent.InThreadExecutorService;
 import com.yahoo.path.Path;
+import com.yahoo.yolean.Exceptions;
 
 import java.io.File;
 import java.util.Arrays;
@@ -36,12 +36,6 @@ public class ImportedMlModels {
         importedModels = Collections.emptyMap();
     }
 
-    /** Will disappear shortly */
-    @Deprecated
-    public ImportedMlModels(File modelsDirectory, Collection<MlModelImporter> importers) {
-        this(modelsDirectory, new InThreadExecutorService(), importers);
-    }
-
     public ImportedMlModels(File modelsDirectory, ExecutorService executor, Collection<MlModelImporter> importers) {
         Map<String, Future<ImportedMlModel>> futureModels = new HashMap<>();
 
@@ -55,7 +49,7 @@ public class ImportedMlModels {
                     models.put(name, model);
                 }
             } catch (InterruptedException | ExecutionException e) {
-                skippedModels.put(name, e.getMessage());
+                skippedModels.put(name, Exceptions.toMessageString(e));
             }
         });
         importedModels = Collections.unmodifiableMap(models);
@@ -97,7 +91,7 @@ public class ImportedMlModels {
                 if (existing != null) {
                     try {
                         throw new IllegalArgumentException("The models in " + child + " and " + existing.get().source() +
-                                " both resolve to the model name '" + name + "'");
+                                                           " both resolve to the model name '" + name + "'");
                     } catch (InterruptedException | ExecutionException e) {}
                 }
 

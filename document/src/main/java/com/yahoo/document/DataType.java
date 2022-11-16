@@ -20,7 +20,6 @@ import com.yahoo.vespa.objects.Identifiable;
 import com.yahoo.vespa.objects.Ids;
 import com.yahoo.vespa.objects.ObjectVisitor;
 
-import java.io.Serializable;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.LinkedList;
@@ -32,10 +31,10 @@ import java.util.List;
  *
  * @author bratseth
  */
-public abstract class DataType extends Identifiable implements Serializable, Comparable<DataType> {
+public abstract class DataType extends Identifiable implements Comparable<DataType> {
 
     // The global class identifier shared with C++.
-    public static int classId = registerClass(Ids.document + 50, DataType.class);
+    public static final int classId = registerClass(Ids.document + 50, DataType.class);
 
     // NOTE: These types are also defined in
     // document/src/vespa/document/datatype/datatype.h
@@ -50,14 +49,18 @@ public abstract class DataType extends Identifiable implements Serializable, Com
     public final static PrimitiveDataType BOOL = new PrimitiveDataType("bool", 6, BoolFieldValue.class, BoolFieldValue.getFactory());
     public final static NumericDataType FLOAT16 = new NumericDataType("float16", 7, Float16FieldValue.class, Float16FieldValue.getFactory());
     public final static DocumentType DOCUMENT = new DocumentType("document");
-    public final static PrimitiveDataType URI = new PrimitiveDataType("uri", 10, UriFieldValue.class, new UriFieldValue.Factory());
+    public final static PrimitiveDataType URI = new PrimitiveDataType("uri", 10, UriFieldValue.class, UriFieldValue.getFactory());
     public final static NumericDataType BYTE = new NumericDataType("byte", 16, ByteFieldValue.class, ByteFieldValue.getFactory());
+    final static int TAG_ID = 18;
     public final static PrimitiveDataType PREDICATE = new PrimitiveDataType("predicate", 20, PredicateFieldValue.class, PredicateFieldValue.getFactory());
     public final static int tensorDataTypeCode = 21; // All TensorDataType instances have id=21 but carries additional type information serialized separately
     // ADDITIONAL parametrized types added at runtime: map, struct, array, weighted set, annotation reference, tensor
 
     // Tags are converted to weightedset<string> when reading the search definition TODO: Remove it
     public final static WeightedSetDataType TAG = new WeightedSetDataType(DataType.STRING, true, true);
+    static {
+        TAG.setTag(true);
+    }
 
     public static int lastPredefinedDataTypeId() {
         return 21;
@@ -276,7 +279,7 @@ public abstract class DataType extends Identifiable implements Serializable, Com
      */
     public FieldPath buildFieldPath(String fieldPathString) {
         if (fieldPathString.length() > 0) {
-            throw new IllegalArgumentException("Datatype " + toString() +
+            throw new IllegalArgumentException("Datatype " + this +
                                                " does not support further recursive structure: " + fieldPathString);
         }
         return new FieldPath();
@@ -314,7 +317,7 @@ public abstract class DataType extends Identifiable implements Serializable, Com
 
     @Override
     public int compareTo(DataType dataType) {
-        return Integer.valueOf(dataTypeId).compareTo(dataType.dataTypeId);
+        return Integer.compare(dataTypeId, dataType.dataTypeId);
     }
 
     /** Returns whether this is a multivalue type, i.e either a CollectionDataType or a MapDataType */

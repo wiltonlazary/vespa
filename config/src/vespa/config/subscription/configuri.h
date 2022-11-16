@@ -17,36 +17,19 @@ class SourceSpec;
  */
 class ConfigUri {
 public:
-    /**
-     * Construct a config URI from a given config id.
-     * @param configId The config id.
-     */
-    ConfigUri(const char * configId) : ConfigUri(vespalib::string(configId)) {}
 
     /**
      * Construct a config URI from a given config id.
      * @param configId The config id.
      */
-    ConfigUri(const std::string &configId) : ConfigUri(vespalib::string(configId)) {}
-
-    /**
-     * Construct a config URI from a given config id.
-     * @param configId The config id.
-     */
-    ConfigUri(vespalib::stringref configId) : ConfigUri(vespalib::string(configId)) {}
-
-    /**
-     * Construct a config URI from a given config id.
-     * @param configId The config id.
-     */
-    ConfigUri(const vespalib::string &configId);
+    explicit ConfigUri(vespalib::stringref configId);
 
     /**
      * Construct a config URI from a config id and a context.
      * @param configId The config id.
      * @param context A context object that can be shared with multiple URIs.
      */
-    ConfigUri(const vespalib::string &configId, IConfigContext::SP context);
+    ConfigUri(const vespalib::string &configId, std::shared_ptr<IConfigContext> context);
 
     ~ConfigUri();
 
@@ -90,7 +73,7 @@ public:
      * Get the context for this uri. Used by subscriber.
      * @return The context.
      */
-    const IConfigContext::SP & getContext() const;
+    const std::shared_ptr<IConfigContext> & getContext() const;
 
     /**
      * Empty if the original id was empty or created with createEmpty
@@ -99,9 +82,9 @@ public:
     bool empty() const { return _empty; }
 
 private:
-    vespalib::string   _configId;
-    IConfigContext::SP _context;
-    bool               _empty;
+    vespalib::string                _configId;
+    std::shared_ptr<IConfigContext> _context;
+    bool                            _empty;
 };
 
 } // namespace config

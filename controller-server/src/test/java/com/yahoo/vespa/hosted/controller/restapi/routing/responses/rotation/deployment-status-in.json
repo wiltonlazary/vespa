@@ -1,13 +1,13 @@
 {
   "deployments": [
     {
-      "routingMethod": "shared",
+      "routingMethod": "sharedLayer4",
       "instance": "tenant:application:default",
       "environment": "prod",
       "region": "us-west-1",
       "status": "in",
       "agent": "operator",
-      "changedAt": "(ignore)"
+      "changedAt": 1600000000000
     }
   ]
 }

@@ -3,9 +3,14 @@ package com.yahoo.vespa.hosted.controller.api.integration.archive;
 
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.ZoneId;
+import com.yahoo.vespa.hosted.controller.tenant.ArchiveAccess;
 
+import java.net.URI;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * @author freva
@@ -13,15 +18,29 @@ import java.util.Map;
  */
 public class MockArchiveService implements ArchiveService {
 
-    public Map<ArchiveBucket, Map<TenantName, String>> authorizedIamRoles = new HashMap<>();
+
+    public Set<ArchiveBucket> archiveBuckets = new HashSet<>();
+    public Map<TenantName, ArchiveAccess> authorizeAccessByTenantName = new HashMap<>();
+
 
     @Override
-    public ArchiveBucket createArchiveBucketFor(ZoneId zoneId, boolean sharded) {
+    public ArchiveBucket createArchiveBucketFor(ZoneId zoneId) {
         return new ArchiveBucket("bucketName", "keyArn");
     }
 
     @Override
-    public void updateBucketAndKeyPolicy(ZoneId zoneId, ArchiveBucket bucket, Map<TenantName, String> authorizeIamRoleByTenantName) {
-        authorizedIamRoles.put(bucket, authorizeIamRoleByTenantName);
+    public void updatePolicies(ZoneId zoneId, Set<ArchiveBucket> buckets, Map<TenantName, ArchiveAccess> authorizeAccessByTenantName) {
+        this.archiveBuckets = new HashSet<>(buckets);
+        this.authorizeAccessByTenantName = new HashMap<>(authorizeAccessByTenantName);
+    }
+
+    @Override
+    public boolean canAddTenantToBucket(ZoneId zoneId, ArchiveBucket bucket) {
+        return bucket.tenants().size() < 5;
+    }
+
+    @Override
+    public URI bucketURI(ZoneId zoneId, String bucketName, TenantName tenantName) {
+        return URI.create(String.format("s3://%s/%s/", bucketName, tenantName.value()));
     }
 }

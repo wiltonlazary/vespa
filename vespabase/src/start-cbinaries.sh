@@ -72,6 +72,9 @@ findhost () {
 findroot
 findhost
 
+ROOT=${VESPA_HOME%/}
+export ROOT
+
 # END environment bootstrap section
 
 bname=`basename $0`
@@ -97,9 +100,9 @@ check_bname_in_value () {
 configure_valgrind () {
     no_valgrind=true
     if which valgrind >/dev/null 2>&1; then
-        if check_bname_in_value $VESPA_USE_VALGRIND; then
+        if check_bname_in_value "$VESPA_USE_VALGRIND"; then
             no_valgrind=false
-            valgrind_log=$VESPA_HOME/tmp/valgrind.$bname.log.$$
+            valgrind_log=${VESPA_HOME}/tmp/valgrind.$bname.log.$$
             case $VESPA_VALGRIND_OPT in
                 *callgrind*) use_callgrind=true;;
             esac
@@ -108,7 +111,7 @@ configure_valgrind () {
 }
 
 configure_huge_pages () {
-    if check_bname_in_value $VESPA_USE_HUGEPAGES_LIST; then
+    if check_bname_in_value "$VESPA_USE_HUGEPAGES_LIST"; then
         log_debug_message "Want huge pages for '$bname' since VESPA_USE_HUGEPAGES_LIST=${VESPA_USE_HUGEPAGES_LIST}"
         export VESPA_USE_HUGEPAGES="yes"
     fi
@@ -134,15 +137,15 @@ configure_use_madvise () {
 }
 
 configure_vespa_malloc () {
-    if check_bname_in_value $VESPA_USE_NO_VESPAMALLOC; then
+    if check_bname_in_value "$VESPA_USE_NO_VESPAMALLOC"; then
         # log_debug_message "Not using vespamalloc for '$bname' since VESPA_USE_NO_VESPAMALLOC=${VESPA_USE_NO_VESPAMALLOC}"
         return
     fi
     suf=vespa/malloc/libvespamalloc.so
-    if check_bname_in_value $VESPA_USE_VESPAMALLOC_D; then
+    if check_bname_in_value "$VESPA_USE_VESPAMALLOC_D"; then
         suf=vespa/malloc/libvespamallocd.so
     fi
-    if check_bname_in_value $VESPA_USE_VESPAMALLOC_DST; then
+    if check_bname_in_value "$VESPA_USE_VESPAMALLOC_DST"; then
         suf=vespa/malloc/libvespamallocdst16.so
     fi
 
@@ -152,7 +155,9 @@ configure_vespa_malloc () {
             tryfile="${VESPA_HOME}/${pre}/${suf}"
             if [ -f "$tryfile" ]; then
                 LD_PRELOAD="$tryfile"
-                log_debug_message "Using LD_PRELOAD='$tryfile'"
+                if [ "$VESPA_LOAD_CODE_AS_HUGEPAGES" ]; then
+                    LD_PRELOAD="$LD_PRELOAD:${VESPA_HOME}/${pre}/vespa/malloc/libvespa_load_as_huge.so"
+                fi
                 if [ "$VESPA_USE_HUGEPAGES" ]; then
                     export VESPA_MALLOC_HUGEPAGES="$VESPA_USE_HUGEPAGES"
                     log_debug_message "enabling hugepages for '$0-bin'."
@@ -167,6 +172,8 @@ configure_valgrind
 configure_huge_pages
 configure_use_madvise
 configure_vespa_malloc
+
+log_debug_message "Using LD_PRELOAD='$LD_PRELOAD'"
 
 if $no_valgrind ; then
     numactl=$(get_numa_ctl_cmd)

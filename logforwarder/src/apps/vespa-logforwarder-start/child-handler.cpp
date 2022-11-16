@@ -76,21 +76,35 @@ runSplunk(const vespalib::string &prefix, std::vector<const char *> args)
 void
 ChildHandler::startChild(const vespalib::string &prefix)
 {
-    if (! _childRunning) {
-        // it is possible that splunk was already running anyway, so
-        // make sure we restart it to get new config activated:
-        runSplunk(prefix, {"stop"});
+    LOG(debug, "startChild '%s'", prefix.c_str());
+    if (_childRunning && prefix == _runningPrefix) {
+        runSplunk(prefix, {"restart"});
+    } else {
+        if (_childRunning) {
+            runSplunk(_runningPrefix, {"stop"});
+        } else {
+            // it is possible that splunk was already running anyway, so
+            // make sure we restart it to get new config activated:
+            runSplunk(prefix, {"stop"});
+        }
         sleep(1);
         runSplunk(prefix, {"start", "--answer-yes", "--no-prompt", "--accept-license"});
         _childRunning = true;
-    } else {
-        runSplunk(prefix, {"restart"});
+        _runningPrefix = prefix;
     }
 }
 
-void
-ChildHandler::stopChild(const vespalib::string &prefix)
-{
-    runSplunk(prefix, {"stop"});
+void ChildHandler::stopChild() {
+    if (_runningPrefix != "") {
+        LOG(debug, "stopChild '%s'", _runningPrefix.c_str());
+        runSplunk(_runningPrefix, {"stop"});
+    }
     _childRunning = false;
+}
+
+void
+ChildHandler::stopChild(const vespalib::string &prefix) {
+    stopChild();
+    _runningPrefix = prefix;
+    stopChild();
 }

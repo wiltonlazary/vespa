@@ -3,16 +3,18 @@
 #pragma once
 
 #include "integerbase.h"
-#include "floatbase.h"
+#include "search_context.h"
+#include <vespa/vespalib/util/atomic.h>
 #include <vespa/vespalib/util/rcuvector.h>
 #include <limits>
 
 namespace search {
 
+class GrowStrategy;
+
 class SingleValueSmallNumericAttribute : public IntegerAttributeTemplate<int8_t>
 {
 private:
-//    friend class AttributeVector::SearchContext;
     typedef IntegerAttributeTemplate<int8_t> B;
     typedef B::BaseType      T;
     typedef B::DocId         DocId;
@@ -32,7 +34,7 @@ private:
     uint32_t _valueShiftMask;   // 0x1f, 0x0f or 0x07
     uint32_t _wordShift;        // 0x05, 0x04 or 0x03
 
-    typedef vespalib::RcuVectorBase<Word> DataVector;
+    using DataVector = vespalib::RcuVectorBase<Word>;
     DataVector _wordData;
 
     T getFromEnum(EnumHandle) const override {
@@ -45,61 +47,16 @@ protected:
     }
 
     void set(DocId doc, T v) {
-        Word &word = _wordData[doc >> _wordShift];
+        Word &word_ref = _wordData[doc >> _wordShift];
         uint32_t valueShift = (doc & _valueShiftMask) << _valueShiftShift;
+        Word word = vespalib::atomic::load_ref_relaxed(word_ref);
         word = (word & ~(_valueMask << valueShift)) |
                ((v & _valueMask) << valueShift);
+        vespalib::atomic::store_ref_relaxed(word_ref, word);
     }
 
 
 public:
-    /*
-     * Specialization of SearchContext
-     */
-    class SingleSearchContext : public NumericAttribute::Range<T>, public SearchContext
-    {
-    private:
-        const Word *_wordData;
-        Word _valueMask;
-        uint32_t _valueShiftShift;
-        uint32_t _valueShiftMask;
-        uint32_t _wordShift;
-
-        int32_t onFind(DocId docId, int32_t elementId, int32_t & weight) const override {
-            return find(docId, elementId, weight);
-        }
-
-        int32_t onFind(DocId docId, int32_t elementId) const override {
-            return find(docId, elementId);
-        }
-
-        bool valid() const override;
-
-    public:
-        SingleSearchContext(std::unique_ptr<QueryTermSimple> qTerm, const SingleValueSmallNumericAttribute & toBeSearched);
-
-        int32_t find(DocId docId, int32_t elemId, int32_t & weight) const {
-            if ( elemId != 0) return -1;
-            const Word &word = _wordData[docId >> _wordShift];
-            uint32_t valueShift = (docId & _valueShiftMask) << _valueShiftShift;
-            T v = (word >> valueShift) & _valueMask;
-            weight = 1;
-            return match(v) ? 0 : -1;
-        }
-
-        int32_t find(DocId docId, int32_t elemId) const {
-            if ( elemId != 0) return -1;
-            const Word &word = _wordData[docId >> _wordShift];
-            uint32_t valueShift = (docId & _valueShiftMask) << _valueShiftShift;
-            T v = (word >> valueShift) & _valueMask;
-            return match(v) ? 0 : -1;
-        }
-
-        Int64Range getAsIntegerTerm() const override;
-
-        std::unique_ptr<queryeval::SearchIterator>
-        createFilterIterator(fef::TermFieldMatchData * matchData, bool strict) override;
-    };
 
     SingleValueSmallNumericAttribute(const vespalib::string & baseFileName, const Config &c, Word valueMask,
                                      uint32_t valueShiftShift, uint32_t valueShiftMask, uint32_t wordShift);
@@ -115,19 +72,19 @@ public:
     void onCommit() override;
     void onAddDocs(DocId docIdLimit) override;
     void onUpdateStat() override;
-    void removeOldGenerations(generation_t firstUsed) override;
-    void onGenerationChange(generation_t generation) override;
+    void reclaim_memory(generation_t oldest_used_gen) override;
+    void before_inc_generation(generation_t current_gen) override;
     bool addDoc(DocId & doc) override;
     bool onLoad(vespalib::Executor *executor) override;
     void onSave(IAttributeSaveTarget &saveTarget) override;
 
-    SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(std::unique_ptr<QueryTermSimple> term, const attribute::SearchContextParams & params) const override;
 
     T getFast(DocId doc) const {
-        const Word &word = _wordData[doc >> _wordShift];
+        const Word &word = _wordData.acquire_elem_ref(doc >> _wordShift);
         uint32_t valueShift = (doc & _valueShiftMask) << _valueShiftShift;
-        return (word >> valueShift) & _valueMask;
+        return (vespalib::atomic::load_ref_relaxed(word) >> valueShift) & _valueMask;
     }
 
     //-------------------------------------------------------------------------
@@ -144,12 +101,6 @@ public:
     }
     uint32_t getEnum(DocId) const override {
         return std::numeric_limits<uint32_t>::max(); // does not have enum
-    }
-    uint32_t getAll(DocId doc, T * v, uint32_t sz) const override {
-        if (sz > 0) {
-            v[0] = getFast(doc);
-        }
-        return 1;
     }
     uint32_t get(DocId doc, largeint_t * v, uint32_t sz) const override {
         if (sz > 0) {
@@ -169,7 +120,6 @@ public:
         }
         return 1;
     }
-    uint32_t getAll(DocId, Weighted *, uint32_t) const override { return 0; }
     uint32_t get(DocId doc, WeightedInt * v, uint32_t sz) const override {
         if (sz > 0) {
             v[0] = WeightedInt(static_cast<largeint_t>(getFast(doc)));
@@ -187,7 +137,7 @@ public:
         return 0;
     }
 
-    void clearDocs(DocId lidLow, DocId lidLimit) override;
+    void clearDocs(DocId lidLow, DocId lidLimit, bool in_shrink_lid_space) override;
     void onShrinkLidSpace() override;
     uint64_t getEstimatedSaveByteSize() const override;
 };
@@ -195,13 +145,13 @@ public:
 class SingleValueSemiNibbleNumericAttribute : public SingleValueSmallNumericAttribute
 {
 public:
-    SingleValueSemiNibbleNumericAttribute(const vespalib::string & baseFileName, const search::GrowStrategy & grow);
+    SingleValueSemiNibbleNumericAttribute(const vespalib::string & baseFileName, const GrowStrategy & grow);
 };
 
 class SingleValueNibbleNumericAttribute : public SingleValueSmallNumericAttribute
 {
 public:
-    SingleValueNibbleNumericAttribute(const vespalib::string & baseFileName, const search::GrowStrategy & grow);
+    SingleValueNibbleNumericAttribute(const vespalib::string & baseFileName, const GrowStrategy & grow);
 };
 
 }

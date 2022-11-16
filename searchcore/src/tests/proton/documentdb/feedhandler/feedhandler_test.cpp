@@ -2,7 +2,12 @@
 
 #include <vespa/persistence/spi/result.h>
 #include <vespa/document/datatype/tensor_data_type.h>
+#include <vespa/document/datatype/documenttype.h>
+#include <vespa/document/fieldvalue/document.h>
+#include <vespa/document/fieldvalue/stringfieldvalue.h>
+#include <vespa/document/fieldvalue/tensorfieldvalue.h>
 #include <vespa/document/update/assignvalueupdate.h>
+#include <vespa/document/repo/configbuilder.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/update/documentupdate.h>
 #include <vespa/document/update/clearvalueupdate.h>
@@ -11,6 +16,7 @@
 #include <vespa/eval/eval/tensor_spec.h>
 #include <vespa/eval/eval/value.h>
 #include <vespa/searchcore/proton/bucketdb/bucketdbhandler.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/test/bucketfactory.h>
 #include <vespa/searchcore/proton/common/feedtoken.h>
 #include <vespa/searchcore/proton/feedoperation/moveoperation.h>
@@ -22,23 +28,25 @@
 #include <vespa/searchcore/proton/server/configstore.h>
 #include <vespa/document/util/feed_reject_helper.h>
 #include <vespa/searchcore/proton/server/ddbstate.h>
-#include <vespa/searchcore/proton/server/executorthreadingservice.h>
 #include <vespa/searchcore/proton/server/feedhandler.h>
 #include <vespa/searchcore/proton/server/i_feed_handler_owner.h>
 #include <vespa/searchcore/proton/server/ireplayconfig.h>
 #include <vespa/searchcore/proton/test/dummy_feed_view.h>
-#include <vespa/searchlib/index/docbuilder.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
+#include <vespa/searchlib/test/doc_builder.h>
 #include <vespa/searchlib/transactionlog/translogserver.h>
 #include <vespa/vespalib/testkit/testapp.h>
 #include <vespa/vespalib/util/lambdatask.h>
 #include <vespa/vespalib/util/exceptions.h>
-#include <vespa/vespalib/io/fileutil.h>
+#include <vespa/vespalib/util/size_literals.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP("feedhandler_test");
 
 using document::BucketId;
+using document::DataType;
 using document::Document;
 using document::DocumentId;
 using document::DocumentType;
@@ -49,9 +57,8 @@ using document::TensorDataType;
 using document::TensorFieldValue;
 using vespalib::IDestructorCallback;
 using search::SerialNum;
-using search::index::schema::CollectionType;
-using search::index::schema::DataType;
 using vespalib::makeLambdaTask;
+using search::test::DocBuilder;
 using search::transactionlog::TransLogServer;
 using search::transactionlog::DomainConfig;
 using storage::spi::RemoveResult;
@@ -185,13 +192,13 @@ struct MyFeedView : public test::DummyFeedView {
     int remove_count;
     int move_count;
     int prune_removed_count;
+    
     int update_count;
     SerialNum update_serial;
     const DocumentType *documentType;
     MyFeedView(const std::shared_ptr<const DocumentTypeRepo> &dtr,
                const DocTypeName &docTypeName);
     ~MyFeedView() override;
-    void resetPutLatch(uint32_t count) { putLatch = std::make_unique<vespalib::CountDownLatch>(count); }
     void preparePut(PutOperation &op) override {
         prepareDocumentOperation(op, op.getDocument()->getId().getGlobalId());
     }
@@ -234,9 +241,9 @@ struct MyFeedView : public test::DummyFeedView {
         (void) token;
         ++remove_count;
     }
-    void handleMove(const MoveOperation &, IDestructorCallback::SP) override { ++move_count; }
-    void heartBeat(SerialNum) override { ++heartbeat_count; }
-    void handlePruneRemovedDocuments(const PruneRemovedDocumentsOperation &) override { ++prune_removed_count; }
+    void handleMove(const MoveOperation &, DoneCallback) override { ++move_count; }
+    void heartBeat(SerialNum, DoneCallback) override { ++heartbeat_count; }
+    void handlePruneRemovedDocuments(const PruneRemovedDocumentsOperation &, DoneCallback) override { ++prune_removed_count; }
     const ISimpleDocumentMetaStore *getDocumentMetaStorePtr() const override {
         return nullptr;
     }
@@ -268,41 +275,40 @@ MyFeedView::~MyFeedView() = default;
 
 
 struct SchemaContext {
-    Schema::SP                schema;
-    std::unique_ptr<DocBuilder> builder;
+    DocBuilder builder;
     SchemaContext();
+    SchemaContext(bool has_i2);
     ~SchemaContext();
     DocTypeName getDocType() const {
-        return DocTypeName(builder->getDocumentType().getName());
+        return DocTypeName(builder.get_document_type().getName());
     }
-    const std::shared_ptr<const document::DocumentTypeRepo> &getRepo() const { return builder->getDocumentTypeRepo(); }
-    void addField(vespalib::stringref fieldName);
+    std::shared_ptr<const document::DocumentTypeRepo> getRepo() const { return builder.get_repo_sp(); }
 };
 
 SchemaContext::SchemaContext()
-    : schema(std::make_shared<Schema>()),
-      builder()
+    : SchemaContext(false)
 {
-    schema->addAttributeField(Schema::AttributeField("tensor", DataType::TENSOR, CollectionType::SINGLE, "tensor(x{},y{})"));
-    schema->addAttributeField(Schema::AttributeField("tensor2", DataType::TENSOR, CollectionType::SINGLE, "tensor(x{},y{})"));
-    addField("i1");
 }
 
+SchemaContext::SchemaContext(bool has_i2)
+    : builder([has_i2](auto& header) {
+                  header.addTensorField("tensor", "tensor(x{},y{})")
+                      .addTensorField("tensor2", "tensor(x{},y{})")
+                      .addField("i1", DataType::T_STRING);
+                  if (has_i2) {
+                      header.addField("i2", DataType::T_STRING);
+                  }
+              })
+{
+}
 
 SchemaContext::~SchemaContext() = default;
-
-void
-SchemaContext::addField(vespalib::stringref fieldName)
-{
-    schema->addIndexField(Schema::IndexField(fieldName, DataType::STRING, CollectionType::SINGLE));
-    builder = std::make_unique<DocBuilder>(*schema);
-}
 
 struct DocumentContext {
     Document::SP  doc;
     BucketId      bucketId;
     DocumentContext(const vespalib::string &docId, DocBuilder &builder) :
-        doc(builder.startDocument(docId).endDocument().release()),
+        doc(builder.make_document(docId)),
         bucketId(BucketFactory::getBucketId(doc->getId()))
     {
     }
@@ -310,9 +316,8 @@ struct DocumentContext {
 
 struct TwoFieldsSchemaContext : public SchemaContext {
     TwoFieldsSchemaContext()
-        : SchemaContext()
+        : SchemaContext(true)
     {
-        addField("i2");
     }
 };
 
@@ -322,7 +327,7 @@ struct UpdateContext {
     DocumentUpdate::SP update;
     BucketId           bucketId;
     UpdateContext(const vespalib::string &docId, DocBuilder &builder) :
-        update(std::make_shared<DocumentUpdate>(*builder.getDocumentTypeRepo(), builder.getDocumentType(), DocumentId(docId))),
+        update(std::make_shared<DocumentUpdate>(builder.get_repo(), builder.get_document_type(), DocumentId(docId))),
         bucketId(BucketFactory::getBucketId(update->getId()))
     {
     }
@@ -343,10 +348,7 @@ struct UpdateContext {
         } else {
             fieldValue->assign(document::StringFieldValue("new value"));
         }
-        document::AssignValueUpdate assignValueUpdate(*fieldValue);
-        document::FieldUpdate fieldUpdate(field);
-        fieldUpdate.addUpdate(assignValueUpdate);
-        update->addUpdate(fieldUpdate);
+        update->addUpdate(document::FieldUpdate(field).addUpdate(std::make_unique<document::AssignValueUpdate>(std::move(fieldValue))));
     }
 };
 
@@ -389,16 +391,6 @@ FeedTokenContext::FeedTokenContext()
 
 FeedTokenContext::~FeedTokenContext() = default;
 
-struct PutContext {
-    FeedTokenContext tokenCtx;
-    DocumentContext  docCtx;
-    typedef std::shared_ptr<PutContext> SP;
-    PutContext(const vespalib::string &docId, DocBuilder &builder) :
-        tokenCtx(),
-        docCtx(docId, builder)
-    {}
-};
-
 struct MyTlsWriter : TlsWriter {
     int store_count;
     int erase_count;
@@ -417,10 +409,9 @@ struct MyTlsWriter : TlsWriter {
 struct FeedHandlerFixture
 {
     DummyFileHeaderContext       _fileHeaderContext;
+    TransportAndExecutorService  _service;
     TransLogServer               tls;
     vespalib::string             tlsSpec;
-    vespalib::ThreadStackExecutor sharedExecutor;
-    ExecutorThreadingService     writeService;
     SchemaContext                schema;
     MyOwner                      owner;
     MyResourceWriteFilter        writeFilter;
@@ -433,10 +424,9 @@ struct FeedHandlerFixture
     FeedHandler                  handler;
     FeedHandlerFixture()
         : _fileHeaderContext(),
-          tls("mytls", 9016, "mytlsdir", _fileHeaderContext, DomainConfig().setPartSizeLimit(0x10000)),
+          _service(1),
+          tls(_service.transport(), "mytls", 9016, "mytlsdir", _fileHeaderContext, DomainConfig().setPartSizeLimit(0x10000)),
           tlsSpec("tcp/localhost:9016"),
-          sharedExecutor(1, 0x10000),
-          writeService(sharedExecutor),
           schema(),
           owner(),
           _state(),
@@ -444,7 +434,7 @@ struct FeedHandlerFixture
           feedView(schema.getRepo(), schema.getDocType()),
           _bucketDB(),
           _bucketDBHandler(_bucketDB),
-          handler(writeService, tlsSpec, schema.getDocType(), owner,
+          handler(_service.write(), tlsSpec, schema.getDocType(), owner,
                   writeFilter, replayConfig, tls, &tls_writer)
     {
         _state.enterLoadState();
@@ -455,39 +445,17 @@ struct FeedHandlerFixture
     }
 
     ~FeedHandlerFixture() {
-        writeService.sync();
+        _service.shutdown();
     }
     template <class FunctionType>
     inline void runAsMaster(FunctionType &&function) {
-        writeService.master().execute(makeLambdaTask(std::move(function)));
-        writeService.master().sync();
+        _service.write().master().execute(makeLambdaTask(std::move(function)));
+        syncMaster();
     }
     void syncMaster() {
-        writeService.master().sync();
+        _service.write().master().sync();
     }
 };
-
-
-struct MyConfigStore : ConfigStore {
-    SerialNum getBestSerialNum() const override { return 1; }
-    SerialNum getOldestSerialNum() const override { return 1; }
-    void saveConfig(const DocumentDBConfig &, SerialNum) override {}
-    void loadConfig(const DocumentDBConfig &, SerialNum, DocumentDBConfig::SP &) override {}
-    void removeInvalid() override {}
-    void prune(SerialNum) override {}
-    bool hasValidSerial(SerialNum) const override { return true; }
-    SerialNum getPrevValidSerial(SerialNum) const override { return 1; }
-    void serializeConfig(SerialNum, vespalib::nbostream &) override {}
-    void deserializeConfig(SerialNum, vespalib::nbostream &) override {}
-    void setProtonConfig(const ProtonConfigSP &) override { }
-};
-
-
-struct ReplayTransactionLogContext {
-    MyConfigStore config_store;
-    DocumentDBConfig::SP cfgSnap;
-};
-
 
 TEST_F("require that heartBeat calls FeedView's heartBeat",
        FeedHandlerFixture)
@@ -498,7 +466,7 @@ TEST_F("require that heartBeat calls FeedView's heartBeat",
 
 TEST_F("require that outdated remove is ignored", FeedHandlerFixture)
 {
-    DocumentContext doc_context("id:ns:searchdocument::foo", *f.schema.builder);
+    DocumentContext doc_context("id:ns:searchdocument::foo", f.schema.builder);
     auto op = std::make_unique<RemoveOperationWithDocId>(doc_context.bucketId, Timestamp(10), doc_context.doc->getId());
     static_cast<DocumentOperation &>(*op).setPrevDbDocumentId(DbDocumentId(4));
     static_cast<DocumentOperation &>(*op).setPrevTimestamp(Timestamp(10000));
@@ -510,7 +478,7 @@ TEST_F("require that outdated remove is ignored", FeedHandlerFixture)
 
 TEST_F("require that outdated put is ignored", FeedHandlerFixture)
 {
-    DocumentContext doc_context("id:ns:searchdocument::foo", *f.schema.builder);
+    DocumentContext doc_context("id:ns:searchdocument::foo", f.schema.builder);
     auto op =std::make_unique<PutOperation>(doc_context.bucketId, Timestamp(10), std::move(doc_context.doc));
     static_cast<DocumentOperation &>(*op).setPrevTimestamp(Timestamp(10000));
     FeedTokenContext token_context;
@@ -530,7 +498,7 @@ addLidToRemove(RemoveDocumentsOperation &op)
 
 TEST_F("require that handleMove calls FeedView", FeedHandlerFixture)
 {
-    DocumentContext doc_context("id:ns:searchdocument::foo", *f.schema.builder);
+    DocumentContext doc_context("id:ns:searchdocument::foo", f.schema.builder);
     MoveOperation op(doc_context.bucketId, Timestamp(2), doc_context.doc, DbDocumentId(0, 2), 1);
     op.setDbDocumentId(DbDocumentId(1, 2));
     f.runAsMaster([&]() { f.handler.handleMove(op, IDestructorCallback::SP()); });
@@ -590,7 +558,7 @@ TEST_F("require that flush cannot unprune", FeedHandlerFixture)
 
 TEST_F("require that remove of unknown document with known data type stores remove", FeedHandlerFixture)
 {
-    DocumentContext doc_context("id:test:searchdocument::foo", *f.schema.builder);
+    DocumentContext doc_context("id:test:searchdocument::foo", f.schema.builder);
     auto op = std::make_unique<RemoveOperationWithDocId>(doc_context.bucketId, Timestamp(10), doc_context.doc->getId());
     FeedTokenContext token_context;
     f.handler.performOperation(std::move(token_context.token), std::move(op));
@@ -600,7 +568,7 @@ TEST_F("require that remove of unknown document with known data type stores remo
 
 TEST_F("require that partial update for non-existing document is tagged as such", FeedHandlerFixture)
 {
-    UpdateContext upCtx("id:test:searchdocument::foo", *f.schema.builder);
+    UpdateContext upCtx("id:test:searchdocument::foo", f.schema.builder);
     auto  op = std::make_unique<UpdateOperation>(upCtx.bucketId, Timestamp(10), upCtx.update);
     FeedTokenContext token_context;
     f.handler.performOperation(std::move(token_context.token), std::move(op));
@@ -616,7 +584,7 @@ TEST_F("require that partial update for non-existing document is tagged as such"
 TEST_F("require that partial update for non-existing document is created if specified", FeedHandlerFixture)
 {
     f.handler.setSerialNum(15);
-    UpdateContext upCtx("id:test:searchdocument::foo", *f.schema.builder);
+    UpdateContext upCtx("id:test:searchdocument::foo", f.schema.builder);
     upCtx.update->setCreateIfNonExistent(true);
     f.feedView.metaStore.insert(upCtx.update->getId().getGlobalId(), MyDocumentMetaStore::Entry(5, 5, Timestamp(10)));
     auto op = std::make_unique<UpdateOperation>(upCtx.bucketId, Timestamp(10), upCtx.update);
@@ -639,7 +607,7 @@ TEST_F("require that put is rejected if resource limit is reached", FeedHandlerF
     f.writeFilter._acceptWriteOperation = false;
     f.writeFilter._message = "Attribute resource limit reached";
 
-    DocumentContext docCtx("id:test:searchdocument::foo", *f.schema.builder);
+    DocumentContext docCtx("id:test:searchdocument::foo", f.schema.builder);
     auto op = std::make_unique<PutOperation>(docCtx.bucketId, Timestamp(10), std::move(docCtx.doc));
     FeedTokenContext token;
     f.handler.performOperation(std::move(token.token), std::move(op));
@@ -654,7 +622,7 @@ TEST_F("require that update is rejected if resource limit is reached", FeedHandl
     f.writeFilter._acceptWriteOperation = false;
     f.writeFilter._message = "Attribute resource limit reached";
 
-    UpdateContext updCtx("id:test:searchdocument::foo", *f.schema.builder);
+    UpdateContext updCtx("id:test:searchdocument::foo", f.schema.builder);
     updCtx.addFieldUpdate("tensor");
     auto op = std::make_unique<UpdateOperation>(updCtx.bucketId, Timestamp(10), updCtx.update);
     FeedTokenContext token;
@@ -671,7 +639,7 @@ TEST_F("require that remove is NOT rejected if resource limit is reached", FeedH
     f.writeFilter._acceptWriteOperation = false;
     f.writeFilter._message = "Attribute resource limit reached";
 
-    DocumentContext docCtx("id:test:searchdocument::foo", *f.schema.builder);
+    DocumentContext docCtx("id:test:searchdocument::foo", f.schema.builder);
     auto op = std::make_unique<RemoveOperationWithDocId>(docCtx.bucketId, Timestamp(10), docCtx.doc->getId());
     FeedTokenContext token;
     f.handler.performOperation(std::move(token.token), std::move(op));
@@ -685,7 +653,7 @@ checkUpdate(FeedHandlerFixture &f, SchemaContext &schemaContext,
             const vespalib::string &fieldName, bool expectReject, bool existing)
 {
     f.handler.setSerialNum(15);
-    UpdateContext updCtx("id:test:searchdocument::foo", *schemaContext.builder);
+    UpdateContext updCtx("id:test:searchdocument::foo", schemaContext.builder);
     updCtx.addFieldUpdate(fieldName);
     if (existing) {
         f.feedView.metaStore.insert(updCtx.update->getId().getGlobalId(), MyDocumentMetaStore::Entry(5, 5, Timestamp(9)));
@@ -767,7 +735,7 @@ TEST_F("require that tensor update with wrong tensor type fails", FeedHandlerFix
 TEST_F("require that put with different document type repo is ok", FeedHandlerFixture)
 {
     TwoFieldsSchemaContext schema;
-    DocumentContext doc_context("id:ns:searchdocument::foo", *schema.builder);
+    DocumentContext doc_context("id:ns:searchdocument::foo", schema.builder);
     auto op = std::make_unique<PutOperation>(doc_context.bucketId,
                                              Timestamp(10), std::move(doc_context.doc));
     FeedTokenContext token_context;
@@ -779,23 +747,37 @@ TEST_F("require that put with different document type repo is ok", FeedHandlerFi
     EXPECT_EQUAL(1, f.tls_writer.store_count);
 }
 
+TEST_F("require that feed stats are updated", FeedHandlerFixture)
+{
+    DocumentContext doc_context("id:ns:searchdocument::foo", f.schema.builder);
+    auto op =std::make_unique<PutOperation>(doc_context.bucketId, Timestamp(10), std::move(doc_context.doc));
+    FeedTokenContext token_context;
+    f.handler.performOperation(std::move(token_context.token), std::move(op));
+    f.syncMaster(); // wait for initateCommit
+    f.syncMaster(); // wait for onCommitDone
+    auto stats = f.handler.get_stats(false);
+    EXPECT_EQUAL(1u, stats.get_commits());
+    EXPECT_EQUAL(1u, stats.get_operations());
+    EXPECT_LESS(0.0, stats.get_total_latency());
+}
+
 using namespace document;
 
 TEST_F("require that update with a fieldpath update will be rejected", SchemaContext) {
     const DocumentType *docType = f.getRepo()->getDocumentType(f.getDocType().getName());
     auto docUpdate = std::make_unique<DocumentUpdate>(*f.getRepo(), *docType, DocumentId("id:ns:" + docType->getName() + "::1"));
-    docUpdate->addFieldPathUpdate(FieldPathUpdate::CP(std::make_unique<RemoveFieldPathUpdate>()));
+    docUpdate->addFieldPathUpdate(std::make_unique<RemoveFieldPathUpdate>());
     EXPECT_TRUE(FeedRejectHelper::mustReject(*docUpdate));
 }
 
 TEST_F("require that all value updates will be inspected before rejected", SchemaContext) {
     const DocumentType *docType = f.getRepo()->getDocumentType(f.getDocType().getName());
     auto docUpdate = std::make_unique<DocumentUpdate>(*f.getRepo(), *docType, DocumentId("id:ns:" + docType->getName() + "::1"));
-    docUpdate->addUpdate(FieldUpdate(docType->getField("i1")).addUpdate(ClearValueUpdate()));
+    docUpdate->addUpdate(std::move(FieldUpdate(docType->getField("i1")).addUpdate(std::make_unique<ClearValueUpdate>())));
     EXPECT_FALSE(FeedRejectHelper::mustReject(*docUpdate));
-    docUpdate->addUpdate(FieldUpdate(docType->getField("i1")).addUpdate(ClearValueUpdate()));
+    docUpdate->addUpdate(std::move(FieldUpdate(docType->getField("i1")).addUpdate(std::make_unique<ClearValueUpdate>())));
     EXPECT_FALSE(FeedRejectHelper::mustReject(*docUpdate));
-    docUpdate->addUpdate(FieldUpdate(docType->getField("i1")).addUpdate(AssignValueUpdate(StringFieldValue())));
+    docUpdate->addUpdate(std::move(FieldUpdate(docType->getField("i1")).addUpdate(std::make_unique<AssignValueUpdate>(StringFieldValue::make()))));
     EXPECT_TRUE(FeedRejectHelper::mustReject(*docUpdate));
 }
 
@@ -805,5 +787,5 @@ TEST_MAIN()
 {
     DummyFileHeaderContext::setCreator("feedhandler_test");
     TEST_RUN_ALL();
-    vespalib::rmdir("mytlsdir", true);
+    std::filesystem::remove_all(std::filesystem::path("mytlsdir"));
 }

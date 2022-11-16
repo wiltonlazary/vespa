@@ -1,11 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.provision.maintenance;
 
-import com.google.inject.Inject;
 import com.yahoo.component.AbstractComponent;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.concurrent.maintenance.Maintainer;
 import com.yahoo.config.provision.Deployer;
-import com.yahoo.config.provision.HostLivenessTracker;
 import com.yahoo.config.provision.InfraDeployer;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.Zone;
@@ -14,7 +13,6 @@ import com.yahoo.vespa.flags.FlagSource;
 import com.yahoo.vespa.hosted.provision.NodeRepository;
 import com.yahoo.vespa.hosted.provision.autoscale.MetricsFetcher;
 import com.yahoo.vespa.hosted.provision.provisioning.ProvisionServiceProvider;
-import com.yahoo.vespa.orchestrator.Orchestrator;
 import com.yahoo.vespa.service.monitor.ServiceMonitor;
 
 import java.time.Duration;
@@ -34,8 +32,8 @@ public class NodeRepositoryMaintenance extends AbstractComponent {
     @SuppressWarnings("unused")
     @Inject
     public NodeRepositoryMaintenance(NodeRepository nodeRepository, Deployer deployer, InfraDeployer infraDeployer,
-                                     HostLivenessTracker hostLivenessTracker, ServiceMonitor serviceMonitor,
-                                     Zone zone, Orchestrator orchestrator, Metric metric,
+                                     ServiceMonitor serviceMonitor,
+                                     Zone zone, Metric metric,
                                      ProvisionServiceProvider provisionServiceProvider, FlagSource flagSource,
                                      MetricsFetcher metricsFetcher) {
         DefaultTimes defaults = new DefaultTimes(zone, deployer);
@@ -46,11 +44,11 @@ public class NodeRepositoryMaintenance extends AbstractComponent {
         maintainers.add(periodicApplicationMaintainer);
         maintainers.add(infrastructureProvisioner);
 
-        maintainers.add(new NodeFailer(deployer, nodeRepository, defaults.failGrace, defaults.nodeFailerInterval, orchestrator, defaults.throttlePolicy, metric));
-        maintainers.add(new NodeHealthTracker(hostLivenessTracker, serviceMonitor, nodeRepository, defaults.nodeFailureStatusUpdateInterval, metric));
+        maintainers.add(new NodeFailer(deployer, nodeRepository, defaults.failGrace, defaults.nodeFailerInterval, defaults.throttlePolicy, metric));
+        maintainers.add(new NodeHealthTracker(serviceMonitor, nodeRepository, defaults.nodeFailureStatusUpdateInterval, metric));
         maintainers.add(new ExpeditedChangeApplicationMaintainer(deployer, metric, nodeRepository, defaults.expeditedChangeRedeployInterval));
         maintainers.add(new ReservationExpirer(nodeRepository, defaults.reservationExpiry, metric));
-        maintainers.add(new RetiredExpirer(nodeRepository, orchestrator, deployer, metric, defaults.retiredInterval, defaults.retiredExpiry));
+        maintainers.add(new RetiredExpirer(nodeRepository, deployer, metric, defaults.retiredInterval, defaults.retiredExpiry));
         maintainers.add(new InactiveExpirer(nodeRepository, defaults.inactiveExpiry, Map.of(NodeType.config, defaults.inactiveConfigServerExpiry,
                                                                                             NodeType.controller, defaults.inactiveControllerExpiry),
                                             metric));
@@ -58,7 +56,7 @@ public class NodeRepositoryMaintenance extends AbstractComponent {
         maintainers.add(new DirtyExpirer(nodeRepository, defaults.dirtyExpiry, metric));
         maintainers.add(new ProvisionedExpirer(nodeRepository, defaults.provisionedExpiry, metric));
         maintainers.add(new NodeRebooter(nodeRepository, flagSource, metric));
-        maintainers.add(new MetricsReporter(nodeRepository, metric, orchestrator, serviceMonitor, periodicApplicationMaintainer::pendingDeployments, defaults.metricsInterval));
+        maintainers.add(new MetricsReporter(nodeRepository, metric, serviceMonitor, periodicApplicationMaintainer::pendingDeployments, defaults.metricsInterval));
         maintainers.add(new SpareCapacityMaintainer(deployer, nodeRepository, metric, defaults.spareCapacityMaintenanceInterval));
         maintainers.add(new OsUpgradeActivator(nodeRepository, defaults.osUpgradeActivatorInterval, metric));
         maintainers.add(new Rebalancer(deployer, nodeRepository, metric, defaults.rebalancerInterval));
@@ -67,12 +65,17 @@ public class NodeRepositoryMaintenance extends AbstractComponent {
         maintainers.add(new ScalingSuggestionsMaintainer(nodeRepository, defaults.scalingSuggestionsInterval, metric));
         maintainers.add(new SwitchRebalancer(nodeRepository, defaults.switchRebalancerInterval, metric, deployer));
 
-        provisionServiceProvider.getLoadBalancerService(nodeRepository)
+        provisionServiceProvider.getLoadBalancerService()
                                 .map(lbService -> new LoadBalancerExpirer(nodeRepository, defaults.loadBalancerExpirerInterval, lbService, metric))
                                 .ifPresent(maintainers::add);
         provisionServiceProvider.getHostProvisioner()
-                                .map(hostProvisioner -> new DynamicProvisioningMaintainer(nodeRepository, defaults.dynamicProvisionerInterval, hostProvisioner, flagSource, metric))
-                                .ifPresent(maintainers::add);
+                                .map(hostProvisioner -> List.of(
+                                        new HostCapacityMaintainer(nodeRepository, defaults.dynamicProvisionerInterval, hostProvisioner, flagSource, metric),
+                                        new HostDeprovisioner(nodeRepository, defaults.hostDeprovisionerInterval, metric, hostProvisioner),
+                                        new HostResumeProvisioner(nodeRepository, defaults.hostResumeProvisionerInterval, metric, hostProvisioner),
+                                        new HostRetirer(nodeRepository, defaults.hostRetirerInterval, metric, hostProvisioner),
+                                        new DiskReplacer(nodeRepository, defaults.diskReplacerInterval, metric, hostProvisioner)))
+                                .ifPresent(maintainers::addAll);
         // The DuperModel is filled with infrastructure applications by the infrastructure provisioner, so explicitly run that now
         infrastructureProvisioner.maintainButThrowOnException();
     }
@@ -111,32 +114,38 @@ public class NodeRepositoryMaintenance extends AbstractComponent {
         private final Duration infrastructureProvisionInterval;
         private final Duration loadBalancerExpirerInterval;
         private final Duration dynamicProvisionerInterval;
+        private final Duration hostDeprovisionerInterval;
+        private final Duration hostResumeProvisionerInterval;
+        private final Duration diskReplacerInterval;
         private final Duration osUpgradeActivatorInterval;
         private final Duration rebalancerInterval;
         private final Duration nodeMetricsCollectionInterval;
         private final Duration autoscalingInterval;
         private final Duration scalingSuggestionsInterval;
         private final Duration switchRebalancerInterval;
-        private final Duration hostEncrypterInterval;
+        private final Duration hostRetirerInterval;
 
         private final NodeFailer.ThrottlePolicy throttlePolicy;
 
         DefaultTimes(Zone zone, Deployer deployer) {
-            autoscalingInterval = Duration.ofMinutes(15);
-            dynamicProvisionerInterval = Duration.ofMinutes(5);
+            autoscalingInterval = Duration.ofMinutes(5);
+            dynamicProvisionerInterval = Duration.ofMinutes(3);
+            hostDeprovisionerInterval = Duration.ofMinutes(3);
+            hostResumeProvisionerInterval = Duration.ofMinutes(3);
+            diskReplacerInterval = Duration.ofMinutes(3);
             failedExpirerInterval = Duration.ofMinutes(10);
-            failGrace = Duration.ofMinutes(30);
+            failGrace = Duration.ofMinutes(20);
             infrastructureProvisionInterval = Duration.ofMinutes(3);
             loadBalancerExpirerInterval = Duration.ofMinutes(5);
             metricsInterval = Duration.ofMinutes(1);
-            nodeFailerInterval = Duration.ofMinutes(15);
+            nodeFailerInterval = Duration.ofMinutes(7);
             nodeFailureStatusUpdateInterval = Duration.ofMinutes(2);
             nodeMetricsCollectionInterval = Duration.ofMinutes(1);
             expeditedChangeRedeployInterval = Duration.ofMinutes(3);
             // Vespa upgrade frequency is higher in CD so (de)activate OS upgrades more frequently as well
             osUpgradeActivatorInterval = zone.system().isCd() ? Duration.ofSeconds(30) : Duration.ofMinutes(5);
             periodicRedeployInterval = Duration.ofMinutes(60);
-            provisionedExpiry = zone.getCloud().dynamicProvisioning() ? Duration.ofMinutes(40) : Duration.ofHours(4);
+            provisionedExpiry = zone.cloud().dynamicProvisioning() ? Duration.ofMinutes(40) : Duration.ofHours(4);
             rebalancerInterval = Duration.ofMinutes(120);
             redeployMaintainerInterval = Duration.ofMinutes(1);
             // Need to be long enough for deployment to be finished for all config model versions
@@ -144,10 +153,10 @@ public class NodeRepositoryMaintenance extends AbstractComponent {
             scalingSuggestionsInterval = Duration.ofMinutes(31);
             spareCapacityMaintenanceInterval = Duration.ofMinutes(30);
             switchRebalancerInterval = Duration.ofHours(1);
-            hostEncrypterInterval = Duration.ofMinutes(5);
             throttlePolicy = NodeFailer.ThrottlePolicy.hosted;
             inactiveConfigServerExpiry = Duration.ofMinutes(5);
             inactiveControllerExpiry = Duration.ofMinutes(5);
+            hostRetirerInterval = Duration.ofMinutes(30);
 
             if (zone.environment().isProduction() && ! zone.system().isCd()) {
                 inactiveExpiry = Duration.ofHours(4); // enough time for the application owner to discover and redeploy

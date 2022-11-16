@@ -8,9 +8,9 @@ import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.vespa.model.VespaModel;
-import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -39,7 +39,7 @@ public class QuotaValidator extends Validator {
         var maxSpend = model.allClusters().stream()
                 .filter(id -> !adminClusterIds(model).contains(id))
                 .map(id -> model.provisioned().all().getOrDefault(id, zeroCapacity))
-                .mapToDouble(c -> c.maxResources().cost())
+                .mapToDouble(c -> c.maxResources().cost()) // TODO: This may be unspecified -> 0
                 .sum();
 
         var actualSpend = model.allocatedHosts().getHosts().stream()
@@ -57,13 +57,12 @@ public class QuotaValidator extends Validator {
         throwIfBudgetExceeded(maxSpend, budget, systemName);
     }
 
-    @NotNull
     private Set<ClusterSpec.Id> adminClusterIds(VespaModel model) {
         return model.allocatedHosts().getHosts().stream()
                 .map(hostSpec -> hostSpec.membership().orElseThrow().cluster())
                 .filter(cluster -> cluster.type() == ClusterSpec.Type.admin)
                 .map(ClusterSpec::id)
-                .collect(Collectors.toUnmodifiableSet());
+                .collect(Collectors.toCollection(() -> new LinkedHashSet<>()));
     }
 
     /** Check that all clusters in the application do not exceed the quota max cluster size. */
@@ -85,22 +84,21 @@ public class QuotaValidator extends Validator {
         }
     }
 
-    private void throwIfBudgetNegative(double spend, BigDecimal budget, SystemName systemName) {
+    private static void throwIfBudgetNegative(double spend, BigDecimal budget, SystemName systemName) {
         if (budget.doubleValue() < 0) {
-            throwBudgetException("Please free up some capacity! This deployment's quota use is ($%.2f) and reserved quota is below zero! ($%.2f)", spend, budget, systemName);
+            throw new IllegalArgumentException(quotaMessage("Please free up some capacity", systemName, spend, budget));
         }
     }
 
-    private void throwIfBudgetExceeded(double spend, BigDecimal budget, SystemName systemName) {
+    private static void throwIfBudgetExceeded(double spend, BigDecimal budget, SystemName systemName) {
         if (budget.doubleValue() < spend) {
-            throw new IllegalArgumentException((systemName.equals(SystemName.Public) ? "" : systemName.value() + ": ") +
-                    "Deployment would make your tenant exceed its quota and has been blocked!  Please contact support to update your plan.");
+            throw new IllegalArgumentException(quotaMessage("Deployment exceeds its quota and has been blocked! Please contact support to update your plan", systemName, spend, budget));
         }
     }
 
-    private void throwBudgetException(String formatMessage, double spend, BigDecimal budget, SystemName systemName) {
-        var message = String.format(Locale.US, formatMessage, spend, budget);
-        var messageWithSystem = (systemName.equals(SystemName.Public) ? "" : systemName.value() + ": ") + message;
-        throw new IllegalArgumentException(messageWithSystem);
+    private static String quotaMessage(String message, SystemName system, double spend, BigDecimal budget) {
+        String quotaDescription = String.format(Locale.ENGLISH, "Quota is $%.2f, but at least $%.2f is required", budget, spend);
+        return (system == SystemName.Public ? "" : system.value() + ": ") + message + ": " + quotaDescription;
     }
+
 }

@@ -8,16 +8,16 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>container-disc</artifactId>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <packaging>container-plugin</packaging>
   <dependencies>
     <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -25,6 +25,20 @@
       <artifactId>testutil</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>junit</groupId>
+          <artifactId>junit</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.hamcrest</groupId>
+          <artifactId>hamcrest-core</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.hamcrest</groupId>
+          <artifactId>hamcrest-library</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
@@ -36,7 +50,13 @@
       <artifactId>assertj-core</artifactId>
       <scope>test</scope>
     </dependency>
-    <dependency>
+      <dependency>
+          <groupId>com.yahoo.vespa</groupId>
+          <artifactId>annotations</artifactId>
+          <version>${project.version}</version>
+          <scope>provided</scope>
+      </dependency>
+      <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>config-lib</artifactId>
       <version>${project.version}</version>
@@ -53,10 +73,6 @@
       <artifactId>security-utils</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.json</groupId>
-      <artifactId>json</artifactId>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -95,15 +111,23 @@
         </exclusion>
       </exclusions>
     </dependency>
+      <dependency>
+          <groupId>com.yahoo.vespa</groupId>
+          <artifactId>defaults</artifactId>
+          <version>${project.version}</version>
+          <scope>provided</scope>
+      </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>vespajlib</artifactId>
       <version>${project.version}</version>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>vespalog</artifactId>
       <version>${project.version}</version>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -122,17 +146,6 @@
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>configdefinitions</artifactId>
       <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.yahoo.vespa</groupId>
-      <artifactId>jdisc_jetty</artifactId>
-      <version>${project.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>javax.servlet</groupId>
-      <artifactId>javax.servlet-api</artifactId>
       <scope>provided</scope>
     </dependency>
     <!-- end WARNING -->
@@ -176,80 +189,30 @@
             <discApplicationClass>com.yahoo.container.jdisc.ConfiguredApplication</discApplicationClass>
             <buildLegacyVespaPlatformBundle>true</buildLegacyVespaPlatformBundle>
             <discPreInstallBundle>
-                <!-- Vespa bundles -->
+                <!-- BEGIN Bundles needed to retrieve config, or used by container-disc -->
                 config-bundle-jar-with-dependencies.jar,
                 configdefinitions-jar-with-dependencies.jar,
-                container-search-and-docproc-jar-with-dependencies.jar,
-                container-search-gui-jar-with-dependencies.jar,
-                docprocs-jar-with-dependencies.jar,
                 hosted-zone-api-jar-with-dependencies.jar,
-                jdisc-security-filters-jar-with-dependencies.jar,
-                linguistics-components-jar-with-dependencies.jar,
-                vespaclient-container-plugin-jar-with-dependencies.jar,
-                vespa-athenz-jar-with-dependencies.jar,
-                container-apache-http-client-bundle-jar-with-dependencies.jar, <!-- Apache http client repackaged as bundle -->
-
-                <!-- Vespa security utils with necessary 3rd party bundles -->
+                container-apache-http-client-bundle-jar-with-dependencies.jar,
                 security-utils.jar,
-                bcpkix-jdk15on-${bouncycastle.version}.jar,
-                bcprov-jdk15on-${bouncycastle.version}.jar,
+                bcprov-jdk18on-${bouncycastle.version}.jar, <!-- Used by security-utils -->
+                bcpkix-jdk18on-${bouncycastle.version}.jar, <!-- Used by security-utils -->
+                bcutil-jdk18on-${bouncycastle.version}.jar, <!-- Used by security-utils -->
+                <!-- END Bundles needed to retrieve config, or used by container-disc -->
 
-               <!-- Jetty -->
-                alpn-api-${jetty-alpn.version}.jar,
-                http2-server-${jetty.version}.jar,
-                http2-common-${jetty.version}.jar,
-                http2-hpack-${jetty.version}.jar,
-                jetty-alpn-java-server-${jetty.version}.jar,
-                jetty-alpn-server-${jetty.version}.jar,
-                jetty-continuation-${jetty.version}.jar,
-                jetty-http-${jetty.version}.jar,
-                jetty-io-${jetty.version}.jar,
-                jetty-jmx-${jetty.version}.jar,
-                jetty-security-${jetty.version}.jar,
-                jetty-server-${jetty.version}.jar,
-                jetty-servlet-${jetty.version}.jar,
-                jetty-servlets-${jetty.version}.jar,
-                jetty-util-${jetty.version}.jar,
-                jetty-util-ajax-${jetty.version}.jar,
-                javax.servlet-api-3.1.0.jar,
-
-                <!-- Spifly (required for OSGi service loader used by Jetty)  -->
-                org.apache.aries.spifly.dynamic.bundle-${spifly.version}.jar,
-                asm-${asm.version}.jar,
-                asm-analysis-${asm.version}.jar,
-                asm-commons-${asm.version}.jar,
-                asm-tree-${asm.version}.jar,
-                asm-util-${asm.version}.jar,
-                <!-- Spifly end -->
-
-                <!-- Jersey 2 + Jackson 2 -->
-                aopalliance-repackaged-${hk2.version}.jar,
-                hk2-api-${hk2.version}.jar,
-                hk2-locator-${hk2.version}.jar,
-                hk2-utils-${hk2.version}.jar,
                 jackson-annotations-${jackson2.version}.jar,
                 jackson-core-${jackson2.version}.jar,
                 jackson-databind-${jackson-databind.version}.jar,
                 jackson-datatype-jdk8-${jackson2.version}.jar,
                 jackson-datatype-jsr310-${jackson2.version}.jar,
-                jackson-jaxrs-base-${jackson2.version}.jar,
-                jackson-jaxrs-json-provider-${jackson2.version}.jar,
-                jackson-module-jaxb-annotations-${jackson2.version}.jar,
-                javassist-${javassist.version}.jar,
-                javax.ws.rs-api-${javax.ws.rs-api.version}.jar,
-                jersey-client-${jersey2.version}.jar,
-                jersey-common-${jersey2.version}.jar,
-                jersey-entity-filtering-${jersey2.version}.jar, <!-- needed by jersey-media-json-jackson -->
-                jersey-guava-${jersey2.version}.jar,
-                jersey-media-json-jackson-${jersey2.version}.jar,
-                jersey-media-multipart-${jersey2.version}.jar,
-                mimepull-${mimepull.version}.jar, <!-- needed by media-multipart -->
-                jersey-server-${jersey2.version}.jar,
-                jersey-proxy-client-${jersey2.version}.jar,
-                osgi-resource-locator-1.0.1.jar,
-                validation-api-1.1.0.Final.jar
-                <!-- jersey2 end -->
+
+                <!-- Only one instance of javax.ws.rs.client.ClientBuilder can be loaded by the JVM -->
+                javax.ws.rs-api-${javax.ws.rs-api.version}.jar
             </discPreInstallBundle>
+
+            <!-- Enable Spifly ServiceLoader weaving. Required for Jetty ALPN/HTTP2 -->
+            <SPI-Provider>*</SPI-Provider>
+            <SPI-Consumer>*</SPI-Consumer>
         </configuration>
       </plugin>
       <plugin>

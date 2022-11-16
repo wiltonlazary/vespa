@@ -6,6 +6,7 @@ import com.yahoo.component.Version;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.model.ConfigModelContext;
 import com.yahoo.config.provision.Capacity;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.ClusterSpec;
@@ -17,15 +18,10 @@ import com.yahoo.vespa.model.HostSystem;
 import com.yahoo.vespa.model.container.xml.ContainerModelBuilder;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
-
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
-import java.util.stream.Collectors;
-
-import static java.util.stream.Collectors.toList;
 
 /**
  * A common utility class to represent a requirement for nodes during model building.
@@ -58,12 +54,20 @@ public class NodesSpecification {
     /** The ID of the cluster referencing this node specification, if any */
     private final Optional<String> combinedId;
 
+    /** The cloud account to use for nodes in this spec, if any */
+    private final Optional<CloudAccount> cloudAccount;
+
+    /* Whether the count attribute was present on the nodes element. */
+    private final boolean hasCountAttribute;
+
     private NodesSpecification(ClusterResources min,
                                ClusterResources max,
                                boolean dedicated, Version version,
                                boolean required, boolean canFail, boolean exclusive,
                                Optional<DockerImage> dockerImageRepo,
-                               Optional<String> combinedId) {
+                               Optional<String> combinedId,
+                               Optional<CloudAccount> cloudAccount,
+                               boolean hasCountAttribute) {
         if (max.smallerThan(min))
             throw new IllegalArgumentException("Min resources must be larger or equal to max resources, but " +
                                                max + " is smaller than " + min);
@@ -73,7 +77,7 @@ public class NodesSpecification {
             throw new IllegalArgumentException("Min and max resources must have the same non-numeric settings, but " +
                                                "min is " + min + " and max " + max);
         if (min.nodeResources().bandwidthGbps() != max.nodeResources().bandwidthGbps())
-            throw new IllegalArgumentException("Min and max resources must have the same bandwith, but " +
+            throw new IllegalArgumentException("Min and max resources must have the same bandwidth, but " +
                                                "min is " + min + " and max " + max);
 
         this.min = min;
@@ -85,13 +89,17 @@ public class NodesSpecification {
         this.exclusive = exclusive;
         this.dockerImageRepo = dockerImageRepo;
         this.combinedId = combinedId;
+        this.cloudAccount = cloudAccount;
+        this.hasCountAttribute = hasCountAttribute;
     }
 
     private static NodesSpecification create(boolean dedicated, boolean canFail, Version version,
-                                             ModelElement nodesElement, Optional<DockerImage> dockerImageRepo) {
+                                             ModelElement nodesElement, Optional<DockerImage> dockerImageRepo,
+                                             Optional<CloudAccount> cloudAccount) {
         var resolvedElement = resolveElement(nodesElement);
         var combinedId = findCombinedId(nodesElement, resolvedElement);
         var resources = toResources(resolvedElement);
+        boolean hasCountAttribute = resolvedElement.stringAttribute("count") != null;
         return new NodesSpecification(resources.getFirst(),
                                       resources.getSecond(),
                                       dedicated,
@@ -100,7 +108,9 @@ public class NodesSpecification {
                                       canFail,
                                       resolvedElement.booleanAttribute("exclusive", false),
                                       dockerImageToUse(resolvedElement, dockerImageRepo),
-                                      combinedId);
+                                      combinedId,
+                                      cloudAccount,
+                                      hasCountAttribute);
     }
 
     private static Pair<ClusterResources, ClusterResources> toResources(ModelElement nodesElement) {
@@ -127,7 +137,8 @@ public class NodesSpecification {
                       ! context.getDeployState().getProperties().isBootstrap(),
                       context.getDeployState().getWantedNodeVespaVersion(),
                       nodesElement,
-                      context.getDeployState().getWantedDockerImageRepo());
+                      context.getDeployState().getWantedDockerImageRepo(),
+                      context.getDeployState().getProperties().cloudAccount());
     }
 
     /**
@@ -156,7 +167,8 @@ public class NodesSpecification {
                                   ! context.getDeployState().getProperties().isBootstrap(),
                                   context.getDeployState().getWantedNodeVespaVersion(),
                                   nodesElement,
-                                  context.getDeployState().getWantedDockerImageRepo()));
+                                  context.getDeployState().getWantedDockerImageRepo(),
+                                  context.getDeployState().getProperties().cloudAccount()));
     }
 
     /**
@@ -171,7 +183,9 @@ public class NodesSpecification {
                                       ! context.getDeployState().getProperties().isBootstrap(),
                                       false,
                                       context.getDeployState().getWantedDockerImageRepo(),
-                                      Optional.empty());
+                                      Optional.empty(),
+                                      context.getDeployState().getProperties().cloudAccount(),
+                                      false);
     }
 
     /** Returns a requirement from <code>count</code> dedicated nodes in one group */
@@ -184,7 +198,9 @@ public class NodesSpecification {
                                       ! context.getDeployState().getProperties().isBootstrap(),
                                       false,
                                       context.getDeployState().getWantedDockerImageRepo(),
-                                      Optional.empty());
+                                      Optional.empty(),
+                                      context.getDeployState().getProperties().cloudAccount(),
+                                      false);
     }
 
     /**
@@ -199,7 +215,7 @@ public class NodesSpecification {
                                                                                            .map(content -> new ModelElement(content).child("nodes"))
                                                                                            .filter(nodes -> nodes != null && nodes.stringAttribute("count") != null)
                                                                                            .map(nodes -> from(nodes, context))
-                                                                                           .collect(toList());
+                                                                                           .toList();
         return new NodesSpecification(new ClusterResources(count, 1, resources),
                                       new ClusterResources(count, 1, resources),
                                       true,
@@ -208,7 +224,9 @@ public class NodesSpecification {
                                       ! context.getDeployState().getProperties().isBootstrap(),
                                       false,
                                       context.getDeployState().getWantedDockerImageRepo(),
-                                      Optional.empty());
+                                      Optional.empty(),
+                                      context.getDeployState().getProperties().cloudAccount(),
+                                      false);
     }
 
     public ClusterResources minResources() { return min; }
@@ -227,6 +245,11 @@ public class NodesSpecification {
      */
     public boolean isExclusive() { return exclusive; }
 
+    /** Returns whether the count attribute was present on the {@code <nodes>} element. */
+    public boolean hasCountAttribute() {
+        return hasCountAttribute;
+    }
+
     public Map<HostResource, ClusterMembership> provision(HostSystem hostSystem,
                                                           ClusterSpec.Type clusterType,
                                                           ClusterSpec.Id clusterId,
@@ -241,7 +264,7 @@ public class NodesSpecification {
                                          .dockerImageRepository(dockerImageRepo)
                                          .stateful(stateful)
                                          .build();
-        return hostSystem.allocateHosts(cluster, Capacity.from(min, max, required, canFail), logger);
+        return hostSystem.allocateHosts(cluster, Capacity.from(min, max, required, canFail, cloudAccount), logger);
     }
 
     private static Pair<NodeResources, NodeResources> nodeResources(ModelElement nodesElement) {
@@ -262,12 +285,13 @@ public class NodesSpecification {
         Pair<Double, Double> vcpu       = toRange(element.requiredStringAttribute("vcpu"),   .0, Double::parseDouble);
         Pair<Double, Double> memory     = toRange(element.requiredStringAttribute("memory"), .0, s -> parseGbAmount(s, "B"));
         Pair<Double, Double> disk       = toRange(element.requiredStringAttribute("disk"),   .0, s -> parseGbAmount(s, "B"));
-        Pair<Double, Double> bandwith   = toRange(element.stringAttribute("bandwith"),       .3, s -> parseGbAmount(s, "BPS"));
-        NodeResources.DiskSpeed   diskSpeed   = parseOptionalDiskSpeed(element.stringAttribute("disk-speed"));
-        NodeResources.StorageType storageType = parseOptionalStorageType(element.stringAttribute("storage-type"));
+        Pair<Double, Double> bandwith   = toRange(element.stringAttribute("bandwidth"),      .3, s -> parseGbAmount(s, "BPS"));
+        NodeResources.DiskSpeed   diskSpeed     = parseOptionalDiskSpeed(element.stringAttribute("disk-speed"));
+        NodeResources.StorageType storageType   = parseOptionalStorageType(element.stringAttribute("storage-type"));
+        NodeResources.Architecture architecture = parseOptionalArchitecture(element.stringAttribute("architecture"));
 
-        var min = new NodeResources(vcpu.getFirst(),  memory.getFirst(),  disk.getFirst(),  bandwith.getFirst(),  diskSpeed, storageType);
-        var max = new NodeResources(vcpu.getSecond(), memory.getSecond(), disk.getSecond(), bandwith.getSecond(), diskSpeed, storageType);
+        var min = new NodeResources(vcpu.getFirst(),  memory.getFirst(),  disk.getFirst(),  bandwith.getFirst(),  diskSpeed, storageType, architecture);
+        var max = new NodeResources(vcpu.getSecond(), memory.getSecond(), disk.getSecond(), bandwith.getSecond(), diskSpeed, storageType, architecture);
         return new Pair<>(min, max);
     }
 
@@ -308,24 +332,35 @@ public class NodesSpecification {
 
     private static NodeResources.DiskSpeed parseOptionalDiskSpeed(String diskSpeedString) {
         if (diskSpeedString == null) return NodeResources.DiskSpeed.getDefault();
-        switch (diskSpeedString) {
-            case "fast" : return NodeResources.DiskSpeed.fast;
-            case "slow" : return NodeResources.DiskSpeed.slow;
-            case "any"  : return NodeResources.DiskSpeed.any;
-            default: throw new IllegalArgumentException("Illegal disk-speed value '" + diskSpeedString +
-                                                        "': Legal values are 'fast', 'slow' and 'any')");
-        }
+        return switch (diskSpeedString) {
+            case "fast" -> NodeResources.DiskSpeed.fast;
+            case "slow" -> NodeResources.DiskSpeed.slow;
+            case "any" -> NodeResources.DiskSpeed.any;
+            default -> throw new IllegalArgumentException("Illegal disk-speed value '" + diskSpeedString +
+                                                          "': Legal values are 'fast', 'slow' and 'any')");
+        };
     }
 
     private static NodeResources.StorageType parseOptionalStorageType(String storageTypeString) {
         if (storageTypeString == null) return NodeResources.StorageType.getDefault();
-        switch (storageTypeString) {
-            case "remote" : return NodeResources.StorageType.remote;
-            case "local"  : return NodeResources.StorageType.local;
-            case "any"    : return NodeResources.StorageType.any;
-            default: throw new IllegalArgumentException("Illegal storage-type value '" + storageTypeString +
-                                                        "': Legal values are 'remote', 'local' and 'any')");
-        }
+        return switch (storageTypeString) {
+            case "remote" -> NodeResources.StorageType.remote;
+            case "local" -> NodeResources.StorageType.local;
+            case "any" -> NodeResources.StorageType.any;
+            default -> throw new IllegalArgumentException("Illegal storage-type value '" + storageTypeString +
+                                                          "': Legal values are 'remote', 'local' and 'any')");
+        };
+    }
+
+    private static NodeResources.Architecture parseOptionalArchitecture(String architecture) {
+        if (architecture == null) return NodeResources.Architecture.getDefault();
+        return switch (architecture) {
+            case "x86_64" -> NodeResources.Architecture.x86_64;
+            case "arm64" -> NodeResources.Architecture.arm64;
+            case "any" -> NodeResources.Architecture.any;
+            default -> throw new IllegalArgumentException("Illegal architecture value '" + architecture +
+                                                          "': Legal values are 'x86_64', 'arm64' and 'any')");
+        };
     }
 
     /**
@@ -353,12 +388,8 @@ public class NodesSpecification {
     /** Returns the ID of the parent container element of nodesElement, if any  */
     private static Optional<String> containerIdOf(ModelElement nodesElement) {
         var element = nodesElement.getXml();
-        for (var containerTag : List.of("container", "jdisc")) {
-            var container = findParentByTag(containerTag, element);
-            if (container.isEmpty()) continue;
-            return container.map(el -> el.getAttribute("id"));
-        }
-        return Optional.empty();
+        var container = findParentByTag("container", element);
+        return container.map(el -> el.getAttribute("id"));
     }
 
     /** Returns the ID of the container element referencing nodesElement, if any */
@@ -390,8 +421,7 @@ public class NodesSpecification {
     private static Optional<Element> findParentByTag(String tag, Element element) {
         Node parent = element.getParentNode();
         if (parent == null) return Optional.empty();
-        if ( ! (parent instanceof Element)) return Optional.empty();
-        Element parentElement = (Element) parent;
+        if ( ! (parent instanceof Element parentElement)) return Optional.empty();
         if (parentElement.getTagName().equals(tag)) return Optional.of(parentElement);
         return findParentByTag(tag, parentElement);
     }
@@ -428,5 +458,4 @@ public class NodesSpecification {
         return "specification of " + (dedicated ? "dedicated " : "") +
                (min.equals(max) ? min : "min " + min + " max " + max);
     }
-
 }

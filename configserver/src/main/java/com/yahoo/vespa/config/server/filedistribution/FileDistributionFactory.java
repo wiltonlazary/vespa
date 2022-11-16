@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.filedistribution;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.config.application.api.FileRegistry;
 import com.yahoo.config.model.api.FileDistribution;
@@ -32,11 +32,11 @@ public class FileDistributionFactory implements AutoCloseable {
     }
 
     public FileDistribution createFileDistribution() {
-        return new FileDistributionImpl(getFileReferencesDir(), supervisor);
+        return new FileDistributionImpl(supervisor);
     }
 
     public AddFileInterface createFileManager(File applicationDir) {
-        return new ApplicationFileManager(applicationDir, new FileDirectory(getFileReferencesDir()));
+        return new ApplicationFileManager(applicationDir, new FileDirectory(getFileReferencesDir()), configserverConfig.hostedVespa());
     }
 
     protected File getFileReferencesDir() {

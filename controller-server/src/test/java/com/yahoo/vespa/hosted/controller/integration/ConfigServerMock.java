@@ -1,10 +1,14 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.integration;
 
-import com.google.inject.Inject;
+import ai.vespa.http.DomainName;
+import ai.vespa.http.HttpURL.Path;
+import ai.vespa.http.HttpURL.Query;
 import com.yahoo.component.AbstractComponent;
 import com.yahoo.component.Version;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.DockerImage;
@@ -13,26 +17,22 @@ import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.zone.ZoneId;
-import com.yahoo.text.Text;
 import com.yahoo.vespa.flags.json.FlagData;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.ClusterMetrics;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.DeploymentData;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.EndpointStatus;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.ProtonMetrics;
-import com.yahoo.vespa.hosted.controller.api.application.v4.model.configserverbindings.ConfigChangeActions;
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
-import com.yahoo.vespa.hosted.controller.api.identifiers.TenantId;
 import com.yahoo.vespa.hosted.controller.api.integration.LogEntry;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ApplicationReindexing;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ApplicationReindexing.Status;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Cluster;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ConfigServer;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ContainerEndpoint;
+import com.yahoo.vespa.hosted.controller.api.integration.configserver.DeploymentResult;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.LoadBalancer;
-import com.yahoo.vespa.hosted.controller.api.integration.configserver.Log;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Node;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeFilter;
-import com.yahoo.vespa.hosted.controller.api.integration.configserver.PrepareResponse;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ProxyResponse;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.QuotaUsage;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ServiceConvergence;
@@ -40,19 +40,17 @@ import com.yahoo.vespa.hosted.controller.api.integration.deployment.TestReport;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TesterCloud;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.RestartFilter;
 import com.yahoo.vespa.hosted.controller.api.integration.secrets.TenantSecretStore;
-import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
-import com.yahoo.vespa.serviceview.bindings.ApplicationView;
-import com.yahoo.vespa.serviceview.bindings.ClusterView;
-import com.yahoo.vespa.serviceview.bindings.ServiceView;
+import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
+import wiremock.org.checkerframework.checker.units.qual.A;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -68,9 +66,11 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static com.yahoo.config.provision.NodeResources.DiskSpeed.slow;
 import static com.yahoo.config.provision.NodeResources.StorageType.remote;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * @author mortent
@@ -80,7 +80,7 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
 
     private final Map<DeploymentId, Application> applications = new LinkedHashMap<>();
     private final Set<ZoneId> inactiveZones = new HashSet<>();
-    private final Map<String, EndpointStatus> endpoints = new HashMap<>();
+    private final Map<DeploymentId, EndpointStatus> endpoints = new HashMap<>();
     private final NodeRepositoryMock nodeRepository = new NodeRepositoryMock();
     private final Map<DeploymentId, ServiceConvergence> serviceStatus = new HashMap<>();
     private final Set<ApplicationId> disallowConvergenceCheckApplications = new HashSet<>();
@@ -89,25 +89,20 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
     private final Set<DeploymentId> suspendedApplications = new HashSet<>();
     private final Map<ZoneId, Set<LoadBalancer>> loadBalancers = new HashMap<>();
     private final Set<Environment> deferLoadBalancerProvisioning = new HashSet<>();
-    private final Map<DeploymentId, List<Log>> warnings = new HashMap<>();
-    private final Map<DeploymentId, Set<String>> containerEndpoints = new HashMap<>();
+    private final Map<DeploymentId, List<DeploymentResult.LogEntry>> warnings = new HashMap<>();
+    private final Map<DeploymentId, Set<ContainerEndpoint>> containerEndpoints = new HashMap<>();
     private final Map<DeploymentId, List<ClusterMetrics>> clusterMetrics = new HashMap<>();
     private final Map<DeploymentId, TestReport> testReport = new HashMap<>();
+    private final Map<DeploymentId, CloudAccount> cloudAccounts = new HashMap<>();
     private List<ProtonMetrics> protonMetrics;
 
     private Version lastPrepareVersion = null;
     private Consumer<ApplicationId> prepareException = null;
-    private ConfigChangeActions configChangeActions = null;
     private Supplier<String> log = () -> "INFO - All good";
 
     @Inject
     public ConfigServerMock(ZoneRegistryMock zoneRegistry) {
         bootstrap(zoneRegistry.zones().all().ids(), SystemApplication.notController());
-    }
-
-    /** Sets the ConfigChangeActions that will be returned on next deployment. */
-    public void setConfigChangeActions(ConfigChangeActions configChangeActions) {
-        this.configChangeActions = configChangeActions;
     }
 
     /** Assigns a reserved tenant node to the given deployment, with initial versions. */
@@ -120,7 +115,9 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
                                       current,
                                       Optional.of(new ClusterResources(2, 1, new NodeResources(3, 8, 50, 1, slow, remote))),
                                       Optional.empty(),
-                                      new Cluster.Utilization(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
+                                      new Cluster.Utilization(0.1, 0.2, 0.3, 0.35,
+                                                              0.4, 0.5, 0.6, 0.65,
+                                                              0.7, 0.8, 0.9, 1.0),
                                       List.of(new Cluster.ScalingEvent(new ClusterResources(0, 0, NodeResources.unspecified()),
                                                                        current,
                                                                        Instant.ofEpochMilli(1234),
@@ -156,7 +153,7 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
     }
 
     public HostName hostFor(ApplicationId application, ZoneId zone) {
-        return HostName.from("host-" + application.serializedForm() + "-" + zone.value());
+        return HostName.of("host-" + application.toFullString() + "-" + zone.value());
     }
 
     public void bootstrap(List<ZoneId> zones, SystemApplication... applications) {
@@ -173,8 +170,8 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
             for (SystemApplication application : applications) {
                 for (int i = 1; i <= 3; i++) {
                     Node node = Node.builder()
-                                    .hostname(HostName.from("node-" + i + "-" + application.id().application()
-                                                                                   .value() + "-" + zone.value()))
+                                    .hostname(HostName.of("node-" + i + "-" + application.id().application()
+                                                                                         .value() + "-" + zone.value()))
                                     .state(Node.State.active)
                                     .type(application.nodeType())
                                     .owner(application.id())
@@ -269,19 +266,28 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
     }
 
     public void generateWarnings(DeploymentId deployment, int count) {
-        List<Log> logs = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) {
-            Log log = new Log();
-            log.time = Instant.now().toEpochMilli();
-            log.level = Level.WARNING.getName();
-            log.message = "log message " + (count + 1) + " generated by unit test";
-            logs.add(log);
-        }
-        warnings.put(deployment, List.copyOf(logs));
+        warnings.put(deployment,
+                     IntStream.rangeClosed(1, count)
+                              .mapToObj(i -> new DeploymentResult.LogEntry(Instant.now().toEpochMilli(),
+                                                                           "log message " + i + " generated by unit test",
+                                                                           Level.WARNING,
+                                                                           false))
+                              .toList());
     }
 
-    public Map<DeploymentId, Set<String>> containerEndpoints() {
+    public Map<DeploymentId, Set<ContainerEndpoint>> containerEndpoints() {
         return Collections.unmodifiableMap(containerEndpoints);
+    }
+
+    public Optional<CloudAccount> cloudAccount(DeploymentId deployment) {
+        return Optional.ofNullable(cloudAccounts.get(deployment));
+    }
+
+    public Set<String> containerEndpointNames(DeploymentId deployment) {
+        return containerEndpoints.getOrDefault(deployment, Set.of()).stream()
+                                 .map(ContainerEndpoint::names)
+                                 .flatMap(Collection::stream)
+                                 .collect(Collectors.toUnmodifiableSet());
     }
 
     public void setMetrics(DeploymentId deployment, ClusterMetrics clusterMetrics) {
@@ -373,6 +379,13 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
 
     @Override
     public PreparedApplication deploy(DeploymentData deployment) {
+        ApplicationPackage appPackage;
+        try (InputStream in = deployment.applicationPackage()) {
+            appPackage = new ApplicationPackage(in.readAllBytes());
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
         lastPrepareVersion = deployment.platform();
         if (prepareException != null)
             prepareException.accept(ApplicationId.from(deployment.instance().tenant(),
@@ -380,64 +393,52 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
                                                        deployment.instance().instance()));
         DeploymentId id = new DeploymentId(deployment.instance(), deployment.zone());
 
-        applications.put(id, new Application(id.applicationId(), lastPrepareVersion, new ApplicationPackage(deployment.applicationPackage())));
+        applications.put(id, new Application(id.applicationId(), lastPrepareVersion, appPackage));
         ClusterSpec.Id cluster = ClusterSpec.Id.from("default");
+        deployment.endpointCertificateMetadata(); // Supplier with side effects >_<
 
         if (nodeRepository().list(id.zoneId(), NodeFilter.all().applications(id.applicationId())).isEmpty())
             provision(id.zoneId(), id.applicationId(), cluster);
 
-        this.containerEndpoints.put(
-                id,
-                deployment.containerEndpoints().stream()
-                          .map(ContainerEndpoint::names)
-                          .flatMap(Collection::stream)
-                          .collect(Collectors.toSet())
-        );
+        this.containerEndpoints.put(id, deployment.containerEndpoints());
+        deployment.cloudAccount().ifPresent(account -> this.cloudAccounts.put(id, account));
 
         if (!deferLoadBalancerProvisioning.contains(id.zoneId().environment())) {
             putLoadBalancers(id.zoneId(), List.of(new LoadBalancer(UUID.randomUUID().toString(),
                                                                    id.applicationId(),
                                                                    cluster,
-                                                                   Optional.of(HostName.from("lb-0--" + id.applicationId().serializedForm() + "--" + id.zoneId().toString())),
+                                                                   Optional.of(HostName.of("lb-0--" + id.applicationId().toFullString() + "--" + id.zoneId().toString())),
+                                                                   Optional.empty(),
                                                                    LoadBalancer.State.active,
                                                                    Optional.of("dns-zone-1"))));
         }
 
-        return () -> {
-            Application application = applications.get(id);
-            application.activate();
-            List<Node> nodes = nodeRepository.list(id.zoneId(), NodeFilter.all().applications(id.applicationId()));
-            for (Node node : nodes) {
-                nodeRepository.putNodes(id.zoneId(), Node.builder(node)
-                                                         .state(Node.State.active)
-                                                         .wantedVersion(application.version().get())
-                                                         .build());
-            }
-            serviceStatus.put(id, new ServiceConvergence(id.applicationId(),
-                                                         id.zoneId(),
-                                                         false,
-                                                         2,
-                                                         nodes.stream()
-                                                                      .map(node -> new ServiceConvergence.Status(node.hostname(),
-                                                                                                                 43,
-                                                                                                                 "container",
-                                                                                                                 1))
-                                                                      .collect(Collectors.toList())));
+        Application application = applications.get(id);
+        application.activate();
+        List<Node> nodes = nodeRepository.list(id.zoneId(), NodeFilter.all().applications(id.applicationId()));
+        for (Node node : nodes) {
+            nodeRepository.putNodes(id.zoneId(), Node.builder(node)
+                                                     .state(Node.State.active)
+                                                     .wantedVersion(application.version().get())
+                                                     .build());
+        }
+        serviceStatus.put(id, new ServiceConvergence(id.applicationId(),
+                                                     id.zoneId(),
+                                                     false,
+                                                     2,
+                                                     nodes.stream()
+                                                          .map(node -> new ServiceConvergence.Status(node.hostname(),
+                                                                                                     43,
+                                                                                                     "container",
+                                                                                                     1))
+                                                          .collect(Collectors.toList())));
 
-            PrepareResponse prepareResponse = new PrepareResponse();
-            prepareResponse.message = "foo";
-            prepareResponse.configChangeActions = configChangeActions != null
-                    ? configChangeActions
-                    : new ConfigChangeActions(List.of(), List.of(), List.of());
-            setConfigChangeActions(null);
-            prepareResponse.tenant = new TenantId("tenant");
-            prepareResponse.log = warnings.getOrDefault(id, Collections.emptyList());
-            return prepareResponse;
-        };
+        DeploymentResult result = new DeploymentResult("foo", warnings.getOrDefault(id, List.of()));
+        return () -> result;
     }
 
     @Override
-    public void reindex(DeploymentId deployment, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly) { }
+    public void reindex(DeploymentId deployment, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly, Double speed) { }
 
     @Override
     public ApplicationReindexing getReindexing(DeploymentId deployment) {
@@ -449,7 +450,8 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
                                                                                                             Instant.ofEpochMilli(567),
                                                                                                             ApplicationReindexing.State.FAILED,
                                                                                                             "(＃｀д´)ﾉ",
-                                                                                                            0.1)))));
+                                                                                                            0.1,
+                                                                                                            1.0)))));
     }
 
     @Override
@@ -481,32 +483,6 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
         removeLoadBalancers(deployment.applicationId(), deployment.zoneId());
     }
 
-    // Returns a canned example response
-    @Override
-    public ApplicationView getApplicationView(String tenantName, String applicationName, String instanceName,
-                                              String environment, String region) {
-        String cfgHostname = Text.format("https://cfg.%s.%s.test.vip:4443", environment, region);
-        String cfgServiceUrlPrefix = Text.format("%s/serviceview/v1/tenant/%s/application/%s/environment/%s/region/%s/instance/%s/service",
-                                                   cfgHostname, tenantName, applicationName,
-                                                   environment, region, instanceName);
-        ApplicationView applicationView = new ApplicationView();
-        ClusterView cluster = new ClusterView();
-        cluster.name = "cluster1";
-        cluster.type = "content";
-        cluster.url = cfgServiceUrlPrefix + "/container-clustercontroller-6s8slgtps7ry8uh6lx21ejjiv/cluster/v2/cluster1";
-        ServiceView service = new ServiceView();
-        service.configId = "cluster1/storage/0";
-        service.host = "host1";
-        service.serviceName = "storagenode";
-        service.serviceType = "storagenode";
-        service.url = cfgServiceUrlPrefix + "/storagenode-awe3slno6mmq2fye191y324jl/state/v1/";
-        cluster.services = new ArrayList<>();
-        cluster.services.add(service);
-        applicationView.clusters = new ArrayList<>();
-        applicationView.clusters.add(cluster);
-        return applicationView;
-    }
-
     @Override
     public List<ClusterMetrics> getDeploymentMetrics(DeploymentId deployment) {
         return Collections.unmodifiableList(clusterMetrics.getOrDefault(deployment, List.of()));
@@ -517,26 +493,19 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
         return this.protonMetrics;
     }
 
-    // Returns a canned example response
     @Override
-    public Map<?,?> getServiceApiResponse(DeploymentId deployment, String serviceName, String restPath) {
-        Map<String,List<?>> root = new HashMap<>();
-        List<Map<?,?>> resources = new ArrayList<>();
-        Map<String,String> resource = new HashMap<>();
-        resource.put("url", "http://localhost:8080/application/v4/tenant/tenant1/application/application1/environment/prod/region/us-west-1/instance/default/service/filedistributorservice-dud1f4w037qdxdrn0ovxfdtgw/state/v1/config");
-        resources.add(resource);
-        root.put("resources", resources);
-        return root;
+    public ProxyResponse getServiceNodePage(DeploymentId deployment, String serviceName, DomainName node, Path subPath, Query query) {
+        return new ProxyResponse((subPath + " and " + query).getBytes(UTF_8), "text/html", 200);
     }
 
     @Override
-    public String getServiceStatusPage(DeploymentId deployment, String serviceName, String node, String subPath) {
-        return "<h1>OK</h1>";
+    public ProxyResponse getServiceNodes(DeploymentId deployment) {
+        return new ProxyResponse("{\"json\":\"thank you very much\"}".getBytes(UTF_8), "application.json", 200);
     }
 
     @Override
-    public void setGlobalRotationStatus(DeploymentId deployment, String upstreamName, EndpointStatus status) {
-        endpoints.put(upstreamName, status);
+    public void setGlobalRotationStatus(DeploymentId deployment, List<String> upstreamNames, EndpointStatus status) {
+        endpoints.put(deployment, status);
     }
 
     @Override
@@ -549,9 +518,9 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
     }
 
     @Override
-    public EndpointStatus getGlobalRotationStatus(DeploymentId deployment, String endpoint) {
-        EndpointStatus result = new EndpointStatus(EndpointStatus.Status.in, "", "", 1497618757L);
-        return endpoints.getOrDefault(endpoint, result);
+    public EndpointStatus getGlobalRotationStatus(DeploymentId deployment, String upstreamName) {
+        EndpointStatus status = new EndpointStatus(EndpointStatus.Status.in, "", Instant.ofEpochSecond(1497618757L));
+        return endpoints.getOrDefault(deployment, status);
     }
 
     @Override
@@ -561,12 +530,12 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
 
     @Override
     public InputStream getLogs(DeploymentId deployment, Map<String, String> queryParameters) {
-        return new ByteArrayInputStream(log.get().getBytes(StandardCharsets.UTF_8));
+        return new ByteArrayInputStream(log.get().getBytes(UTF_8));
     }
 
     @Override
-    public ProxyResponse getApplicationPackageContent(DeploymentId deployment, String path, URI requestUri) {
-        return new ProxyResponse("{\"path\":\"" + path + "\"}", "application/json", 200);
+    public ProxyResponse getApplicationPackageContent(DeploymentId deployment, Path path, URI requestUri) {
+        return new ProxyResponse(("{\"path\":\"/" + String.join("/", path.segments()) + "\"}").getBytes(UTF_8), "application/json", 200);
     }
 
     public void setLogStream(Supplier<String> log) {
@@ -580,9 +549,7 @@ public class ConfigServerMock extends AbstractComponent implements ConfigServer 
 
     @Override
     public QuotaUsage getQuotaUsage(DeploymentId deploymentId) {
-        var q = new QuotaUsage();
-        q.rate = 42.42;
-        return q;
+        return new QuotaUsage(42);
     }
 
     @Override

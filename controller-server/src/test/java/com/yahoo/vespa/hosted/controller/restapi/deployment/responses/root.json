@@ -7,8 +7,8 @@
       "date": 0,
       "controllerVersion": false,
       "systemVersion": false,
-      "configServers": [],
-      "failingApplications": [],
+      "configServers": [ ],
+      "failingApplications": [ ],
       "productionApplications": [
         {
           "tenant": "tenant1",
@@ -29,7 +29,7 @@
           "productionSuccesses": 1
         }
       ],
-      "deployingApplications": [],
+      "deployingApplications": [ ],
       "applications": [
         {
           "tenant": "tenant1",
@@ -37,14 +37,15 @@
           "instance": "default",
           "upgrading": false,
           "upgradePolicy": "default",
+          "compileVersion": "6.1.0",
           "jobs": [
             {
               "name": "system-test",
-              "coolingDownUntil": "(ignore)"
+              "coolingDownUntil": 1600000000000
             },
             {
               "name": "staging-test",
-              "coolingDownUntil": "(ignore)"
+              "coolingDownUntil": 1600000000000
             },
             {
               "name": "production-us-west-1"
@@ -54,8 +55,8 @@
             "production-us-west-1": {
               "success": {
                 "number": 1,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "success"
               }
             }
@@ -64,8 +65,8 @@
             "production-us-west-1": {
               "success": {
                 "number": 1,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "success"
               }
             }
@@ -77,13 +78,8 @@
           "instance": "i2",
           "upgrading": false,
           "upgradePolicy": "default",
+          "compileVersion": "6.1.0",
           "jobs": [
-            {
-              "name": "system-test"
-            },
-            {
-              "name": "staging-test"
-            },
             {
               "name": "production-us-west-1"
             }
@@ -92,8 +88,8 @@
             "production-us-west-1": {
               "success": {
                 "number": 1,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "success"
               }
             }
@@ -102,8 +98,8 @@
             "production-us-west-1": {
               "success": {
                 "number": 1,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "success"
               }
             }
@@ -190,15 +186,16 @@
           "instance": "default",
           "upgrading": true,
           "upgradePolicy": "default",
+          "compileVersion": "6.1.0",
           "jobs": [
             {
               "name": "system-test",
-              "coolingDownUntil": "(ignore)",
-              "pending": "platform"
+              "coolingDownUntil": 1600000000000,
+              "pending": "application"
             },
             {
               "name": "staging-test",
-              "coolingDownUntil": "(ignore)",
+              "coolingDownUntil": 1600000000000,
               "pending": "platform"
             },
             {
@@ -210,26 +207,26 @@
             "system-test": {
               "failing": {
                 "number": 2,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "error"
               },
               "running": {
                 "number": 3,
-                "start": "(ignore)",
+                "start": 1600000000000,
                 "status": "running"
               }
             },
             "staging-test": {
               "failing": {
                 "number": 2,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "error"
               },
               "running": {
                 "number": 3,
-                "start": "(ignore)",
+                "start": 1600000000000,
                 "status": "running"
               }
             }
@@ -238,26 +235,26 @@
             "system-test": {
               "failing": {
                 "number": 2,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "error"
               },
               "running": {
                 "number": 3,
-                "start": "(ignore)",
+                "start": 1600000000000,
                 "status": "running"
               }
             },
             "staging-test": {
               "failing": {
                 "number": 2,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "error"
               },
               "running": {
                 "number": 3,
-                "start": "(ignore)",
+                "start": 1600000000000,
                 "status": "running"
               }
             }
@@ -269,10 +266,10 @@
           "instance": "i1",
           "upgrading": false,
           "upgradePolicy": "default",
+          "compileVersion": "6.1.0",
           "jobs": [
             {
               "name": "system-test",
-              "coolingDownUntil": "(ignore)",
               "pending": "application"
             },
             {
@@ -288,35 +285,35 @@
             "system-test": {
               "failing": {
                 "number": 3,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "error"
               }
             },
             "staging-test": {
               "running": {
                 "number": 3,
-                "start": "(ignore)",
+                "start": 1600000000000,
                 "status": "running"
               }
             },
             "production-us-west-1": {
               "success": {
                 "number": 2,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "success"
               }
             }
           },
           "upgradeRuns": {
-            "system-test": {},
-            "staging-test": {},
+            "system-test": { },
+            "staging-test": { },
             "production-us-west-1": {
               "success": {
                 "number": 2,
-                "start": "(ignore)",
-                "end": "(ignore)",
+                "start": 1600000000000,
+                "end": 1600000000000,
                 "status": "success"
               }
             }
@@ -328,13 +325,8 @@
           "instance": "i2",
           "upgrading": true,
           "upgradePolicy": "default",
+          "compileVersion": "6.1.0",
           "jobs": [
-            {
-              "name": "system-test"
-            },
-            {
-              "name": "staging-test"
-            },
             {
               "name": "production-us-west-1",
               "pending": "platform"
@@ -344,7 +336,7 @@
             "production-us-west-1": {
               "running": {
                 "number": 2,
-                "start": "(ignore)",
+                "start": 1600000000000,
                 "status": "running"
               }
             }
@@ -353,7 +345,7 @@
             "production-us-west-1": {
               "running": {
                 "number": 2,
-                "start": "(ignore)",
+                "start": 1600000000000,
                 "status": "running"
               }
             }
@@ -365,25 +357,23 @@
   "jobs": [
     "system-test",
     "staging-test",
-    "production-us-east-3",
-    "test-us-east-3",
-    "production-us-west-1",
-    "test-us-west-1",
-    "production-us-central-1",
-    "test-us-central-1",
     "production-ap-northeast-1",
     "test-ap-northeast-1",
     "production-ap-northeast-2",
     "test-ap-northeast-2",
     "production-ap-southeast-1",
     "test-ap-southeast-1",
-    "production-eu-west-1",
-    "test-eu-west-1",
     "production-aws-us-east-1a",
     "test-aws-us-east-1a",
-    "production-aws-us-west-2a",
-    "test-aws-us-west-2a",
     "production-aws-us-east-1b",
-    "test-aws-us-east-1b"
+    "test-aws-us-east-1b",
+    "production-eu-west-1",
+    "test-eu-west-1",
+    "production-us-central-1",
+    "test-us-central-1",
+    "production-us-east-3",
+    "test-us-east-3",
+    "production-us-west-1",
+    "test-us-west-1"
   ]
 }

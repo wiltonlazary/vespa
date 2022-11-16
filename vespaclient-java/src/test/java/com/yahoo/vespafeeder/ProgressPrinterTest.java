@@ -2,31 +2,24 @@
 package com.yahoo.vespafeeder;
 
 import com.yahoo.clientmetrics.RouteMetricSet;
-import com.yahoo.concurrent.Timer;
+import com.yahoo.concurrent.ManualTimer;
 import com.yahoo.documentapi.messagebus.protocol.DocumentIgnoredReply;
 import com.yahoo.documentapi.messagebus.protocol.PutDocumentMessage;
 import com.yahoo.documentapi.messagebus.protocol.UpdateDocumentMessage;
 import com.yahoo.messagebus.EmptyReply;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class ProgressPrinterTest {
 
-    class DummyTimer implements Timer {
-        long ms;
-
-        public long milliTime() { return ms; }
-    }
-
     @Test
-    public void testSimple() {
+    void testSimple() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        DummyTimer timer = new DummyTimer();
-        timer.ms = 0;
+        ManualTimer timer = new ManualTimer();
         ProgressPrinter printer = new ProgressPrinter(timer, new PrintStream(output));
         RouteMetricSet metrics = new RouteMetricSet("foobar", printer);
 
@@ -36,7 +29,7 @@ public class ProgressPrinterTest {
             metrics.addReply(reply);
         }
 
-        timer.ms = 1200;
+        timer.set(1200);
 
         {
             EmptyReply reply = new EmptyReply();
@@ -50,7 +43,7 @@ public class ProgressPrinterTest {
             metrics.addReply(reply);
         }
 
-        timer.ms = 2400;
+        timer.set(2400);
 
         {
             DocumentIgnoredReply reply = new DocumentIgnoredReply();
@@ -65,7 +58,7 @@ public class ProgressPrinterTest {
             metrics.addReply(reply);
         }
 
-        timer.ms = 62000;
+        timer.set(62000);
 
         {
             EmptyReply reply = new EmptyReply();
@@ -78,12 +71,12 @@ public class ProgressPrinterTest {
 
         String correct =
                 "\rSuccessfully sent 2 messages so far" +
-                "\rSuccessfully sent 3 messages so far" +
-                "\n\n" +
-                "Messages sent to vespa (route foobar) :\n" +
-                "---------------------------------------\n" +
-                "PutDocument:\tok: 2 msgs/sec: 0.03 failed: 0 ignored: 1 latency(min, max, avg): 0, 0, 0\n" +
-                "UpdateDocument:\tok: 1 msgs/sec: 0.02 failed: 2 ignored: 0 latency(min, max, avg): 0, 0, 0\n";
+                        "\rSuccessfully sent 3 messages so far" +
+                        "\n\n" +
+                        "Messages sent to vespa (route foobar) :\n" +
+                        "---------------------------------------\n" +
+                        "PutDocument:\tok: 2 msgs/sec: 0.03 failed: 0 ignored: 1 latency(min, max, avg): 0, 0, 0\n" +
+                        "UpdateDocument:\tok: 1 msgs/sec: 0.02 failed: 2 ignored: 0 latency(min, max, avg): 0, 0, 0\n";
 
         assertEquals(correct, val);
     }

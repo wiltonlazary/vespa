@@ -9,9 +9,9 @@
 #include <vespa/storageapi/messageapi/storagemessage.h>
 #include <vespa/vdslib/state/cluster_state_bundle.h>
 #include <vespa/vdslib/state/clusterstate.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/stllike/asciistream.h>
 #include <vespa/vespalib/util/exceptions.h>
+#include <vespa/vespalib/util/string_escape.h>
 #include <vespa/vespalib/util/stringfmt.h>
 
 #include <fstream>
@@ -35,15 +35,14 @@ StateManager::StateManager(StorageComponentRegister& compReg,
       _stateLock(),
       _stateCond(),
       _listenerLock(),
-      _nodeState(std::make_shared<lib::NodeState>(_component.getNodeType(), lib::State::INITIALIZING)),
+      _nodeState(std::make_shared<lib::NodeState>(_component.getNodeType(), lib::State::DOWN)),
       _nextNodeState(),
       _systemState(std::make_shared<const ClusterStateBundle>(lib::ClusterState())),
       _nextSystemState(),
+      _reported_host_info_cluster_state_version(0),
       _stateListeners(),
       _queuedStateRequests(),
       _threadLock(),
-      _lastProgressUpdateCausingSend(0),
-      _progressLastInitStateSend(-1),
       _systemStateHistory(),
       _systemStateHistorySize(50),
       _hostInfo(std::move(hostInfo)),
@@ -94,70 +93,24 @@ StateManager::print(std::ostream& out, bool verbose,
     out << "StateManager()";
 }
 
-#ifdef ENABLE_BUCKET_OPERATION_LOGGING
-namespace {
-
-vespalib::string
-escapeHtml(vespalib::stringref str)
-{
-    vespalib::asciistream ss;
-    for (size_t i = 0; i < str.size(); ++i) {
-        switch (str[i]) {
-        case '<':
-            ss << "&lt;";
-            break;
-        case '>':
-            ss << "&gt;";
-            break;
-        case '&':
-            ss << "&amp;";
-            break;
-        default:
-            ss << str[i];
-        }
-    }
-    return ss.str();
-}
-
-}
-#endif
-
 void
 StateManager::reportHtmlStatus(std::ostream& out,
                                const framework::HttpUrlPath& path) const
 {
+    using vespalib::xml_content_escaped;
     (void) path;
-#ifdef ENABLE_BUCKET_OPERATION_LOGGING
-    if (path.hasAttribute("history")) {
-        std::istringstream iss(path.getAttribute("history"), std::istringstream::in);
-        uint64_t rawId;
-        iss >> std::hex >> rawId;
-        document::BucketId bid(rawId);
-        out << "<h3>History for " << bid << "</h3>\n";
-        vespalib::string history(
-                debug::BucketOperationLogger::getInstance().getHistory(bid));
-        out << "<pre>" << escapeHtml(history) << "</pre>\n";
-        return;
-    } else if (path.hasAttribute("search")) {
-        vespalib::string substr(path.getAttribute("search"));
-        out << debug::BucketOperationLogger::getInstance()
-            .searchBucketHistories(substr, "/systemstate?history=");
-        return;
-    }
-#endif
-
     {
         std::lock_guard lock(_stateLock);
-        const auto &baseLineClusterState = _systemState->getBaselineClusterState();
+        const auto& baseLineClusterState = _systemState->getBaselineClusterState();
         out << "<h1>Current system state</h1>\n"
-            << "<code>" << baseLineClusterState->toString(true) << "</code>\n"
+            << "<code>" << xml_content_escaped(baseLineClusterState->toString(true)) << "</code>\n"
             << "<h1>Current node state</h1>\n"
             << "<code>" << baseLineClusterState->getNodeState(lib::Node(
                         _component.getNodeType(), _component.getIndex())
                                                      ).toString(true)
             << "</code>\n"
             << "<h1>Reported node state</h1>\n"
-            << "<code>" << _nodeState->toString(true) << "</code>\n"
+            << "<code>" << xml_content_escaped(_nodeState->toString(true)) << "</code>\n"
             << "<h1>Pending state requests</h1>\n"
             << _queuedStateRequests.size() << "\n"
             << "<h1>System state history</h1>\n"
@@ -165,7 +118,7 @@ StateManager::reportHtmlStatus(std::ostream& out,
             << "<th>Received at time</th><th>State</th></tr>\n";
         for (auto it = _systemStateHistory.rbegin(); it != _systemStateHistory.rend(); ++it) {
             out << "<tr><td>" << it->first << "</td><td>"
-                << *it->second->getBaselineClusterState() << "</td></tr>\n";
+                << xml_content_escaped(it->second->getBaselineClusterState()->toString()) << "</td></tr>\n";
         }
         out << "</table>\n";
     }
@@ -283,31 +236,8 @@ StateManager::notifyStateListeners()
                 break; // No change
             }
             if (_nextNodeState) {
-                assert(!(_nodeState->getState() == State::UP
-                         && _nextNodeState->getState() == State::INITIALIZING));
-
-                if (_nodeState->getState() == State::INITIALIZING
-                    && _nextNodeState->getState() == State::INITIALIZING
-                    && ((_component.getClock().getTimeInMillis() - _lastProgressUpdateCausingSend)
-                        < framework::MilliSecTime(1000))
-                    && _nextNodeState->getInitProgress() < 1
-                    && (_nextNodeState->getInitProgress() - _progressLastInitStateSend) < 0.01)
-                {
-                    // For this special case, where we only have gotten a little
-                    // initialization progress and we have reported recently,
-                    // don't trigger sending get node state reply yet.
-                } else {
-                    newState = _nextNodeState;
-                    if (!_queuedStateRequests.empty()
-                        && _nextNodeState->getState() == State::INITIALIZING)
-                    {
-                        _lastProgressUpdateCausingSend = _component.getClock().getTimeInMillis();
-                        _progressLastInitStateSend = newState->getInitProgress();
-                    } else {
-                        _lastProgressUpdateCausingSend = framework::MilliSecTime(0);
-                        _progressLastInitStateSend = -1;
-                    }
-                }
+                assert(_nextNodeState->getState() != State::INITIALIZING);
+                newState   = _nextNodeState;
                 _nodeState = _nextNodeState;
                 _nextNodeState.reset();
             }
@@ -318,8 +248,9 @@ StateManager::notifyStateListeners()
         }
         for (auto* listener : _stateListeners) {
             listener->handleNewState();
-                // If one of them actually altered the state again, abort
-                // sending events, update states and send new one to all.
+            // If one of them actually altered the state again, abort
+            // sending events, update states and send new one to all.
+            std::lock_guard guard(_stateLock);
             if (_nextNodeState || _nextSystemState) {
                 break;
             }
@@ -342,6 +273,9 @@ StateManager::enableNextClusterState()
     // overwritten by a non-null pending cluster state afterwards.
     logNodeClusterStateTransition(*_systemState, *_nextSystemState);
     _systemState = _nextSystemState;
+    if (!_nextSystemState->deferredActivation()) {
+        _reported_host_info_cluster_state_version = _systemState->getVersion();
+    } // else: reported version updated upon explicit activation edge
     _nextSystemState.reset();
     _systemStateHistory.emplace_back(_component.getClock().getTimeInMillis(), _systemState);
 }
@@ -455,14 +389,14 @@ StateManager::onGetNodeState(const api::GetNodeStateCommand::SP& cmd)
                        "%" PRId64 " milliseconds unless a node state change "
                        "happens before that time.",
                 msTimeout, msTimeout * 800 / 1000);
-            TimeStatePair pair(
+            TimeStateCmdPair pair(
                     _component.getClock().getTimeInMillis()
                     + framework::MilliSecTime(msTimeout * 800 / 1000),
                     cmd);
             _queuedStateRequests.emplace_back(std::move(pair));
         } else {
             LOG(debug, "Answered get node state request right away since it "
-                       "thought we were in nodestate %s, while our actual "
+                       "thought we were in node state %s, while our actual "
                        "node state is currently %s and we didn't just reply to "
                        "existing request.",
                 cmd->getExpectedState() == nullptr ? "unknown"
@@ -511,7 +445,10 @@ StateManager::onActivateClusterStateVersion(
     auto reply = std::make_shared<api::ActivateClusterStateVersionReply>(*cmd);
     {
         std::lock_guard lock(_stateLock);
-        reply->setActualVersion(_systemState ? _systemState->getVersion() : 0);
+        reply->setActualVersion(_systemState->getVersion());
+        if (cmd->version() == _systemState->getVersion()) {
+            _reported_host_info_cluster_state_version = _systemState->getVersion();
+        }
     }
     sendUp(reply);
     return true;
@@ -577,21 +514,6 @@ StateManager::sendGetNodeStateReplies(framework::MilliSecTime olderThanTime, uin
     return true;
 }
 
-namespace {
-    std::string getHostInfoFilename(bool advanceCount) {
-        static uint32_t fileCounter = 0;
-        static pid_t pid = getpid();
-        if (advanceCount) {
-            ++fileCounter;
-        }
-        uint32_t fileIndex = fileCounter % 8;
-        std::ostringstream fileName;
-        fileName << vespa::Defaults::underVespaHome("tmp/hostinfo")
-                 << "." << pid << "." << fileIndex << ".report";
-        return fileName.str();
-    }
-}
-
 std::string
 StateManager::getNodeInfo() const
 {
@@ -625,21 +547,12 @@ StateManager::getNodeInfo() const
     //   _systemLock.
     // - getNodeInfo() (this function) always acquires the same lock.
     std::lock_guard guard(_stateLock);
-    stream << "cluster-state-version" << _systemState->getVersion();
+    stream << "cluster-state-version" << _reported_host_info_cluster_state_version;
 
     _hostInfo->printReport(stream);
     stream << End();
     stream.finalize();
 
-    // Dump report to new report file.
-    std::string oldFile(getHostInfoFilename(false));
-    std::string newFile(getHostInfoFilename(true));
-    std::ofstream of(newFile.c_str());
-    of << json.str();
-    of.close();
-    // If dumping went ok, delete old report file
-    vespalib::unlink(oldFile);
-    // Return report
     return json.str();
 }
 

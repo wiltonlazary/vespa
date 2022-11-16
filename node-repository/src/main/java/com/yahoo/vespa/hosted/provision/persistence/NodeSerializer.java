@@ -9,6 +9,7 @@ import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterSpec;
 import com.yahoo.config.provision.DockerImage;
@@ -18,6 +19,7 @@ import com.yahoo.config.provision.NodeFlavors;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.NodeType;
 import com.yahoo.config.provision.TenantName;
+import com.yahoo.config.provision.WireguardKey;
 import com.yahoo.config.provision.host.FlavorOverrides;
 import com.yahoo.config.provision.serialization.NetworkPortsSerializer;
 import com.yahoo.slime.ArrayTraverser;
@@ -25,7 +27,6 @@ import com.yahoo.slime.Cursor;
 import com.yahoo.slime.Inspector;
 import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
-import com.yahoo.slime.Type;
 import com.yahoo.vespa.hosted.provision.Node;
 import com.yahoo.vespa.hosted.provision.node.Address;
 import com.yahoo.vespa.hosted.provision.node.Agent;
@@ -42,6 +43,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -75,6 +77,7 @@ public class NodeSerializer {
     private static final String idKey = "openStackId";
     private static final String parentHostnameKey = "parentHostname";
     private static final String historyKey = "history";
+    private static final String logKey = "log";
     private static final String instanceKey = "instance"; // legacy name, TODO: change to allocation with backwards compat
     private static final String rebootGenerationKey = "rebootGeneration";
     private static final String currentRebootGenerationKey = "currentRebootGeneration";
@@ -97,6 +100,8 @@ public class NodeSerializer {
     private static final String exclusiveToClusterTypeKey = "exclusiveToClusterType";
     private static final String switchHostnameKey = "switchHostname";
     private static final String trustedCertificatesKey = "trustedCertificates";
+    private static final String cloudAccountKey = "cloudAccount";
+    private static final String wireguardPubKeyKey = "wireguardPubkey";
 
     // Node resource fields
     private static final String flavorKey = "flavor";
@@ -112,6 +117,7 @@ public class NodeSerializer {
     private static final String restartGenerationKey = "restartGeneration";
     private static final String currentRestartGenerationKey = "currentRestartGeneration";
     private static final String removableKey = "removable";
+    private static final String reusableKey = "reusable";
     // Saved as part of allocation instead of serviceId, since serviceId serialized form is not easily extendable.
     private static final String wantedVespaVersionKey = "wantedVespaVersion";
     private static final String wantedContainerImageRepoKey = "wantedDockerImageRepo";
@@ -177,7 +183,8 @@ public class NodeSerializer {
         object.setBool(wantToFailKey, node.status().wantToFail());
         object.setBool(wantToRebuildKey, node.status().wantToRebuild());
         node.allocation().ifPresent(allocation -> toSlime(allocation, object.setObject(instanceKey)));
-        toSlime(node.history(), object.setArray(historyKey));
+        toSlime(node.history().events(), object.setArray(historyKey));
+        toSlime(node.history().log(), object.setArray(logKey));
         object.setString(nodeTypeKey, toString(node.type()));
         node.status().osVersion().current().ifPresent(version -> object.setString(osVersionKey, version.toString()));
         node.status().osVersion().wanted().ifPresent(version -> object.setString(wantedOsVersionKey, version.toFullString()));
@@ -189,6 +196,10 @@ public class NodeSerializer {
         node.exclusiveToApplicationId().ifPresent(applicationId -> object.setString(exclusiveToApplicationIdKey, applicationId.serializedForm()));
         node.exclusiveToClusterType().ifPresent(clusterType -> object.setString(exclusiveToClusterTypeKey, clusterType.name()));
         trustedCertificatesToSlime(node.trustedCertificates(), object.setArray(trustedCertificatesKey));
+        if (!node.cloudAccount().isUnspecified()) {
+            object.setString(cloudAccountKey, node.cloudAccount().value());
+        }
+        node.wireguardPubKey().ifPresent(pubKey -> object.setString(wireguardPubKeyKey, pubKey.value()));
     }
 
     private void toSlime(Flavor flavor, Cursor object) {
@@ -212,14 +223,15 @@ public class NodeSerializer {
         object.setString(serviceIdKey, allocation.membership().stringValue());
         object.setLong(restartGenerationKey, allocation.restartGeneration().wanted());
         object.setLong(currentRestartGenerationKey, allocation.restartGeneration().current());
-        object.setBool(removableKey, allocation.isRemovable());
+        object.setBool(removableKey, allocation.removable());
+        object.setBool(reusableKey, allocation.reusable());
         object.setString(wantedVespaVersionKey, allocation.membership().cluster().vespaVersion().toString());
         allocation.membership().cluster().dockerImageRepo().ifPresent(repo -> object.setString(wantedContainerImageRepoKey, repo.untagged()));
         allocation.networkPorts().ifPresent(ports -> NetworkPortsSerializer.toSlime(ports, object.setArray(networkPortsKey)));
     }
 
-    private void toSlime(History history, Cursor array) {
-        for (History.Event event : history.events())
+    private void toSlime(Collection<History.Event> events, Cursor array) {
+        for (History.Event event : events)
             toSlime(event, array.addObject());
     }
 
@@ -254,10 +266,10 @@ public class NodeSerializer {
     // ---------------- Deserialization --------------------------------------------------
 
     public Node fromJson(Node.State state, byte[] data) {
-        var key = Hashing.sipHash24().newHasher()
-                         .putString(state.name(), StandardCharsets.UTF_8)
-                         .putBytes(data).hash()
-                         .asLong();
+        long key = Hashing.sipHash24().newHasher()
+                          .putString(state.name(), StandardCharsets.UTF_8)
+                          .putBytes(data).hash()
+                          .asLong();
         try {
             return cache.get(key, () -> nodeFromSlime(state, SlimeUtils.jsonToSlime(data).get()));
         } catch (ExecutionException e) {
@@ -272,20 +284,22 @@ public class NodeSerializer {
                                       ipAddressesFromSlime(object, ipAddressPoolKey),
                                       addressesFromSlime(object)),
                         object.field(hostnameKey).asString(),
-                        parentHostnameFromSlime(object),
+                        SlimeUtils.optionalString(object.field(parentHostnameKey)),
                         flavor,
                         statusFromSlime(object),
                         state,
                         allocationFromSlime(flavor.resources(), object.field(instanceKey)),
-                        historyFromSlime(object.field(historyKey)),
+                        historyFromSlime(object),
                         nodeTypeFromString(object.field(nodeTypeKey).asString()),
                         Reports.fromSlime(object.field(reportsKey)),
-                        modelNameFromSlime(object),
-                        reservedToFromSlime(object.field(reservedToKey)),
-                        exclusiveToApplicationIdFromSlime(object.field(exclusiveToApplicationIdKey)),
-                        exclusiveToClusterTypeFromSlime(object.field(exclusiveToClusterTypeKey)),
-                        switchHostnameFromSlime(object.field(switchHostnameKey)),
-                        trustedCertificatesFromSlime(object));
+                        SlimeUtils.optionalString(object.field(modelNameKey)),
+                        SlimeUtils.optionalString(object.field(reservedToKey)).map(TenantName::from),
+                        SlimeUtils.optionalString(object.field(exclusiveToApplicationIdKey)).map(ApplicationId::fromSerializedForm),
+                        SlimeUtils.optionalString(object.field(exclusiveToClusterTypeKey)).map(ClusterSpec.Type::from),
+                        SlimeUtils.optionalString(object.field(switchHostnameKey)),
+                        trustedCertificatesFromSlime(object),
+                        SlimeUtils.optionalString(object.field(cloudAccountKey)).map(CloudAccount::from).orElse(CloudAccount.empty),
+                        SlimeUtils.optionalString(object.field(wireguardPubKeyKey)).map(WireguardKey::from));
     }
 
     private Status statusFromSlime(Inspector object) {
@@ -300,12 +314,7 @@ public class NodeSerializer {
                           object.field(wantToFailKey).asBool(),
                           new OsVersion(versionFromSlime(object.field(osVersionKey)),
                                         versionFromSlime(object.field(wantedOsVersionKey))),
-                          instantFromSlime(object.field(firmwareCheckKey)));
-    }
-
-    private Optional<String> switchHostnameFromSlime(Inspector field) {
-        if (!field.valid()) return Optional.empty();
-        return Optional.of(field.asString());
+                          SlimeUtils.optionalInstant(object.field(firmwareCheckKey)));
     }
 
     private Flavor flavorFromSlime(Inspector object) {
@@ -329,6 +338,7 @@ public class NodeSerializer {
                                                                  .orElse(assignedResources),
                                           generationFromSlime(object, restartGenerationKey, currentRestartGenerationKey),
                                           object.field(removableKey).asBool(),
+                                          object.field(reusableKey).asBool(),
                                           NetworkPortsSerializer.fromSlime(object.field(networkPortsKey))));
     }
 
@@ -338,14 +348,20 @@ public class NodeSerializer {
                                   InstanceName.from(object.field(instanceIdKey).asString()));
     }
 
-    private History historyFromSlime(Inspector array) {
+    private History historyFromSlime(Inspector object) {
+        return new History(eventsFromSlime(object.field(historyKey)),
+                           eventsFromSlime(object.field(logKey)));
+    }
+
+    private List<History.Event> eventsFromSlime(Inspector array) {
+        if (!array.valid()) return List.of();
         List<History.Event> events = new ArrayList<>();
         array.traverse((ArrayTraverser) (int i, Inspector item) -> {
             History.Event event = eventFromSlime(item);
             if (event != null)
                 events.add(event);
         });
-        return new History(events);
+        return events;
     }
 
     private History.Event eventFromSlime(Inspector object) {
@@ -364,35 +380,15 @@ public class NodeSerializer {
     private ClusterMembership clusterMembershipFromSlime(Inspector object) {
         return ClusterMembership.from(object.field(serviceIdKey).asString(),
                                       versionFromSlime(object.field(wantedVespaVersionKey)).get(),
-                                      containerImageRepoFromSlime(object.field(wantedContainerImageRepoKey)));
+                                      containerImageFromSlime(object.field(wantedContainerImageRepoKey)));
     }
 
     private Optional<Version> versionFromSlime(Inspector object) {
-        if ( ! object.valid()) return Optional.empty();
-        return Optional.of(Version.fromString(object.asString()));
-    }
-
-    private Optional<DockerImage> containerImageRepoFromSlime(Inspector object) {
-        if ( ! object.valid() || object.asString().isEmpty()) return Optional.empty();
-        return Optional.of(DockerImage.fromString(object.asString()));
+        return object.valid() ? Optional.of(Version.fromString(object.asString())) : Optional.empty();
     }
 
     private Optional<DockerImage> containerImageFromSlime(Inspector object) {
-        if ( ! object.valid()) return Optional.empty();
-        return Optional.of(DockerImage.fromString(object.asString()));
-    }
-
-    private Optional<Instant> instantFromSlime(Inspector object) {
-        if ( ! object.valid())
-            return Optional.empty();
-        return Optional.of(Instant.ofEpochMilli(object.asLong()));
-    }
-
-    private Optional<String> parentHostnameFromSlime(Inspector object) {
-        if (object.field(parentHostnameKey).valid())
-            return Optional.of(object.field(parentHostnameKey).asString());
-        else
-            return Optional.empty();
+        return SlimeUtils.optionalString(object).map(DockerImage::fromString);
     }
 
     private Set<String> ipAddressesFromSlime(Inspector object, String key) {
@@ -403,175 +399,144 @@ public class NodeSerializer {
 
     private List<Address> addressesFromSlime(Inspector object) {
         return SlimeUtils.entriesStream(object.field(containersKey))
-                .map(elem -> new Address(elem.field(containerHostnameKey).asString()))
-                .collect(Collectors.toList());
-    }
-
-    private Optional<String> modelNameFromSlime(Inspector object) {
-        if (object.field(modelNameKey).valid()) {
-            return Optional.of(object.field(modelNameKey).asString());
-        }
-        return Optional.empty();
-    }
-
-    private Optional<TenantName> reservedToFromSlime(Inspector object) {
-        if (! object.valid()) return Optional.empty();
-        if (object.type() != Type.STRING)
-            throw new IllegalArgumentException("Expected 'reservedTo' to be a string but is " + object);
-        return Optional.of(TenantName.from(object.asString()));
-    }
-
-    private Optional<ApplicationId> exclusiveToApplicationIdFromSlime(Inspector object) {
-        if (! object.valid()) return Optional.empty();
-        if (object.type() != Type.STRING)
-            throw new IllegalArgumentException("Expected 'exclusiveTo' to be a string but is " + object);
-        return Optional.of(ApplicationId.fromSerializedForm(object.asString()));
-    }
-
-    private Optional<ClusterSpec.Type> exclusiveToClusterTypeFromSlime(Inspector object) {
-        if (! object.valid()) return Optional.empty();
-        if (object.type() != Type.STRING)
-            throw new IllegalArgumentException("Expected 'exclusiveToClusterType' to be a string but is " + object);
-        return Optional.of(ClusterSpec.Type.from(object.asString()));
+                         .map(elem -> new Address(elem.field(containerHostnameKey).asString()))
+                         .collect(Collectors.toList());
     }
 
     private List<TrustStoreItem> trustedCertificatesFromSlime(Inspector object) {
         return SlimeUtils.entriesStream(object.field(trustedCertificatesKey))
-                .map(elem -> new TrustStoreItem(elem.field(fingerprintKey).asString(),
-                                                Instant.ofEpochMilli(elem.field(expiresKey).asLong())))
-                .collect(Collectors.toList());
+                         .map(elem -> new TrustStoreItem(elem.field(fingerprintKey).asString(),
+                                                         Instant.ofEpochMilli(elem.field(expiresKey).asLong())))
+                         .collect(Collectors.toList());
     }
 
     // ----------------- Enum <-> string mappings ----------------------------------------
     
     /** Returns the event type, or null if this event type should be ignored */
     private History.Event.Type eventTypeFromString(String eventTypeString) {
-        switch (eventTypeString) {
-            case "provisioned" : return History.Event.Type.provisioned;
-            case "deprovisioned" : return History.Event.Type.deprovisioned;
-            case "readied" : return History.Event.Type.readied;
-            case "reserved" : return History.Event.Type.reserved;
-            case "activated" : return History.Event.Type.activated;
-            case "wantToRetire": return History.Event.Type.wantToRetire;
-            case "wantToFail": return History.Event.Type.wantToFail;
-            case "retired" : return History.Event.Type.retired;
-            case "deactivated" : return History.Event.Type.deactivated;
-            case "parked" : return History.Event.Type.parked;
-            case "failed" : return History.Event.Type.failed;
-            case "deallocated" : return History.Event.Type.deallocated;
-            case "down" : return History.Event.Type.down;
-            case "requested" : return History.Event.Type.requested;
-            case "resized" : return History.Event.Type.resized;
-            case "rebooted" : return History.Event.Type.rebooted;
-            case "osUpgraded" : return History.Event.Type.osUpgraded;
-            case "firmwareVerified" : return History.Event.Type.firmwareVerified;
-            case "breakfixed" : return History.Event.Type.breakfixed;
-            case "preferToRetire" : return History.Event.Type.preferToRetire;
-        }
-        throw new IllegalArgumentException("Unknown node event type '" + eventTypeString + "'");
+        return switch (eventTypeString) {
+            case "provisioned" -> History.Event.Type.provisioned;
+            case "deprovisioned" -> History.Event.Type.deprovisioned;
+            case "readied" -> History.Event.Type.readied;
+            case "reserved" -> History.Event.Type.reserved;
+            case "activated" -> History.Event.Type.activated;
+            case "wantToRetire" -> History.Event.Type.wantToRetire;
+            case "wantToFail" -> History.Event.Type.wantToFail;
+            case "retired" -> History.Event.Type.retired;
+            case "deactivated" -> History.Event.Type.deactivated;
+            case "parked" -> History.Event.Type.parked;
+            case "failed" -> History.Event.Type.failed;
+            case "deallocated" -> History.Event.Type.deallocated;
+            case "down" -> History.Event.Type.down;
+            case "up" -> History.Event.Type.up;
+            case "resized" -> History.Event.Type.resized;
+            case "rebooted" -> History.Event.Type.rebooted;
+            case "osUpgraded" -> History.Event.Type.osUpgraded;
+            case "firmwareVerified" -> History.Event.Type.firmwareVerified;
+            case "breakfixed" -> History.Event.Type.breakfixed;
+            case "preferToRetire" -> History.Event.Type.preferToRetire;
+            default -> throw new IllegalArgumentException("Unknown node event type '" + eventTypeString + "'");
+        };
     }
 
     private String toString(History.Event.Type nodeEventType) {
-        switch (nodeEventType) {
-            case provisioned : return "provisioned";
-            case deprovisioned : return "deprovisioned";
-            case readied : return "readied";
-            case reserved : return "reserved";
-            case activated : return "activated";
-            case wantToRetire: return "wantToRetire";
-            case wantToFail: return "wantToFail";
-            case retired : return "retired";
-            case deactivated : return "deactivated";
-            case parked : return "parked";
-            case failed : return "failed";
-            case deallocated : return "deallocated";
-            case down : return "down";
-            case requested: return "requested";
-            case resized: return "resized";
-            case rebooted: return "rebooted";
-            case osUpgraded: return "osUpgraded";
-            case firmwareVerified: return "firmwareVerified";
-            case breakfixed: return "breakfixed";
-            case preferToRetire: return "preferToRetire";
-        }
-        throw new IllegalArgumentException("Serialized form of '" + nodeEventType + "' not defined");
+        return switch (nodeEventType) {
+            case provisioned -> "provisioned";
+            case deprovisioned -> "deprovisioned";
+            case readied -> "readied";
+            case reserved -> "reserved";
+            case activated -> "activated";
+            case wantToRetire -> "wantToRetire";
+            case wantToFail -> "wantToFail";
+            case retired -> "retired";
+            case deactivated -> "deactivated";
+            case parked -> "parked";
+            case failed -> "failed";
+            case deallocated -> "deallocated";
+            case down -> "down";
+            case up -> "up";
+            case resized -> "resized";
+            case rebooted -> "rebooted";
+            case osUpgraded -> "osUpgraded";
+            case firmwareVerified -> "firmwareVerified";
+            case breakfixed -> "breakfixed";
+            case preferToRetire -> "preferToRetire";
+        };
     }
 
     private Agent eventAgentFromSlime(Inspector eventAgentField) {
-        switch (eventAgentField.asString()) {
-            case "operator" : return Agent.operator;
-            case "application" : return Agent.application;
-            case "system" : return Agent.system;
-            case "DirtyExpirer" : return Agent.DirtyExpirer;
-            case "DynamicProvisioningMaintainer" : return Agent.DynamicProvisioningMaintainer;
-            case "FailedExpirer" : return Agent.FailedExpirer;
-            case "InactiveExpirer" : return Agent.InactiveExpirer;
-            case "NodeFailer" : return Agent.NodeFailer;
-            case "NodeHealthTracker" : return Agent.NodeHealthTracker;
-            case "ProvisionedExpirer" : return Agent.ProvisionedExpirer;
-            case "Rebalancer" : return Agent.Rebalancer;
-            case "ReservationExpirer" : return Agent.ReservationExpirer;
-            case "RetiringUpgrader" : return Agent.RetiringUpgrader;
-            case "RebuildingOsUpgrader" : return Agent.RebuildingOsUpgrader;
-            case "SpareCapacityMaintainer": return Agent.SpareCapacityMaintainer;
-            case "SwitchRebalancer": return Agent.SwitchRebalancer;
-            case "HostEncrypter": return Agent.HostEncrypter;
-            case "ParkedExpirer": return Agent.ParkedExpirer;
-        }
-        throw new IllegalArgumentException("Unknown node event agent '" + eventAgentField.asString() + "'");
+        return switch (eventAgentField.asString()) {
+            case "operator" -> Agent.operator;
+            case "application" -> Agent.application;
+            case "system" -> Agent.system;
+            case "DirtyExpirer" -> Agent.DirtyExpirer;
+            case "DynamicProvisioningMaintainer", "HostCapacityMaintainer" -> Agent.HostCapacityMaintainer;
+            case "HostResumeProvisioner" -> Agent.HostResumeProvisioner;
+            case "FailedExpirer" -> Agent.FailedExpirer;
+            case "InactiveExpirer" -> Agent.InactiveExpirer;
+            case "NodeFailer" -> Agent.NodeFailer;
+            case "NodeHealthTracker" -> Agent.NodeHealthTracker;
+            case "ProvisionedExpirer" -> Agent.ProvisionedExpirer;
+            case "Rebalancer" -> Agent.Rebalancer;
+            case "ReservationExpirer" -> Agent.ReservationExpirer;
+            case "RetiringUpgrader" -> Agent.RetiringOsUpgrader;
+            case "RebuildingOsUpgrader" -> Agent.RebuildingOsUpgrader;
+            case "SpareCapacityMaintainer" -> Agent.SpareCapacityMaintainer;
+            case "SwitchRebalancer" -> Agent.SwitchRebalancer;
+            case "HostEncrypter" -> Agent.HostEncrypter;
+            case "ParkedExpirer" -> Agent.ParkedExpirer;
+            default -> throw new IllegalArgumentException("Unknown node event agent '" + eventAgentField.asString() + "'");
+        };
     }
     private String toString(Agent agent) {
-        switch (agent) {
-            case operator : return "operator";
-            case application : return "application";
-            case system : return "system";
-            case DirtyExpirer : return "DirtyExpirer";
-            case DynamicProvisioningMaintainer : return "DynamicProvisioningMaintainer";
-            case FailedExpirer : return "FailedExpirer";
-            case InactiveExpirer : return "InactiveExpirer";
-            case NodeFailer : return "NodeFailer";
-            case NodeHealthTracker: return "NodeHealthTracker";
-            case ProvisionedExpirer : return "ProvisionedExpirer";
-            case Rebalancer : return "Rebalancer";
-            case ReservationExpirer : return "ReservationExpirer";
-            case RetiringUpgrader: return "RetiringUpgrader";
-            case RebuildingOsUpgrader: return "RebuildingOsUpgrader";
-            case SpareCapacityMaintainer: return "SpareCapacityMaintainer";
-            case SwitchRebalancer: return "SwitchRebalancer";
-            case HostEncrypter: return "HostEncrypter";
-            case ParkedExpirer: return "ParkedExpirer";
-        }
-        throw new IllegalArgumentException("Serialized form of '" + agent + "' not defined");
+        return switch (agent) {
+            case operator -> "operator";
+            case application -> "application";
+            case system -> "system";
+            case DirtyExpirer -> "DirtyExpirer";
+            case HostCapacityMaintainer -> "DynamicProvisioningMaintainer";
+            case HostResumeProvisioner -> "HostResumeProvisioner";
+            case FailedExpirer -> "FailedExpirer";
+            case InactiveExpirer -> "InactiveExpirer";
+            case NodeFailer -> "NodeFailer";
+            case NodeHealthTracker -> "NodeHealthTracker";
+            case ProvisionedExpirer -> "ProvisionedExpirer";
+            case Rebalancer -> "Rebalancer";
+            case ReservationExpirer -> "ReservationExpirer";
+            case RetiringOsUpgrader -> "RetiringUpgrader";
+            case RebuildingOsUpgrader -> "RebuildingOsUpgrader";
+            case SpareCapacityMaintainer -> "SpareCapacityMaintainer";
+            case SwitchRebalancer -> "SwitchRebalancer";
+            case HostEncrypter -> "HostEncrypter";
+            case ParkedExpirer -> "ParkedExpirer";
+        };
     }
 
     static NodeType nodeTypeFromString(String typeString) {
-        switch (typeString) {
-            case "tenant": return NodeType.tenant;
-            case "host": return NodeType.host;
-            case "proxy": return NodeType.proxy;
-            case "proxyhost": return NodeType.proxyhost;
-            case "config": return NodeType.config;
-            case "confighost": return NodeType.confighost;
-            case "controller": return NodeType.controller;
-            case "controllerhost": return NodeType.controllerhost;
-            case "devhost": return NodeType.devhost;
-            default : throw new IllegalArgumentException("Unknown node type '" + typeString + "'");
-        }
+        return switch (typeString) {
+            case "tenant" -> NodeType.tenant;
+            case "host" -> NodeType.host;
+            case "proxy" -> NodeType.proxy;
+            case "proxyhost" -> NodeType.proxyhost;
+            case "config" -> NodeType.config;
+            case "confighost" -> NodeType.confighost;
+            case "controller" -> NodeType.controller;
+            case "controllerhost" -> NodeType.controllerhost;
+            default -> throw new IllegalArgumentException("Unknown node type '" + typeString + "'");
+        };
     }
 
     static String toString(NodeType type) {
-        switch (type) {
-            case tenant: return "tenant";
-            case host: return "host";
-            case proxy: return "proxy";
-            case proxyhost: return "proxyhost";
-            case config: return "config";
-            case confighost: return "confighost";
-            case controller: return "controller";
-            case controllerhost: return "controllerhost";
-            case devhost: return "devhost";
-        }
-        throw new IllegalArgumentException("Serialized form of '" + type + "' not defined");
+        return switch (type) {
+            case tenant -> "tenant";
+            case host -> "host";
+            case proxy -> "proxy";
+            case proxyhost -> "proxyhost";
+            case config -> "config";
+            case confighost -> "confighost";
+            case controller -> "controller";
+            case controllerhost -> "controllerhost";
+        };
     }
 
 }

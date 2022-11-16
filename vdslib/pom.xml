@@ -5,12 +5,12 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>vdslib</artifactId>
   <packaging>container-plugin</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <name>vdslib</name>
   <description> </description>
   <dependencies>
@@ -25,14 +25,15 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.codehaus.jettison</groupId>
-      <artifactId>jettison</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
       <groupId>com.yahoo.vespa</groupId>
       <artifactId>config</artifactId>
       <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.yahoo.vespa</groupId>
+      <artifactId>annotations</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
@@ -56,13 +57,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <compilerArgs>
-            <arg>-Xlint:all</arg>
-            <arg>-Xlint:-serial</arg>
-            <arg>-Werror</arg>
-          </compilerArgs>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>com.yahoo.vespa</groupId>

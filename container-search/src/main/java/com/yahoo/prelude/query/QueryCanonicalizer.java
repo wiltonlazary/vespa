@@ -1,8 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.prelude.query;
 
+import com.yahoo.processing.request.CompoundName;
 import com.yahoo.search.Query;
 import com.yahoo.search.query.QueryTree;
+import com.yahoo.search.query.properties.DefaultProperties;
 
 import java.util.HashSet;
 import java.util.ListIterator;
@@ -26,18 +28,31 @@ public class QueryCanonicalizer {
      * @return null if the query is valid, an error message if it is invalid
      */
     public static String canonicalize(Query query) {
-        return canonicalize(query.getModel().getQueryTree());
+        return canonicalize(query.getModel().getQueryTree(),
+                            query.properties().getInteger(DefaultProperties.MAX_QUERY_ITEMS));
     }
 
     /**
-     * Canonicalize this query
+     * Canonicalizes this query, allowing any query tree size
+     *
+     * @return null if the query is valid, an error message if it is invalid
+     */
+    public static String canonicalize(QueryTree queryTree) {
+        return canonicalize(queryTree, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Canonicalizes this query
      * 
      * @return null if the query is valid, an error message if it is invalid
      */
-    public static String canonicalize(QueryTree query) {
+    private static String canonicalize(QueryTree query, Integer maxQueryItems) {
         ListIterator<Item> rootItemIterator = query.getItemIterator();
         CanonicalizationResult result = recursivelyCanonicalize(rootItemIterator.next(), rootItemIterator);
         if (query.isEmpty() && ! result.isError()) result = CanonicalizationResult.error("No query");
+        int itemCount = query.treeSize();
+        if (itemCount > maxQueryItems)
+            result = CanonicalizationResult.error(String.format("Query tree exceeds allowed item count. Configured limit: %d - Item count: %d", maxQueryItems, itemCount));
         return result.error().orElse(null); // preserve old API, unfortunately
     }
 
@@ -77,11 +92,6 @@ public class QueryCanonicalizer {
         else if (composite instanceof RankItem) {
             makeDuplicatesCheap((RankItem)composite);
         }
-        else if (composite instanceof NotItem) {
-            if (((NotItem) composite).getPositiveItem() == null)
-                return CanonicalizationResult.error("Can not search for only negative items");
-        }
-
         if (composite.getItemCount() == 0)
             parentIterator.remove();
 

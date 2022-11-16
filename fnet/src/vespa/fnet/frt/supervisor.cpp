@@ -10,15 +10,19 @@
 #include <vespa/fastos/thread.h>
 #include <vespa/vespalib/util/require.h>
 
+FNET_IPacketStreamer *
+FRT_Supervisor::get_packet_streamer() {
+    static FRT_PacketFactory packet_factory;
+    static FNET_SimplePacketStreamer packet_streamer(&packet_factory);
+    return &packet_streamer;
+}
+
+
 FRT_Supervisor::FRT_Supervisor(FNET_Transport *transport)
     : _transport(transport),
-      _packetFactory(),
-      _packetStreamer(&_packetFactory),
       _connector(nullptr),
       _reflectionManager(),
-      _rpcHooks(&_reflectionManager),
-      _connHooks(*this),
-      _methodMismatchHook()
+      _rpcHooks(&_reflectionManager)
 {
     _rpcHooks.InitRPC(this);
 }
@@ -26,6 +30,7 @@ FRT_Supervisor::FRT_Supervisor(FNET_Transport *transport)
 
 FRT_Supervisor::~FRT_Supervisor()
 {
+    _transport->detach(this);
     if (_connector != nullptr) {
         _connector->SubRef();
     }
@@ -39,7 +44,7 @@ FRT_Supervisor::Listen(const char *spec)
 {
     if (_connector != nullptr)
         return false;
-    _connector = _transport->Listen(spec, &_packetStreamer, this);
+    _connector = _transport->Listen(spec, get_packet_streamer(), this);
     return (_connector != nullptr);
 }
 
@@ -65,7 +70,7 @@ FRT_Supervisor::GetTarget(const char *spec)
 {
     FNET_TransportThread *thread = _transport->select_thread(spec, strlen(spec));
     return new FRT_Target(thread->GetScheduler(),
-                          thread->Connect(spec, &_packetStreamer));
+                          thread->Connect(spec, get_packet_streamer()));
 }
 
 
@@ -74,9 +79,8 @@ FRT_Supervisor::Get2WayTarget(const char *spec, FNET_Context connContext)
 {
     FNET_TransportThread *thread = _transport->select_thread(spec, strlen(spec));
     return new FRT_Target(thread->GetScheduler(),
-                          thread->Connect(spec, &_packetStreamer,
-                                  nullptr, FNET_Context(),
-                                  this, connContext));
+                          thread->Connect(spec, get_packet_streamer(),
+                                          this, connContext));
 }
 
 
@@ -99,34 +103,6 @@ FRT_Supervisor::AllocRPCRequest(FRT_RPCRequest *tradein)
         tradein->SubRef();
     }
     return new FRT_RPCRequest();
-}
-
-
-void
-FRT_Supervisor::SetSessionInitHook(FRT_METHOD_PT  method, FRT_Invokable *handler)
-{
-    _connHooks.SetSessionInitHook(method, handler);
-}
-
-
-void
-FRT_Supervisor::SetSessionDownHook(FRT_METHOD_PT  method, FRT_Invokable *handler)
-{
-    _connHooks.SetSessionDownHook(method, handler);
-}
-
-
-void
-FRT_Supervisor::SetSessionFiniHook(FRT_METHOD_PT  method, FRT_Invokable *handler)
-{
-    _connHooks.SetSessionFiniHook(method, handler);
-}
-
-
-void
-FRT_Supervisor::SetMethodMismatchHook(FRT_METHOD_PT  method, FRT_Invokable *handler)
-{
-    _methodMismatchHook = std::make_unique<FRT_Method>("frt.hook.methodMismatch", "*", "*", method, handler);
 }
 
 
@@ -176,13 +152,6 @@ FRT_Supervisor::InvokeSync(SchedulerPtr scheduler, FNET_Connection *conn, FRT_RP
 
 
 bool
-FRT_Supervisor::InitAdminChannel(FNET_Channel *channel)
-{
-    return _connHooks.InitAdminChannel(channel);
-}
-
-
-bool
 FRT_Supervisor::InitChannel(FNET_Channel *channel, uint32_t pcode)
 {
     pcode &= 0xffff; // remove flags;
@@ -219,14 +188,6 @@ FRT_Supervisor::HandlePacket(FNET_Packet *packet, FNET_Context context)
 
     if (req->IsError()) {
 
-        if (req->GetErrorCode() != FRTE_RPC_BAD_REQUEST
-            && _methodMismatchHook)
-        {
-            invoker->ForceMethod(_methodMismatchHook.get());
-            return (invoker->Invoke()) ?
-                FNET_FREE_CHANNEL : FNET_CLOSE_CHANNEL;
-        }
-
         invoker->HandleDone(false);
         return FNET_FREE_CHANNEL;
 
@@ -234,6 +195,7 @@ FRT_Supervisor::HandlePacket(FNET_Packet *packet, FNET_Context context)
 
         return (invoker->Invoke()) ?
             FNET_FREE_CHANNEL : FNET_CLOSE_CHANNEL;
+
     }
 }
 
@@ -315,88 +277,6 @@ FRT_Supervisor::RPCHooks::RPC_GetMethodInfo(FRT_RPCRequest *req)
         info->GetDocumentation(req->GetReturn());
     } else {
         req->SetError(FRTE_RPC_METHOD_FAILED, "No such method");
-    }
-}
-
-//----------------------------------------------------
-// Connection Hooks
-//----------------------------------------------------
-
-FRT_Supervisor::ConnHooks::ConnHooks(FRT_Supervisor &parent)
-    : _parent(parent),
-      _sessionInitHook(),
-      _sessionDownHook(),
-      _sessionFiniHook()
-{
-}
-
-
-FRT_Supervisor::ConnHooks::~ConnHooks() = default;
-
-void
-FRT_Supervisor::ConnHooks::SetSessionInitHook(FRT_METHOD_PT  method, FRT_Invokable *handler)
-{
-    _sessionInitHook = std::make_unique<FRT_Method>("frt.hook.sessionInit", "", "", method, handler);
-}
-
-
-void
-FRT_Supervisor::ConnHooks::SetSessionDownHook(FRT_METHOD_PT  method, FRT_Invokable *handler)
-{
-    _sessionDownHook = std::make_unique<FRT_Method>("frt.hook.sessionDown", "", "", method, handler);
-}
-
-
-void
-FRT_Supervisor::ConnHooks::SetSessionFiniHook(FRT_METHOD_PT  method, FRT_Invokable *handler)
-{
-    _sessionFiniHook = std::make_unique<FRT_Method>("frt.hook.sessionFini", "", "", method, handler);
-}
-
-
-void
-FRT_Supervisor::ConnHooks::InvokeHook(FRT_Method *hook, FNET_Connection *conn)
-{
-    FRT_RPCRequest *req = _parent.AllocRPCRequest();
-    req->SetMethodName(hook->GetName());
-    req->getStash().create<FRT_HookInvoker>(req, hook, conn).Invoke();
-}
-
-
-bool
-FRT_Supervisor::ConnHooks::InitAdminChannel(FNET_Channel *channel)
-{
-    FNET_Connection *conn = channel->GetConnection();
-    conn->SetCleanupHandler(this);
-    if (_sessionInitHook) {
-        InvokeHook(_sessionInitHook.get(), conn);
-    }
-    channel->SetHandler(this);
-    channel->SetContext(channel);
-    return true;
-}
-
-
-FNET_IPacketHandler::HP_RetCode
-FRT_Supervisor::ConnHooks::HandlePacket(FNET_Packet *packet, FNET_Context context)
-{
-    if (!packet->IsChannelLostCMD()) {
-        packet->Free();
-        return FNET_KEEP_CHANNEL;
-    }
-    FNET_Channel *ch = context._value.CHANNEL;
-    if (_sessionDownHook) {
-        InvokeHook(_sessionDownHook.get(), ch->GetConnection());
-    }
-    return FNET_FREE_CHANNEL;
-}
-
-
-void
-FRT_Supervisor::ConnHooks::Cleanup(FNET_Connection *conn)
-{
-    if (_sessionFiniHook) {
-        InvokeHook(_sessionFiniHook.get(), conn);
     }
 }
 

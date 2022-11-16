@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <vespa/vespalib/stllike/allocator.h>
 #include <cstdint>
+#include <vector>
 
 namespace vespalib {
 
@@ -37,5 +39,7 @@ public:
     constexpr bool operator==(const string_id &rhs) const noexcept { return (_id == rhs._id); }
     constexpr bool operator!=(const string_id &rhs) const noexcept { return (_id != rhs._id); }
 };
+
+using StringIdVector = std::vector<string_id, vespalib::allocator_large<string_id>>;
 
 }

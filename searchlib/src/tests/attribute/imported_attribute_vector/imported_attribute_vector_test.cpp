@@ -73,14 +73,14 @@ TEST_F("makeReadGuard(false) acquires guards on both target and reference attrib
         EXPECT_EQUAL(2u, f.target_attr->getCurrentGeneration());
         EXPECT_EQUAL(2u, f.reference_attr->getCurrentGeneration());
         // Should still be holding guard for first generation of writes for both attributes
-        EXPECT_EQUAL(1u, f.target_attr->getFirstUsedGeneration());
-        EXPECT_EQUAL(1u, f.reference_attr->getFirstUsedGeneration());
+        EXPECT_EQUAL(1u, f.target_attr->get_oldest_used_generation());
+        EXPECT_EQUAL(1u, f.reference_attr->get_oldest_used_generation());
     }
     // Force a generation handler update
     add_n_docs_with_undefined_values(*f.reference_attr, 1);
     add_n_docs_with_undefined_values(*f.target_attr, 1);
-    EXPECT_EQUAL(3u, f.target_attr->getFirstUsedGeneration());
-    EXPECT_EQUAL(3u, f.reference_attr->getFirstUsedGeneration());
+    EXPECT_EQUAL(3u, f.target_attr->get_oldest_used_generation());
+    EXPECT_EQUAL(3u, f.reference_attr->get_oldest_used_generation());
 }
 
 TEST_F("makeReadGuard(true) acquires enum guard on target and regular guard on reference attribute", Fixture) {
@@ -95,15 +95,15 @@ TEST_F("makeReadGuard(true) acquires enum guard on target and regular guard on r
         EXPECT_EQUAL(5u, f.target_attr->getCurrentGeneration());
         EXPECT_EQUAL(2u, f.reference_attr->getCurrentGeneration());
 
-        EXPECT_EQUAL(3u, f.target_attr->getFirstUsedGeneration());
-        EXPECT_EQUAL(1u, f.reference_attr->getFirstUsedGeneration());
+        EXPECT_EQUAL(3u, f.target_attr->get_oldest_used_generation());
+        EXPECT_EQUAL(1u, f.reference_attr->get_oldest_used_generation());
         EXPECT_TRUE(has_active_enum_guards(*f.target_attr));
     }
     // Force a generation handler update
     add_n_docs_with_undefined_values(*f.reference_attr, 1);
     add_n_docs_with_undefined_values(*f.target_attr, 1);
-    EXPECT_EQUAL(7u, f.target_attr->getFirstUsedGeneration());
-    EXPECT_EQUAL(3u, f.reference_attr->getFirstUsedGeneration());
+    EXPECT_EQUAL(7u, f.target_attr->get_oldest_used_generation());
+    EXPECT_EQUAL(3u, f.reference_attr->get_oldest_used_generation());
     EXPECT_FALSE(has_active_enum_guards(*f.target_attr));
 }
 
@@ -244,6 +244,7 @@ struct SingleStringAttrFixture : Fixture {
     SingleStringAttrFixture() : Fixture() {
         setup();
     }
+    ~SingleStringAttrFixture() override;
 
     void setup() {
         this->template reset_with_single_value_reference_mappings<StringAttribute, const char*>(
@@ -252,6 +253,8 @@ struct SingleStringAttrFixture : Fixture {
                  {DocId(4), dummy_gid(7), DocId(7), "bar"}});
     }
 };
+
+SingleStringAttrFixture::~SingleStringAttrFixture() = default;
 
 TEST_F("Single-valued string attribute values can be retrieved via reference", SingleStringAttrFixture)
 {
@@ -329,6 +332,7 @@ struct MultiStringAttrFixture : Fixture {
     MultiStringAttrFixture() : Fixture() {
         setup();
     }
+    ~MultiStringAttrFixture() override;
 
     void setup() {
         reset_with_array_value_reference_mappings<StringAttribute, const char *>(
@@ -337,6 +341,8 @@ struct MultiStringAttrFixture : Fixture {
                  {DocId(4), dummy_gid(7), DocId(7), doc7_values}});
     }
 };
+
+MultiStringAttrFixture::~MultiStringAttrFixture() = default;
 
 TEST_F("Multi-valued string attribute values can be retrieved via reference", MultiStringAttrFixture) {
     assert_multi_value_matches<const char*>(f, DocId(2), f.doc3_values, string_eq);
@@ -368,6 +374,7 @@ struct WeightedMultiStringAttrFixture : Fixture {
     WeightedMultiStringAttrFixture() : Fixture() {
         setup();
     }
+    ~WeightedMultiStringAttrFixture() override;
 
     void setup() {
         reset_with_wset_value_reference_mappings<StringAttribute, WeightedString>(
@@ -376,6 +383,8 @@ struct WeightedMultiStringAttrFixture : Fixture {
                  {DocId(3), dummy_gid(7), DocId(7), doc7_values}});
     }
 };
+
+WeightedMultiStringAttrFixture::~WeightedMultiStringAttrFixture() = default;
 
 TEST_F("Weighted string attribute values can be retrieved via reference", WeightedMultiStringAttrFixture) {
     assert_multi_value_matches<WeightedString>(f, DocId(1), f.doc3_values);
@@ -420,7 +429,7 @@ struct MockAttributeVector : NotImplementedAttribute {
     long _return_value{1234};
 
     MockAttributeVector()
-            : NotImplementedAttribute("mock", Config(BasicType::STRING)) {
+            : NotImplementedAttribute("mock") {
     }
 
     void set_received_args(DocId doc_id, void* ser_to,
@@ -523,6 +532,7 @@ struct TensorAttrFixture : Fixture {
     {
         setup(dense);
     }
+    ~TensorAttrFixture() override;
     void setup(bool dense) {
         if (dense) {
             tensor1 = createTensor(TensorSpec("tensor(x[2])").add({{"x", 1}}, 11));
@@ -562,6 +572,7 @@ struct TensorAttrFixture : Fixture {
     }
 };
 
+TensorAttrFixture::~TensorAttrFixture() = default;
 
 TEST_F("Imported sparse tensor", TensorAttrFixture(false))
 {

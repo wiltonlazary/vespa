@@ -36,13 +36,18 @@ struct MyRangeTerm : InitTerm<RangeTerm> {};
 struct MyStringTerm : InitTerm<StringTerm>  {};
 struct MySubstrTerm : InitTerm<SubstringTerm>  {};
 struct MySuffixTerm : InitTerm<SuffixTerm>  {};
+struct MyFuzzyTerm : FuzzyTerm { MyFuzzyTerm(): FuzzyTerm("term", "view", 0, Weight(0), 2, 0) {} };
 struct MyWeakAnd : WeakAnd { MyWeakAnd() : WeakAnd(1234, "view") {} };
 struct MyWeightedSetTerm : WeightedSetTerm { MyWeightedSetTerm() : WeightedSetTerm(0, "view", 0, Weight(42)) {} };
 struct MyDotProduct : DotProduct { MyDotProduct() : DotProduct(0, "view", 0, Weight(42)) {} };
 struct MyWandTerm : WandTerm { MyWandTerm() : WandTerm(0, "view", 0, Weight(42), 57, 67, 77.7) {} };
 struct MyPredicateQuery : InitTerm<PredicateQuery> {};
 struct MyRegExpTerm : InitTerm<RegExpTerm>  {};
-struct MyNearestNeighborTerm : NearestNeighborTerm {};
+struct MyNearestNeighborTerm : NearestNeighborTerm {
+    MyNearestNeighborTerm() : NearestNeighborTerm("qt", "fn", 0, Weight(42), 10, true, 666, 1234.5) {}
+};
+struct MyTrue : TrueQueryNode {};
+struct MyFalse : FalseQueryNode {};
 
 struct MyQueryNodeTypes {
     typedef MyAnd And;
@@ -61,6 +66,7 @@ struct MyQueryNodeTypes {
     typedef MyStringTerm StringTerm;
     typedef MySubstrTerm SubstringTerm;
     typedef MySuffixTerm SuffixTerm;
+    typedef MyFuzzyTerm FuzzyTerm;
     typedef MyWeakAnd WeakAnd;
     typedef MyWeightedSetTerm WeightedSetTerm;
     typedef MyDotProduct DotProduct;
@@ -68,6 +74,8 @@ struct MyQueryNodeTypes {
     typedef MyPredicateQuery PredicateQuery;
     typedef MyRegExpTerm RegExpTerm;
     typedef MyNearestNeighborTerm NearestNeighborTerm;
+    typedef MyFalse FalseQueryNode;
+    typedef MyTrue TrueQueryNode;
 };
 
 class MyCustomVisitor : public CustomTypeVisitor<MyQueryNodeTypes>
@@ -104,6 +112,9 @@ public:
     void visit(MyPredicateQuery &) override { setVisited<MyPredicateQuery>(); }
     void visit(MyRegExpTerm &) override { setVisited<MyRegExpTerm>(); }
     void visit(MyNearestNeighborTerm &) override { setVisited<MyNearestNeighborTerm>(); }
+    void visit(MyTrue &) override { setVisited<MyTrue>(); }
+    void visit(MyFalse &) override { setVisited<MyFalse>(); }
+    void visit(MyFuzzyTerm &) override { setVisited<MyFuzzyTerm>(); }
 };
 
 template <class T>
@@ -136,6 +147,11 @@ TEST("customtypevisitor_test") {
     requireThatNodeIsVisited<MyWandTerm>();
     requireThatNodeIsVisited<MyPredicateQuery>();
     requireThatNodeIsVisited<MyRegExpTerm>();
+    requireThatNodeIsVisited<MyLocationTerm>();
+    requireThatNodeIsVisited<MyNearestNeighborTerm>();
+    requireThatNodeIsVisited<MyTrue>();
+    requireThatNodeIsVisited<MyFalse>();
+    requireThatNodeIsVisited<MyFuzzyTerm>();
 }
 }  // namespace
 

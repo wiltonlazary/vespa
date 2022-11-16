@@ -18,9 +18,10 @@ namespace fixed_thread_bundle {
  * support static wiring of signal paths and execution hooks.
  **/
 struct Work {
-    const std::vector<Runnable *> *targets;
+    Runnable* const* targets;
+    size_t cnt;
     CountDownLatch *latch;
-    Work() : targets(0), latch(0) {}
+    Work() : targets(nullptr), cnt(0), latch(0) {}
 };
 
 /**
@@ -30,10 +31,10 @@ struct Part {
     const Work &work;
     size_t offset;
     Part(const Work &w, size_t o) : work(w), offset(o) {}
-    bool valid() { return (offset < work.targets->size()); }
+    bool valid() { return (offset < work.cnt); }
     void perform() {
         if (valid()) {
-            (*(work.targets))[offset]->run();
+            work.targets[offset]->run();
         }
         work.latch->countDown();
     }
@@ -86,8 +87,9 @@ struct Signal {
 class SimpleThreadBundle : public ThreadBundle
 {
 public:
-    typedef fixed_thread_bundle::Work Work;
-    typedef fixed_thread_bundle::Signal Signal;
+    using Work = fixed_thread_bundle::Work;
+    using Signal = fixed_thread_bundle::Signal;
+    using init_fun_t = Runnable::init_fun_t;
 
     typedef std::unique_ptr<SimpleThreadBundle> UP;
     enum Strategy { USE_SIGNAL_LIST, USE_SIGNAL_TREE, USE_BROADCAST };
@@ -97,10 +99,12 @@ public:
     private:
         std::mutex _lock;
         size_t     _bundleSize;
+        init_fun_t _init_fun;
         std::vector<SimpleThreadBundle*> _bundles;
 
     public:
-        Pool(size_t bundleSize);
+        Pool(size_t bundleSize, init_fun_t init_fun);
+        Pool(size_t bundleSize) : Pool(bundleSize, Runnable::default_init_function) {}
         ~Pool();
         SimpleThreadBundle::UP obtain();
         void release(SimpleThreadBundle::UP bundle);
@@ -112,14 +116,8 @@ private:
         Thread thread;
         Signal &signal;
         Runnable::UP hook;
-        Worker(Signal &s, Runnable::UP h) : thread(*this), signal(s), hook(std::move(h)) {
-            thread.start();
-        }
-        void run() override {
-            for (size_t gen = 0; signal.wait(gen) > 0; ) {
-                hook->run();
-            }
-        }
+        Worker(Signal &s, init_fun_t init_fun, Runnable::UP h);
+        void run() override;
     };
 
     Work                    _work;
@@ -128,10 +126,13 @@ private:
     Runnable::UP            _hook;
 
 public:
-    SimpleThreadBundle(size_t size, Strategy strategy = USE_SIGNAL_LIST);
+    SimpleThreadBundle(size_t size, init_fun_t init_fun, Strategy strategy = USE_SIGNAL_LIST);
+    SimpleThreadBundle(size_t size, Strategy strategy = USE_SIGNAL_LIST)
+      : SimpleThreadBundle(size, Runnable::default_init_function, strategy) {}
     ~SimpleThreadBundle();
     size_t size() const override;
-    void run(const std::vector<Runnable*> &targets) override;
+    using ThreadBundle::run;
+    void run(Runnable* const* targets, size_t cnt) override;
 };
 
 } // namespace vespalib

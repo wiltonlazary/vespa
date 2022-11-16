@@ -72,13 +72,16 @@ findhost () {
 findroot
 findhost
 
+ROOT=${VESPA_HOME%/}
+export ROOT
+
 # END environment bootstrap section
 
 export MALLOC_ARENA_MAX=1 #Does not need fast allocation
 exec java \
 -server -enableassertions \
 -XX:ThreadStackSize=512 \
--verbose:gc \
+-Xlog:gc \
 -Xms4g -Xmx4g \
 -Djava.library.path=${VESPA_HOME}/libexec64/native:${VESPA_HOME}/lib64 \
 -XX:MaxDirectMemorySize=32m -Djava.awt.headless=true $(getJavaOptionsIPV46) \

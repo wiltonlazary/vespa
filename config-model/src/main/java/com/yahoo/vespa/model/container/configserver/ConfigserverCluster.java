@@ -9,7 +9,6 @@ import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.Zone;
-import com.yahoo.container.StatisticsConfig;
 import com.yahoo.container.core.VipStatusConfig;
 import com.yahoo.container.jdisc.config.HealthMonitorConfig;
 import com.yahoo.net.HostName;
@@ -31,7 +30,6 @@ public class ConfigserverCluster extends AbstractConfigProducer
         ConfigserverConfig.Producer,
         CuratorConfig.Producer,
         HealthMonitorConfig.Producer,
-        StatisticsConfig.Producer,
         VipStatusConfig.Producer,
         ZookeeperServerConfig.Producer {
 
@@ -47,7 +45,7 @@ public class ConfigserverCluster extends AbstractConfigProducer
         this.containerCluster = containerCluster;
 
         // If we are in a config server cluster the correct zone is propagated through cloud config options,
-        // not through config to deployment options (see StandaloneContainerApplication.scala),
+        // not through config to deployment options (see StandaloneContainerApplication.java),
         // so we need to propagate the zone options into the container from here
         Environment environment = options.environment().isPresent() ? Environment.from(options.environment().get()) : Environment.defaultEnvironment();
         RegionName region = options.region().isPresent() ? RegionName.from(options.region().get()) : RegionName.defaultName();
@@ -82,6 +80,9 @@ public class ConfigserverCluster extends AbstractConfigProducer
 
         if (options.zookeeperClientPort().isPresent()) {
             builder.clientPort(options.zookeeperClientPort().get());
+        }
+        if (options.hostedVespa().orElse(false)) {
+            builder.vespaTlsConfigFile(Defaults.getDefaults().underVespaHome("conf/zookeeper/tls.conf.json"));
         }
     }
 
@@ -170,12 +171,6 @@ public class ConfigserverCluster extends AbstractConfigProducer
         builder.hostname(server.hostName);
         builder.id(id);
         return builder;
-    }
-
-    @Override
-    public void getConfig(StatisticsConfig.Builder builder) {
-        builder.collectionintervalsec(60.0);
-        builder.loggingintervalsec(60.0);
     }
 
     @Override

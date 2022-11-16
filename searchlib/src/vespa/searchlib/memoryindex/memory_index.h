@@ -8,6 +8,8 @@
 #include <vespa/searchlib/queryeval/searchable.h>
 #include <vespa/vespalib/stllike/hash_set.h>
 #include <vespa/vespalib/util/memoryusage.h>
+#include <atomic>
+#include <mutex>
 
 namespace search::index {
     class IFieldLengthInspector;
@@ -20,7 +22,8 @@ namespace document { class Document; }
 
 namespace search::memoryindex {
 
-class DocumentInverter;
+class DocumentInverterCollection;
+class DocumentInverterContext;
 class FieldIndexCollection;
 
 /**
@@ -41,26 +44,22 @@ class FieldIndexCollection;
 class MemoryIndex : public queryeval::Searchable {
 private:
     using ISequencedTaskExecutor = vespalib::ISequencedTaskExecutor;
+    using LidVector = std::vector<uint32_t>;
+    using OnWriteDoneType = const std::shared_ptr<vespalib::IDestructorCallback> &;
     index::Schema     _schema;
     ISequencedTaskExecutor &_invertThreads;
     ISequencedTaskExecutor &_pushThreads;
     std::unique_ptr<FieldIndexCollection> _fieldIndexes;
-    std::unique_ptr<DocumentInverter>  _inverter0;
-    std::unique_ptr<DocumentInverter>  _inverter1;
-    DocumentInverter                  *_inverter;
+    std::unique_ptr<DocumentInverterContext> _inverter_context;
+    std::unique_ptr<DocumentInverterCollection> _inverters;
     bool                _frozen;
     uint32_t            _maxDocId;
-    uint32_t            _numDocs;
+    std::atomic<uint32_t> _numDocs;
     mutable std::mutex  _lock;
     std::vector<bool>   _hiddenFields;
     index::Schema::SP   _prunedSchema;
     vespalib::hash_set<uint32_t> _indexedDocs; // documents in memory index
     const uint64_t      _staticMemoryFootprint;
-
-    MemoryIndex(const MemoryIndex &) = delete;
-    MemoryIndex(MemoryIndex &&) = delete;
-    MemoryIndex &operator=(const MemoryIndex &) = delete;
-    MemoryIndex &operator=(MemoryIndex &&) = delete;
 
     void updateMaxDocId(uint32_t docId) {
         if (docId > _maxDocId) {
@@ -68,15 +67,15 @@ private:
         }
     }
     void incNumDocs() {
-        ++_numDocs;
+        auto num_docs = _numDocs.load(std::memory_order_relaxed);
+        _numDocs.store(num_docs + 1, std::memory_order_relaxed);
     }
     void decNumDocs() {
-        if (_numDocs > 0) {
-            --_numDocs;
+        auto num_docs = _numDocs.load(std::memory_order_relaxed);
+        if (num_docs > 0) {
+            _numDocs.store(num_docs - 1, std::memory_order_relaxed);
         }
     }
-
-    void flipInverter();
 
 public:
     using UP = std::unique_ptr<MemoryIndex>;
@@ -96,7 +95,11 @@ public:
                 ISequencedTaskExecutor& invertThreads,
                 ISequencedTaskExecutor& pushThreads);
 
-    ~MemoryIndex();
+    MemoryIndex(const MemoryIndex &) = delete;
+    MemoryIndex(MemoryIndex &&) = delete;
+    MemoryIndex &operator=(const MemoryIndex &) = delete;
+    MemoryIndex &operator=(MemoryIndex &&) = delete;
+    ~MemoryIndex() override;
 
     const index::Schema &getSchema() const { return _schema; }
 
@@ -108,23 +111,21 @@ public:
      * If the document is already in the index, the old version will be removed first.
      * This function is async. commit() must be called for changes to take effect.
      */
-    void insertDocument(uint32_t docId, const document::Document &doc);
+    void insertDocument(uint32_t docId, const document::Document &doc, OnWriteDoneType on_write_done);
 
     /**
      * Remove a document from the underlying field indexes.
      *
      * This function is async. commit() must be called for changes to take effect.
      */
-    void removeDocument(uint32_t docId);
+    void removeDocuments(LidVector lids);
 
     /**
      * Commits the inserts and removes since the last commit, making them searchable.
      *
-     * When commit is completed, 'onWriteDone' goes out of scope, scheduling completion callback.
-     *
-     * Callers can call pushThreads.sync() to wait for push completion.
+     * When commit is completed, 'on_write_done' goes out of scope, scheduling completion callback.
      */
-    void commit(const std::shared_ptr<vespalib::IDestructorCallback> &onWriteDone);
+    void commit(OnWriteDoneType on_write_done);
 
     /**
      * Freeze this index.
@@ -140,13 +141,14 @@ public:
     void dump(index::IndexBuilder &indexBuilder);
 
     // Implements Searchable
-    queryeval::Blueprint::UP createBlueprint(const queryeval::IRequestContext & requestContext,
-                                             const queryeval::FieldSpec &field,
-                                             const query::Node &term) override;
+    std::unique_ptr<queryeval::Blueprint> createBlueprint(const queryeval::IRequestContext & requestContext,
+                                                          const queryeval::FieldSpec &field,
+                                                          const query::Node &term) override;
 
-    queryeval::Blueprint::UP createBlueprint(const queryeval::IRequestContext & requestContext,
-                                             const queryeval::FieldSpecList &fields,
-                                             const query::Node &term) override {
+    std::unique_ptr<queryeval::Blueprint> createBlueprint(const queryeval::IRequestContext & requestContext,
+                                                          const queryeval::FieldSpecList &fields,
+                                                          const query::Node &term) override
+    {
         return queryeval::Searchable::createBlueprint(requestContext, fields, term);
     }
 
@@ -156,7 +158,7 @@ public:
     }
 
     virtual uint32_t getNumDocs() const {
-        return _numDocs;
+        return _numDocs.load(std::memory_order_relaxed);
     }
 
     virtual uint64_t getNumWords() const;

@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.application.container;
 
-import com.google.common.annotations.Beta;
+import com.yahoo.api.annotations.Beta;
 import com.yahoo.application.container.handler.Request;
 import com.yahoo.application.container.handler.Response;
 import com.yahoo.jdisc.handler.CompletionHandler;
@@ -11,7 +11,6 @@ import com.yahoo.jdisc.handler.ResponseHandler;
 import com.yahoo.jdisc.service.CurrentContainer;
 import com.yahoo.jdisc.test.TestDriver;
 
-import javax.annotation.concurrent.ThreadSafe;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -22,7 +21,6 @@ import java.util.concurrent.CountDownLatch;
 /**
  * @author Einar M R Rosenvinge
  */
-@ThreadSafe
 @Beta
 final class SynchronousRequestResponseHandler {
 
@@ -121,7 +119,7 @@ final class SynchronousRequestResponseHandler {
         }
     }
 
-    @ThreadSafe
+
     private static class BlockingResponseHandler implements ResponseHandler, ContentChannel {
         private volatile com.yahoo.jdisc.Response discResponse = null;
         private CountDownLatch closedLatch = new CountDownLatch(1);

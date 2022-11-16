@@ -2,6 +2,8 @@
 package com.yahoo.container.plugin.mojo;
 
 import org.apache.commons.io.FileUtils;
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.resolver.ArtifactResolutionException;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
@@ -56,22 +58,49 @@ public class ApplicationMojo extends AbstractMojo {
 
     /** Writes meta data about this package if the destination directory exists. */
     private void addBuildMetaData(File applicationDestination) throws MojoExecutionException {
-        if ( ! applicationDestination.exists())
-            return;
+        if ( ! applicationDestination.exists()) return;
 
-        if (vespaversion == null) // Get the build version of the parent project unless specifically set.
-            vespaversion = project.getProperties().getProperty("vespaversion");
+        if (vespaversion == null)
+            vespaversion = project.getPlugin("com.yahoo.vespa:vespa-application-maven-plugin").getVersion();
 
-        String metaData = String.format("{\"compileVersion\": \"%s\",\n \"buildTime\": %d}",
-                                        vespaversion,
-                                        System.currentTimeMillis());
+        Version compileVersion = Version.from(vespaversion);
+
+        MavenProject current = project;
+        while (current.getParent() != null && current.getParent().getParentArtifact() != null)
+            current = current.getParent();
+
+        Version parentVersion = null;
+        Artifact parentArtifact = current.getParentArtifact();
+        if (parentArtifact != null && isVespaParent(parentArtifact.getGroupId())) {
+            try {
+                parentVersion = Version.from(parentArtifact.getSelectedVersion().toString());
+            } catch (ArtifactResolutionException e) {
+                parentVersion = Version.from(parentArtifact.getVersion());
+            }
+            if (parentVersion.compareTo(compileVersion) < 0)
+                throw new IllegalArgumentException("compile version (" + compileVersion + ") cannot be higher than parent version (" + parentVersion + ")");
+        }
+
+        String metaData = String.format("""
+                                        {
+                                          "compileVersion": "%s",
+                                          "buildTime": %d,
+                                          "parentVersion": %s
+                                        }
+                                        """,
+                                        compileVersion,
+                                        System.currentTimeMillis(),
+                                        parentVersion == null ? null : "\"" + parentVersion + "\"");
         try {
-            Files.write(applicationDestination.toPath().resolve("build-meta.json"),
-                        metaData.getBytes(StandardCharsets.UTF_8));
+            Files.writeString(applicationDestination.toPath().resolve("build-meta.json"), metaData);
         }
         catch (IOException e) {
             throw new MojoExecutionException("Failed writing compile version and build time.", e);
         }
+    }
+
+    static boolean isVespaParent(String groupId) {
+        return groupId.matches("(com\\.yahoo\\.vespa|ai\\.vespa)(\\..+)?");
     }
 
     private void copyBundlesForSubModules(File componentsDir) throws MojoExecutionException {

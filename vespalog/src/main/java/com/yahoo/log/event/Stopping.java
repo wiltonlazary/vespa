@@ -5,7 +5,7 @@ package com.yahoo.log.event;
  *
  * @author  Bjorn Borud
  */
-public class Stopping extends Event {
+class Stopping extends Event {
     public Stopping () {
     }
 

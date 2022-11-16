@@ -23,9 +23,7 @@ import com.yahoo.search.query.parser.ParserFactory;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * A utility for writing parser tests
@@ -62,6 +60,7 @@ public class ParsingTester {
      * Returns an unfrozen version of the IndexFacts this will use.
      * This can be used to add new indexes and passing the resulting IndexFacts to the constructor of this.
      */
+    @SuppressWarnings("deprecation")
     public static IndexFacts createIndexFacts() {
         String indexInfoConfigID = "file:src/test/java/com/yahoo/prelude/query/parser/test/parseindexinfo.cfg";
         ConfigGetter<IndexInfoConfig> getter = new ConfigGetter<>(IndexInfoConfig.class);
@@ -118,10 +117,10 @@ public class ParsingTester {
                               Language language, Linguistics linguistics) {
         Item root = parseQuery(toParse, filter, language, mode, linguistics);
         if (parsed == null) {
-            assertTrue("root should be null, but was " + root, root == null);
+            assertTrue(root instanceof NullItem, "root is " + root);
         } else {
-            assertNotNull("Got null from parsing " + toParse, root);
-            assertEquals("Parse of '" + toParse + "'", parsed, root.toString());
+            assertNotNull(root, "Got null from parsing " + toParse);
+            assertEquals(parsed, root.toString(), "Parse of '" + toParse + "'");
         }
         return root;
     }
@@ -136,9 +135,7 @@ public class ParsingTester {
                 .setLinguistics(linguistics)
                 .setSpecialTokens(tokenRegistry.getSpecialTokens("default")));
         Item root = parser.parse(new Parsable().setQuery(query).setFilter(filter).setLanguage(language)).getRoot();
-        if (root instanceof NullItem) {
-            return null;
-        }
+        if (root == null) throw new NullPointerException(); // Should be NullItem
         return root;
     }
 

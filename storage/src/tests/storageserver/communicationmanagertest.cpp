@@ -6,6 +6,7 @@
 #include <vespa/messagebus/rpcmessagebus.h>
 #include <vespa/storageapi/message/persistence.h>
 #include <vespa/storage/frameworkimpl/component/storagecomponentregisterimpl.h>
+#include <vespa/storage/persistence/messages.h>
 #include <vespa/document/bucket/fixed_bucket_spaces.h>
 #include <tests/common/teststorageapp.h>
 #include <tests/common/dummystoragelink.h>
@@ -44,6 +45,24 @@ struct CommunicationManagerTest : Test {
     }
 };
 
+namespace {
+
+void
+wait_for_slobrok_visibility(const CommunicationManager& mgr,
+                            const api::StorageMessageAddress& addr)
+{
+    const auto deadline = vespalib::steady_clock::now() + 60s;
+    do {
+        if (mgr.address_visible_in_slobrok(addr)) {
+            return;
+        }
+        std::this_thread::sleep_for(10ms);
+    } while (vespalib::steady_clock::now() < deadline);
+    FAIL() << "Timed out waiting for address " << addr.toString() << " to be visible in Slobrok";
+}
+
+}
+
 TEST_F(CommunicationManagerTest, simple) {
     mbus::Slobrok slobrok;
     vdstestlib::DirConfig distConfig(getStandardConfig(false));
@@ -59,9 +78,9 @@ TEST_F(CommunicationManagerTest, simple) {
     TestDistributorApp distNode(distConfig.getConfigId());
 
     CommunicationManager distributor(distNode.getComponentRegister(),
-                                     distConfig.getConfigId());
+                                     config::ConfigUri(distConfig.getConfigId()));
     CommunicationManager storage(storNode.getComponentRegister(),
-                                 storConfig.getConfigId());
+                                 config::ConfigUri(storConfig.getConfigId()));
     DummyStorageLink *distributorLink = new DummyStorageLink();
     DummyStorageLink *storageLink = new DummyStorageLink();
     distributor.push_back(std::unique_ptr<StorageLink>(distributorLink));
@@ -69,12 +88,19 @@ TEST_F(CommunicationManagerTest, simple) {
     distributor.open();
     storage.open();
 
-    std::this_thread::sleep_for(1s);
+    auto stor_addr  = api::StorageMessageAddress::create(&_Storage, lib::NodeType::STORAGE, 1);
+    auto distr_addr = api::StorageMessageAddress::create(&_Storage, lib::NodeType::DISTRIBUTOR, 1);
+    // It is undefined when the logical nodes will be visible in each others Slobrok
+    // mirrors, so explicitly wait until mutual visibility is ensured. Failure to do this
+    // might cause the below message to be immediately bounced due to failing to map the
+    // storage address to an actual RPC endpoint.
+    ASSERT_NO_FATAL_FAILURE(wait_for_slobrok_visibility(distributor, stor_addr));
+    ASSERT_NO_FATAL_FAILURE(wait_for_slobrok_visibility(storage, distr_addr));
 
     // Send a message through from distributor to storage
     auto cmd = std::make_shared<api::GetCommand>(
             makeDocumentBucket(document::BucketId(0)), document::DocumentId("id:ns:mytype::mydoc"), document::AllFields::NAME);
-    cmd->setAddress(api::StorageMessageAddress::create(&_Storage, lib::NodeType::STORAGE, 1));
+    cmd->setAddress(stor_addr);
     distributorLink->sendUp(cmd);
     storageLink->waitForMessages(1, MESSAGE_WAIT_TIME_SEC);
     ASSERT_GT(storageLink->getNumCommands(), 0);
@@ -111,7 +137,7 @@ CommunicationManagerTest::doTestConfigPropagation(bool isContentNode)
     }
 
     CommunicationManager commMgr(node->getComponentRegister(),
-                                 config.getConfigId());
+                                 config::ConfigUri(config.getConfigId()));
     DummyStorageLink *storageLink = new DummyStorageLink();
     commMgr.push_back(std::unique_ptr<StorageLink>(storageLink));
     commMgr.open();
@@ -157,7 +183,7 @@ TEST_F(CommunicationManagerTest, commands_are_dequeued_in_fifo_order) {
     TestServiceLayerApp storNode(storConfig.getConfigId());
 
     CommunicationManager storage(storNode.getComponentRegister(),
-                                 storConfig.getConfigId());
+                                 config::ConfigUri(storConfig.getConfigId()));
     DummyStorageLink *storageLink = new DummyStorageLink();
     storage.push_back(std::unique_ptr<StorageLink>(storageLink));
     storage.open();
@@ -190,7 +216,7 @@ TEST_F(CommunicationManagerTest, replies_are_dequeued_in_fifo_order) {
     TestServiceLayerApp storNode(storConfig.getConfigId());
 
     CommunicationManager storage(storNode.getComponentRegister(),
-                                 storConfig.getConfigId());
+                                 config::ConfigUri(storConfig.getConfigId()));
     DummyStorageLink *storageLink = new DummyStorageLink();
     storage.push_back(std::unique_ptr<StorageLink>(storageLink));
     storage.open();
@@ -231,7 +257,7 @@ struct CommunicationManagerFixture {
 
         node = std::make_unique<TestServiceLayerApp>(stor_config.getConfigId());
         comm_mgr = std::make_unique<CommunicationManager>(node->getComponentRegister(),
-                                                          stor_config.getConfigId());
+                                                          config::ConfigUri(stor_config.getConfigId()));
         bottom_link = new DummyStorageLink();
         comm_mgr->push_back(std::unique_ptr<StorageLink>(bottom_link));
         comm_mgr->open();
@@ -329,6 +355,13 @@ TEST_F(CommunicationManagerTest, unmapped_bucket_space_for_get_documentapi_reque
     ASSERT_TRUE(reply.hasErrors());
     EXPECT_EQ(static_cast<uint32_t>(api::ReturnCode::REJECTED), reply.getError(0).getCode());
     EXPECT_EQ(uint64_t(1), f.comm_mgr->metrics().bucketSpaceMappingFailures.getValue());
+}
+
+TEST_F(CommunicationManagerTest, communication_manager_swallows_internal_replies) {
+    CommunicationManagerFixture f;
+    auto msg = std::make_unique<RecheckBucketInfoCommand>(makeDocumentBucket({16, 1}));
+    auto reply = std::shared_ptr<api::StorageReply>(msg->makeReply());
+    EXPECT_TRUE(f.comm_mgr->onUp(reply)); // true == handled by storage link
 }
 
 } // storage

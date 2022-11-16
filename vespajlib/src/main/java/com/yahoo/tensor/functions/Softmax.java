@@ -7,6 +7,7 @@ import com.yahoo.tensor.evaluation.Name;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * @author bratseth
@@ -46,8 +47,11 @@ public class Softmax<NAMETYPE extends Name> extends CompositeTensorFunction<NAME
     }
 
     @Override
-    public String toString(ToStringContext context) {
+    public String toString(ToStringContext<NAMETYPE> context) {
         return "softmax(" + argument.toString(context) + ", " + dimension + ")";
     }
+
+    @Override
+    public int hashCode() { return Objects.hash("softmax", argument, dimension); }
 
 }

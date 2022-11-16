@@ -12,11 +12,13 @@
 #include <vespa/searchlib/fef/test/plugin/setup.h>
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/searchlib/fef/test/ftlib.h>
+#include <vespa/searchcommon/attribute/config.h>
 
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 
 using namespace search::features;
 using namespace search::fef;
@@ -596,19 +598,17 @@ Benchmark::Main()
     setup_fef_test_plugin(_factory);
     setup_search_features(_factory);
 
-    int idx = 1;
     int opt;
-    const char * arg;
     bool optError = false;
     vespalib::string file;
     vespalib::string feature;
-    while ((opt = GetOpt("c:f:", arg, idx)) != -1) {
+    while ((opt = getopt(_argc, _argv, "c:f:")) != -1) {
         switch (opt) {
         case 'c':
-            file.assign(arg);
+            file.assign(optarg);
             break;
         case 'f':
-            feature.assign(arg);
+            feature.assign(optarg);
             break;
         default:
             optError = true;
@@ -616,7 +616,7 @@ Benchmark::Main()
         }
     }
 
-    if (_argc != idx || optError) {
+    if (_argc != optind || optError) {
         //usage();
         return -1;
     }

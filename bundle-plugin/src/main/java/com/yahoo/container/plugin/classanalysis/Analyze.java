@@ -13,7 +13,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Optional;
 
-
 /**
  * Main entry point for class analysis
  *
@@ -21,6 +20,7 @@ import java.util.Optional;
  * @author ollivir
  */
 public class Analyze {
+
     public static ClassFileMetaData analyzeClass(File classFile) {
         return analyzeClass(classFile, null);
     }
@@ -44,7 +44,7 @@ public class Analyze {
     }
 
     static Optional<String> internalNameToClassName(String internalClassName) {
-        if(internalClassName == null) {
+        if (internalClassName == null) {
             return Optional.empty();
         } else {
             return getClassName(Type.getObjectType(internalClassName));
@@ -53,17 +53,19 @@ public class Analyze {
 
     static Optional<String> getClassName(Type aType) {
         switch (aType.getSort()) {
-        case Type.ARRAY:
-            return getClassName(aType.getElementType());
-        case Type.OBJECT:
-            return Optional.of(aType.getClassName());
-        default:
-            return Optional.empty();
+            case Type.ARRAY:
+                return getClassName(aType.getElementType());
+            case Type.OBJECT:
+                return Optional.of(aType.getClassName());
+            case Type.METHOD:
+                return getClassName(aType.getReturnType());
+            default:
+                return Optional.empty();
         }
     }
 
     static AnnotationVisitor visitAnnotationDefault(ImportCollector collector) {
-        return new AnnotationVisitor(Opcodes.ASM7) {
+        return new AnnotationVisitor(Opcodes.ASM9) {
             @Override
             public void visit(String name, Object value) {
             }
@@ -89,4 +91,5 @@ public class Analyze {
             }
         };
     }
+
 }

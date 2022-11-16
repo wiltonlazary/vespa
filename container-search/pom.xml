@@ -8,26 +8,16 @@
   <parent>
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>parent</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <relativePath>../parent/pom.xml</relativePath>
   </parent>
   <artifactId>container-search</artifactId>
   <packaging>jar</packaging>
-  <version>7-SNAPSHOT</version>
+  <version>8-SNAPSHOT</version>
   <dependencies>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <scope>test</scope>
-    </dependency>
     <dependency>
       <groupId>org.apache.httpcomponents</groupId>
       <artifactId>httpclient</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.hamcrest</groupId>
-      <artifactId>hamcrest-library</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -50,6 +40,12 @@
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
+      <artifactId>hosted-zone-api</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.yahoo.vespa</groupId>
       <artifactId>config-lib</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
@@ -61,13 +57,14 @@
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>org.json</groupId>
-      <artifactId>json</artifactId>
+      <groupId>com.yahoo.vespa</groupId>
+      <artifactId>container-core</artifactId>
+      <version>${project.version}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>com.yahoo.vespa</groupId>
-      <artifactId>container-core</artifactId>
+      <artifactId>container-disc</artifactId>
       <version>${project.version}</version>
       <scope>provided</scope>
     </dependency>
@@ -100,10 +97,6 @@
     <dependency>
       <groupId>com.ibm.icu</groupId>
       <artifactId>icu4j</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>net.jcip</groupId>
-      <artifactId>jcip-annotations</artifactId>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
@@ -149,10 +142,34 @@
       <artifactId>testutil</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>junit</groupId>
+          <artifactId>junit</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.hamcrest</groupId>
+          <artifactId>hamcrest-core</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.hamcrest</groupId>
+          <artifactId>hamcrest-library</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -212,11 +229,18 @@
             <arg>-Xlint:-rawtypes</arg>
             <arg>-Xlint:-unchecked</arg>
             <arg>-Xlint:-serial</arg>
-            <arg>-Xlint:-deprecation</arg>
-            <arg>-Xlint:-dep-ann</arg>
-            <arg>-Xlint:-cast</arg>
             <arg>-Werror</arg>
           </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Illegal reflective access in ProbabilisticSampleRateTest by mockito/bytebuddy -->
+          <argLine>
+            --add-opens=java.base/jdk.internal.util.random=ALL-UNNAMED
+          </argLine>
         </configuration>
       </plugin>
       <plugin>

@@ -12,7 +12,9 @@ import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.provision.AllocatedHosts;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.AthenzDomain;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.DockerImage;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.path.Path;
 import com.yahoo.slime.SlimeUtils;
@@ -23,6 +25,7 @@ import com.yahoo.vespa.config.server.deploy.ZooKeeperClient;
 import com.yahoo.vespa.config.server.deploy.ZooKeeperDeployer;
 import com.yahoo.vespa.config.server.filedistribution.AddFileInterface;
 import com.yahoo.vespa.config.server.filedistribution.MockFileManager;
+import com.yahoo.vespa.config.server.tenant.CloudAccountSerializer;
 import com.yahoo.vespa.config.server.tenant.OperatorCertificateSerializer;
 import com.yahoo.vespa.config.server.tenant.TenantRepository;
 import com.yahoo.vespa.config.server.tenant.TenantSecretStoreSerializer;
@@ -31,7 +34,7 @@ import com.yahoo.vespa.config.server.zookeeper.ZKApplicationPackage;
 import com.yahoo.vespa.curator.Curator;
 import com.yahoo.vespa.curator.transaction.CuratorOperations;
 import com.yahoo.vespa.curator.transaction.CuratorTransaction;
-
+import org.apache.zookeeper.data.Stat;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.List;
@@ -55,6 +58,7 @@ public class SessionZooKeeperClient {
     // NOTE: Any state added here MUST also be propagated in com.yahoo.vespa.config.server.deploy.Deployment.prepare()
 
     static final String APPLICATION_ID_PATH = "applicationId";
+    static final String TAGS_PATH = "tags";
     static final String APPLICATION_PACKAGE_REFERENCE_PATH = "applicationPackageReference";
     private static final String VERSION_PATH = "version";
     private static final String CREATE_TIME_PATH = "createTime";
@@ -63,9 +67,11 @@ public class SessionZooKeeperClient {
     private static final String QUOTA_PATH = "quota";
     private static final String TENANT_SECRET_STORES_PATH = "tenantSecretStores";
     private static final String OPERATOR_CERTIFICATES_PATH = "operatorCertificates";
+    private static final String CLOUD_ACCOUNT_PATH = "cloudAccount";
 
     private final Curator curator;
     private final TenantName tenantName;
+    private final long sessionId;
     private final Path sessionPath;
     private final Path sessionStatusPath;
     private final String serverId;  // hostname
@@ -75,6 +81,7 @@ public class SessionZooKeeperClient {
     public SessionZooKeeperClient(Curator curator, TenantName tenantName, long sessionId, String serverId, AddFileInterface fileManager, int maxNodeSize) {
         this.curator = curator;
         this.tenantName = tenantName;
+        this.sessionId = sessionId;
         this.sessionPath = getSessionPath(tenantName, sessionId);
         this.serverId = serverId;
         this.sessionStatusPath = sessionPath.append(ZKApplication.SESSIONSTATE_ZK_SUBPATH);
@@ -105,6 +112,8 @@ public class SessionZooKeeperClient {
             return Session.Status.UNKNOWN;
         }
     }
+
+    public long sessionId() { return sessionId; }
 
     public CompletionWaiter createActiveWaiter() { return createCompletionWaiter(ACTIVE_BARRIER); }
 
@@ -164,6 +173,20 @@ public class SessionZooKeeperClient {
         return curator.getData(applicationIdPath()).map(d -> ApplicationId.fromSerializedForm(Utf8.toString(d)));
     }
 
+    private Path tagsPath() {
+        return sessionPath.append(TAGS_PATH);
+    }
+
+    public void writeTags(Tags tags) {
+        curator.set(tagsPath(), Utf8.toBytes(tags.asString()));
+    }
+
+    public Tags readTags() {
+        Optional<byte[]> data = curator.getData(tagsPath());
+        if (data.isEmpty()) return Tags.empty();
+        return Tags.fromString(Utf8.toString(data.get()));
+    }
+
     void writeApplicationPackageReference(Optional<FileReference> applicationPackageReference) {
         applicationPackageReference.ifPresent(
                 reference -> curator.set(applicationPackageReferencePath(), Utf8.toBytes(reference.value())));
@@ -204,6 +227,10 @@ public class SessionZooKeeperClient {
         return sessionPath.append(OPERATOR_CERTIFICATES_PATH);
     }
 
+    private Path cloudAccountPath() {
+        return sessionPath.append(CLOUD_ACCOUNT_PATH);
+    }
+
     public void writeVespaVersion(Version version) {
        curator.set(versionPath(), Utf8.toBytes(version.toString()));
     }
@@ -226,6 +253,11 @@ public class SessionZooKeeperClient {
     public Instant readCreateTime() {
         Optional<byte[]> data = curator.getData(getCreateTimePath());
         return data.map(d -> Instant.ofEpochSecond(Long.parseLong(Utf8.toString(d)))).orElse(Instant.EPOCH);
+    }
+
+    public Instant readActivatedTime() {
+        Optional<Stat> statData = curator.getStat(sessionStatusPath);
+        return statData.map(s -> Instant.ofEpochMilli(s.getMtime())).orElse(Instant.EPOCH);
     }
 
     private Path getCreateTimePath() {
@@ -303,6 +335,19 @@ public class SessionZooKeeperClient {
                       .map(SlimeUtils::jsonToSlime)
                       .map(slime -> OperatorCertificateSerializer.fromSlime(slime.get()))
                       .orElse(List.of());
+    }
+
+    public void writeCloudAccount(Optional<CloudAccount> cloudAccount) {
+        if (cloudAccount.isPresent()) {
+            byte[] data = uncheck(() -> SlimeUtils.toJsonBytes(CloudAccountSerializer.toSlime(cloudAccount.get())));
+            curator.set(cloudAccountPath(), data);
+        } else {
+            curator.delete(cloudAccountPath());
+        }
+    }
+
+    public Optional<CloudAccount> readCloudAccount() {
+        return curator.getData(cloudAccountPath()).map(SlimeUtils::jsonToSlime).map(slime -> CloudAccountSerializer.fromSlime(slime.get()));
     }
 
     /**

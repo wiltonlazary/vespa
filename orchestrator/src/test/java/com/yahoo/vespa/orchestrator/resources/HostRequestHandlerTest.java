@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.orchestrator.resources;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.container.jdisc.HttpRequestBuilder;
 import com.yahoo.container.jdisc.HttpResponse;
 import com.yahoo.jdisc.Metric;
@@ -293,7 +293,7 @@ class HostRequestHandlerTest {
         HttpResponse httpResponse = executeRequest(testDriver, Method.GET, "/orchestrator/v1/hosts/hostname", null);
         GetHostResponse response = parseResponseContent(testDriver, httpResponse, GetHostResponse.class);
 
-        assertEquals("http://localhost/orchestrator/v1/instances/tenantId:applicationId", response.applicationUrl());
+        assertEquals("http://localhost/orchestrator/v1/instances/tenantId%3AapplicationId", response.applicationUrl());
         assertEquals("hostname", response.hostname());
         assertEquals("ALLOWED_TO_BE_DOWN", response.state());
         assertEquals("1970-01-01T00:00:00Z", response.suspendedSince());

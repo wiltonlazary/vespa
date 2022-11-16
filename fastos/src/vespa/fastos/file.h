@@ -84,11 +84,11 @@ private:
     // And setFAdviseOptions() per file.
     static int    _defaultFAdviseOptions;
     int           _fAdviseOptions;
-    size_t        _writeChunkSize;
+    size_t        _chunkSize;
     void WriteBufInternal(const void *buffer, size_t length);
 
 protected:
-    char         *_filename;
+    std::string   _filename;
     unsigned int  _openFlags;
     bool          _directIOEnabled;
     bool          _syncWritesEnabled;
@@ -97,77 +97,6 @@ public:
     static void setDefaultFAdviseOptions(int options) { _defaultFAdviseOptions = options; }
     int getFAdviseOptions()                     const { return _fAdviseOptions; }
     void setFAdviseOptions(int options)               { _fAdviseOptions = options; }
-
-    /**
-     * Initialize the file class. This is invoked by
-     * @ref FastOS_Application::Init().
-     * @return Boolean success/failure
-     */
-    static bool InitializeClass ();
-
-    /**
-     * Cleanup the file class. This is invoked by
-     * @ref FastOS_Application::Cleanup().
-     * @return Boolean success/failure
-     */
-    static bool CleanupClass ();
-
-    /**
-     * Copy a single file. Will overwrite destination if it already exists.
-     *
-     * @author Sveinar Rasmussen
-     * @return        success/failure
-     * @param src a 'const char *' value with the file to copy from
-     * @param dst a 'const char *' value with the name of the resulting copy
-     */
-    static bool CopyFile( const char *src, const char *dst );
-
-    /**
-     * Move a file from src to dst. Has the same semantics as
-     * FastOS_File::Rename, except that it works across different
-     * volumes / disks as well (Via copy and remove).
-     *
-     * @author Terje Loken
-     * @return success / failure
-     * @param src a 'const char *' value with the file to move from
-     * @param dst a 'const char *' value with the name of the resulting filename
-     */
-    static bool MoveFile( const char *src, const char *dst);
-
-    /**
-     * Remove a directory, even if it is non-empty. Missing directory does not cause error.
-     *
-     * @author Terje Loken
-     * @throws    std::runtime_error if there are errors.
-     * @param dir a 'const char *' valuem, with the path to the directory we
-     *            want to remove.
-     */
-    static void EmptyAndRemoveDirectory(const char *dir);
-
-    /**
-     * Empty a directory. Delete all files and directories within the
-     * dir, with the exception of files matching a specific name
-     * (optional).  The exception does not apply files in
-     * subdirectories.
-     *
-     * @author Terje Loken
-     * @throws    std::runtime_error if there are errors.
-     * @param  dir      a 'const char *' value with the directory to empty.
-     * @param  keepFile a 'const char *' value. If supplied, leave files with
-     *                  this name alone.
-     */
-    static void EmptyDirectory( const char *dir, const char *keepFile = nullptr);
-
-    /**
-     * Make a directory (special compatibility version)
-     * Succeed if the directory already exists. A stat is performed
-     * to check the directory before attempting to create the
-     * directory.
-     * If the procedure fails, an error is printed to stderr and
-     * the program exits.
-     * @param name  Name of directory
-     */
-    static void MakeDirIfNotPresentOrExit(const char *name);
 
     /**
      * Return path separator string. This will yield "/" on UNIX systems.
@@ -309,7 +238,7 @@ public:
      * already is closed.
      * @return Boolean success/failure
      */
-    virtual bool Close() = 0;
+    [[nodiscard]] virtual bool Close() = 0;
 
     /**
      * Is the file currently opened?
@@ -324,7 +253,7 @@ public:
      * @return The number of bytes which was actually read,
      *         or -1 on error.
      */
-    virtual ssize_t Read(void *buffer, size_t length) = 0;
+    [[nodiscard]] virtual ssize_t Read(void *buffer, size_t length) = 0;
 
     /**
      * Write [len] bytes from [buffer].  This is just a wrapper for
@@ -334,7 +263,7 @@ public:
      * @param len     number of bytes to write
      * @return Boolean success/failure
      */
-    bool CheckedWrite(const void *buffer, size_t len);
+    [[nodiscard]] bool CheckedWrite(const void *buffer, size_t len);
 
     /**
      * Write [len] bytes from [buffer].
@@ -342,7 +271,7 @@ public:
      * @param len     number of bytes to write
      * @return The number of bytes actually written, or -1 on error
      */
-    virtual ssize_t Write2(const void *buffer, size_t len) = 0;
+    [[nodiscard]] virtual ssize_t Write2(const void *buffer, size_t len) = 0;
 
     /**
      * Read [length] bytes into [buffer]. Caution! If the actual number
@@ -439,7 +368,7 @@ public:
     /**
      * Force completion of pending disk writes (flush cache).
      */
-    virtual bool Sync() = 0;
+    [[nodiscard]] virtual bool Sync() = 0;
 
     /**
      * Are we in some kind of file read mode?
@@ -485,8 +414,8 @@ public:
     /**
      * Set the write chunk size used in WriteBuf.
      */
-    void SetWriteChunkSize(size_t writeChunkSize);
-    size_t getWriteChunkSize() const { return _writeChunkSize; }
+    void setChunkSize(size_t chunkSize) { _chunkSize = chunkSize; }
+    size_t getChunkSize() const { return _chunkSize; }
 
     /**
      * Get restrictions for direct disk I/O. The file should be opened
@@ -726,7 +655,7 @@ private:
     FastOS_DirectoryScanInterface& operator= (const FastOS_DirectoryScanInterface&);
 
 protected:
-    char *_searchPath;
+    std::string _searchPath;
 
 public:
 
@@ -750,7 +679,7 @@ public:
      * This is an internal copy of the path specified in the constructor.
      * @return Search path string.
      */
-    const char *GetSearchPath () { return _searchPath; }
+    const char *GetSearchPath () { return _searchPath.c_str(); }
 
     /**
      * Read the next entry in the directory scan. Failure indicates

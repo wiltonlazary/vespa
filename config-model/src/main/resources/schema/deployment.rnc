@@ -7,6 +7,7 @@ start = element deployment {
    attribute major-version { text }? &
    attribute athenz-domain { xsd:string }? &
    attribute athenz-service { xsd:string }? &
+   attribute cloud-account { xsd:string }? &
    Step
 }
 
@@ -23,6 +24,8 @@ StepExceptInstance =
     Endpoints? &
     Test? &
     Staging? &
+    Dev? &
+    Perf? &
     Prod*
 
 PrimitiveStep =
@@ -32,7 +35,9 @@ PrimitiveStep =
 
 Instance = element instance {
    attribute id { xsd:string } &
+   attribute tags { xsd:string }? &
    attribute athenz-service { xsd:string }? &
+   attribute cloud-account { xsd:string }? &
    StepExceptInstance
 }
 
@@ -47,19 +52,32 @@ SerialSteps = element steps {
 }
 
 ParallelInstances = element parallel {
+    SerialInstances* &
+    Instance*
+}
+
+SerialInstances = element steps {
+    ParallelInstances* &
     Instance*
 }
 
 Upgrade = element upgrade {
     attribute policy { xsd:string }? &
+    attribute revision-target { xsd:string }? &
+    attribute revision-change { xsd:string }? &
+    attribute min-risk { xsd:long }? &
+    attribute max-risk { xsd:long }? &
+    attribute max-idle-hours { xsd:long }? &
     attribute rollout { xsd:string }?
 }
 
 BlockChange = element block-change {
     attribute revision { xsd:boolean }? &
     attribute version { xsd:boolean }? &
-    attribute days { xsd:string } &
-    attribute hours { xsd:string } &
+    attribute days { xsd:string }? &
+    attribute hours { xsd:string }? &
+    attribute from-date { xsd:string }? &
+    attribute to-date { xsd:string }? &
     attribute time-zone { xsd:string }?
 }
 
@@ -86,10 +104,19 @@ Staging = element staging {
    text
 }
 
+Dev = element dev {
+   attribute cloud-account { xsd:string }?
+}
+
+Perf = element perf {
+   attribute cloud-account { xsd:string }?
+}
+
 Prod = element prod {
    attribute global-service-id { text }? &
    attribute athenz-service { xsd:string }? &
    attribute tester-flavor { xsd:string }? &
+   attribute cloud-account { xsd:string }? &
    Region* &
    Delay* &
    ProdTest* &
@@ -101,8 +128,9 @@ ProdTest = element test {
 }
 
 Region = element region {
-   attribute active { xsd:boolean } &
+   attribute active { xsd:boolean }? &
    attribute athenz-service { xsd:string }? &
+   attribute cloud-account { xsd:string }? &
    text
 }
 
@@ -116,10 +144,18 @@ EndpointRegion = element region {
     text
 }
 
+EndpointInstance = element instance {
+    attribute weight { xsd:long } &
+    attribute region { xsd:string }? &
+    text
+}
+
 Endpoint = element endpoint {
     attribute id { xsd:string }? &
     attribute container-id { xsd:string } &
-    EndpointRegion*
+    attribute region { xsd:string }? &
+    EndpointRegion* &
+    EndpointInstance*
 }
 
 Endpoints = element endpoints {

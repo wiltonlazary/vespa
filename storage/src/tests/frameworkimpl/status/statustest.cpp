@@ -2,7 +2,6 @@
 
 #include <vespa/storageframework/defaultimplementation/component/componentregisterimpl.h>
 #include <vespa/storage/frameworkimpl/status/statuswebserver.h>
-#include <vespa/storageframework/defaultimplementation/thread/threadpoolimpl.h>
 #include <vespa/storageframework/generic/status/htmlstatusreporter.h>
 #include <vespa/storageframework/generic/status/xmlstatusreporter.h>
 #include <tests/common/teststorageapp.h>
@@ -10,8 +9,10 @@
 #include <vespa/vespalib/net/crypto_engine.h>
 #include <vespa/vespalib/net/socket_spec.h>
 #include <vespa/vespalib/net/sync_crypto_socket.h>
+#include <vespa/config/subscription/configuri.h>
 #include <vespa/vespalib/gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <string>
 
 using namespace ::testing;
 
@@ -99,6 +100,19 @@ void StatusTest::SetUp() {
     _node = std::make_unique<TestServiceLayerApp>();
 }
 
+namespace {
+
+std::string additional_fixed_http_response_headers() {
+    return ("X-XSS-Protection: 1; mode=block\r\n"
+            "X-Frame-Options: DENY\r\n"
+            "Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n"
+            "X-Content-Type-Options: nosniff\r\n"
+            "Cache-Control: no-store\r\n"
+            "Pragma: no-cache\r\n");
+}
+
+}
+
 TEST_F(StatusTest, index_status_page) {
     StatusComponent rep1(_node->getComponentRegister(), "foo",
                          new HtmlStatusReporter(
@@ -108,19 +122,14 @@ TEST_F(StatusTest, index_status_page) {
                             "barid", "Bar impl", "<p>info</p>"));
     StatusWebServer webServer(_node->getComponentRegister(),
                               _node->getComponentRegister(),
-                              "raw:httpport 0");
+                              config::ConfigUri("raw:httpport 0"));
     auto actual = fetch(webServer.getListenPort(), "/");
     std::string expected(
             "HTTP\\/1.1 200 OK\r\n"
             "Connection: close\r\n"
             "Content-Type: text\\/html\r\n"
             "Content-Length: [0-9]+\r\n"
-            "X-XSS-Protection: 1; mode=block\r\n"
-            "X-Frame-Options: DENY\r\n"
-            "Content-Security-Policy: default-src 'none'\r\n"
-            "X-Content-Type-Options: nosniff\r\n"
-            "Cache-Control: no-store\r\n"
-            "Pragma: no-cache\r\n"
+            + additional_fixed_http_response_headers() +
             "\r\n"
             "<html>\n"
             "<head>\n"
@@ -143,19 +152,40 @@ TEST_F(StatusTest, html_status) {
                 "fooid", "Foo impl", "<p>info</p>", "<!-- script -->"));
     StatusWebServer webServer(_node->getComponentRegister(),
                               _node->getComponentRegister(),
-                              "raw:httpport 0");
+                              config::ConfigUri("raw:httpport 0"));
     auto actual = fetch(webServer.getListenPort(), "/fooid?unusedParam");
     std::string expected(
             "HTTP/1.1 200 OK\r\n"
             "Connection: close\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 117\r\n"
-            "X-XSS-Protection: 1; mode=block\r\n"
-            "X-Frame-Options: DENY\r\n"
-            "Content-Security-Policy: default-src 'none'\r\n"
-            "X-Content-Type-Options: nosniff\r\n"
-            "Cache-Control: no-store\r\n"
-            "Pragma: no-cache\r\n"
+            + additional_fixed_http_response_headers() +
+            "\r\n"
+            "<html>\n"
+            "<head>\n"
+            "  <title>Foo impl</title>\n"
+            "<!-- script --></head>\n"
+            "<body>\n"
+            "  <h1>Foo impl</h1>\n"
+            "<p>info</p></body>\n"
+            "</html>\n"
+    );
+    EXPECT_EQ(expected, std::string(actual));
+}
+
+TEST_F(StatusTest, path_with_v1_prefix_aliases_to_handler_under_root) {
+    StatusComponent rep1(_node->getComponentRegister(), "foo",
+                         new HtmlStatusReporter("fooid", "Foo impl", "<p>info</p>", "<!-- script -->"));
+    StatusWebServer webServer(_node->getComponentRegister(),
+                              _node->getComponentRegister(),
+                              config::ConfigUri("raw:httpport 0"));
+    auto actual = fetch(webServer.getListenPort(), "/contentnode-status/v1/fooid?unusedParam");
+    std::string expected(
+            "HTTP/1.1 200 OK\r\n"
+            "Connection: close\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 117\r\n"
+            + additional_fixed_http_response_headers() +
             "\r\n"
             "<html>\n"
             "<head>\n"
@@ -175,19 +205,14 @@ TEST_F(StatusTest, xml_sStatus) {
                 "fooid", "Foo impl"));
     StatusWebServer webServer(_node->getComponentRegister(),
                               _node->getComponentRegister(),
-                              "raw:httpport 0");
+                              config::ConfigUri("raw:httpport 0"));
     auto actual = fetch(webServer.getListenPort(), "/fooid?unusedParam");
     std::string expected(
             "HTTP/1.1 200 OK\r\n"
             "Connection: close\r\n"
             "Content-Type: application/xml\r\n"
             "Content-Length: 100\r\n"
-            "X-XSS-Protection: 1; mode=block\r\n"
-            "X-Frame-Options: DENY\r\n"
-            "Content-Security-Policy: default-src 'none'\r\n"
-            "X-Content-Type-Options: nosniff\r\n"
-            "Cache-Control: no-store\r\n"
-            "Pragma: no-cache\r\n"
+            + additional_fixed_http_response_headers() +
             "\r\n"
             "<?xml version=\"1.0\"?>\n"
             "<status id=\"fooid\" name=\"Foo impl\">\n"
@@ -200,7 +225,7 @@ TEST_F(StatusTest, xml_sStatus) {
 TEST_F(StatusTest, test404) {
     StatusWebServer webServer(_node->getComponentRegister(),
                               _node->getComponentRegister(),
-                              "raw:httpport 0");
+                              config::ConfigUri("raw:httpport 0"));
     auto actual = fetch(webServer.getListenPort(), "/fooid?unusedParam");
     std::string expected(
             "HTTP/1.1 404 Not Found\r\n"

@@ -6,7 +6,6 @@
 #include "removedonecontext.h"
 #include "putdonecontext.h"
 #include <vespa/searchcore/proton/feedoperation/operations.h>
-#include <vespa/vespalib/util/isequencedtaskexecutor.h>
 
 using document::Document;
 using document::DocumentUpdate;
@@ -56,9 +55,9 @@ FastAccessFeedView::removeAttributes(SerialNum serialNum, const LidVector &lidsT
 }
 
 void
-FastAccessFeedView::heartBeatAttributes(SerialNum serialNum)
+FastAccessFeedView::heartBeatAttributes(SerialNum serialNum, DoneCallback onDone)
 {
-    _attributeWriter->heartBeat(serialNum);
+    _attributeWriter->heartBeat(serialNum, onDone);
 }
 
 FastAccessFeedView::FastAccessFeedView(StoreOnlyFeedView::Context storeOnlyCtx, const PersistentParams &params, const Context &ctx)
@@ -70,13 +69,13 @@ FastAccessFeedView::FastAccessFeedView(StoreOnlyFeedView::Context storeOnlyCtx, 
 FastAccessFeedView::~FastAccessFeedView() = default;
 
 void
-FastAccessFeedView::handleCompactLidSpace(const CompactLidSpaceOperation &op)
+FastAccessFeedView::handleCompactLidSpace(const CompactLidSpaceOperation &op, DoneCallback onDone)
 {
     // Drain pending PutDoneContext and ForceCommitContext objects
-    _writeService.sync();
+    forceCommitAndWait(search::CommitParam(op.getSerialNum()));
     _docIdLimit.set(op.getLidLimit());
     getAttributeWriter()->compactLidSpace(op.getLidLimit(), op.getSerialNum());
-    Parent::handleCompactLidSpace(op);
+    Parent::handleCompactLidSpace(op, onDone);
 }
 
 void
@@ -85,13 +84,6 @@ FastAccessFeedView::internalForceCommit(const CommitParam & param, OnForceCommit
     _attributeWriter->forceCommit(param, onCommitDone);
     onCommitDone->registerCommittedDocIdLimit(_metaStore.getCommittedDocIdLimit(), &_docIdLimit);
     Parent::internalForceCommit(param, onCommitDone);
-}
-
-void
-FastAccessFeedView::sync()
-{
-    Parent::sync();
-    _writeService.attributeFieldWriter().sync();
 }
 
 } // namespace proton

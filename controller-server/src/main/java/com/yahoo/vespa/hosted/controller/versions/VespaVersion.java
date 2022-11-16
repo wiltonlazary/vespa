@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.versions;
 
 import com.yahoo.component.Version;
@@ -15,40 +15,25 @@ import static com.yahoo.config.application.api.DeploymentSpec.UpgradePolicy;
 
 /**
  * Information about a particular Vespa version.
- * VespaVersions are identified by their version number and ordered by increasing version numbers.
  *
- * This is immutable.
+ * Vespa versions are identified by their version number and ordered by increasing version numbers.
  * 
  * @author bratseth
  */
-public class VespaVersion implements Comparable<VespaVersion> {
+public record VespaVersion(Version version,
+                           String releaseCommit,
+                           Instant committedAt,
+                           boolean isControllerVersion,
+                           boolean isSystemVersion,
+                           boolean isReleased,
+                           List<NodeVersion> nodeVersions,
+                           Confidence confidence) implements Comparable<VespaVersion> {
 
-    private final Version version;
-    private final String releaseCommit;
-    private final Instant committedAt;
-    private final boolean isControllerVersion;
-    private final boolean isSystemVersion;
-    private final boolean isReleased;
-    private final List<NodeVersion> nodeVersions;
-    private final Confidence confidence;
-
-    public VespaVersion(Version version, String releaseCommit, Instant committedAt,
-                        boolean isControllerVersion, boolean isSystemVersion, boolean isReleased,
-                        List<NodeVersion> nodeVersions,
-                        Confidence confidence) {
-        this.version = version;
-        this.releaseCommit = releaseCommit;
-        this.committedAt = committedAt;
-        this.isControllerVersion = isControllerVersion;
-        this.isSystemVersion = isSystemVersion;
-        this.isReleased = isReleased;
-        this.nodeVersions = nodeVersions;
-        this.confidence = confidence;
-    }
-
-    public static Confidence confidenceFrom(DeploymentStatistics statistics, Controller controller) {
+    public static Confidence confidenceFrom(DeploymentStatistics statistics, Controller controller, VersionStatus versionStatus) {
+        int thisMajorVersion = statistics.version().getMajor();
         InstanceList all = InstanceList.from(controller.jobController().deploymentStatuses(ApplicationList.from(controller.applications().asList())
-                                                                                                          .withProductionDeployment()));
+                                                                                                          .withProductionDeployment()))
+                                       .allowingMajorVersion(thisMajorVersion, versionStatus);
         // 'production on this': All production deployment jobs upgrading to this version have completed without failure
         InstanceList productionOnThis = all.matching(instance -> statistics.productionSuccesses().stream().anyMatch(run -> run.id().application().equals(instance)))
                                            .not().failingUpgrade()
@@ -59,7 +44,7 @@ public class VespaVersion implements Comparable<VespaVersion> {
         if  ( ! failingOnThis.with(UpgradePolicy.canary).isEmpty())
             return Confidence.broken;
 
-        // 'broken' if 4 non-canary was broken by this, and that is at least 10% of all
+        // 'broken' if 6 non-canary was broken by this, and that is at least 5% of all
         if (nonCanaryApplicationsBroken(statistics.version(), failingOnThis, productionOnThis))
             return Confidence.broken;
 
@@ -130,15 +115,21 @@ public class VespaVersion implements Comparable<VespaVersion> {
     /** The confidence of a version. */
     public enum Confidence {
 
+        /** Rollout was aborted. The system infrastructure should stay on, or roll back to, its current version */
+        aborted,
+
         /** This version has been proven defective */
         broken,
         
         /** We don't have sufficient evidence that this version is working */
         low,
-        
+
         /** We have sufficient evidence that this version is working */
         normal,
-        
+
+        /** This version works, but we want users to stop using it */
+        legacy,
+
         /** We have overwhelming evidence that this version is working */
         high;
         
@@ -170,9 +161,9 @@ public class VespaVersion implements Comparable<VespaVersion> {
 
         if (productionNonCanaries.size() + failingNonCanaries.size() == 0) return false;
 
-        // 'broken' if 4 non-canary was broken by this, and that is at least 10% of all
+        // 'broken' if 6 non-canary was broken by this, and that is at least 5% of all
         int brokenByThisVersion = failingNonCanaries.size();
-        return brokenByThisVersion >= 4 && brokenByThisVersion >= productionOnThis.size() * 0.1;
+        return brokenByThisVersion >= 6 && brokenByThisVersion >= productionOnThis.size() * 0.05;
      }
 
 }

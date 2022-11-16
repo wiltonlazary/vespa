@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 #include <vespa/vespalib/testkit/test_kit.h>
 #include <vespa/vespalib/stllike/string.h>
-#include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/searchlib/features/valuefeature.h>
 #include <vespa/searchlib/fef/blueprintfactory.h>
 #include <vespa/searchlib/fef/test/indexenvironment.h>
@@ -79,7 +78,8 @@ struct Fixture {
     explicit Fixture() {
         factory.addPrototype(std::make_shared<ValueBlueprint>());
         factory.addPrototype(std::make_shared<UnboxBlueprint>());
-        factory.addPrototype(std::make_shared<ProxyBlueprint>("box",         Blueprint::AcceptInput::NUMBER, true));
+        factory.addPrototype(std::make_shared<ProxyBlueprint>("do_box",      Blueprint::AcceptInput::NUMBER, true));
+        factory.addPrototype(std::make_shared<ProxyBlueprint>("do_unbox",    Blueprint::AcceptInput::OBJECT, false));
         factory.addPrototype(std::make_shared<ProxyBlueprint>("maybe_box",   Blueprint::AcceptInput::ANY,    true));
         factory.addPrototype(std::make_shared<ProxyBlueprint>("maybe_unbox", Blueprint::AcceptInput::ANY,    false));
     }
@@ -101,31 +101,39 @@ struct Fixture {
     }
 
     bool verify(const vespalib::string &feature) {
-        return verifyFeature(factory, indexEnv, feature, "unit test");
+        std::vector<search::fef::Message> errors;
+        return verifyFeature(factory, indexEnv, feature, "unit test", errors);
     }
 };
 
 TEST_F("require that values can be boxed and unboxed", Fixture()) {
-    EXPECT_EQUAL(3.0, f1.eval("box(value(3))"));
-    EXPECT_EQUAL(0.0, f1.eval("box(value(3)).was_object"));
-    EXPECT_EQUAL(3.0, f1.eval("unbox(box(value(3)))"));
-    EXPECT_EQUAL(1.0, f1.eval("maybe_unbox(box(value(3))).was_object"));
-    EXPECT_EQUAL(3.0, f1.eval("box(unbox(box(value(3))))"));
-    EXPECT_EQUAL(0.0, f1.eval("box(unbox(box(value(3)))).was_object"));
+    EXPECT_EQUAL(3.0, f1.eval("do_box(value(3))"));
+    EXPECT_EQUAL(0.0, f1.eval("do_box(value(3)).was_object"));
+    EXPECT_EQUAL(3.0, f1.eval("do_unbox(do_box(value(3)))"));
+    EXPECT_EQUAL(1.0, f1.eval("maybe_unbox(do_box(value(3))).was_object"));
+    EXPECT_EQUAL(3.0, f1.eval("do_box(do_unbox(do_box(value(3))))"));
+    EXPECT_EQUAL(0.0, f1.eval("do_box(do_unbox(do_box(value(3)))).was_object"));
 }
 
 TEST_F("require that output features may be either objects or numbers", Fixture()) {
     EXPECT_TRUE(f1.verify("value(3)"));
-    EXPECT_TRUE(f1.verify("box(value(3))"));
+    EXPECT_TRUE(f1.verify("do_box(value(3))"));
 }
 
 TEST_F("require that feature input/output types must be compatible", Fixture()) {
-    EXPECT_TRUE(!f1.verify("unbox(value(3))"));
+    EXPECT_TRUE(!f1.verify("do_unbox(value(3))"));
     EXPECT_TRUE(f1.verify("maybe_unbox(value(3))"));
-    EXPECT_TRUE(f1.verify("unbox(box(value(3)))"));
-    EXPECT_TRUE(!f1.verify("unbox(box(box(value(3))))"));
-    EXPECT_TRUE(f1.verify("unbox(maybe_box(box(value(3))))"));
-    EXPECT_TRUE(f1.verify("unbox(box(unbox(box(value(3)))))"));
+    EXPECT_TRUE(f1.verify("do_unbox(do_box(value(3)))"));
+    EXPECT_TRUE(!f1.verify("do_unbox(do_box(do_box(value(3))))"));
+    EXPECT_TRUE(f1.verify("do_unbox(maybe_box(do_box(value(3))))"));
+    EXPECT_TRUE(f1.verify("do_unbox(do_box(do_unbox(do_box(value(3)))))"));
+}
+
+TEST_F("require that 'unbox' feature works for both numbers and objects", Fixture()) {
+    EXPECT_EQUAL(3.0, f1.eval("unbox(value(3))"));
+    EXPECT_EQUAL(3.0, f1.eval("unbox(do_box(value(3)))"));
+    EXPECT_EQUAL(0.0, f1.eval("maybe_unbox(unbox(do_box(value(3)))).was_object"));
+    EXPECT_EQUAL(0.0, f1.eval("maybe_unbox(unbox(value(3))).was_object"));
 }
 
 TEST_MAIN() { TEST_RUN_ALL(); }

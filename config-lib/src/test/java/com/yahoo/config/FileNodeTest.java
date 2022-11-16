@@ -1,26 +1,29 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author Ulf Lilleengen
- * @since 5.1
  */
 public class FileNodeTest {
+
     @Test
-    public void testSetValue() {
+    void testSetValue() {
         FileNode n = new FileNode();
-        assertThat(n.toString(), is("(null)"));
+        assertEquals("(null)", n.toString());
         assertTrue(n.doSetValue("foo.txt"));
-        assertThat(n.value().value(), is("foo.txt"));
+        assertEquals("foo.txt", n.value().value());
         assertTrue(n.doSetValue("\"foo.txt\""));
-        assertThat(n.value().value(), is("foo.txt"));
-        assertThat(n.toString(), is("\"foo.txt\""));
+        assertEquals("foo.txt", n.value().value());
+        assertEquals("\"foo.txt\"", n.toString());
+
+        assertEquals("Path may not start with '..' but got 'foo/../../boo'",
+                assertThrows(IllegalArgumentException.class, () -> new FileNode("foo/../../boo")).getMessage());
     }
+
 }

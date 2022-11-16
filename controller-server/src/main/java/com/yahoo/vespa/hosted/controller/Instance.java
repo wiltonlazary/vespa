@@ -5,16 +5,17 @@ import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.InstanceName;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.zone.ZoneId;
-import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationVersion;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
+import com.yahoo.vespa.hosted.controller.api.integration.deployment.RevisionId;
 import com.yahoo.vespa.hosted.controller.application.AssignedRotation;
 import com.yahoo.vespa.hosted.controller.application.Change;
 import com.yahoo.vespa.hosted.controller.application.Deployment;
 import com.yahoo.vespa.hosted.controller.application.DeploymentActivity;
 import com.yahoo.vespa.hosted.controller.application.DeploymentMetrics;
 import com.yahoo.vespa.hosted.controller.application.QuotaUsage;
-import com.yahoo.vespa.hosted.controller.rotation.RotationStatus;
+import com.yahoo.vespa.hosted.controller.routing.rotation.RotationStatus;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -40,6 +41,7 @@ import java.util.stream.Collectors;
 public class Instance {
 
     private final ApplicationId id;
+    private final Tags tags;
     private final Map<ZoneId, Deployment> deployments;
     private final List<AssignedRotation> rotations;
     private final RotationStatus rotationStatus;
@@ -47,14 +49,15 @@ public class Instance {
     private final Change change;
 
     /** Creates an empty instance */
-    public Instance(ApplicationId id) {
-        this(id, Set.of(), Map.of(), List.of(), RotationStatus.EMPTY, Change.empty());
+    public Instance(ApplicationId id, Tags tags) {
+        this(id, tags, Set.of(), Map.of(), List.of(), RotationStatus.EMPTY, Change.empty());
     }
 
     /** Creates an empty instance*/
-    public Instance(ApplicationId id, Collection<Deployment> deployments, Map<JobType, Instant> jobPauses,
+    public Instance(ApplicationId id, Tags tags, Collection<Deployment> deployments, Map<JobType, Instant> jobPauses,
                     List<AssignedRotation> rotations, RotationStatus rotationStatus, Change change) {
         this.id = Objects.requireNonNull(id, "id cannot be null");
+        this.tags = Objects.requireNonNull(tags, "tags cannot be null");
         this.deployments = Objects.requireNonNull(deployments, "deployments cannot be null").stream()
                                   .collect(Collectors.toUnmodifiableMap(Deployment::zone, Function.identity()));
         this.jobPauses = Map.copyOf(Objects.requireNonNull(jobPauses, "deploymentJobs cannot be null"));
@@ -63,16 +66,20 @@ public class Instance {
         this.change = Objects.requireNonNull(change, "change cannot be null");
     }
 
-    public Instance withNewDeployment(ZoneId zone, ApplicationVersion applicationVersion, Version version,
+    public Instance with(Tags tags) {
+        return new Instance(id, tags, deployments.values(), jobPauses, rotations, rotationStatus, change);
+    }
+
+    public Instance withNewDeployment(ZoneId zone, RevisionId revision, Version version,
                                       Instant instant, Map<DeploymentMetrics.Warning, Integer> warnings, QuotaUsage quotaUsage) {
         // Use info from previous deployment if available, otherwise create a new one.
-        Deployment previousDeployment = deployments.getOrDefault(zone, new Deployment(zone, applicationVersion,
+        Deployment previousDeployment = deployments.getOrDefault(zone, new Deployment(zone, revision,
                                                                                       version, instant,
                                                                                       DeploymentMetrics.none,
                                                                                       DeploymentActivity.none,
                                                                                       QuotaUsage.none,
                                                                                       OptionalDouble.empty()));
-        Deployment newDeployment = new Deployment(zone, applicationVersion, version, instant,
+        Deployment newDeployment = new Deployment(zone, revision, version, instant,
                                                   previousDeployment.metrics().with(warnings),
                                                   previousDeployment.activity(),
                                                   quotaUsage,
@@ -87,7 +94,7 @@ public class Instance {
         else
             jobPauses.remove(jobType);
 
-        return new Instance(id, deployments.values(), jobPauses, rotations, rotationStatus, change);
+        return new Instance(id, tags, deployments.values(), jobPauses, rotations, rotationStatus, change);
     }
 
     public Instance recordActivityAt(Instant instant, ZoneId zone) {
@@ -118,15 +125,15 @@ public class Instance {
     }
 
     public Instance with(List<AssignedRotation> assignedRotations) {
-        return new Instance(id, deployments.values(), jobPauses, assignedRotations, rotationStatus, change);
+        return new Instance(id, tags, deployments.values(), jobPauses, assignedRotations, rotationStatus, change);
     }
 
     public Instance with(RotationStatus rotationStatus) {
-        return new Instance(id, deployments.values(), jobPauses, rotations, rotationStatus, change);
+        return new Instance(id, tags, deployments.values(), jobPauses, rotations, rotationStatus, change);
     }
 
     public Instance withChange(Change change) {
-        return new Instance(id, deployments.values(), jobPauses, rotations, rotationStatus, change);
+        return new Instance(id, tags, deployments.values(), jobPauses, rotations, rotationStatus, change);
     }
 
     private Instance with(Deployment deployment) {
@@ -136,12 +143,14 @@ public class Instance {
     }
 
     private Instance with(Map<ZoneId, Deployment> deployments) {
-        return new Instance(id, deployments.values(), jobPauses, rotations, rotationStatus, change);
+        return new Instance(id, tags, deployments.values(), jobPauses, rotations, rotationStatus, change);
     }
 
     public ApplicationId id() { return id; }
 
     public InstanceName name() { return id.instance(); }
+
+    public Tags tags() { return tags; }
 
     /** Returns an immutable map of the current deployments of this */
     public Map<ZoneId, Deployment> deployments() { return deployments; }
@@ -188,6 +197,13 @@ public class Instance {
                 .map(Deployment::quota).reduce(QuotaUsage::add).orElse(QuotaUsage.none);
     }
 
+    /** Returns the total quota usage for manual deployments for this instance **/
+    public QuotaUsage manualQuotaUsage() {
+        return deployments.values().stream()
+                .filter(d -> d.zone().environment().isManuallyDeployed())
+                .map(Deployment::quota).reduce(QuotaUsage::add).orElse(QuotaUsage.none);
+    }
+
     /** Returns the total quota usage for this instance, excluding one specific deployment (and temporary deployments) */
     public QuotaUsage quotaUsageExcluding(ApplicationId application, ZoneId zone) {
         return deployments.values().stream()
@@ -199,7 +215,7 @@ public class Instance {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (! (o instanceof Instance)) return false;
+        if ( ! (o instanceof Instance)) return false;
 
         Instance that = (Instance) o;
 
@@ -213,6 +229,6 @@ public class Instance {
 
     @Override
     public String toString() {
-        return "application '" + id + "'";
+        return "application instance '" + id.toFullString() + "'";
     }
 }

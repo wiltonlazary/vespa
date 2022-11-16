@@ -1,7 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.core.documentapi;
 
-import com.yahoo.cloud.config.SlobroksConfig;
 import com.yahoo.document.config.DocumentmanagerConfig;
 import com.yahoo.document.select.parser.ParseException;
 import com.yahoo.documentapi.AsyncParameters;
@@ -18,13 +17,13 @@ import com.yahoo.documentapi.VisitorParameters;
 import com.yahoo.documentapi.VisitorSession;
 import com.yahoo.documentapi.messagebus.MessageBusDocumentAccess;
 import com.yahoo.documentapi.messagebus.MessageBusParams;
-import com.yahoo.documentapi.messagebus.loadtypes.LoadTypeSet;
-import com.yahoo.messagebus.MessagebusConfig;
 import com.yahoo.documentapi.messagebus.protocol.DocumentProtocolPoliciesConfig;
+import com.yahoo.messagebus.MessagebusConfig;
 import com.yahoo.vespa.config.content.DistributionConfig;
-import com.yahoo.vespa.config.content.LoadTypeConfig;
+import com.yahoo.yolean.concurrent.Memoized;
 
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Wraps a lazily initialised {@link DocumentAccess}. Lazy to allow it to always be set up.
@@ -34,48 +33,37 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class VespaDocumentAccess extends DocumentAccess {
 
+    private static final Logger log = Logger.getLogger(VespaDocumentAccess.class.getName());
+
     private final MessageBusParams parameters;
 
-    private final AtomicReference<DocumentAccess> delegate = new AtomicReference<>();
-    private boolean shutDown = false;
+    private final Memoized<DocumentAccess, RuntimeException> delegate;
 
     VespaDocumentAccess(DocumentmanagerConfig documentmanagerConfig,
-                        LoadTypeConfig loadTypeConfig,
                         String slobroksConfigId,
                         MessagebusConfig messagebusConfig,
                         DocumentProtocolPoliciesConfig policiesConfig,
                         DistributionConfig distributionConfig) {
         super(new DocumentAccessParams().setDocumentmanagerConfig(documentmanagerConfig));
-        this.parameters = new MessageBusParams(new LoadTypeSet(loadTypeConfig))
+        this.parameters = new MessageBusParams()
                 .setDocumentProtocolPoliciesConfig(policiesConfig, distributionConfig);
         this.parameters.setDocumentmanagerConfig(documentmanagerConfig);
         this.parameters.getRPCNetworkParams().setSlobrokConfigId(slobroksConfigId);
         this.parameters.getMessageBusParams().setMessageBusConfig(messagebusConfig);
+        this.delegate = new Memoized<>(() -> new MessageBusDocumentAccess(parameters), DocumentAccess::shutdown);
     }
 
     public DocumentAccess delegate() {
-        DocumentAccess access = delegate.getAcquire();
-        return access != null ? access : delegate.updateAndGet(value -> {
-            if (value != null)
-                return value;
-
-            if (shutDown)
-                throw new IllegalStateException("This document access has been shut down");
-
-            return new MessageBusDocumentAccess(parameters);
-        });
+        return delegate.get();
     }
 
     @Override
     public void shutdown() {
-        delegate.updateAndGet(access -> {
-            super.shutdown();
-            shutDown = true;
-            if (access != null)
-                access.shutdown();
+        log.log(Level.WARNING, "This injected document access should only be shut down by the container", new IllegalStateException());
+    }
 
-            return null;
-        });
+    void protectedShutdown() {
+        delegate.close();
     }
 
     @Override

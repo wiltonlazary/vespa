@@ -1,16 +1,19 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "configsubscription.h"
+#include <vespa/config/common/configupdate.h>
+#include <vespa/config/common/iconfigholder.h>
 #include <vespa/config/common/exceptions.h>
 #include <vespa/config/common/misc.h>
-#include "configsubscription.h"
 
 namespace config {
 
-ConfigSubscription::ConfigSubscription(const SubscriptionId & id, const ConfigKey & key, const IConfigHolder::SP & holder, Source::UP source)
+ConfigSubscription::ConfigSubscription(const SubscriptionId & id, const ConfigKey & key,
+                                       std::shared_ptr<IConfigHolder> holder, std::unique_ptr<Source> source)
     : _id(id),
       _key(key),
       _source(std::move(source)),
-      _holder(holder),
+      _holder(std::move(holder)),
       _next(),
       _current(),
       _isChanged(false),
@@ -26,16 +29,20 @@ ConfigSubscription::~ConfigSubscription()
 
 
 bool
-ConfigSubscription::nextUpdate(int64_t generation, std::chrono::milliseconds timeout)
+ConfigSubscription::nextUpdate(int64_t generation, vespalib::steady_time deadline)
 {
     if (_closed || !_holder->poll()) {
         return false;
     }
+    auto old = std::move(_next);
     _next = _holder->provide();
+    if (old) {
+        _next->merge(*old);
+    }
     if (isGenerationNewer(_next->getGeneration(), generation)) {
         return true;
     }
-    return (!_closed && _holder->wait(timeout));
+    return (!_closed && _holder->wait_until(deadline));
 }
 
 bool
@@ -56,38 +63,13 @@ ConfigSubscription::getGeneration() const
     return _next->getGeneration();
 }
 
-const ConfigKey &
-ConfigSubscription::getKey() const
-{
-    return _key;
-}
-
 void
 ConfigSubscription::close()
 {
-    if (!_closed) {
-        _closed = true;
-        _holder->interrupt();
+    if (!_closed.exchange(true)) {
+        _holder->close();
         _source->close();
     }
-}
-
-void
-ConfigSubscription::reset()
-{
-    _isChanged = false;
-}
-
-bool
-ConfigSubscription::isChanged() const
-{
-    return _isChanged;
-}
-
-int64_t
-ConfigSubscription::getLastGenerationChanged() const
-{
-    return _lastGenerationChanged;
 }
 
 void
@@ -98,7 +80,7 @@ ConfigSubscription::flip()
         _current = std::move(_next);
         _lastGenerationChanged = _current->getGeneration();
     } else {
-        _current.reset(new ConfigUpdate(_current->getValue(), false, _next->getGeneration()));
+        _current = std::make_unique<ConfigUpdate>(_current->getValue(), false, _next->getGeneration());
     }
     _isChanged = change;
 }

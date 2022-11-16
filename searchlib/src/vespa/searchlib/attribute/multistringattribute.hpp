@@ -2,15 +2,17 @@
 
 #pragma once
 
-#include "stringattribute.h"
 #include "multistringattribute.h"
 #include "enumattribute.hpp"
+#include "enumerated_multi_value_read_view.h"
 #include "multienumattribute.hpp"
-#include <vespa/fastlib/io/bufferedfile.h>
+#include "multi_string_enum_hint_search_context.h"
 #include <vespa/vespalib/text/utf8.h>
 #include <vespa/vespalib/text/lowercase.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/searchlib/util/bufferwriter.h>
 #include <vespa/vespalib/util/regexp.h>
+#include <vespa/vespalib/util/stash.h>
 #include <vespa/searchlib/query/query_term_ucs4.h>
 
 namespace search {
@@ -26,6 +28,11 @@ MultiValueStringAttributeT(const vespalib::string &name,
 { }
 
 template <typename B, typename M>
+MultiValueStringAttributeT<B, M>::MultiValueStringAttributeT(const vespalib::string &name)
+    : MultiValueStringAttributeT<B, M>(name, AttributeVector::Config(AttributeVector::BasicType::STRING,  attribute::CollectionType::ARRAY))
+{ }
+
+template <typename B, typename M>
 MultiValueStringAttributeT<B, M>::~MultiValueStringAttributeT() = default;
 
 
@@ -38,99 +45,27 @@ MultiValueStringAttributeT<B, M>::freezeEnumDictionary()
 
 
 template <typename B, typename M>
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 MultiValueStringAttributeT<B, M>::getSearch(QueryTermSimpleUP qTerm,
                                             const attribute::SearchContextParams &) const
 {
-    if (this->getCollectionType() == attribute::CollectionType::WSET) {
-        return std::make_unique<StringTemplSearchContext<StringSetImplSearchContext>>(std::move(qTerm), *this);
-    } else {
-        return std::make_unique<StringTemplSearchContext<StringArrayImplSearchContext>>(std::move(qTerm), *this);
-    }
-}
-
-namespace {
-
-template <typename E>
-class EnumAccessor {
-public:
-    EnumAccessor(const E & enumStore) : _enumStore(enumStore) { }
-    const char * get(typename E::Index index) const { return _enumStore.get_value(index); }
-private:
-    const E & _enumStore;
-};
-
+    bool cased = this->get_match_is_cased();
+    auto doc_id_limit = this->getCommittedDocIdLimit();
+    return std::make_unique<attribute::MultiStringEnumHintSearchContext<M>>(std::move(qTerm), cased, *this, this->_mvMapping.make_read_view(doc_id_limit), this->_enumStore, doc_id_limit, this->getStatus().getNumValues());
 }
 
 template <typename B, typename M>
-int32_t
-MultiValueStringAttributeT<B, M>::StringSetImplSearchContext::onFind(DocId doc, int32_t elemId, int32_t &weight) const
+const attribute::IArrayReadView<const char*>*
+MultiValueStringAttributeT<B, M>::make_read_view(attribute::IMultiValueAttribute::ArrayTag<const char*>, vespalib::Stash& stash) const
 {
-    StringAttribute::StringSearchContext::CollectWeight collector;
-    return this->findNextWeight(doc, elemId, weight, collector);
+    return &stash.create<attribute::EnumeratedMultiValueReadView<const char*, M>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()), this->_enumStore);
 }
 
 template <typename B, typename M>
-int32_t
-MultiValueStringAttributeT<B, M>::StringArrayImplSearchContext::onFind(DocId doc, int32_t elemId, int32_t &weight) const
+const attribute::IWeightedSetReadView<const char*>*
+MultiValueStringAttributeT<B, M>::make_read_view(attribute::IMultiValueAttribute::WeightedSetTag<const char*>, vespalib::Stash& stash) const
 {
-    StringAttribute::StringSearchContext::CollectHitCount collector;
-    return this->findNextWeight(doc, elemId, weight, collector);
-}
-
-template <typename B, typename M>
-template <typename Collector>
-int32_t
-MultiValueStringAttributeT<B, M>::StringImplSearchContext::findNextWeight(DocId doc, int32_t elemId, int32_t & weight, Collector & collector) const
-{
-    WeightedIndexArrayRef indices(myAttribute()._mvMapping.get(doc));
-
-    EnumAccessor<typename B::EnumStore> accessor(myAttribute()._enumStore);
-    int32_t foundElem = findNextMatch(indices, elemId, accessor, collector);
-    weight = collector.getWeight();
-    return foundElem;
-}
-
-template <typename B, typename M>
-int32_t
-MultiValueStringAttributeT<B, M>::StringImplSearchContext::onFind(DocId doc, int32_t elemId) const
-{
-    const auto& attr = static_cast<const MultiValueStringAttributeT<B, M>&>(attribute());
-    WeightedIndexArrayRef indices(attr._mvMapping.get(doc));
-    for (uint32_t i(elemId); i < indices.size(); i++) {
-        if (isMatch(attr._enumStore.get_value(indices[i].value()))) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-template <typename B, typename M>
-template <typename BT>
-MultiValueStringAttributeT<B, M>::StringTemplSearchContext<BT>::
-StringTemplSearchContext(QueryTermSimpleUP qTerm, const AttrType & toBeSearched) :
-    BT(std::move(qTerm), toBeSearched),
-    EnumHintSearchContext(toBeSearched.getEnumStore().get_dictionary(),
-                          toBeSearched.getCommittedDocIdLimit(),
-                          toBeSearched.getStatus().getNumValues())
-{
-    const EnumStore &enumStore(toBeSearched.getEnumStore());
-
-    this->_plsc = static_cast<attribute::IPostingListSearchContext *>(this);
-    if (this->valid()) {
-        if (this->isPrefix()) {
-            auto comp = enumStore.make_folded_comparator_prefix(queryTerm()->getTerm());
-            lookupRange(comp, comp);
-        } else if (this->isRegex()) {
-            vespalib::string prefix(vespalib::RegexpUtil::get_prefix(this->queryTerm()->getTerm()));
-            auto comp = enumStore.make_folded_comparator_prefix(prefix.c_str());
-            lookupRange(comp, comp);
-        } else {
-            auto comp = enumStore.make_folded_comparator(queryTerm()->getTerm());
-            lookupTerm(comp);
-        }
-    }
+    return &stash.create<attribute::EnumeratedMultiValueReadView<multivalue::WeightedValue<const char*>, M>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()), this->_enumStore);
 }
 
 } // namespace search

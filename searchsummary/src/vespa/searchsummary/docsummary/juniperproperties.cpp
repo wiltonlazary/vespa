@@ -1,10 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "juniperproperties.h"
-#include <vespa/searchcommon/config/subscriptionproxyng.h>
 #include <vespa/vespalib/util/stringfmt.h>
+#include <vespa/searchsummary/config/config-juniperrc.h>
 
-using vespa::config::search::summary::JuniperrcConfig;
 using vespalib::make_string;
 
 namespace search::docsummary {
@@ -22,9 +21,7 @@ JuniperProperties::JuniperProperties(const JuniperrcConfig &cfg) :
     configure(cfg);
 }
 
-JuniperProperties::~JuniperProperties() {
-    // empty
-}
+JuniperProperties::~JuniperProperties() = default;
 
 void
 JuniperProperties::reset()
@@ -66,8 +63,7 @@ JuniperProperties::configure(const JuniperrcConfig &cfg)
     _properties["juniper.stem.min_length"]  = make_string("%d", cfg.stemMinLength);
     _properties["juniper.stem.max_extend"]  = make_string("%d", cfg.stemMaxExtend);
 
-    for (uint32_t i = 0; i < cfg.override.size(); ++i) {
-        const JuniperrcConfig::Override &override = cfg.override[i];
+    for (const auto & override : cfg.override) {
         const vespalib::string keyDynsum = make_string("%s.dynsum.", override.fieldname.c_str());
         const vespalib::string keyMatcher = make_string("%s.matcher.", override.fieldname.c_str());
         const vespalib::string keyStem = make_string("%s.stem.", override.fieldname.c_str());
@@ -87,17 +83,10 @@ JuniperProperties::configure(const JuniperrcConfig &cfg)
     }
 }
 
-void
-JuniperProperties::subscribe(const char *configId)
-{
-    SubscriptionProxyNg<JuniperProperties, JuniperrcConfig> subscriber(*this, &JuniperProperties::configure);
-    subscriber.subscribe(configId);
-}
-
 const char *
-JuniperProperties::GetProperty(const char *name, const char *def)
+JuniperProperties::GetProperty(const char *name, const char *def) const
 {
-    std::map<vespalib::string, vespalib::string>::const_iterator it = _properties.find(name);
+    auto it = _properties.find(name);
     return it != _properties.end() ? it->second.c_str() : def;
 }
 

@@ -1,8 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "document_inverter.h"
-#include "field_index_collection.h"
 #include "memory_index.h"
+#include "document_inverter.h"
+#include "document_inverter_collection.h"
+#include "document_inverter_context.h"
+#include "field_index_collection.h"
 #include <vespa/document/fieldvalue/arrayfieldvalue.h>
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/vespalib/util/isequencedtaskexecutor.h>
@@ -26,6 +28,7 @@ using index::IFieldLengthInspector;
 using index::IndexBuilder;
 using index::Schema;
 using index::SchemaUtil;
+using query::FuzzyTerm;
 using query::LocationTerm;
 using query::NearestNeighborTerm;
 using query::Node;
@@ -57,9 +60,8 @@ MemoryIndex::MemoryIndex(const Schema& schema,
       _invertThreads(invertThreads),
       _pushThreads(pushThreads),
       _fieldIndexes(std::make_unique<FieldIndexCollection>(_schema, inspector)),
-      _inverter0(std::make_unique<DocumentInverter>(_schema, _invertThreads, _pushThreads, *_fieldIndexes)),
-      _inverter1(std::make_unique<DocumentInverter>(_schema, _invertThreads, _pushThreads, *_fieldIndexes)),
-      _inverter(_inverter0.get()),
+      _inverter_context(std::make_unique<DocumentInverterContext>(_schema, _invertThreads, _pushThreads, *_fieldIndexes)),
+      _inverters(std::make_unique<DocumentInverterCollection>(*_inverter_context, 4)),
       _frozen(false),
       _maxDocId(0), // docId 0 is reserved
       _numDocs(0),
@@ -71,14 +73,10 @@ MemoryIndex::MemoryIndex(const Schema& schema,
 {
 }
 
-MemoryIndex::~MemoryIndex()
-{
-    _invertThreads.sync();
-    _pushThreads.sync();
-}
+MemoryIndex::~MemoryIndex() = default;
 
 void
-MemoryIndex::insertDocument(uint32_t docId, const document::Document &doc)
+MemoryIndex::insertDocument(uint32_t docId, const document::Document &doc, OnWriteDoneType on_write_done)
 {
     if (_frozen) {
         LOG(warning, "Memory index frozen: ignoring insert of document '%s'(%u): '%s'",
@@ -86,39 +84,37 @@ MemoryIndex::insertDocument(uint32_t docId, const document::Document &doc)
         return;
     }
     updateMaxDocId(docId);
-    _inverter->invertDocument(docId, doc);
+    auto& inverter = _inverters->get_active_inverter();
+    inverter.invertDocument(docId, doc, on_write_done);
     if (_indexedDocs.insert(docId).second) {
         incNumDocs();
     }
 }
 
 void
-MemoryIndex::removeDocument(uint32_t docId)
+MemoryIndex::removeDocuments(LidVector lids)
 {
     if (_frozen) {
-        LOG(warning, "Memory index frozen: ignoring remove of document (%u)", docId);
+        LOG(warning, "Memory index frozen: ignoring remove of %lu documents", lids.size());
         return;
     }
-    _inverter->removeDocument(docId);
-    if (_indexedDocs.find(docId) != _indexedDocs.end()) {
-        _indexedDocs.erase(docId);
-        decNumDocs();
+    for (uint32_t lid : lids) {
+
+        if (_indexedDocs.find(lid) != _indexedDocs.end()) {
+            _indexedDocs.erase(lid);
+            decNumDocs();
+        }
     }
+    auto& inverter = _inverters->get_active_inverter();
+    inverter.removeDocuments(std::move(lids));
 }
 
 void
-MemoryIndex::commit(const std::shared_ptr<vespalib::IDestructorCallback> &onWriteDone)
+MemoryIndex::commit(OnWriteDoneType on_write_done)
 {
-    _invertThreads.sync(); // drain inverting into this inverter
-    _pushThreads.sync(); // drain use of other inverter
-    _inverter->pushDocuments(onWriteDone);
-    flipInverter();
-}
-
-void
-MemoryIndex::flipInverter()
-{
-    _inverter = (_inverter != _inverter0.get()) ? _inverter0.get(): _inverter1.get();
+    auto& inverter = _inverters->get_active_inverter();
+    inverter.pushDocuments(on_write_done);
+    _inverters->switch_active_inverter();
 }
 
 void
@@ -173,6 +169,7 @@ public:
     void visit(SubstringTerm &n) override { visitTerm(n); }
     void visit(SuffixTerm &n)    override { visitTerm(n); }
     void visit(RegExpTerm &n)    override { visitTerm(n); }
+    void visit(FuzzyTerm &n)    override { visitTerm(n); }
     void visit(PredicateQuery &n) override { not_supported(n); }
     void visit(NearestNeighborTerm &n) override { not_supported(n); }
 

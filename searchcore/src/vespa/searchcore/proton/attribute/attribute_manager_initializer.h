@@ -10,7 +10,7 @@
 #include <vespa/searchlib/common/serialnum.h>
 #include <vespa/config-attributes.h>
 
-namespace searchcorespi { namespace index { struct IThreadService; } }
+namespace searchcorespi::index { struct IThreadService; }
 
 namespace proton {
 
@@ -20,30 +20,31 @@ namespace proton {
 class AttributeManagerInitializer : public initializer::InitializerTask
 {
 private:
-    search::SerialNum _configSerialNum;
-    DocumentMetaStore::SP _documentMetaStore;
-    AttributeManager::SP _attrMgr;
+    search::SerialNum                       _configSerialNum;
+    DocumentMetaStore::SP                   _documentMetaStore;
+    AttributeManager::SP                    _attrMgr;
     vespa::config::search::AttributesConfig _attrCfg;
-    AllocStrategy _alloc_strategy;
-    bool _fastAccessAttributesOnly;
-    searchcorespi::index::IThreadService &_master;
-    InitializedAttributesResult _attributesResult;
-    std::shared_ptr<AttributeManager::SP> _attrMgrResult;
+    AllocStrategy                           _alloc_strategy;
+    bool                                    _fastAccessAttributesOnly;
+    searchcorespi::index::IThreadService   &_master;
+    InitializedAttributesResult             _attributesResult;
+    std::shared_ptr<AttributeManager::SP>   _attrMgrResult;
 
-    AttributeCollectionSpec::UP createAttributeSpec() const;
+    std::unique_ptr<AttributeCollectionSpec> createAttributeSpec() const;
 
 public:
     AttributeManagerInitializer(search::SerialNum configSerialNum,
                                 initializer::InitializerTask::SP documentMetaStoreInitTask,
                                 DocumentMetaStore::SP documentMetaStore,
-                                AttributeManager::SP baseAttrMgr,
+                                const AttributeManager & baseAttrMgr,
                                 const vespa::config::search::AttributesConfig &attrCfg,
                                 const AllocStrategy& alloc_strategy,
                                 bool fastAccessAttributesOnly,
                                 searchcorespi::index::IThreadService &master,
                                 std::shared_ptr<AttributeManager::SP> attrMgrResult);
+    ~AttributeManagerInitializer() override;
 
-    virtual void run() override;
+    void run() override;
 };
 
 } // namespace proton

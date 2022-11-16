@@ -4,6 +4,7 @@
 #include "hnsw_graph.h"
 #include <vespa/searchlib/util/bufferwriter.h>
 #include <limits>
+#include <cassert>
 
 namespace search::tensor {
 
@@ -12,9 +13,9 @@ namespace {
 size_t
 count_valid_link_arrays(const HnswGraph & graph) {
     size_t count(0);
-    size_t num_nodes = graph.node_refs.size();
+    size_t num_nodes = graph.node_refs.get_size(); // Called from writer only
     for (size_t i = 0; i < num_nodes; ++i) {
-        auto node_ref = graph.node_refs[i].load_acquire();
+        auto node_ref = graph.get_node_ref(i);
         if (node_ref.valid()) {
             count += graph.nodes.get(node_ref).size();
         }
@@ -25,7 +26,7 @@ count_valid_link_arrays(const HnswGraph & graph) {
 }
 
 HnswIndexSaver::MetaData::MetaData()
-    : entry_docid(0),
+    : entry_nodeid(0),
       entry_level(-1),
       refs(),
       nodes()
@@ -37,9 +38,9 @@ HnswIndexSaver::HnswIndexSaver(const HnswGraph &graph)
     : _graph_links(graph.links), _meta_data()
 {
     auto entry = graph.get_entry_node();
-    _meta_data.entry_docid = entry.docid;
+    _meta_data.entry_nodeid = entry.nodeid;
     _meta_data.entry_level = entry.level;
-    size_t num_nodes = graph.node_refs.size();
+    size_t num_nodes = graph.node_refs.get_size(); // Called from writer only
     assert (num_nodes <= (std::numeric_limits<uint32_t>::max() - 1));
     size_t link_array_count = count_valid_link_arrays(graph);
     assert (link_array_count <= std::numeric_limits<uint32_t>::max());
@@ -47,11 +48,11 @@ HnswIndexSaver::HnswIndexSaver(const HnswGraph &graph)
     _meta_data.nodes.reserve(num_nodes+1);
     for (size_t i = 0; i < num_nodes; ++i) {
         _meta_data.nodes.push_back(_meta_data.refs.size());
-        auto node_ref = graph.node_refs[i].load_acquire();
+        auto node_ref = graph.get_node_ref(i);
         if (node_ref.valid()) {
             auto levels = graph.nodes.get(node_ref);
             for (const auto& links_ref : levels) {
-                _meta_data.refs.push_back(links_ref.load_acquire());
+                _meta_data.refs.push_back(links_ref.load_relaxed());
             }
         }
     }
@@ -61,7 +62,7 @@ HnswIndexSaver::HnswIndexSaver(const HnswGraph &graph)
 void
 HnswIndexSaver::save(BufferWriter& writer) const
 {
-    writer.write(&_meta_data.entry_docid, sizeof(uint32_t));
+    writer.write(&_meta_data.entry_nodeid, sizeof(uint32_t));
     writer.write(&_meta_data.entry_level, sizeof(int32_t));
     uint32_t num_nodes = _meta_data.nodes.size() - 1;
     writer.write(&num_nodes, sizeof(uint32_t));

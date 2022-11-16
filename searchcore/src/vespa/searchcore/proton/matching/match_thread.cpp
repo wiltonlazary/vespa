@@ -10,7 +10,6 @@
 #include <vespa/searchlib/common/bitvector.h>
 #include <vespa/searchlib/queryeval/multibitvectoriterator.h>
 #include <vespa/searchlib/queryeval/andnotsearch.h>
-#include <vespa/vespalib/util/thread_bundle.h>
 #include <vespa/vespalib/data/slime/cursor.h>
 #include <vespa/vespalib/data/slime/inserter.h>
 
@@ -19,8 +18,8 @@ LOG_SETUP(".proton.matching.match_thread");
 
 namespace proton::matching {
 
-using search::queryeval::OptimizedAndNotForBlackListing;
 using search::queryeval::SearchIterator;
+using search::fef::BlueprintResolver;
 using search::fef::MatchData;
 using search::fef::RankProgram;
 using search::fef::FeatureResolver;
@@ -49,17 +48,6 @@ struct SimpleStrategy {
     }
 };
 
-// seek_next maps to OptimizedAndNotForBlackListing::seekFast
-struct FastBlackListingStrategy {
-    static bool can_use(bool do_rank, bool do_limit, SearchIterator &search) {
-        return (!do_rank && !do_limit &&
-                (dynamic_cast<OptimizedAndNotForBlackListing *>(&search) != nullptr));
-    }
-    static uint32_t seek_next(SearchIterator &search, uint32_t docid) {
-        return static_cast<OptimizedAndNotForBlackListing &>(search).seekFast(docid);
-    }
-};
-
 LazyValue get_score_feature(const RankProgram &rankProgram) {
     FeatureResolver resolver(rankProgram.get_seeds());
     assert(resolver.num_features() == 1u);
@@ -74,14 +62,14 @@ MatchThread::Context::Context(double rankDropLimit, MatchTools &tools, HitCollec
     : matches(0),
       _matches_limit(tools.match_limiter().sample_hits_per_thread(num_threads)),
       _score_feature(get_score_feature(tools.rank_program())),
-      _ranking(tools.rank_program()),
       _rankDropLimit(rankDropLimit),
       _hits(hits),
-      _doom(tools.getDoom())
+      _doom(tools.getDoom()),
+      dropped()
 {
 }
 
-template <bool use_rank_drop_limit>
+template <MatchThread::RankDropLimitE use_rank_drop_limit>
 void
 MatchThread::Context::rankHit(uint32_t docId) {
     double score = _score_feature.as_number(docId);
@@ -89,9 +77,11 @@ MatchThread::Context::rankHit(uint32_t docId) {
     if (__builtin_expect(std::isnan(score) || std::isinf(score), false)) {
         score = -HUGE_VAL;
     }
-    if (use_rank_drop_limit) {
+    if (use_rank_drop_limit != RankDropLimitE::no) {
         if (__builtin_expect(score > _rankDropLimit, true)) {
             _hits.addHit(docId, score);
+        } else if (use_rank_drop_limit == RankDropLimitE::track) {
+            dropped.template emplace_back(docId);
         }
     } else {
         _hits.addHit(docId, score);
@@ -149,7 +139,8 @@ MatchThread::try_share(DocidRange &docid_range, uint32_t next_docid) {
     return false;
 }
 
-template <typename Strategy, bool do_rank, bool do_limit, bool do_share_work, bool use_rank_drop_limit>
+template <typename Strategy, bool do_rank, bool do_limit, bool do_share_work,
+          MatchThread::RankDropLimitE use_rank_drop_limit>
 uint32_t
 MatchThread::inner_match_loop(Context &context, MatchTools &tools, DocidRange &docid_range)
 {
@@ -177,7 +168,8 @@ MatchThread::inner_match_loop(Context &context, MatchTools &tools, DocidRange &d
     return docId;
 }
 
-template <typename Strategy, bool do_rank, bool do_limit, bool do_share_work, bool use_rank_drop_limit>
+template <typename Strategy, bool do_rank, bool do_limit, bool do_share_work,
+          MatchThread::RankDropLimitE use_rank_drop_limit>
 void
 MatchThread::match_loop(MatchTools &tools, HitCollector &hits)
 {
@@ -215,29 +207,34 @@ MatchThread::match_loop(MatchTools &tools, HitCollector &hits)
     if (do_rank) {
         thread_stats.docsRanked(matches);
     }
+    if (use_rank_drop_limit == RankDropLimitE::track) {
+        if (auto task = matchToolsFactory.createOnMatchTask()) {
+            task->run(std::move(context.dropped));
+        }
+    }
 }
 
 //-----------------------------------------------------------------------------
 
-template <bool do_rank, bool do_limit, bool do_share, bool use_rank_drop_limit>
+template <bool do_rank, bool do_limit, bool do_share, MatchThread::RankDropLimitE use_rank_drop_limit>
 void
 MatchThread::match_loop_helper_rank_limit_share_drop(MatchTools &tools, HitCollector &hits)
 {
-    if (FastBlackListingStrategy::can_use(do_rank, do_limit, tools.search())) {
-        match_loop<FastBlackListingStrategy, do_rank, do_limit, do_share, use_rank_drop_limit>(tools, hits);
-    } else {
-        match_loop<SimpleStrategy, do_rank, do_limit, do_share, use_rank_drop_limit>(tools, hits);
-    }
+    match_loop<SimpleStrategy, do_rank, do_limit, do_share, use_rank_drop_limit>(tools, hits);
 }
 
 template <bool do_rank, bool do_limit, bool do_share>
 void
 MatchThread::match_loop_helper_rank_limit_share(MatchTools &tools, HitCollector &hits)
 {
-    if (std::isnan(matchParams.rankDropLimit)) {
-        match_loop_helper_rank_limit_share_drop<do_rank, do_limit, do_share, false>(tools, hits);
+    if (matchParams.has_rank_drop_limit()) {
+        if (matchToolsFactory.hasOnMatchTask()) {
+            match_loop_helper_rank_limit_share_drop<do_rank, do_limit, do_share, RankDropLimitE::track>(tools, hits);
+        } else {
+            match_loop_helper_rank_limit_share_drop<do_rank, do_limit, do_share, RankDropLimitE::yes>(tools, hits);
+        }
     } else {
-        match_loop_helper_rank_limit_share_drop<do_rank, do_limit, do_share, true>(tools, hits);
+        match_loop_helper_rank_limit_share_drop<do_rank, do_limit, do_share, RankDropLimitE::no>(tools, hits);
     }
 }
 
@@ -276,7 +273,7 @@ MatchThread::match_loop_helper(MatchTools &tools, HitCollector &hits)
 search::ResultSet::UP
 MatchThread::findMatches(MatchTools &tools)
 {
-    tools.setup_first_phase();
+    tools.setup_first_phase(first_phase_profiler.get());
     if (isFirstThread()) {
         LOG(spam, "SearchIterator: %s", tools.search().asString().c_str());
     }
@@ -293,9 +290,6 @@ MatchThread::findMatches(MatchTools &tools)
     match_loop_helper(tools, hits);
     if (tools.has_second_phase_rank()) {
         trace->addEvent(4, "Start second phase rerank");
-        tools.setup_second_phase();
-        DocidRange docid_range(1, matchParams.numDocs);
-        tools.search().initRange(docid_range.begin, docid_range.end);
         auto sorted_hit_seq = matchToolsFactory.should_diversify()
                               ? hits.getSortedHitSequence(matchParams.arraySize)
                               : hits.getSortedHitSequence(matchParams.heapSize);
@@ -303,11 +297,14 @@ MatchThread::findMatches(MatchTools &tools)
         WaitTimer get_second_phase_work_timer(wait_time_s);
         auto my_work = communicator.get_second_phase_work(sorted_hit_seq, thread_id);
         get_second_phase_work_timer.done();
-        DocumentScorer scorer(tools.rank_program(), tools.search());
         if (tools.getDoom().hard_doom()) {
             my_work.clear();
         }
-        scorer.score(my_work);
+        if (!my_work.empty()) {
+            tools.setup_second_phase(second_phase_profiler.get());
+            DocumentScorer scorer(tools.rank_program(), tools.search());
+            scorer.score(my_work);
+        }
         thread_stats.docsReRanked(my_work.size());
         trace->addEvent(5, "Synchronize before rank scaling");
         WaitTimer complete_second_phase_timer(wait_time_s);
@@ -315,7 +312,7 @@ MatchThread::findMatches(MatchTools &tools)
         complete_second_phase_timer.done();
         hits.setReRankedHits(std::move(kept_hits));
         hits.setRanges(ranges);
-        if (auto onReRankTask = matchToolsFactory.createOnReRankTask()) {
+        if (auto onReRankTask = matchToolsFactory.createOnSecondPhaseTask()) {
             onReRankTask->run(hits.getReRankedHits());
         }
     }
@@ -329,7 +326,7 @@ MatchThread::processResult(const Doom & doom,
                            ResultProcessor::Context &context)
 {
     if (doom.hard_doom()) return;
-    bool hasGrouping = (context.grouping.get() != 0);
+    bool hasGrouping = bool(context.grouping);
     if (context.sort->hasSortData() || hasGrouping) {
         result->mergeWithBitOverflow(fallback_rank_value());
     }
@@ -376,8 +373,12 @@ MatchThread::processResult(const Doom & doom,
             }
         }
     }
-    if (auto onMatchTask = matchToolsFactory.createOnMatchTask()) {
-        onMatchTask->run(search::ResultSet::stealResult(std::move(*result)));
+
+    if (auto task = matchToolsFactory.createOnMatchTask()) {
+        task->run(result->copyResult());
+    }
+    if (auto task = matchToolsFactory.createOnFirstPhaseTask()) {
+        task->run(search::ResultSet::stealResult(std::move(*result)));
     }
     if (hasGrouping) {
         context.grouping->setDistributionKey(_distributionKey);
@@ -396,7 +397,8 @@ MatchThread::MatchThread(size_t thread_id_in,
                          vespalib::DualMergeDirector &md,
                          uint32_t distributionKey,
                          const RelativeTime & relativeTime,
-                         uint32_t traceLevel) :
+                         uint32_t traceLevel,
+                         uint32_t profileDepth) :
     thread_id(thread_id_in),
     num_threads(num_threads_in),
     matchParams(mp),
@@ -413,9 +415,15 @@ MatchThread::MatchThread(size_t thread_id_in,
     match_time_s(0.0),
     wait_time_s(0.0),
     match_with_ranking(mtf.has_first_phase_rank() && mp.save_rank_scores()),
-    trace(std::make_unique<Trace>(relativeTime, traceLevel)),
+    trace(std::make_unique<Trace>(relativeTime, traceLevel, profileDepth)),
+    first_phase_profiler(),
+    second_phase_profiler(),
     my_issues()
 {
+    if ((traceLevel > 0) && (profileDepth > 0)) {
+        first_phase_profiler = std::make_unique<vespalib::ExecutionProfiler>(profileDepth);
+        second_phase_profiler = std::make_unique<vespalib::ExecutionProfiler>(profileDepth);
+    }
 }
 
 void
@@ -437,7 +445,7 @@ MatchThread::run()
                         scheduler.total_size(thread_id),
                         result->getNumHits(),
                         resultContext->sort->hasSortData(),
-                        resultContext->grouping.get() != 0));
+                        bool(resultContext->grouping)));
         get_token_timer.done();
         trace->addEvent(5, "Start result processing");
         processResult(matchTools->getDoom(), std::move(result), *resultContext);
@@ -447,6 +455,14 @@ MatchThread::run()
     trace->addEvent(4, "Start thread merge");
     mergeDirector.dualMerge(thread_id, *resultContext->result, resultContext->groupingSource);
     trace->addEvent(4, "MatchThread::run Done");
+    if (first_phase_profiler) {
+        first_phase_profiler->report(trace->createCursor("first_phase_profiling"),
+                                     [](const vespalib::string &name){ return BlueprintResolver::describe_feature(name); });
+    }
+    if (second_phase_profiler) {
+        second_phase_profiler->report(trace->createCursor("second_phase_profiling"),
+                                      [](const vespalib::string &name){ return BlueprintResolver::describe_feature(name); });
+    }
 }
 
 }

@@ -3,20 +3,23 @@
 #pragma once
 
 #include "load_utils.h"
+#include "attributevector.h"
+#include <vespa/searchcommon/attribute/multivalue.h>
 
-namespace search {
-namespace attribute {
+namespace search::attribute {
 
 template <class MvMapping, class Saver>
 uint32_t
 loadFromEnumeratedMultiValue(MvMapping & mapping,
                              ReaderBase & attrReader,
-                             vespalib::ConstArrayRef<typename MvMapping::MultiValueType::ValueType> enumValueToValueMap,
+                             vespalib::ConstArrayRef<atomic_utils::NonAtomicValue_t<multivalue::ValueType_t<typename MvMapping::MultiValueType>>> enumValueToValueMap,
                              vespalib::ConstArrayRef<uint32_t> enum_value_remapping,
                              Saver saver)
 {
     mapping.prepareLoadFromMultiValue();
     using MultiValueType = typename MvMapping::MultiValueType;
+    using ValueType = multivalue::ValueType_t<MultiValueType>;
+    using NonAtomicValueType = atomic_utils::NonAtomicValue_t<ValueType>;
     std::vector<MultiValueType> indices;
     uint32_t numDocs = attrReader.getNumIdx() - 1;
     uint64_t numValues = attrReader.getEnumCount();
@@ -34,8 +37,12 @@ loadFromEnumeratedMultiValue(MvMapping & mapping,
             if (!enum_value_remapping.empty()) {
                 enumValue = enum_value_remapping[enumValue];
             }
-            int32_t weight = MultiValueType::_hasWeight ? attrReader.getNextWeight() : 1;
-            indices.emplace_back(enumValueToValueMap[enumValue], weight);
+            int32_t weight = multivalue::is_WeightedValue_v<MultiValueType> ? attrReader.getNextWeight() : 1;
+            if constexpr (std::is_same_v<ValueType, NonAtomicValueType>) {
+                indices.emplace_back(multivalue::ValueBuilder<MultiValueType>::build(enumValueToValueMap[enumValue], weight));
+            } else {
+                indices.emplace_back(multivalue::ValueBuilder<MultiValueType>::build(ValueType(enumValueToValueMap[enumValue]), weight));
+            }
             saver.save(enumValue, doc, weight);
         }
         if (maxValueCount < indices.size()) {
@@ -54,12 +61,14 @@ void
 loadFromEnumeratedSingleValue(Vector &vector,
                               vespalib::GenerationHolder &genHolder,
                               ReaderBase &attrReader,
-                              vespalib::ConstArrayRef<typename Vector::ValueType> enumValueToValueMap,
+                              vespalib::ConstArrayRef<atomic_utils::NonAtomicValue_t<typename Vector::ValueType>> enumValueToValueMap,
                               vespalib::ConstArrayRef<uint32_t> enum_value_remapping,
                               Saver saver)
 {
+    using ValueType = typename Vector::ValueType;
+    using NonAtomicValueType = atomic_utils::NonAtomicValue_t<ValueType>;
     uint32_t numDocs = attrReader.getEnumCount();
-    genHolder.clearHoldLists();
+    genHolder.reclaim_all();
     vector.reset();
     vector.unsafe_reserve(numDocs);
     for (uint32_t doc = 0; doc < numDocs; ++doc) {
@@ -68,10 +77,13 @@ loadFromEnumeratedSingleValue(Vector &vector,
         if (!enum_value_remapping.empty()) {
             enumValue = enum_value_remapping[enumValue];
         }
-        vector.push_back(enumValueToValueMap[enumValue]);
+        if constexpr (std::is_same_v<ValueType, NonAtomicValueType>) {
+            vector.push_back(enumValueToValueMap[enumValue]);
+        } else {
+            vector.push_back(ValueType(enumValueToValueMap[enumValue]));
+        }
         saver.save(enumValue, doc, 1);
     }
 }
 
-} // namespace search::attribute
-} // namespace search
+}

@@ -1,8 +1,9 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.rankingexpression.importer.operations;
 
 import ai.vespa.rankingexpression.importer.DimensionRenamer;
 import ai.vespa.rankingexpression.importer.OrderedTensorType;
+import com.yahoo.searchlib.rankingexpression.Reference;
 import com.yahoo.searchlib.rankingexpression.evaluation.DoubleValue;
 import com.yahoo.searchlib.rankingexpression.rule.ConstantNode;
 import com.yahoo.searchlib.rankingexpression.rule.ExpressionNode;
@@ -64,7 +65,7 @@ public class Unsqueeze extends IntermediateOperation {
     }
 
     @Override
-    protected TensorFunction lazyGetFunction() {
+    protected TensorFunction<Reference> lazyGetFunction() {
         if ( ! allInputFunctionsPresent(1)) return null;
 
         // multiply with a generated tensor created from the expanded dimensions
@@ -74,9 +75,9 @@ public class Unsqueeze extends IntermediateOperation {
         }
         TensorType generatedType = typeBuilder.build();
         ExpressionNode generatedExpression = new ConstantNode(new DoubleValue(1));
-        Generate generatedFunction = new Generate(generatedType,
+        Generate<Reference> generatedFunction = new Generate<>(generatedType,
                 new GeneratorLambdaFunctionNode(generatedType, generatedExpression).asLongListToDoubleOperator());
-        return new com.yahoo.tensor.functions.Join(inputs().get(0).function().get(), generatedFunction, ScalarFunctions.multiply());
+        return new com.yahoo.tensor.functions.Join<>(inputs().get(0).function().get(), generatedFunction, ScalarFunctions.multiply());
     }
 
     @Override

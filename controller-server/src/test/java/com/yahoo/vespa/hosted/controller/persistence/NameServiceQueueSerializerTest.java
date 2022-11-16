@@ -7,15 +7,16 @@ import com.yahoo.vespa.hosted.controller.api.integration.dns.LatencyAliasTarget;
 import com.yahoo.vespa.hosted.controller.api.integration.dns.Record;
 import com.yahoo.vespa.hosted.controller.api.integration.dns.RecordData;
 import com.yahoo.vespa.hosted.controller.api.integration.dns.RecordName;
+import com.yahoo.vespa.hosted.controller.api.integration.dns.WeightedDirectTarget;
 import com.yahoo.vespa.hosted.controller.dns.CreateRecord;
 import com.yahoo.vespa.hosted.controller.dns.CreateRecords;
 import com.yahoo.vespa.hosted.controller.dns.NameServiceQueue;
 import com.yahoo.vespa.hosted.controller.dns.RemoveRecords;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author mpolden
@@ -25,21 +26,29 @@ public class NameServiceQueueSerializerTest {
     private final NameServiceQueueSerializer serializer = new NameServiceQueueSerializer();
 
     @Test
-    public void test_serialization() {
+    void test_serialization() {
         var record1 = new Record(Record.Type.CNAME, RecordName.from("cname.example.com"), RecordData.from("example.com"));
         var record2 = new Record(Record.Type.TXT, RecordName.from("txt.example.com"), RecordData.from("text"));
         var requests = List.of(
                 new CreateRecord(record1),
                 new CreateRecords(List.of(record2)),
                 new CreateRecords(List.of(new Record(Record.Type.ALIAS, RecordName.from("alias.example.com"),
-                                                     new LatencyAliasTarget(HostName.from("alias1"),
-                                                                            "dns-zone-01",
-                                                                            ZoneId.from("prod", "us-north-1")).pack()),
-                                          new Record(Record.Type.ALIAS, RecordName.from("alias.example.com"),
-                                                     new LatencyAliasTarget(HostName.from("alias2"),
-                                                                            "dns-zone-02",
-                                                                            ZoneId.from("prod", "us-north-2")).pack()))
+                                new LatencyAliasTarget(HostName.of("alias1"),
+                                        "dns-zone-01",
+                                        ZoneId.from("prod", "us-north-1")).pack()),
+                        new Record(Record.Type.ALIAS, RecordName.from("alias.example.com"),
+                                new LatencyAliasTarget(HostName.of("alias2"),
+                                        "dns-zone-02",
+                                        ZoneId.from("prod", "us-north-2")).pack()),
+                        new Record(Record.Type.ALIAS, RecordName.from("alias.example.com"),
+                                new LatencyAliasTarget(HostName.of("alias2"),
+                                        "ignored",
+                                        ZoneId.from("prod", "us-south-1")).pack()))
                 ),
+                new CreateRecords(List.of(new Record(Record.Type.DIRECT, RecordName.from("direct.example.com"),
+                                new WeightedDirectTarget(RecordData.from("10.1.2.3"),
+                                        ZoneId.from("prod", "us-north-1"),
+                                        100).pack()))),
                 new RemoveRecords(record1.type(), record1.name()),
                 new RemoveRecords(record2.type(), record2.data())
         );

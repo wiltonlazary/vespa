@@ -4,10 +4,10 @@ package com.yahoo.security.tls;
 import com.yahoo.security.KeyStoreBuilder;
 import com.yahoo.security.KeyStoreType;
 import com.yahoo.security.KeyUtils;
+import com.yahoo.security.MutableX509KeyManager;
+import com.yahoo.security.MutableX509TrustManager;
 import com.yahoo.security.SslContextBuilder;
 import com.yahoo.security.X509CertificateUtils;
-import com.yahoo.security.tls.authz.PeerAuthorizerTrustManager;
-import com.yahoo.security.tls.policy.AuthorizedPeers;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
@@ -19,7 +19,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.time.Duration;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -112,9 +111,8 @@ public class ConfigFileBasedTlsContext implements TlsContext {
                                                              PeerAuthentication peerAuthentication) {
 
         HostnameVerification hostnameVerification = options.isHostnameValidationDisabled() ? HostnameVerification.DISABLED : HostnameVerification.ENABLED;
-        PeerAuthorizerTrustManager authorizerTrustManager = options.getAuthorizedPeers()
-                .map(authorizedPeers -> new PeerAuthorizerTrustManager(authorizedPeers, mode, hostnameVerification, mutableTrustManager))
-                .orElseGet(() -> new PeerAuthorizerTrustManager(new AuthorizedPeers(Collections.emptySet()), AuthorizationMode.DISABLE, hostnameVerification, mutableTrustManager));
+        PeerAuthorizerTrustManager authorizerTrustManager =
+                new PeerAuthorizerTrustManager(options.getAuthorizedPeers(), mode, hostnameVerification, mutableTrustManager);
         SSLContext sslContext = new SslContextBuilder()
                 .withKeyManager(mutableKeyManager)
                 .withTrustManager(authorizerTrustManager)

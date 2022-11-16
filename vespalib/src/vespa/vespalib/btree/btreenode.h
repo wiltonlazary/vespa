@@ -5,9 +5,10 @@
 #include "noaggregated.h"
 #include "minmaxaggregated.h"
 #include "btree_key_data.h"
-#include <vespa/vespalib/datastore/entryref.h>
+#include <vespa/vespalib/datastore/atomic_entry_ref.h>
 #include <vespa/vespalib/datastore/handle.h>
 #include <cassert>
+#include <type_traits>
 #include <utility>
 #include <cstddef>
 
@@ -64,6 +65,7 @@ protected:
 
 public:
     using Ref = datastore::EntryRef;
+    using ChildRef = datastore::AtomicEntryRef;
 
     bool isLeaf() const { return _level == 0u; }
     bool getFrozen() const { return _isFrozen; }
@@ -99,6 +101,8 @@ public:
     }
 
     const DataT &getData(uint32_t idx) const { return _data[idx]; }
+    // Only use during compaction when changing reference to moved value
+    DataT &getWData(uint32_t idx) { return _data[idx]; }
     void setData(uint32_t idx, const DataT &data) { _data[idx] = data; }
     static bool hasData() { return true; }
 };
@@ -119,6 +123,9 @@ public:
         (void) idx;
         return BTreeNoLeafData::_instance;
     }
+
+    // Only use during compaction when changing reference to moved value
+    BTreeNoLeafData &getWData(uint32_t) const { return BTreeNoLeafData::_instance; }
 
     void setData(uint32_t idx, const BTreeNoLeafData &data) {
         (void) idx;
@@ -199,7 +206,14 @@ protected:
 public:
     const KeyT & getKey(uint32_t idx) const { return _keys[idx]; }
     const KeyT & getLastKey() const { return _keys[validSlots() - 1]; }
-    void writeKey(uint32_t idx, const KeyT & key) { _keys[idx] = key; }
+    void writeKey(uint32_t idx, const KeyT & key) {
+        if constexpr (std::is_same_v<KeyT, vespalib::datastore::AtomicEntryRef>) {
+            _keys[idx].store_release(key.load_relaxed());
+        } else {
+            _keys[idx] = key;
+        }
+    }
+    void write_key_relaxed(uint32_t idx, const KeyT & key) { _keys[idx] = key; }
 
     template <typename CompareT>
     uint32_t lower_bound(uint32_t sidx, const KeyT & key, CompareT comp) const;
@@ -276,10 +290,10 @@ public:
 };
 
 template <typename KeyT, typename AggrT, uint32_t NumSlots = 16>
-class BTreeInternalNode : public BTreeNodeTT<KeyT, BTreeNode::Ref, AggrT, NumSlots>
+class BTreeInternalNode : public BTreeNodeTT<KeyT, BTreeNode::ChildRef, AggrT, NumSlots>
 {
 public:
-    typedef BTreeNodeTT<KeyT, BTreeNode::Ref, AggrT, NumSlots> ParentType;
+    typedef BTreeNodeTT<KeyT, BTreeNode::ChildRef, AggrT, NumSlots> ParentType;
     typedef BTreeInternalNode<KeyT, AggrT, NumSlots> InternalNodeType;
     template <typename, typename, typename, size_t, size_t>
     friend class BTreeNodeAllocator;
@@ -296,12 +310,15 @@ public:
     typedef BTreeNode::Ref Ref;
     typedef datastore::Handle<InternalNodeType> RefPair;
     using ParentType::_keys;
+    using ParentType::_data;
     using ParentType::validSlots;
     using ParentType::_validSlots;
     using ParentType::getFrozen;
     using ParentType::getData;
+    using ParentType::insert;
     using ParentType::setData;
     using ParentType::setLevel;
+    using ParentType::update;
     using ParentType::EMPTY_LEVEL;
     typedef KeyT KeyType;
     typedef Ref DataType;
@@ -330,9 +347,17 @@ private:
     uint32_t countValidLeaves(uint32_t start, uint32_t end, NodeAllocatorType &allocator);
 
 public:
-    BTreeNode::Ref getChild(uint32_t idx) const { return getData(idx); }
-    void setChild(uint32_t idx, BTreeNode::Ref child) { setData(idx, child); }
-    BTreeNode::Ref getLastChild() const { return getChild(validSlots() - 1); }
+    BTreeNode::Ref getChild(uint32_t idx) const { return _data[idx].load_acquire(); }
+    BTreeNode::Ref get_child_relaxed(uint32_t idx) const { return _data[idx].load_relaxed(); }
+    void setChild(uint32_t idx, BTreeNode::Ref child) { _data[idx].store_release(child); }
+    void set_child_relaxed(uint32_t idx, BTreeNode::Ref child) { _data[idx].store_relaxed(child); }
+    BTreeNode::Ref get_last_child_relaxed() const { return get_child_relaxed(validSlots() - 1); }
+    void update(uint32_t idx, const KeyT & key, BTreeNode::Ref child) {
+        update(idx, key, BTreeNode::ChildRef(child));
+    }
+    void insert(uint32_t idx, const KeyT & key, BTreeNode::Ref child) {
+        insert(idx, key, BTreeNode::ChildRef(child));
+    }
     uint32_t validLeaves() const { return _validLeaves; }
     void setValidLeaves(uint32_t newValidLeaves) { _validLeaves = newValidLeaves; }
     void incValidLeaves(uint32_t delta) { _validLeaves += delta; }
@@ -356,15 +381,15 @@ public:
 
     template <typename NodeStoreType, typename FunctionType>
     void foreach_key(NodeStoreType &store, FunctionType func) const {
-        const BTreeNode::Ref *it = this->_data;
-        const BTreeNode::Ref *ite = it + _validSlots;
+        const BTreeNode::ChildRef *it = this->_data;
+        const BTreeNode::ChildRef *ite = it + _validSlots;
         if (this->getLevel() > 1u) {
             for (; it != ite; ++it) {
-                store.mapInternalRef(*it)->foreach_key(store, func);
+                store.mapInternalRef(it->load_acquire())->foreach_key(store, func);
             }
         } else {
             for (; it != ite; ++it) {
-                store.mapLeafRef(*it)->foreach_key(func);
+                store.mapLeafRef(it->load_acquire())->foreach_key(func);
             }
         }
     }
@@ -375,31 +400,31 @@ public:
      */
     template <typename NodeStoreType, typename FunctionType>
     void foreach_key_range(NodeStoreType &store, uint32_t start_idx, uint32_t end_idx, FunctionType func) const {
-        const BTreeNode::Ref *it = this->_data;
-        const BTreeNode::Ref *ite = it + end_idx;
+        const BTreeNode::ChildRef *it = this->_data;
+        const BTreeNode::ChildRef *ite = it + end_idx;
         it += start_idx;
         if (this->getLevel() > 1u) {
             for (; it != ite; ++it) {
-                store.mapInternalRef(*it)->foreach_key(store, func);
+                store.mapInternalRef(it->load_acquire())->foreach_key(store, func);
             }
         } else {
             for (; it != ite; ++it) {
-                store.mapLeafRef(*it)->foreach_key(func);
+                store.mapLeafRef(it->load_acquire())->foreach_key(func);
             }
         }
     }
 
     template <typename NodeStoreType, typename FunctionType>
     void foreach(NodeStoreType &store, FunctionType func) const {
-        const BTreeNode::Ref *it = this->_data;
-        const BTreeNode::Ref *ite = it + _validSlots;
+        const BTreeNode::ChildRef *it = this->_data;
+        const BTreeNode::ChildRef *ite = it + _validSlots;
         if (this->getLevel() > 1u) {
             for (; it != ite; ++it) {
-                store.mapInternalRef(*it)->foreach(store, func);
+                store.mapInternalRef(it->load_acquire())->foreach(store, func);
             }
         } else {
             for (; it != ite; ++it) {
-                store.mapLeafRef(*it)->foreach(func);
+                store.mapLeafRef(it->load_acquire())->foreach(func);
             }
         }
     }

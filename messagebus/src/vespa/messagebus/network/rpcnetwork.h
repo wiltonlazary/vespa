@@ -11,6 +11,7 @@
 #include <vespa/messagebus/reply.h>
 #include <vespa/slobrok/imirrorapi.h>
 #include <vespa/vespalib/component/versionspecification.h>
+#include <vespa/vespalib/net/tls/capability_set.h>
 #include <vespa/vespalib/util/compressionconfig.h>
 #include <vespa/fnet/frt/invokable.h>
 
@@ -33,10 +34,10 @@ class RPCServiceAddress;
  * Network implementation based on RPC. This class is responsible for
  * keeping track of services and for sending messages to services.
  **/
-class RPCNetwork : public INetwork,
-                   public FRT_Invokable {
+class RPCNetwork : public FRT_Invokable, public INetwork {
 private:
     using CompressionConfig = vespalib::compression::CompressionConfig;
+    using CapabilitySet     = vespalib::net::tls::CapabilitySet;
     struct SendContext : public RPCTarget::IVersionHandler {
         std::mutex                _lock;
         RPCNetwork               &_net;
@@ -66,13 +67,10 @@ private:
     std::unique_ptr<RPCTargetPool>                     _targetPool;
     std::unique_ptr<FNET_Task>                         _targetPoolTask;
     std::unique_ptr<RPCServicePool>                    _servicePool;
-    std::unique_ptr<vespalib::SyncableThreadExecutor>  _executor;
-    std::unique_ptr<RPCSendAdapter>                    _sendV1;
     std::unique_ptr<RPCSendAdapter>                    _sendV2;
     SendAdapterMap                                     _sendAdapters;
     CompressionConfig                                  _compressionConfig;
-    bool                                               _allowDispatchForEncode;
-    bool                                               _allowDispatchForDecode;
+    CapabilitySet                                      _required_capabilities;
 
     /**
      * Resolves and assigns a service address for the given recipient using the
@@ -224,10 +222,6 @@ public:
     const slobrok::api::IMirrorAPI &getMirror() const override;
     CompressionConfig getCompressionConfig() { return _compressionConfig; }
     void invoke(FRT_RPCRequest *req);
-    vespalib::Executor & getExecutor() const { return *_executor; }
-    bool allowDispatchForEncode() const { return _allowDispatchForEncode; }
-    bool allowDispatchForDecode() const { return _allowDispatchForDecode; }
-
 };
 
 } // namespace mbus

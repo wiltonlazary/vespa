@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "valuefeature.h"
 #include "euclidean_distance_feature.h"
+#include "valuefeature.h"
 #include "array_parser.hpp"
 #include <vespa/searchlib/attribute/integerbase.h>
 #include <vespa/searchlib/fef/properties.h>
@@ -99,7 +99,7 @@ EuclideanDistanceBlueprint::createExecutor(const IQueryEnvironment &env, vespali
 {
     const IAttributeVector * attribute = env.getAttributeContext().getAttribute(_attributeName);
     if (attribute == nullptr) {
-        Issue::report("The attribute vector '%s' was not found in the attribute manager, returning executor with default value.",
+        Issue::report("euclidean_distance feature: The attribute vector '%s' was not found, returning default value.",
                       _attributeName.c_str());
         return stash.create<SingleZeroValueExecutor>();
     }
@@ -113,8 +113,8 @@ EuclideanDistanceBlueprint::createExecutor(const IQueryEnvironment &env, vespali
             return create<double>(*attribute, queryVector, stash);
         }
     }
-    Issue::report("The attribute vector '%s' is NOT of type array<int/long/float/double>"
-                  ", returning executor with default value.", attribute->getName().c_str());
+    Issue::report("euclidean_distance feature: The attribute vector '%s' is NOT of type array<int/long/float/double>"
+                  ", returning default value.", attribute->getName().c_str());
     return stash.create<SingleZeroValueExecutor>();
 
 }

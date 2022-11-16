@@ -20,7 +20,7 @@ public class EquivItem extends CompositeTaggableItem {
     public EquivItem() {}
 
     /**
-     * Creates an EQUIV with the given item as child.  The new EQUIV will take connectivity,
+     * Creates an EQUIV with the given item as child. The new EQUIV will take connectivity,
      * significance and weight from the given item.
      *
      * @param item will be modified and added as a child
@@ -48,7 +48,7 @@ public class EquivItem extends CompositeTaggableItem {
         // steal other item's weight:
         setWeight(item.getWeight());
 
-        // we have now stolen all of the other item's unique id needs:
+        // we have now stolen all the other item's unique id needs:
         item.setHasUniqueID(false);
     }
 
@@ -83,11 +83,16 @@ public class EquivItem extends CompositeTaggableItem {
         super.adding(item);
         Validator.ensure("Could not add an item of type " + item.getItemType() +
                          ": Equiv can only have word, wordAlternatives, int, exact, or phrase as children",
-                         item.getItemType() == ItemType.WORD ||
-                         item.getItemType() == ItemType.WORD_ALTERNATIVES ||
-                         item.getItemType() == ItemType.INT ||
-                         item.getItemType() == ItemType.EXACT ||
-                         item.getItemType() == ItemType.PHRASE);
+                         acceptsChildrenOfType(item.getItemType()));
+    }
+
+    /** Returns true if this accepts child items of the given type */
+    public static boolean acceptsChildrenOfType(ItemType itemType) {
+        return itemType == ItemType.WORD ||
+               itemType == ItemType.WORD_ALTERNATIVES ||
+               itemType == ItemType.INT ||
+               itemType == ItemType.EXACT ||
+               itemType == ItemType.PHRASE;
     }
 
 }

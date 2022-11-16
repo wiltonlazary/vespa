@@ -37,8 +37,6 @@ public class NodeRepositoryNode {
     private Set<String> additionalIpAddresses;
     @JsonProperty("additionalHostnames")
     private List<String> additionalHostnames;
-    @JsonProperty("openStackId")
-    private String openStackId;
     @JsonProperty("flavor")
     private String flavor;
     @JsonProperty("resources")
@@ -65,6 +63,8 @@ public class NodeRepositoryNode {
     private String currentOsVersion;
     @JsonProperty("wantedOsVersion")
     private String wantedOsVersion;
+    @JsonProperty("deferOsUpgrade")
+    private Boolean deferOsUpgrade;
     @JsonProperty("currentFirmwareCheck")
     private Long currentFirmwareCheck;
     @JsonProperty("wantedFirmwareCheck")
@@ -87,6 +87,8 @@ public class NodeRepositoryNode {
     private Boolean wantToDeprovision;
     @JsonProperty("wantToRebuild")
     private Boolean wantToRebuild;
+    @JsonProperty("down")
+    private Boolean down;
     @JsonProperty("cost")
     private Integer cost;
     @JsonProperty("history")
@@ -105,6 +107,8 @@ public class NodeRepositoryNode {
     private String exclusiveTo;
     @JsonProperty("switchHostname")
     private String switchHostname;
+    @JsonProperty("cloudAccount")
+    private String cloudAccount;
 
     public String getUrl() {
         return url;
@@ -160,14 +164,6 @@ public class NodeRepositoryNode {
 
     public void setAdditionalHostnames(List<String> additionalHostnames) {
         this.additionalHostnames = additionalHostnames;
-    }
-
-    public String getOpenStackId() {
-        return openStackId;
-    }
-
-    public void setOpenStackId(String openStackId) {
-        this.openStackId = openStackId;
     }
 
     public String getFlavor() {
@@ -258,6 +254,14 @@ public class NodeRepositoryNode {
         this.wantedVespaVersion = wantedVespaVersion;
     }
 
+    public Boolean getDeferOsUpgrade() {
+        return deferOsUpgrade;
+    }
+
+    public void setDeferOsUpgrade(Boolean deferOsUpgrade) {
+        this.deferOsUpgrade = deferOsUpgrade;
+    }
+
     public Integer getFailCount() {
         return failCount;
     }
@@ -328,6 +332,14 @@ public class NodeRepositoryNode {
         this.wantToRebuild = wantToRebuild;
     }
 
+    public Boolean getDown() {
+        return down;
+    }
+
+    public void setDown(Boolean down) {
+        this.down = down;
+    }
+
     public Integer getCost() {
         return cost;
     }
@@ -346,6 +358,10 @@ public class NodeRepositoryNode {
 
     public String getOrchestratorStatus() {
         return orchestratorStatus;
+    }
+
+    public void setOrchestratorStatus(String orchestratorStatus) {
+        this.orchestratorStatus = orchestratorStatus;
     }
 
     public Long suspendedSinceMillis() {
@@ -424,6 +440,13 @@ public class NodeRepositoryNode {
         this.switchHostname = switchHostname;
     }
 
+    public String getCloudAccount() {
+        return cloudAccount;
+    }
+
+    public void setCloudAccount(String cloudAccount) {
+        this.cloudAccount = cloudAccount;
+    }
 
     // --- Helper methods for code that (wrongly) consume this directly
 
@@ -437,17 +460,17 @@ public class NodeRepositoryNode {
 
     // --- end
 
+
     @Override
     public String toString() {
         return "NodeRepositoryNode{" +
                "url='" + url + '\'' +
                ", id='" + id + '\'' +
-               ", state=" + state +
+               ", state='" + state + '\'' +
                ", hostname='" + hostname + '\'' +
                ", ipAddresses=" + ipAddresses +
                ", additionalIpAddresses=" + additionalIpAddresses +
                ", additionalHostnames=" + additionalHostnames +
-               ", openStackId='" + openStackId + '\'' +
                ", flavor='" + flavor + '\'' +
                ", resources=" + resources +
                ", requestedResources=" + requestedResources +
@@ -461,17 +484,19 @@ public class NodeRepositoryNode {
                ", wantedVespaVersion='" + wantedVespaVersion + '\'' +
                ", currentOsVersion='" + currentOsVersion + '\'' +
                ", wantedOsVersion='" + wantedOsVersion + '\'' +
+               ", deferOsUpgrade=" + deferOsUpgrade +
                ", currentFirmwareCheck=" + currentFirmwareCheck +
                ", wantedFirmwareCheck=" + wantedFirmwareCheck +
                ", failCount=" + failCount +
-               ", environment=" + environment +
-               ", type=" + type +
+               ", environment='" + environment + '\'' +
+               ", type='" + type + '\'' +
                ", wantedDockerImage='" + wantedDockerImage + '\'' +
                ", currentDockerImage='" + currentDockerImage + '\'' +
                ", parentHostname='" + parentHostname + '\'' +
                ", wantToRetire=" + wantToRetire +
                ", wantToDeprovision=" + wantToDeprovision +
                ", wantToRebuild=" + wantToRebuild +
+               ", down=" + down +
                ", cost=" + cost +
                ", history=" + history +
                ", orchestratorStatus='" + orchestratorStatus + '\'' +
@@ -481,6 +506,7 @@ public class NodeRepositoryNode {
                ", reservedTo='" + reservedTo + '\'' +
                ", exclusiveTo='" + exclusiveTo + '\'' +
                ", switchHostname='" + switchHostname + '\'' +
+               ", cloudAccount='" + cloudAccount + '\'' +
                '}';
     }
 

@@ -26,6 +26,7 @@ vespa_add_library(searchlib_fef OBJECT
     phrase_splitter_query_env.cpp
     phrasesplitter.cpp
     properties.cpp
+    query_value.cpp
     queryproperties.cpp
     rank_program.cpp
     ranksetup.cpp
@@ -35,6 +36,7 @@ vespa_add_library(searchlib_fef OBJECT
     table.cpp
     tablemanager.cpp
     termfieldmatchdata.cpp
+    termfieldmatchdataarray.cpp
     termfieldmatchdataposition.cpp
     termmatchdatamerger.cpp
     utils.cpp

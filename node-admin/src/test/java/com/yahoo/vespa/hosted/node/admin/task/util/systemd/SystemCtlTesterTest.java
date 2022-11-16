@@ -1,14 +1,14 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.systemd;
 
 import com.yahoo.vespa.hosted.node.admin.component.TestTaskContext;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.TestTerminal;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.function.Function;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author freva
@@ -21,7 +21,7 @@ public class SystemCtlTesterTest {
     private final TestTaskContext context = new TestTaskContext();
 
     @Test
-    public void return_expectations() {
+    void return_expectations() {
         assertSystemCtlMethod(sct -> sct.expectEnable(unit), sc -> sc.enable(unit).converge(context));
         assertSystemCtlMethod(sct -> sct.expectDisable(unit), sc -> sc.disable(unit).converge(context));
         assertSystemCtlMethod(sct -> sct.expectStart(unit), sc -> sc.start(unit).converge(context));
@@ -31,7 +31,7 @@ public class SystemCtlTesterTest {
     }
 
     @Test
-    public void void_tests() {
+    void void_tests() {
         systemCtl.expectRestart(unit);
         systemCtl.restart(unit).converge(context);
         terminal.verifyAllCommandsExecuted();

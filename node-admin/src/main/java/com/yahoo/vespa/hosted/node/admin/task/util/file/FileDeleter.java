@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.node.admin.task.util.file;
 
 import com.yahoo.vespa.hosted.node.admin.component.TaskContext;
@@ -26,7 +26,7 @@ public class FileDeleter {
     public boolean converge(TaskContext context) {
         boolean deleted = uncheck(() -> Files.deleteIfExists(path));
         if (deleted) {
-            context.recordSystemModification(logger, "Deleted file or directory " + path);
+            context.recordSystemModification(logger, "Deleted " + path);
         }
 
         return deleted;

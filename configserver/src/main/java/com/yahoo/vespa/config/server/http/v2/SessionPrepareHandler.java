@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.config.server.http.v2;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.cloud.config.ConfigserverConfig;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.container.jdisc.HttpRequest;
@@ -51,11 +51,6 @@ public class SessionPrepareHandler extends SessionHandler {
         applicationRepository.validateThatSessionIsNotActive(tenant, sessionId);
         applicationRepository.validateThatSessionIsPrepared(tenant, sessionId);
         return new SessionPrepareResponse(tenant.getName(), request, sessionId);
-    }
-
-    @Override
-    public Duration getTimeout() {
-        return zookeeperBarrierTimeout.plus(Duration.ofSeconds(10));
     }
 
     private Tenant getExistingTenant(HttpRequest request) {

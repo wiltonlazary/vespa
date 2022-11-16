@@ -4,20 +4,32 @@
 package cmd
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestAPIKey(t *testing.T) {
-	homeDir := filepath.Join(t.TempDir(), ".vespa")
-	keyFile := filepath.Join(homeDir, "t1.api-key.pem")
+	t.Run("auth api-key", func(t *testing.T) {
+		testAPIKey(t, []string{"auth", "api-key"})
+	})
+}
 
-	out, _ := execute(command{args: []string{"api-key", "-a", "t1.a1.i1"}, homeDir: homeDir}, t, nil)
-	assert.Contains(t, out, "Success: API private key written to "+keyFile+"\n")
+func testAPIKey(t *testing.T, subcommand []string) {
+	cli, stdout, stderr := newTestCLI(t)
 
-	out, outErr := execute(command{args: []string{"api-key", "-a", "t1.a1.i1"}, homeDir: homeDir}, t, nil)
-	assert.Contains(t, outErr, "Error: File "+keyFile+" already exists\nHint: Use -f to overwrite it\n")
-	assert.Contains(t, out, "This is your public key")
+	err := cli.Run("config", "set", "target", "cloud")
+	assert.Nil(t, err)
+
+	args := append(subcommand, "-a", "t1.a1.i1")
+	err = cli.Run(args...)
+	assert.Nil(t, err)
+	assert.Equal(t, "", stderr.String())
+	assert.Contains(t, stdout.String(), "Success: API private key written to")
+
+	err = cli.Run(subcommand...)
+	assert.NotNil(t, err)
+	assert.Contains(t, stderr.String(), "Error: refusing to overwrite")
+	assert.Contains(t, stderr.String(), "Hint: Use -f to overwrite it\n")
+	assert.Contains(t, stdout.String(), "This is your public key")
 }

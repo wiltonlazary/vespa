@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "exceptions.h"
 #include "metrics.h"
@@ -141,7 +141,7 @@ RpcForwarder::flush()
     if (!request->CheckReturnTypes("bix")) {
         auto error_msg = make_string("Error in rpc reply from logserver ('%s'): '%s'",
                                      _connection_spec.c_str(), request->GetErrorMessage());
-        LOG(warning, "%s", error_msg.c_str());
+        LOG(debug, "%s", error_msg.c_str());
         throw ConnectionException(error_msg);
     }
     ProtoConverter::ProtoLogResponse proto_response;

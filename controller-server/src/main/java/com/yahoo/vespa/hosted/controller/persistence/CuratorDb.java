@@ -1,10 +1,10 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.persistence;
 
-import com.google.common.util.concurrent.UncheckedTimeoutException;
-import com.google.inject.Inject;
 import com.yahoo.collections.Pair;
 import com.yahoo.component.Version;
+import com.yahoo.component.annotation.Inject;
+import com.yahoo.concurrent.UncheckedTimeoutException;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.HostName;
 import com.yahoo.config.provision.TenantName;
@@ -12,14 +12,16 @@ import com.yahoo.config.provision.zone.ZoneId;
 import com.yahoo.path.Path;
 import com.yahoo.slime.Slime;
 import com.yahoo.slime.SlimeUtils;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.curator.Curator;
-import com.yahoo.vespa.curator.Lock;
 import com.yahoo.vespa.hosted.controller.Application;
+import com.yahoo.vespa.hosted.controller.api.identifiers.ControllerVersion;
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
 import com.yahoo.vespa.hosted.controller.api.integration.archive.ArchiveBucket;
 import com.yahoo.vespa.hosted.controller.api.integration.certificates.EndpointCertificateMetadata;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobType;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.RunId;
+import com.yahoo.vespa.hosted.controller.api.integration.vcmr.VespaChangeRequest;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
 import com.yahoo.vespa.hosted.controller.auditlog.AuditLog;
 import com.yahoo.vespa.hosted.controller.deployment.RetriggerEntry;
@@ -27,15 +29,13 @@ import com.yahoo.vespa.hosted.controller.deployment.RetriggerEntrySerializer;
 import com.yahoo.vespa.hosted.controller.deployment.Run;
 import com.yahoo.vespa.hosted.controller.deployment.Step;
 import com.yahoo.vespa.hosted.controller.dns.NameServiceQueue;
-import com.yahoo.vespa.hosted.controller.api.integration.vcmr.VespaChangeRequest;
 import com.yahoo.vespa.hosted.controller.notification.Notification;
-import com.yahoo.vespa.hosted.controller.routing.GlobalRouting;
 import com.yahoo.vespa.hosted.controller.routing.RoutingPolicy;
-import com.yahoo.vespa.hosted.controller.routing.RoutingPolicyId;
+import com.yahoo.vespa.hosted.controller.routing.RoutingStatus;
 import com.yahoo.vespa.hosted.controller.routing.ZoneRoutingPolicy;
 import com.yahoo.vespa.hosted.controller.support.access.SupportAccess;
+import com.yahoo.vespa.hosted.controller.tenant.PendingMailVerification;
 import com.yahoo.vespa.hosted.controller.tenant.Tenant;
-import com.yahoo.vespa.hosted.controller.versions.ControllerVersion;
 import com.yahoo.vespa.hosted.controller.versions.OsVersionStatus;
 import com.yahoo.vespa.hosted.controller.versions.OsVersionTarget;
 import com.yahoo.vespa.hosted.controller.versions.VersionStatus;
@@ -54,7 +54,6 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
@@ -64,9 +63,7 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
-import static java.util.Comparator.comparing;
 import static java.util.stream.Collectors.collectingAndThen;
-import static java.util.stream.Collectors.toUnmodifiableList;
 
 /**
  * Curator backed database for storing the persistence state of controllers. This maps controller specific operations
@@ -84,7 +81,9 @@ public class CuratorDb {
     private static final Duration defaultTryLockTimeout = Duration.ofSeconds(1);
 
     private static final Path root = Path.fromString("/controller/v1");
+
     private static final Path lockRoot = root.append("locks");
+
     private static final Path tenantRoot = root.append("tenants");
     private static final Path applicationRoot = root.append("applications");
     private static final Path jobRoot = root.append("jobs");
@@ -96,14 +95,13 @@ public class CuratorDb {
     private static final Path changeRequestsRoot = root.append("changeRequests");
     private static final Path notificationsRoot = root.append("notifications");
     private static final Path supportAccessRoot = root.append("supportAccess");
+    private static final Path mailVerificationRoot = root.append("mailVerification");
 
     private final NodeVersionSerializer nodeVersionSerializer = new NodeVersionSerializer();
     private final VersionStatusSerializer versionStatusSerializer = new VersionStatusSerializer(nodeVersionSerializer);
     private final ControllerVersionSerializer controllerVersionSerializer = new ControllerVersionSerializer();
     private final ConfidenceOverrideSerializer confidenceOverrideSerializer = new ConfidenceOverrideSerializer();
     private final TenantSerializer tenantSerializer = new TenantSerializer();
-    private final ApplicationSerializer applicationSerializer = new ApplicationSerializer();
-    private final RunSerializer runSerializer = new RunSerializer();
     private final OsVersionSerializer osVersionSerializer = new OsVersionSerializer();
     private final OsVersionTargetSerializer osVersionTargetSerializer = new OsVersionTargetSerializer(osVersionSerializer);
     private final OsVersionStatusSerializer osVersionStatusSerializer = new OsVersionStatusSerializer(osVersionSerializer, nodeVersionSerializer);
@@ -111,6 +109,10 @@ public class CuratorDb {
     private final ZoneRoutingPolicySerializer zoneRoutingPolicySerializer = new ZoneRoutingPolicySerializer(routingPolicySerializer);
     private final AuditLogSerializer auditLogSerializer = new AuditLogSerializer();
     private final NameServiceQueueSerializer nameServiceQueueSerializer = new NameServiceQueueSerializer();
+    private final ApplicationSerializer applicationSerializer = new ApplicationSerializer();
+    private final RunSerializer runSerializer = new RunSerializer();
+    private final RetriggerEntrySerializer retriggerEntrySerializer = new RetriggerEntrySerializer();
+    private final NotificationsSerializer notificationsSerializer = new NotificationsSerializer();
 
     private final Curator curator;
     private final Duration tryLockTimeout;
@@ -137,40 +139,45 @@ public class CuratorDb {
         return Arrays.stream(curator.zooKeeperEnsembleConnectionSpec().split(","))
                      .filter(hostAndPort -> !hostAndPort.isEmpty())
                      .map(hostAndPort -> hostAndPort.split(":")[0])
-                     .collect(Collectors.toUnmodifiableList());
+                     .toList();
     }
 
     // -------------- Locks ---------------------------------------------------
 
-    public Lock lock(TenantName name) {
-        return curator.lock(lockPath(name), defaultLockTimeout.multipliedBy(2));
+    public Mutex lock(TenantName name) {
+        return curator.lock(lockRoot.append("tenants").append(name.value()), defaultLockTimeout.multipliedBy(2));
     }
 
-    public Lock lock(TenantAndApplicationId id) {
-        return curator.lock(lockPath(id), defaultLockTimeout.multipliedBy(2));
+    public Mutex lock(TenantAndApplicationId id) {
+        return curator.lock(lockRoot.append("applications").append(id.tenant().value() + ":" +
+                                                                   id.application().value()),
+                            defaultLockTimeout.multipliedBy(2));
     }
 
-    public Lock lockForDeployment(ApplicationId id, ZoneId zone) {
-        return curator.lock(lockPath(id, zone), deployLockTimeout);
+    public Mutex lockForDeployment(ApplicationId id, ZoneId zone) {
+        return curator.lock(lockRoot.append("instances").append(id.serializedForm() + ":" + zone.environment().value() +
+                                                                ":" + zone.region().value()),
+                            deployLockTimeout);
     }
 
-    public Lock lock(ApplicationId id, JobType type) {
-        return curator.lock(lockPath(id, type), defaultLockTimeout);
+    public Mutex lock(ApplicationId id, JobType type) {
+        return curator.lock(lockRoot.append("jobs").append(id.serializedForm() + ":" + type.jobName()),
+                            defaultLockTimeout);
     }
 
-    public Lock lock(ApplicationId id, JobType type, Step step) throws TimeoutException {
-        return tryLock(lockPath(id, type, step));
+    public Mutex lock(ApplicationId id, JobType type, Step step) throws TimeoutException {
+        return tryLock(lockRoot.append("steps").append(id.serializedForm() + ":" + type.jobName() + ":" + step.name()));
     }
 
-    public Lock lockRotations() {
+    public Mutex lockRotations() {
         return curator.lock(lockRoot.append("rotations"), defaultLockTimeout);
     }
 
-    public Lock lockConfidenceOverrides() {
+    public Mutex lockConfidenceOverrides() {
         return curator.lock(lockRoot.append("confidenceOverrides"), defaultLockTimeout);
     }
 
-    public Lock lockMaintenanceJob(String jobName) {
+    public Mutex lockMaintenanceJob(String jobName) {
         try {
             return tryLock(lockRoot.append("maintenanceJobLocks").append(jobName));
         } catch (TimeoutException e) {
@@ -178,53 +185,56 @@ public class CuratorDb {
         }
     }
 
-    @SuppressWarnings("unused") // Called by internal code
-    public Lock lockProvisionState(String provisionStateId) {
-        return curator.lock(lockPath(provisionStateId), Duration.ofSeconds(1));
+    public Mutex lockProvisionState(String provisionStateId) {
+        return curator.lock(lockRoot.append("provisioning").append("states").append(provisionStateId), Duration.ofSeconds(1));
     }
 
-    public Lock lockOsVersions() {
+    public Mutex lockOsVersions() {
         return curator.lock(lockRoot.append("osTargetVersion"), defaultLockTimeout);
     }
 
-    public Lock lockOsVersionStatus() {
+    public Mutex lockOsVersionStatus() {
         return curator.lock(lockRoot.append("osVersionStatus"), defaultLockTimeout);
     }
 
-    public Lock lockRoutingPolicies() {
+    public Mutex lockRoutingPolicies() {
         return curator.lock(lockRoot.append("routingPolicies"), defaultLockTimeout);
     }
 
-    public Lock lockAuditLog() {
+    public Mutex lockAuditLog() {
         return curator.lock(lockRoot.append("auditLog"), defaultLockTimeout);
     }
 
-    public Lock lockNameServiceQueue() {
+    public Mutex lockNameServiceQueue() {
         return curator.lock(lockRoot.append("nameServiceQueue"), defaultLockTimeout);
     }
 
-    public Lock lockMeteringRefreshTime() throws TimeoutException {
+    public Mutex lockMeteringRefreshTime() throws TimeoutException {
         return tryLock(lockRoot.append("meteringRefreshTime"));
     }
 
-    public Lock lockArchiveBuckets(ZoneId zoneId) {
+    public Mutex lockArchiveBuckets(ZoneId zoneId) {
         return curator.lock(lockRoot.append("archiveBuckets").append(zoneId.value()), defaultLockTimeout);
     }
 
-    public Lock lockChangeRequests() {
+    public Mutex lockChangeRequests() {
         return curator.lock(lockRoot.append("changeRequests"), defaultLockTimeout);
     }
 
-    public Lock lockNotifications(TenantName tenantName) {
+    public Mutex lockNotifications(TenantName tenantName) {
         return curator.lock(lockRoot.append("notifications").append(tenantName.value()), defaultLockTimeout);
     }
 
-    public Lock lockSupportAccess(DeploymentId deploymentId) {
+    public Mutex lockSupportAccess(DeploymentId deploymentId) {
         return curator.lock(lockRoot.append("supportAccess").append(deploymentId.dottedString()), defaultLockTimeout);
     }
 
-    public Lock lockDeploymentRetriggerQueue() {
+    public Mutex lockDeploymentRetriggerQueue() {
         return curator.lock(lockRoot.append("deploymentRetriggerQueue"), defaultLockTimeout);
+    }
+
+    public Mutex lockPendingMailVerification(String verificationCode) {
+        return curator.lock(lockRoot.append("pendingMailVerification").append(verificationCode), defaultLockTimeout);
     }
 
     // -------------- Helpers ------------------------------------------
@@ -233,7 +243,7 @@ public class CuratorDb {
      *
      * Useful for maintenance jobs, where there is no point in running the jobs back to back.
      */
-    private Lock tryLock(Path path) throws TimeoutException {
+    private Mutex tryLock(Path path) throws TimeoutException {
         try {
             return curator.lock(path, tryLockTimeout);
         }
@@ -266,17 +276,6 @@ public class CuratorDb {
 
     public void writeUpgradesPerMinute(double n) {
         curator.set(upgradesPerMinutePath(), ByteBuffer.allocate(Double.BYTES).putDouble(n).array());
-    }
-
-    public Optional<Integer> readTargetMajorVersion() {
-        return read(targetMajorVersionPath(), ByteBuffer::wrap).map(ByteBuffer::getInt);
-    }
-
-    public void writeTargetMajorVersion(Optional<Integer> targetMajorVersion) {
-        if (targetMajorVersion.isPresent())
-            curator.set(targetMajorVersionPath(), ByteBuffer.allocate(Integer.BYTES).putInt(targetMajorVersion.get()).array());
-        else
-            curator.delete(targetMajorVersionPath());
     }
 
     public void writeVersionStatus(VersionStatus status) {
@@ -331,7 +330,7 @@ public class CuratorDb {
     }
 
     public Optional<Tenant> readTenant(TenantName name) {
-        return readSlime(tenantPath(name)).map(bytes -> tenantSerializer.tenantFrom(bytes));
+        return readSlime(tenantPath(name)).map(tenantSerializer::tenantFrom);
     }
 
     public List<Tenant> readTenants() {
@@ -363,7 +362,7 @@ public class CuratorDb {
                       .map(stat -> cachedApplications.compute(path, (__, old) ->
                               old != null && old.getFirst() == stat.getVersion()
                               ? old
-                              : new Pair<>(stat.getVersion(), read(path, applicationSerializer::fromSlime).get())).getSecond());
+                              : new Pair<>(stat.getVersion(), read(path, bytes -> applicationSerializer.fromSlime(bytes)).get())).getSecond());
     }
 
     public List<Application> readApplications(boolean canFail) {
@@ -397,7 +396,7 @@ public class CuratorDb {
         return curator.getChildren(applicationRoot).stream()
                       .map(TenantAndApplicationId::fromSerialized)
                       .sorted()
-                      .collect(toUnmodifiableList());
+                      .toList();
     }
 
     public void removeApplication(TenantAndApplicationId id) {
@@ -426,7 +425,7 @@ public class CuratorDb {
                               old != null && old.getFirst() == stat.getVersion()
                               ? old
                               : new Pair<>(stat.getVersion(), runSerializer.runsFromSlime(readSlime(path).get()))).getSecond())
-                      .orElse(new TreeMap<>(comparing(RunId::number)));
+                      .orElseGet(Collections::emptyNavigableMap);
     }
 
     public void deleteRunData(ApplicationId id, JobType type) {
@@ -514,19 +513,31 @@ public class CuratorDb {
 
     // -------------- Routing policies ----------------------------------------
 
-    public void writeRoutingPolicies(ApplicationId application, Map<RoutingPolicyId, RoutingPolicy> policies) {
+    public void writeRoutingPolicies(ApplicationId application, List<RoutingPolicy> policies) {
+        for (var policy : policies) {
+            if (!policy.id().owner().equals(application)) {
+                throw new IllegalArgumentException(policy.id() + " does not belong to the application being written: " +
+                                                   application.toShortString());
+            }
+        }
         curator.set(routingPolicyPath(application), asJson(routingPolicySerializer.toSlime(policies)));
     }
 
-    public Map<ApplicationId, Map<RoutingPolicyId, RoutingPolicy>> readRoutingPolicies() {
-        return curator.getChildren(routingPoliciesRoot).stream()
-                      .map(ApplicationId::fromSerializedForm)
-                      .collect(Collectors.toUnmodifiableMap(Function.identity(), this::readRoutingPolicies));
+    public Map<ApplicationId, List<RoutingPolicy>> readRoutingPolicies() {
+        return readRoutingPolicies((instance) -> true);
     }
 
-    public Map<RoutingPolicyId, RoutingPolicy> readRoutingPolicies(ApplicationId application) {
+    public Map<ApplicationId, List<RoutingPolicy>> readRoutingPolicies(Predicate<ApplicationId> filter) {
+        return curator.getChildren(routingPoliciesRoot).stream()
+                      .map(ApplicationId::fromSerializedForm)
+                      .filter(filter)
+                      .collect(Collectors.toUnmodifiableMap(Function.identity(),
+                                                            this::readRoutingPolicies));
+    }
+
+    public List<RoutingPolicy> readRoutingPolicies(ApplicationId application) {
         return readSlime(routingPolicyPath(application)).map(slime -> routingPolicySerializer.fromSlime(application, slime))
-                                                        .orElseGet(Map::of);
+                                                        .orElseGet(List::of);
     }
 
     public void writeZoneRoutingPolicy(ZoneRoutingPolicy policy) {
@@ -535,7 +546,7 @@ public class CuratorDb {
 
     public ZoneRoutingPolicy readZoneRoutingPolicy(ZoneId zone) {
         return readSlime(zoneRoutingPolicyPath(zone)).map(data -> zoneRoutingPolicySerializer.fromSlime(zone, data))
-                                                     .orElse(new ZoneRoutingPolicy(zone, GlobalRouting.DEFAULT_STATUS));
+                                                     .orElseGet(() -> new ZoneRoutingPolicy(zone, RoutingStatus.DEFAULT));
     }
 
     // -------------- Application endpoint certificates ----------------------------
@@ -579,7 +590,7 @@ public class CuratorDb {
 
     public Set<ArchiveBucket> readArchiveBuckets(ZoneId zoneId) {
         return curator.getData(archiveBucketsPath(zoneId)).map(String::new).map(ArchiveBucketsSerializer::fromJsonString)
-                .orElse(Set.of());
+                .orElseGet(Set::of);
     }
 
     public void writeArchiveBuckets(ZoneId zoneid, Set<ArchiveBucket> archiveBuckets) {
@@ -612,18 +623,18 @@ public class CuratorDb {
 
     public List<Notification> readNotifications(TenantName tenantName) {
         return readSlime(notificationsPath(tenantName))
-                .map(slime -> NotificationsSerializer.fromSlime(tenantName, slime)).orElseGet(List::of);
+                .map(slime -> notificationsSerializer.fromSlime(tenantName, slime)).orElseGet(List::of);
     }
 
 
-    public List<TenantName> listNotifications() {
+    public List<TenantName> listTenantsWithNotifications() {
         return curator.getChildren(notificationsRoot).stream()
-                .map(TenantName::from)
-                .collect(Collectors.toUnmodifiableList());
+                      .map(TenantName::from)
+                      .toList();
     }
 
     public void writeNotifications(TenantName tenantName, List<Notification> notifications) {
-        curator.set(notificationsPath(tenantName), asJson(NotificationsSerializer.toSlime(notifications)));
+        curator.set(notificationsPath(tenantName), asJson(notificationsSerializer.toSlime(notifications)));
     }
 
     public void deleteNotifications(TenantName tenantName) {
@@ -636,7 +647,6 @@ public class CuratorDb {
         return readSlime(supportAccessPath(deploymentId)).map(SupportAccessSerializer::fromSlime).orElse(SupportAccess.DISALLOWED_NO_HISTORY);
     }
 
-    /** Take lock before reading before writing */
     public void writeSupportAccess(DeploymentId deploymentId, SupportAccess supportAccess) {
         curator.set(supportAccessPath(deploymentId), asJson(SupportAccessSerializer.toSlime(supportAccess)));
     }
@@ -644,58 +654,39 @@ public class CuratorDb {
     // -------------- Job Retrigger entries -----------------------------------
 
     public List<RetriggerEntry> readRetriggerEntries() {
-        return readSlime(deploymentRetriggerPath()).map(RetriggerEntrySerializer::fromSlime).orElse(List.of());
+        return readSlime(deploymentRetriggerPath()).map(retriggerEntrySerializer::fromSlime).orElseGet(List::of);
     }
 
     public void writeRetriggerEntries(List<RetriggerEntry> retriggerEntries) {
-        curator.set(deploymentRetriggerPath(), asJson(RetriggerEntrySerializer.toSlime(retriggerEntries)));
+        curator.set(deploymentRetriggerPath(), asJson(retriggerEntrySerializer.toSlime(retriggerEntries)));
+    }
+
+    // -------------- Pending mail verification -------------------------------
+
+    public Optional<PendingMailVerification> getPendingMailVerification(String verificationCode) {
+        return readSlime(mailVerificationPath(verificationCode)).map(MailVerificationSerializer::fromSlime);
+    }
+
+    public List<PendingMailVerification> listPendingMailVerifications() {
+        return curator.getChildren(mailVerificationRoot)
+                .stream()
+                .map(this::getPendingMailVerification)
+                .flatMap(Optional::stream)
+                .collect(Collectors.toList());
+    }
+
+    public void writePendingMailVerification(PendingMailVerification pendingMailVerification) {
+        curator.set(mailVerificationPath(pendingMailVerification.getVerificationCode()), asJson(MailVerificationSerializer.toSlime(pendingMailVerification)));
+    }
+
+    public void deletePendingMailVerification(PendingMailVerification pendingMailVerification) {
+        curator.delete(mailVerificationPath(pendingMailVerification.getVerificationCode()));
     }
 
     // -------------- Paths ---------------------------------------------------
 
-    private Path lockPath(TenantName tenant) {
-        return lockRoot
-                .append(tenant.value());
-    }
-
-    private Path lockPath(TenantAndApplicationId application) {
-        return lockPath(application.tenant())
-                .append(application.application().value());
-    }
-
-    private Path lockPath(ApplicationId instance) {
-        return lockPath(TenantAndApplicationId.from(instance))
-                .append(instance.instance().value());
-    }
-
-    private Path lockPath(ApplicationId instance, ZoneId zone) {
-        return lockPath(instance)
-                .append(zone.environment().value())
-                .append(zone.region().value());
-    }
-
-    private Path lockPath(ApplicationId instance, JobType type) {
-        return lockPath(instance)
-                .append(type.jobName());
-    }
-
-    private Path lockPath(ApplicationId instance, JobType type, Step step) {
-        return lockPath(instance, type)
-                .append(step.name());
-    }
-
-    private Path lockPath(String provisionId) {
-        return lockRoot
-                .append(provisionStatePath())
-                .append(provisionId);
-    }
-
     private static Path upgradesPerMinutePath() {
         return root.append("upgrader").append("upgradesPerMinute");
-    }
-
-    private static Path targetMajorVersionPath() {
-        return root.append("upgrader").append("targetMajorVersion");
     }
 
     private static Path confidenceOverridesPath() {
@@ -790,6 +781,10 @@ public class CuratorDb {
 
     private static Path deploymentRetriggerPath() {
         return root.append("deploymentRetriggerQueue");
+    }
+
+    private static Path mailVerificationPath(String verificationCode) {
+        return mailVerificationRoot.append(verificationCode);
     }
 
 }

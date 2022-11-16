@@ -1,13 +1,12 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.ca.restapi;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.container.jdisc.HttpRequest;
 import com.yahoo.container.jdisc.HttpResponse;
-import com.yahoo.container.jdisc.LoggingRequestHandler;
+import com.yahoo.container.jdisc.ThreadedHttpRequestHandler;
 import com.yahoo.container.jdisc.secretstore.SecretStore;
-import com.yahoo.jdisc.http.servlet.ServletRequest;
-import java.util.logging.Level;
+import com.yahoo.jdisc.http.server.jetty.RequestUtils;
 import com.yahoo.restapi.ErrorResponse;
 import com.yahoo.restapi.Path;
 import com.yahoo.restapi.SlimeJsonResponse;
@@ -15,12 +14,12 @@ import com.yahoo.security.KeyUtils;
 import com.yahoo.security.SubjectAlternativeName;
 import com.yahoo.security.X509CertificateUtils;
 import com.yahoo.slime.Slime;
+import com.yahoo.slime.SlimeUtils;
 import com.yahoo.vespa.athenz.api.AthenzService;
 import com.yahoo.vespa.athenz.identityprovider.api.EntityBindingsMapper;
-import com.yahoo.slime.SlimeUtils;
-import com.yahoo.vespa.hosted.athenz.instanceproviderservice.config.AthenzProviderServiceConfig;
 import com.yahoo.vespa.hosted.athenz.instanceproviderservice.InstanceConfirmation;
 import com.yahoo.vespa.hosted.athenz.instanceproviderservice.InstanceValidator;
+import com.yahoo.vespa.hosted.athenz.instanceproviderservice.config.AthenzProviderServiceConfig;
 import com.yahoo.vespa.hosted.ca.Certificates;
 import com.yahoo.vespa.hosted.ca.instance.InstanceIdentity;
 import com.yahoo.vespa.hosted.ca.instance.InstanceRefresh;
@@ -37,7 +36,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
-import java.util.stream.Stream;
+import java.util.logging.Level;
 
 /**
  * REST API for issuing and refreshing node certificates in a hosted Vespa system.
@@ -49,7 +48,7 @@ import java.util.stream.Stream;
  *
  * @author mpolden
  */
-public class CertificateAuthorityApiHandler extends LoggingRequestHandler {
+public class CertificateAuthorityApiHandler extends ThreadedHttpRequestHandler {
 
     private final SecretStore secretStore;
     private final Certificates certificates;
@@ -67,7 +66,7 @@ public class CertificateAuthorityApiHandler extends LoggingRequestHandler {
         this.secretStore = secretStore;
         this.certificates = certificates;
         this.caPrivateKeySecretName = athenzProviderServiceConfig.secretName();
-        this.caCertificateSecretName = athenzProviderServiceConfig.domain() + ".ca.cert";
+        this.caCertificateSecretName = athenzProviderServiceConfig.caCertSecretName();
         this.instanceValidator = instanceValidator;
     }
 
@@ -97,8 +96,8 @@ public class CertificateAuthorityApiHandler extends LoggingRequestHandler {
         var instanceRegistration = deserializeRequest(request, InstanceSerializer::registrationFromSlime);
 
         InstanceConfirmation confirmation = new InstanceConfirmation(instanceRegistration.provider(), instanceRegistration.domain(), instanceRegistration.service(), EntityBindingsMapper.toSignedIdentityDocumentEntity(instanceRegistration.attestationData()));
-        confirmation.set(InstanceValidator.SAN_IPS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRegistration.csr(), SubjectAlternativeName.Type.IP_ADDRESS));
-        confirmation.set(InstanceValidator.SAN_DNS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRegistration.csr(), SubjectAlternativeName.Type.DNS_NAME));
+        confirmation.set(InstanceValidator.SAN_IPS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRegistration.csr(), SubjectAlternativeName.Type.IP));
+        confirmation.set(InstanceValidator.SAN_DNS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRegistration.csr(), SubjectAlternativeName.Type.DNS));
         if (!instanceValidator.isValidInstance(confirmation)) {
             log.log(Level.INFO, "Invalid instance registration for " + instanceRegistration.toString());
             return ErrorResponse.forbidden("Unable to launch service: " +instanceRegistration.service());
@@ -130,8 +129,8 @@ public class CertificateAuthorityApiHandler extends LoggingRequestHandler {
         refreshesSameService(instanceRefresh, athenzService);
 
         InstanceConfirmation instanceConfirmation = new InstanceConfirmation(provider, athenzService.getDomain().getName(), athenzService.getName(), null);
-        instanceConfirmation.set(InstanceValidator.SAN_IPS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRefresh.csr(), SubjectAlternativeName.Type.IP_ADDRESS));
-        instanceConfirmation.set(InstanceValidator.SAN_DNS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRefresh.csr(), SubjectAlternativeName.Type.DNS_NAME));
+        instanceConfirmation.set(InstanceValidator.SAN_IPS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRefresh.csr(), SubjectAlternativeName.Type.IP));
+        instanceConfirmation.set(InstanceValidator.SAN_DNS_ATTRNAME, Certificates.getSubjectAlternativeNames(instanceRefresh.csr(), SubjectAlternativeName.Type.DNS));
         if(!instanceValidator.isValidRefresh(instanceConfirmation)) {
             return ErrorResponse.forbidden("Unable to refresh cert: " + instanceRefresh.csr().getSubject().toString());
         }
@@ -168,7 +167,7 @@ public class CertificateAuthorityApiHandler extends LoggingRequestHandler {
     }
 
     private List<X509Certificate> getRequestCertificateChain(HttpRequest request) {
-        return Optional.ofNullable(request.getJDiscRequest().context().get(ServletRequest.JDISC_REQUEST_X509CERT))
+        return Optional.ofNullable(request.getJDiscRequest().context().get(RequestUtils.JDISC_REQUEST_X509CERT))
                 .map(X509Certificate[].class::cast)
                 .map(Arrays::asList)
                 .orElse(Collections.emptyList());
@@ -177,9 +176,7 @@ public class CertificateAuthorityApiHandler extends LoggingRequestHandler {
     private AthenzService getRequestAthenzService(HttpRequest request) {
         return getRequestCertificateChain(request).stream()
                 .findFirst()
-                .map(X509CertificateUtils::getSubjectCommonNames)
-                .map(List::stream)
-                .flatMap(Stream::findFirst)
+                .flatMap(X509CertificateUtils::getSubjectCommonName)
                 .map(AthenzService::new)
                 .orElseThrow(() -> new RuntimeException("No certificate found"));
     }

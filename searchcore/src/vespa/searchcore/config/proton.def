@@ -54,7 +54,7 @@ flush.strategy enum {SIMPLE, MEMORY} default=MEMORY restart
 flush.memory.maxmemory long default=4294967296
 
 ## Maximum total disk bloat factor before forcing flush.
-flush.memory.diskbloatfactor double default=0.2
+flush.memory.diskbloatfactor double default=0.25
 
 ## Max disk usage (in bytes) for all transaction logs before running flush.
 ## In this case the oldest component is flushed such that transaction log can be pruned and disk freed.
@@ -65,7 +65,7 @@ flush.memory.maxtlssize long default=21474836480
 flush.memory.each.maxmemory long default=1073741824
 
 ## Maximum disk bloat factor per component before forcing flush.
-flush.memory.each.diskbloatfactor double default=0.2
+flush.memory.each.diskbloatfactor double default=0.25
 
 ## Age of unflushed content before forcing age prioritization.
 ## Unit is seconds with 31 hours being the default.
@@ -80,6 +80,10 @@ flush.memory.conservative.memorylimitfactor double default=0.5
 ## When resource limit for disk is reached we choose a conservative mode for the flush strategy.
 ## In this case this factor is multiplied with 'maxtlssize' to calculate a conservative value to use instead.
 flush.memory.conservative.disklimitfactor double default=0.5
+
+## The factor used to multiply with the resource limits for disk / memory to find the high
+## watermark indicating when to from normal into conservative mode for the flush strategy.
+flush.memory.conservative.highwatermarkfactor double default=0.95
 
 ## The factor used to multiply with the resource limits for disk / memory to find the low
 ## watermark indicating when to go back from conservative to normal mode for the flush strategy.
@@ -125,16 +129,17 @@ indexing.write.io enum {NORMAL, OSYNC, DIRECTIO} default=DIRECTIO restart
 ## Control io options during read both under dump and fusion.
 indexing.read.io enum {NORMAL, DIRECTIO} default=DIRECTIO restart
 
-## Control number of threads used for indexing
+## Overrides the number of threads used for writing fields across all document dbs.
+## See feeding.concurrency for details.
 indexing.threads int default=1 restart
 
 ## Option to specify what is most important during indexing.
 ## This is experimental and will most likely be temporary.
-indexing.optimize enum {LATENCY, THROUGHPUT, ADAPTIVE} default=LATENCY restart
+indexing.optimize enum {LATENCY, THROUGHPUT, ADAPTIVE} default=THROUGHPUT restart
 
 ## Maximum number of pending operations for each of the internal
 ## indexing threads.  Only used when visibility delay is zero.
-indexing.tasklimit int default=1000
+indexing.tasklimit int default=-1000
 
 ## Deprecated and ignored, will soon go away
 indexing.semiunboundtasklimit int default = 1000
@@ -144,7 +149,7 @@ indexing.semiunboundtasklimit int default = 1000
 indexing.kind_of_watermark int default = 0 restart
 
 ## Controls minimum reaction time in seconds if using THROUGHPUT
-indexing.reactiontime double default = 0.005 restart
+indexing.reactiontime double default = 0.001 restart
 
 
 ## How long a freshly loaded index shall be warmed up
@@ -203,7 +208,7 @@ distribution.searchablecopies long default=1
 ## Control cache size in bytes.
 ## Postive numbers are absolute in bytes.
 ## Negative numbers are a percentage of memory.
-summary.cache.maxbytes long default=-5
+summary.cache.maxbytes long default=-4
 
 ## Include visits in the cache, if the visitoperation allows it.
 ## This will enable another separate cache of summary.cache.maxbytes size.
@@ -289,17 +294,6 @@ documentdb[].configid string
 documentdb[].visibilitydelay double default=0.0
 ## Whether this document type is globally distributed or not.
 documentdb[].global bool default=false
-## A number between 0.0 and 1.0 that specifies the concurrency when handling feed operations.
-## When set to 1.0 all cores on the cpu is utilized.
-##
-## 3 thread pools used for various aspect of feeding are configured based on this setting:
-##   1) Writing changes to attribute fields
-##   2) Inverting index fields
-##   3) Writing changes to index fields
-##
-## The number of threads in each of pools is calculated as:
-##   max(ceil((hwinfo.cpu.cores * feeding.concurrency)/3), indexing.threads)
-documentdb[].feeding.concurrency double default=0.2
 
 ## Minimum initial size for any per document tables.
 documentdb[].allocation.initialnumdocs long default=1024
@@ -320,6 +314,15 @@ documentdb[].allocation.max_dead_bytes_ratio double default=0.05
 
 ## The ratio of used address space that can be dead before attempting to perform compaction.
 documentdb[].allocation.max_dead_address_space_ratio double default=0.2
+
+## Upper bound for number of buffers that can be compacted at the same time in
+## a data store for a specific reason (e.g. memory used, address space used).
+documentdb[].allocation.max_compact_buffers int default=1
+
+## Ratio of active buffers that can be compacted at the same time in a data
+## store for a specific reason (e.g. memory used, address space used).
+## Effective limit is ceil(active_buffers * active_buffers_ratio).
+documentdb[].allocation.active_buffers_ratio double default=0.1
 
 ## The interval of when periodic tasks should be run
 periodic.interval double default=3600.0
@@ -380,17 +383,6 @@ lidspacecompaction.allowedlidbloat int default=1
 ## The lid bloat factor must be >= allowedlidbloatfactor before considering compaction.
 lidspacecompaction.allowedlidbloatfactor double default=0.01
 
-## DEPRECATED (no longer used): Remove on Vespa 8
-## The delay (in seconds) for when the last remove batch operation would be considered to block lid space compaction.
-##
-## When considering compaction, if the document meta store has received a remove batch operation in the last delay seconds,
-## the lid space compaction job is blocked. It is considered again at the next regular interval (see above).
-##
-## Remove batch operations are used when deleting buckets on a content node.
-## This functionality ensures that during massive deleting of buckets (e.g. as part of redistribution of data to a new node),
-## lid space compaction do not interfere, but instead is applied after deleting of buckets is complete.
-lidspacecompaction.removebatchblockdelay double default=2.0
-
 ## The rate (ops / second) of remove batch operations for when to block lid space compaction.
 ##
 ## When considering compaction, if the current observed rate of remove batch operations
@@ -433,7 +425,7 @@ initialize.threads int default = 0
 
 ## Portion of max address space used in components in attribute vectors
 ## before put and update operations in feed is blocked.
-writefilter.attribute.address_space_limit double default = 0.9
+writefilter.attribute.address_space_limit double default = 0.92
 
 ## Portion of physical memory that can be resident memory in anonymous mapping
 ## by the proton process before put and update portion of feed is blocked.
@@ -480,18 +472,28 @@ hwinfo.cpu.cores int default = 0 restart
 ## A number between 0.0 and 1.0 that specifies the concurrency when handling feed operations.
 ## When set to 1.0 all cores on the cpu is utilized.
 ##
-## 4 thread pools used for various aspect of feeding are configured based on this setting:
-##   1) Compressing and compacting documents
-##   2) Writing changes to attribute fields
-##   3) Inverting index fields
-##   4) Writing changes to index fields
+## 3 thread pools used for various aspect of feeding are configured based on this setting:
+##   1) Basic shared thread pool. E.g. used for compressing and compacting documents.
+##   2) Warmup thread pool. Used for disk index warmup.
+##   3) Field writer thread pool. Used for writing data to document fields:
+##     - Inverting index fields
+##     - Writing changes to index fields
+##     - Writing changes to attribute fields
 ##
-## The number of threads in pool 1 is calculated as:
-##   max(ceil(hwinfo.cpu.cores * feeding.concurrency), summary.log.numthreads)
-## The number of threads in each of pools 2-4 is calculated as:
-##   max(ceil((hwinfo.cpu.cores * feeding.concurrency)/3), indexing.threads)
-## Deprecated -> Use documentdb.feeding.concurrency
+## See shared_threading_service_config.cpp for details on how the thread pool sizes are calculated.
 feeding.concurrency double default = 0.2 restart
+
+## A number between 0.0 and 1.0 telling how nice the feed and background threads shall be.
+## A value of 0.0, which is default, means 'not any nicer than anyone else'.
+## The scale from 0.0 to 1.0 is not linear. It is OS specific.
+feeding.niceness double default = 0.0 restart
+
+## Maximum number of pending tasks for the master thread in each document db.
+##
+## This limit is only considered when executing tasks for handling external feed operations.
+## In that case the calling thread (persistence thread) is blocked until the master thread has capacity to handle more tasks.
+## When this limit is set to 0 it is ignored.
+feeding.master_task_limit int default = 0
 
 ## Adjustment to resource limit when determining if maintenance jobs can run.
 ##
@@ -514,3 +516,14 @@ bucketdb.checksumtype enum {LEGACY, XXHASH64} default = LEGACY restart
 ## FAST_VALUE uses the new and optimized FastValueBuilderFactory instead.
 ## TODO: Remove when default has been switched to FAST_VALUE.
 tensor_implementation enum {TENSOR_ENGINE, FAST_VALUE} default = FAST_VALUE
+
+## Whether to report issues back to the container via protobuf field
+forward_issues bool default = true
+
+## Chooses the throttling policy used to control the window size
+## of the SharedOperationThrottler component used by the transaction log replay feed state.
+replay_throttling_policy.type enum { UNLIMITED, DYNAMIC } default=DYNAMIC
+## Only used if replay_throttling_policy.type == DYNAMIC:
+replay_throttling_policy.min_window_size int default=100
+replay_throttling_policy.max_window_size int default=10000
+replay_throttling_policy.window_size_increment int default=20

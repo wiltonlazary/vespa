@@ -7,11 +7,12 @@ import com.yahoo.config.subscription.ConfigSource;
 import com.yahoo.config.subscription.ConfigSubscriber;
 import com.yahoo.container.di.config.Subscriber;
 import com.yahoo.vespa.config.ConfigKey;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.logging.Logger;
 
 import static java.util.logging.Level.FINE;
@@ -31,10 +32,16 @@ public class CloudSubscriber  implements Subscriber {
     // if waitNextGeneration has not yet been called, -1 should be returned
     private long generation = -1L;
 
-    CloudSubscriber(String name, ConfigSource configSource, Set<ConfigKey<ConfigInstance>> keys) {
+    CloudSubscriber(ExecutorService executor, String name, ConfigSource configSource, Set<ConfigKey<ConfigInstance>> keys) {
         this.name = name;
         this.subscriber = new ConfigSubscriber(configSource);
-        keys.forEach(k -> handles.put(k, subscriber.subscribe(k.getConfigClass(), k.getConfigId())));
+        Map<ConfigKey<ConfigInstance>, Future<ConfigHandle<ConfigInstance>>> futureHandles = new HashMap<>();
+        keys.forEach(k -> futureHandles.put(k, executor.submit(() -> subscriber.subscribe(k.getConfigClass(), k.getConfigId()))));
+        futureHandles.forEach((k, f) -> {
+            try {
+                handles.put(k, f.get());
+            } catch (InterruptedException | ExecutionException e) {}
+        });
     }
 
     @Override
@@ -47,11 +54,18 @@ public class CloudSubscriber  implements Subscriber {
         return generation;
     }
 
-    //mapValues returns a view,, so we need to force evaluation of it here to prevent deferred evaluation.
+    //mapValues returns a view, so we need to force evaluation of it here to prevent deferred evaluation.
     @Override
     public Map<ConfigKey<ConfigInstance>, ConfigInstance> config() {
         Map<ConfigKey<ConfigInstance>, ConfigInstance> ret = new HashMap<>();
-        handles.forEach((k, v) -> ret.put(k, v.getConfig()));
+        handles.forEach((k, v) -> {
+            ConfigInstance config = v.getConfig();
+            if (config == null) {
+                throw new IllegalArgumentException("Got a null config from the config system for key: " + k +
+                        "\nConfig handle: " + v);
+            }
+            ret.put(k, config);
+        });
         return ret;
     }
 
@@ -60,11 +74,6 @@ public class CloudSubscriber  implements Subscriber {
         if (handles.isEmpty())
             throw new IllegalStateException("No config keys registered");
 
-        // Catch and just log config exceptions due to missing config values for parameters that do
-        // not have a default value. These exceptions occur when the user has removed a component
-        // from services.xml, and the component takes a config that has parameters without a
-        // default value in the def-file. There is a new 'components' config underway, where the
-        // component is removed, so this old config generation will soon be replaced by a new one.
         boolean gotNextGen = false;
         while ( ! gotNextGen) {
             try {

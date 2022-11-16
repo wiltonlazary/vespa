@@ -7,6 +7,7 @@
 #include <vespa/vespalib/stllike/string.h>
 #include <vespa/vespalib/util/memoryusage.h>
 #include <vespa/vespalib/util/time.h>
+#include <atomic>
 #include <vector>
 
 namespace vespalib { class DataBuffer; }
@@ -17,14 +18,14 @@ class IBufferVisitor;
 class IDataStoreVisitor
 {
 public:
-    virtual ~IDataStoreVisitor() { }
+    virtual ~IDataStoreVisitor() = default;
     virtual void visit(uint32_t lid, const void *buffer, size_t sz) = 0;
 };
 
 class IDataStoreVisitorProgress
 {
 public:
-    virtual ~IDataStoreVisitorProgress() { }
+    virtual ~IDataStoreVisitorProgress() = default;
     virtual void updateProgress(double progress) = 0;
 };
 
@@ -46,11 +47,7 @@ public:
      * @param dirName  The directory that will contain the data file.
      **/
     IDataStore(const vespalib::string & dirName);
-
-    /**
-     * Allow inhertitance.
-     **/
-    virtual ~IDataStore();
+     ~IDataStore() override;
 
     /**
      * Read data from the data store into a buffer.
@@ -125,7 +122,7 @@ public:
      * to avoid misuse we let the report a more conservative number here if necessary.
      * @return diskspace to be gained.
      */
-    virtual size_t getMaxCompactGain() const { return getDiskBloat(); }
+    virtual size_t getMaxSpreadAsBloat() const = 0;
 
 
     /**
@@ -176,7 +173,7 @@ public:
      * Get the number of entries (including removed IDs
      * or gaps in the local ID sequence) in the data store.
      */
-    uint32_t getDocIdLimit() const { return _docIdLimit; }
+    uint32_t getDocIdLimit() const { return _docIdLimit.load(std::memory_order_acquire); }
 
     /**
      * Returns the name of the base directory where the data file is stored.
@@ -185,16 +182,16 @@ public:
 
 protected:
     void setDocIdLimit(uint32_t docIdLimit) {
-        _docIdLimit = docIdLimit;
+        _docIdLimit.store(docIdLimit, std::memory_order_release);
     }
     void updateDocIdLimit(uint32_t docIdLimit) {
-        if (docIdLimit > _docIdLimit) {
+        if (docIdLimit > _docIdLimit.load(std::memory_order_relaxed)) {
             setDocIdLimit(docIdLimit);
         }
     }
 
 private:
-    uint32_t         _docIdLimit;
+    std::atomic<uint32_t> _docIdLimit;
     vespalib::string _dirName;
 };
 

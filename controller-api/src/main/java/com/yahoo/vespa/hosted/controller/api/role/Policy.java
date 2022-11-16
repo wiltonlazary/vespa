@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.api.role;
 
 import com.yahoo.config.provision.ApplicationName;
@@ -22,7 +22,7 @@ enum Policy {
 
     /** Full access to everything. */
     operator(Privilege.grant(Action.all())
-                      .on(PathGroup.allExcept(PathGroup.billingPaths()))
+                      .on(PathGroup.allExcept(PathGroup.operatorRestrictedPaths()))
                       .in(SystemName.all()),
              Privilege.grant(Action.read)
                       .on(PathGroup.billingPathsNoToken())
@@ -49,7 +49,7 @@ enum Policy {
     /** Access to create a user tenant in select systems. */
     user(Privilege.grant(Action.create, Action.update)
                   .on(PathGroup.user)
-                  .in(SystemName.main, SystemName.cd, SystemName.dev)),
+                  .in(SystemName.main, SystemName.cd)),
 
     /** Access to create a tenant. */
     tenantCreate(Privilege.grant(Action.create)
@@ -87,7 +87,7 @@ enum Policy {
                              .on(PathGroup.application, PathGroup.applicationInfo, PathGroup.reindexing, PathGroup.serviceDump)
                              .in(SystemName.all())),
 
-    /** Read access to application information and settings. */
+    /** Update access to application information and settings. */
     applicationUpdate(Privilege.grant(Action.update)
                                .on(PathGroup.application, PathGroup.applicationInfo)
                                .in(SystemName.all())),
@@ -130,7 +130,7 @@ enum Policy {
     /** Read access to all information in select systems. */
     classifiedRead(Privilege.grant(Action.read)
                             .on(PathGroup.allExcept(PathGroup.classifiedOperator))
-                            .in(SystemName.main, SystemName.cd, SystemName.dev)),
+                            .in(SystemName.main, SystemName.cd)),
 
     /** Read access to public info. */
     publicRead(Privilege.grant(Action.read)
@@ -188,14 +188,18 @@ enum Policy {
                                     .on(PathGroup.billingList, PathGroup.billing)
                                     .in(SystemName.PublicCd, SystemName.Public)),
 
+    accessRequests(Privilege.grant(Action.all())
+            .on(PathGroup.accessRequests, PathGroup.accessRequestApproval)
+            .in(SystemName.PublicCd, SystemName.Public)),
+
     /** Invoice management */
     hostedAccountant(Privilege.grant(Action.all())
-                                    .on(PathGroup.hostedAccountant, PathGroup.accountant)
+                                    .on(PathGroup.hostedAccountant, PathGroup.accountant, PathGroup.userSearch)
                                     .in(SystemName.PublicCd, SystemName.Public)),
 
-    /** Listing endpoint certificate request info */
-    endpointCertificateRequestInfo(Privilege.grant(Action.read)
-            .on(PathGroup.endpointCertificateRequestInfo)
+    /** Listing endpoint certificates and re-requesting certificates */
+    endpointCertificateApi(Privilege.grant(Action.all())
+            .on(PathGroup.endpointCertificates)
             .in(SystemName.all())),
 
     /** Secret store operations */
@@ -205,7 +209,11 @@ enum Policy {
 
     horizonProxyOperations(Privilege.grant(Action.all())
             .on(PathGroup.horizonProxy)
-            .in(SystemName.PublicCd, SystemName.Public));
+            .in(SystemName.PublicCd, SystemName.Public)),
+
+    emailVerification(Privilege.grant(Action.create)
+                        .on(PathGroup.emailVerification)
+                        .in(SystemName.PublicCd, SystemName.Public));
 
     private final Set<Privilege> privileges;
 

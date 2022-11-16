@@ -13,9 +13,11 @@ import com.yahoo.config.application.api.ComponentInfo;
 import com.yahoo.config.application.api.DeployLogger;
 import com.yahoo.config.application.api.UnparsedConfigDefinition;
 import com.yahoo.config.codegen.DefParser;
+import com.yahoo.config.model.application.AbstractApplicationPackage;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.InstanceName;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.io.HexDump;
@@ -32,7 +34,6 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
-
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
@@ -47,11 +48,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
 import java.io.StringReader;
+import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -59,6 +62,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -66,13 +70,13 @@ import static com.yahoo.text.Lowercase.toLowerCase;
 
 
 /**
- * Application package derived from local files, ie. during deploy.
+ * Application package derived from local files, i.e. during deploy.
  * Construct using {@link com.yahoo.config.model.application.provider.FilesApplicationPackage#fromFile(java.io.File)} or
  * {@link com.yahoo.config.model.application.provider.FilesApplicationPackage#fromFileWithDeployData(java.io.File, DeployData)}.
  *
  * @author Vegard Havdal
  */
-public class FilesApplicationPackage implements ApplicationPackage {
+public class FilesApplicationPackage extends AbstractApplicationPackage {
 
     /**
      * The name of the subdirectory (below the original application package root)
@@ -87,6 +91,7 @@ public class FilesApplicationPackage implements ApplicationPackage {
 
     private static final Logger log = Logger.getLogger(FilesApplicationPackage.class.getName());
     private static final String META_FILE_NAME = ".applicationMetaData";
+    private static final Map<Path, Set<String>> validFileExtensions;
 
     private final File appDir;
     private final File preprocessedDir;
@@ -113,7 +118,7 @@ public class FilesApplicationPackage implements ApplicationPackage {
      * @return an Application package instance
      */
     public static FilesApplicationPackage fromFile(File appDir, boolean includeSourceFiles) {
-        return new Builder(appDir).preprocessedDir(new File(appDir, preprocessed))
+        return new Builder(appDir).preprocessedDir(applicationFile(appDir, preprocessed))
                                   .includeSourceFiles(includeSourceFiles)
                                   .build();
     }
@@ -130,11 +135,11 @@ public class FilesApplicationPackage implements ApplicationPackage {
     }
 
     private static ApplicationMetaData metaDataFromDeployData(File appDir, DeployData deployData) {
-        return new ApplicationMetaData(deployData.getDeployedByUser(),
-                                       deployData.getDeployedFromDir(),
+        return new ApplicationMetaData(deployData.getDeployedFromDir(),
                                        deployData.getDeployTimestamp(),
                                        deployData.isInternalRedeploy(),
                                        deployData.getApplicationId(),
+                                       deployData.getTags(),
                                        computeCheckSum(appDir),
                                        deployData.getGeneration(),
                                        deployData.getCurrentlyActiveGeneration());
@@ -155,16 +160,10 @@ public class FilesApplicationPackage implements ApplicationPackage {
         this.appDir = appDir;
         this.preprocessedDir = preprocessedDir;
         appSubDirs = new AppSubDirs(appDir);
-        configDefsDir = new File(appDir, CONFIG_DEFINITIONS_DIR);
+        configDefsDir = applicationFile(appDir, CONFIG_DEFINITIONS_DIR);
         addUserIncludeDirs();
         this.metaData = metaData;
         transformerFactory = TransformerFactory.newInstance();
-    }
-
-    @Override
-    @SuppressWarnings("deprecation")
-    public String getApplicationName() {
-        return metaData.getApplicationId().application().value();
     }
 
     @Override
@@ -177,7 +176,7 @@ public class FilesApplicationPackage implements ApplicationPackage {
 
     @Override
     public ApplicationFile getFile(Path path) {
-        File file = (path.isRoot() ? appDir : new File(appDir, path.getRelative()));
+        File file = (path.isRoot() ? appDir : applicationFile(appDir, path.getRelative()));
         return new FilesApplicationFile(path, file);
     }
 
@@ -189,7 +188,7 @@ public class FilesApplicationPackage implements ApplicationPackage {
     private List<NamedReader> getFiles(Path relativePath, String namePrefix, String suffix, boolean recurse) {
         try {
             List<NamedReader> readers=new ArrayList<>();
-            File dir = new File(appDir, relativePath.getRelative());
+            File dir = applicationFile(appDir, relativePath);
             if ( ! dir.isDirectory()) return readers;
 
             File[] files = dir.listFiles();
@@ -241,7 +240,7 @@ public class FilesApplicationPackage implements ApplicationPackage {
     }
 
     private File getHostsFile() {
-        return new File(appDir, HOSTS);
+        return applicationFile(appDir, HOSTS);
     }
 
     @Override
@@ -250,7 +249,7 @@ public class FilesApplicationPackage implements ApplicationPackage {
     }
 
     private File getServicesFile() {
-        return new File(appDir, SERVICES);
+        return applicationFile(appDir, SERVICES);
     }
 
     @Override
@@ -429,11 +428,11 @@ public class FilesApplicationPackage implements ApplicationPackage {
     static List<File> getSearchDefinitionFiles(File appDir) {
         List<File> schemaFiles = new ArrayList<>();
 
-        File sdDir = new File(appDir, SEARCH_DEFINITIONS_DIR.getRelative());
+        File sdDir = applicationFile(appDir, SEARCH_DEFINITIONS_DIR.getRelative());
         if (sdDir.isDirectory())
             schemaFiles.addAll(Arrays.asList(sdDir.listFiles((dir, name) -> name.matches(".*\\" + SD_NAME_SUFFIX))));
 
-        sdDir = new File(appDir, SCHEMAS_DIR.getRelative());
+        sdDir = applicationFile(appDir, SCHEMAS_DIR.getRelative());
         if (sdDir.isDirectory())
             schemaFiles.addAll(Arrays.asList(sdDir.listFiles((dir, name) -> name.matches(".*\\" + SD_NAME_SUFFIX))));
 
@@ -446,17 +445,17 @@ public class FilesApplicationPackage implements ApplicationPackage {
 
     // Only for use by deploy processor
     public static List<Component> getComponents(File appDir) {
-        List<Component> components = new ArrayList<>();
-        for (Bundle bundle : Bundle.getBundles(new File(appDir, COMPONENT_DIR))) {
-            components.add(new Component(bundle, new ComponentInfo(new File(COMPONENT_DIR, bundle.getFile().getName()).getPath())));
-        }
-        return components;
+        return components(appDir, Component::new);
     }
 
     private static List<ComponentInfo> getComponentsInfo(File appDir) {
-        List<ComponentInfo> components = new ArrayList<>();
-        for (Bundle bundle : Bundle.getBundles(new File(appDir, COMPONENT_DIR))) {
-            components.add(new ComponentInfo(new File(COMPONENT_DIR, bundle.getFile().getName()).getPath()));
+        return components(appDir, (__, info) -> info);
+    }
+
+    private static <T> List<T> components(File appDir, BiFunction<Bundle, ComponentInfo, T> toValue) {
+        List<T> components = new ArrayList<>();
+        for (Bundle bundle : Bundle.getBundles(applicationFile(appDir, COMPONENT_DIR))) {
+            components.add(toValue.apply(bundle, new ComponentInfo(Path.fromString(COMPONENT_DIR).append(bundle.getFile().getName()).getRelative())));
         }
         return components;
     }
@@ -480,17 +479,18 @@ public class FilesApplicationPackage implements ApplicationPackage {
     }
 
     private static ApplicationMetaData readMetaData(File appDir) {
+        String originalAppDir = preprocessed.equals(appDir.getName()) ? appDir.getParentFile().getName() : appDir.getName();
         ApplicationMetaData defaultMetaData = new ApplicationMetaData("n/a",
-                                                                      "n/a",
                                                                       0L,
                                                                       false,
                                                                       ApplicationId.from(TenantName.defaultName(),
-                                                                                         ApplicationName.from(appDir.getName()),
+                                                                                         ApplicationName.from(originalAppDir),
                                                                                          InstanceName.defaultName()),
+                                                                      Tags.empty(),
                                                                       "",
                                                                       0L,
                                                                       0L);
-        File metaFile = new File(appDir, META_FILE_NAME);
+        File metaFile = applicationFile(appDir, META_FILE_NAME);
         if ( ! metaFile.exists()) {
             return defaultMetaData;
         }
@@ -547,18 +547,17 @@ public class FilesApplicationPackage implements ApplicationPackage {
         if (new File(name).isAbsolute())
             throw new IllegalArgumentException("Absolute path to ranking expression file is not allowed: " + name);
 
-        File sdDir = new File(appDir, SCHEMAS_DIR.getRelative());
-        File expressionFile = new File(sdDir, name);
+        Path path = Path.fromString(name);
+        File expressionFile = applicationFile(appDir, SCHEMAS_DIR.append(path));
         if ( ! expressionFile.exists()) {
-            sdDir = new File(appDir, SEARCH_DEFINITIONS_DIR.getRelative());
-            expressionFile = new File(sdDir, name);
+            expressionFile = applicationFile(appDir, SEARCH_DEFINITIONS_DIR.append(path));
         }
         return expressionFile;
     }
 
     @Override
     public File getFileReference(Path pathRelativeToAppDir) {
-        return new File(appDir, pathRelativeToAppDir.getRelative());
+        return applicationFile(appDir, pathRelativeToAppDir.getRelative());
     }
 
     @Override
@@ -575,8 +574,8 @@ public class FilesApplicationPackage implements ApplicationPackage {
     }
 
     @Override
-    public void writeMetaData() throws IOException {
-        File metaFile = new File(appDir, META_FILE_NAME);
+    public void writeMetaData() {
+        File metaFile = applicationFile(appDir, META_FILE_NAME);
         IOUtils.writeFile(metaFile, metaData.asJsonBytes());
     }
 
@@ -587,7 +586,8 @@ public class FilesApplicationPackage implements ApplicationPackage {
                                                     inputXml,
                                                     metaData.getApplicationId().instance(),
                                                     zone.environment(),
-                                                    zone.region())
+                                                    zone.region(),
+                                                    metaData.getTags())
                     .run();
 
             try (FileOutputStream outputStream = new FileOutputStream(destination)) {
@@ -601,13 +601,11 @@ public class FilesApplicationPackage implements ApplicationPackage {
     @Override
     public ApplicationPackage preprocess(Zone zone, DeployLogger logger) throws IOException {
         IOUtils.recursiveDeleteDir(preprocessedDir);
-        IOUtils.copyDirectory(appDir, preprocessedDir, -1, (dir, name) -> ! name.equals(preprocessed) &&
-                                                                                         ! name.equals(SERVICES) &&
-                                                                                         ! name.equals(HOSTS) &&
-                                                                                         ! name.equals(CONFIG_DEFINITIONS_DIR));
+        IOUtils.copyDirectory(appDir, preprocessedDir, -1,
+                              (__, name) -> ! List.of(preprocessed, SERVICES, HOSTS, CONFIG_DEFINITIONS_DIR).contains(name));
         File servicesFile = validateServicesFile();
-        preprocessXML(new File(preprocessedDir, SERVICES), servicesFile, zone);
-        preprocessXML(new File(preprocessedDir, HOSTS), getHostsFile(), zone);
+        preprocessXML(applicationFile(preprocessedDir, SERVICES), servicesFile, zone);
+        preprocessXML(applicationFile(preprocessedDir, HOSTS), getHostsFile(), zone);
         FilesApplicationPackage preprocessed = fromFile(preprocessedDir, includeSourceFiles);
         preprocessed.copyUserDefsIntoApplication();
         return preprocessed;
@@ -730,10 +728,105 @@ public class FilesApplicationPackage implements ApplicationPackage {
         }
 
         public FilesApplicationPackage build() {
-            return new FilesApplicationPackage(appDir, preprocessedDir.orElse(new File(appDir, preprocessed)),
+            return new FilesApplicationPackage(appDir, preprocessedDir.orElse(applicationFile(appDir, preprocessed)),
                                                metaData.orElse(readMetaData(appDir)), includeSourceFiles);
         }
 
+    }
+
+    static File applicationFile(File parent, String path) {
+        return applicationFile(parent, Path.fromString(path));
+    }
+
+    static File applicationFile(File parent, Path path) {
+        File file = new File(parent, path.getRelative());
+        if ( ! file.getAbsolutePath().startsWith(parent.getAbsolutePath()))
+            throw new IllegalArgumentException(file + " is not a child of " + parent);
+
+        return file;
+    }
+
+    /* Validates that files in application dir and subdirectories have a known extension */
+    public void validateFileExtensions() {
+        validFileExtensions.forEach((subDir, __) -> validateInDir(subDir.toFile().toPath()));
+    }
+
+    private void validateInDir(java.nio.file.Path subDir) {
+        java.nio.file.Path path = appDir.toPath().resolve(subDir);
+        File subDirectory = path.toFile();
+        if ( ! subDirectory.exists() || ! subDirectory.isDirectory()) return;
+
+        try (var filesInPath = Files.list(path)) {
+            filesInPath.forEach(filePath -> {
+                if (filePath.toFile().isDirectory())
+                    validateInDir(appDir.toPath().relativize(filePath));
+                else
+                    validateFileExtensions(filePath);
+            });
+        } catch (IOException e) {
+            log.log(Level.WARNING, "Unable to list files in " + subDirectory, e);
+        }
+    }
+
+    static {
+        // Note: Directories intentionally not validated: MODELS_DIR (custom models can contain files with any extension)
+
+        // TODO: Files that according to doc (https://docs.vespa.ai/en/reference/schema-reference.html) can be anywhere in the application package:
+        //   constant tensors (.json, .json.lz4)
+        //   onnx model files (.onnx)
+        validFileExtensions = Map.ofEntries(
+                Map.entry(Path.fromString(COMPONENT_DIR), Set.of(".jar")),
+                Map.entry(CONSTANTS_DIR, Set.of(".json", ".json.lz4")),
+                Map.entry(Path.fromString(DOCPROCCHAINS_DIR), Set.of(".xml")),
+                Map.entry(PAGE_TEMPLATES_DIR, Set.of(".xml")),
+                Map.entry(Path.fromString(PROCESSORCHAINS_DIR), Set.of(".xml")),
+                Map.entry(QUERY_PROFILES_DIR, Set.of(".xml")),
+                Map.entry(QUERY_PROFILE_TYPES_DIR, Set.of(".xml")),
+                Map.entry(Path.fromString(ROUTINGTABLES_DIR), Set.of(".xml")),
+                Map.entry(RULES_DIR, Set.of(RULES_NAME_SUFFIX)),
+                // Note: Might have rank profiles in subdirs: [schema-name]/[rank-profile].profile
+                Map.entry(SCHEMAS_DIR, Set.of(SD_NAME_SUFFIX, RANKEXPRESSION_NAME_SUFFIX, RANKPROFILE_NAME_SUFFIX)),
+                Map.entry(Path.fromString(SEARCHCHAINS_DIR), Set.of(".xml")),
+                // Note: Might have rank profiles in subdirs: [schema-name]/[rank-profile].profile
+                Map.entry(SEARCH_DEFINITIONS_DIR, Set.of(SD_NAME_SUFFIX, RANKEXPRESSION_NAME_SUFFIX, RANKPROFILE_NAME_SUFFIX)),
+                Map.entry(SECURITY_DIR, Set.of(".pem")));
+    }
+
+    private void validateFileExtensions(java.nio.file.Path pathToFile) {
+        Set<String> allowedExtensions = findAllowedExtensions(appDir.toPath().relativize(pathToFile).getParent());
+        log.log(Level.FINE, "Checking " + pathToFile + " against " + allowedExtensions);
+        String fileName = pathToFile.toFile().getName();
+        if (allowedExtensions.stream().noneMatch(fileName::endsWith)) {
+            String message = "File in application package with unknown extension: " +
+                    appDir.toPath().relativize(pathToFile.getParent()).resolve(fileName) + ", please delete or move file to another directory.";
+            throw new IllegalArgumentException(message);
+        }
+    }
+
+    private Set<String> findAllowedExtensions(java.nio.file.Path relativeDirectory) {
+        Set<String> validExtensions = new HashSet<>();
+        validExtensions.add(".gitignore");
+
+        // Special case, since subdirs in schemas/ can have any name
+        if (isSchemasSubDir(relativeDirectory))
+            validExtensions.add(RANKPROFILE_NAME_SUFFIX);
+        else
+            validExtensions.addAll(validFileExtensions.entrySet().stream()
+                                                      .filter(entry -> entry.getKey()
+                                                                            .equals(Path.fromString(relativeDirectory.toString())))
+                                                      .map(Map.Entry::getValue)
+                                                      .findFirst()
+                                                      .orElse(Set.of()));
+        return validExtensions;
+    }
+
+    private boolean isSchemasSubDir(java.nio.file.Path relativeDirectory) {
+        java.nio.file.Path schemasPath = SCHEMAS_DIR.toFile().toPath().getName(0);
+        java.nio.file.Path searchDefinitionsPath = SEARCH_DEFINITIONS_DIR.toFile().toPath().getName(0);
+        if (List.of(schemasPath, searchDefinitionsPath).contains(relativeDirectory)) return false;
+
+        return (relativeDirectory.startsWith(schemasPath + "/")
+                || relativeDirectory.startsWith(searchDefinitionsPath + "/"));
     }
 
 }

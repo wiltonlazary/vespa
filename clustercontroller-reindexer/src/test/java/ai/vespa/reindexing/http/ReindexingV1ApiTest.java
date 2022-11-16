@@ -10,7 +10,7 @@ import com.yahoo.document.DocumentTypeManager;
 import com.yahoo.document.config.DocumentmanagerConfig;
 import com.yahoo.documentapi.ProgressToken;
 import com.yahoo.jdisc.test.MockMetric;
-import com.yahoo.searchdefinition.derived.Deriver;
+import com.yahoo.schema.derived.Deriver;
 import com.yahoo.vespa.curator.mock.MockCurator;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +19,7 @@ import java.util.List;
 import java.util.concurrent.Executors;
 
 import static com.yahoo.jdisc.http.HttpRequest.Method.POST;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author jonmv

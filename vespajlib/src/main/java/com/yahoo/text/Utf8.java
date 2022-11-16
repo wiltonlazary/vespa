@@ -18,7 +18,6 @@ import java.nio.charset.StandardCharsets;
  * @author arnej27959
  * @author Steinar Knutsen
  * @author baldersheim
- *
  */
 public final class Utf8 {
 
@@ -112,17 +111,17 @@ public final class Utf8 {
      * @return Utf8 encoded array
      */
     public static byte[] toBytes(String string) {
-        // This is just wrapper for String::getBytes. Pre-Java 9 this had an more efficient approach for ASCII-only strings.
+        // This is just wrapper for String::getBytes. Pre-Java 9 this had a more efficient approach for ASCII-only strings.
         return string.getBytes(StandardCharsets.UTF_8);
     }
     /**
      * Decode a UTF-8 string.
      *
-     * @param utf8 The bytes to decode.
+     * @param utf8 the bytes to decode
      * @return Utf8 encoded array
      */
-    public static String toString(byte [] utf8) {
-        // This is just wrapper for String::new. Pre-Java 9 this had an more efficient approach for ASCII-onlu strings.
+    public static String toString(byte[] utf8) {
+        // This is just wrapper for String::new. Pre-Java 9 this had a more efficient approach for ASCII-onlu strings.
         return new String(utf8, StandardCharsets.UTF_8);
     }
 

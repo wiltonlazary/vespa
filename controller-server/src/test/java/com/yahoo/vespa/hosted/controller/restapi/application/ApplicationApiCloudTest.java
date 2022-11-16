@@ -2,10 +2,13 @@
 package com.yahoo.vespa.hosted.controller.restapi.application;
 
 import ai.vespa.hosted.api.MultiPartStreamer;
+import com.yahoo.component.Version;
 import com.yahoo.config.provision.ApplicationId;
 import com.yahoo.config.provision.ApplicationName;
 import com.yahoo.config.provision.InstanceName;
 import com.yahoo.config.provision.TenantName;
+import com.yahoo.restapi.RestApiException;
+import com.yahoo.vespa.flags.Flags;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
@@ -25,10 +28,9 @@ import com.yahoo.vespa.hosted.controller.security.Auth0Credentials;
 import com.yahoo.vespa.hosted.controller.security.CloudTenantSpec;
 import com.yahoo.vespa.hosted.controller.security.Credentials;
 import com.yahoo.vespa.hosted.controller.tenant.CloudTenant;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import javax.ws.rs.ForbiddenException;
 import java.io.File;
 import java.util.Collections;
 import java.util.Optional;
@@ -39,10 +41,10 @@ import static com.yahoo.application.container.handler.Request.Method.GET;
 import static com.yahoo.application.container.handler.Request.Method.POST;
 import static com.yahoo.application.container.handler.Request.Method.PUT;
 import static com.yahoo.vespa.hosted.controller.restapi.application.ApplicationApiTest.createApplicationSubmissionData;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author oyving
@@ -56,7 +58,7 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
     private static final TenantName tenantName = TenantName.from("scoober");
     private static final ApplicationName applicationName = ApplicationName.from("albums");
 
-    @Before
+    @BeforeEach
     public void before() {
         tester = new ContainerTester(container, responseFiles);
         ((InMemoryFlagSource) tester.controller().flagSource())
@@ -65,7 +67,7 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
     }
 
     @Test
-    public void test_missing_security_clients_pem() {
+    void test_missing_security_clients_pem() {
         var application = prodBuilder().build();
 
         var deployRequest = request("/application/v4/tenant/scoober/application/albums/submit", POST)
@@ -79,26 +81,82 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
     }
 
     @Test
-    public void tenant_info_workflow() {
+    void tenant_info_profile() {
+        tester.flagSource().withBooleanFlag(Flags.ENABLED_MAIL_VERIFICATION.id(), true);
+        var request = request("/application/v4/tenant/scoober/info/profile", GET)
+                .roles(Set.of(Role.reader(tenantName)));
+        tester.assertResponse(request, "{}", 200);
+
+        var updateRequest = request("/application/v4/tenant/scoober/info/profile", PUT)
+                .data("{\"contact\":{\"name\":\"Some Name\",\"email\":\"foo@example.com\"},\"tenant\":{\"company\":\"Scoober, Inc.\",\"website\":\"https://example.com/\"}}")
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(updateRequest, "{\"message\":\"Tenant info updated\"}", 200);
+
+        tester.assertResponse(request, "{\"contact\":{\"name\":\"Some Name\",\"email\":\"foo@example.com\",\"emailVerified\":false},\"tenant\":{\"company\":\"\",\"website\":\"https://example.com/\"}}", 200);
+    }
+
+    @Test
+    void tenant_info_billing() {
+        var request = request("/application/v4/tenant/scoober/info/billing", GET)
+                .roles(Set.of(Role.reader(tenantName)));
+        tester.assertResponse(request, "{}", 200);
+
+        var fullAddress = "{\"addressLines\":\"addressLines\",\"postalCodeOrZip\":\"postalCodeOrZip\",\"city\":\"city\",\"stateRegionProvince\":\"stateRegionProvince\",\"country\":\"country\"}";
+        var fullBillingContact = "{\"contact\":{\"name\":\"name\",\"email\":\"foo@example\",\"phone\":\"phone\"},\"address\":" + fullAddress + "}";
+
+        var updateRequest = request("/application/v4/tenant/scoober/info/billing", PUT)
+                .data(fullBillingContact)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(updateRequest, "{\"message\":\"Tenant info updated\"}", 200);
+
+        tester.assertResponse(request, "{\"contact\":{\"name\":\"name\",\"email\":\"foo@example\",\"phone\":\"phone\"},\"address\":{\"addressLines\":\"addressLines\",\"postalCodeOrZip\":\"postalCodeOrZip\",\"city\":\"city\",\"stateRegionProvince\":\"stateRegionProvince\",\"country\":\"country\"}}", 200);
+    }
+
+    @Test
+    void tenant_info_contacts() {
+        tester.flagSource().withBooleanFlag(Flags.ENABLED_MAIL_VERIFICATION.id(), true);
+        var request = request("/application/v4/tenant/scoober/info/contacts", GET)
+                .roles(Set.of(Role.reader(tenantName)));
+        tester.assertResponse(request, "{\"contacts\":[]}", 200);
+
+
+        var fullContacts = "{\"contacts\":[{\"audiences\":[\"tenant\"],\"email\":\"contact1@example.com\",\"emailVerified\":false},{\"audiences\":[\"notifications\"],\"email\":\"contact2@example.com\",\"emailVerified\":false},{\"audiences\":[\"tenant\",\"notifications\"],\"email\":\"contact3@example.com\",\"emailVerified\":false}]}";
+        var updateRequest = request("/application/v4/tenant/scoober/info/contacts", PUT)
+                .data(fullContacts)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(updateRequest, "{\"message\":\"Tenant info updated\"}", 200);
+        tester.assertResponse(request, fullContacts, 200);
+    }
+
+    @Test
+    void tenant_info_workflow() {
         var infoRequest =
                 request("/application/v4/tenant/scoober/info", GET)
-                .roles(Set.of(Role.reader(tenantName)));
+                        .roles(Set.of(Role.reader(tenantName)));
         tester.assertResponse(infoRequest, "{}", 200);
 
-        String partialInfo = "{\"name\":\"newName\", \"billingContact\":{\"name\":\"billingName\"}}";
-
+        String partialInfo = "{\"contactName\":\"newName\", \"contactEmail\": \"foo@example.com\", \"billingContact\":{\"name\":\"billingName\"}}";
         var postPartial =
                 request("/application/v4/tenant/scoober/info", PUT)
                         .data(partialInfo)
                         .roles(Set.of(Role.administrator(tenantName)));
         tester.assertResponse(postPartial, "{\"message\":\"Tenant info updated\"}", 200);
 
+        String partialContacts = "{\"contacts\": [{\"audiences\": [\"tenant\"],\"email\": \"contact1@example.com\"}]}";
+        var postPartialContacts =
+                request("/application/v4/tenant/scoober/info", PUT)
+                        .data(partialContacts)
+                        .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(postPartialContacts, "{\"message\":\"Tenant info updated\"}", 200);
+
         // Read back the updated info
-        tester.assertResponse(infoRequest, "{\"name\":\"newName\",\"email\":\"\",\"website\":\"\",\"invoiceEmail\":\"\",\"contactName\":\"\",\"contactEmail\":\"\",\"billingContact\":{\"name\":\"billingName\",\"email\":\"\",\"phone\":\"\"}}", 200);
+        tester.assertResponse(infoRequest, "{\"name\":\"\",\"email\":\"\",\"website\":\"\",\"contactName\":\"newName\",\"contactEmail\":\"foo@example.com\",\"contactEmailVerified\":true,\"billingContact\":{\"name\":\"billingName\",\"email\":\"\",\"phone\":\"\"},\"contacts\":[{\"audiences\":[\"tenant\"],\"email\":\"contact1@example.com\",\"emailVerified\":true}]}", 200);
+        tester.flagSource().withBooleanFlag(Flags.ENABLED_MAIL_VERIFICATION.id(), true);
 
         String fullAddress = "{\"addressLines\":\"addressLines\",\"postalCodeOrZip\":\"postalCodeOrZip\",\"city\":\"city\",\"stateRegionProvince\":\"stateRegionProvince\",\"country\":\"country\"}";
-        String fullBillingContact = "{\"name\":\"name\",\"email\":\"email\",\"phone\":\"phone\",\"address\":" + fullAddress + "}";
-        String fullInfo = "{\"name\":\"name\",\"email\":\"email\",\"website\":\"webSite\",\"invoiceEmail\":\"invoiceEmail\",\"contactName\":\"contactName\",\"contactEmail\":\"contanctEmail\",\"address\":" + fullAddress + ",\"billingContact\":" + fullBillingContact + "}";
+        String fullBillingContact = "{\"name\":\"name\",\"email\":\"foo@example\",\"phone\":\"phone\",\"address\":" + fullAddress + "}";
+        String fullContacts = "[{\"audiences\":[\"tenant\"],\"email\":\"contact1@example.com\",\"emailVerified\":true},{\"audiences\":[\"notifications\"],\"email\":\"contact2@example.com\",\"emailVerified\":false},{\"audiences\":[\"tenant\",\"notifications\"],\"email\":\"contact3@example.com\",\"emailVerified\":false}]";
+        String fullInfo = "{\"name\":\"name\",\"email\":\"foo@example\",\"website\":\"https://yahoo.com\",\"contactName\":\"contactName\",\"contactEmail\":\"contact@example.com\",\"contactEmailVerified\":false,\"address\":" + fullAddress + ",\"billingContact\":" + fullBillingContact + ",\"contacts\":" + fullContacts + "}";
 
         // Now set all fields
         var postFull =
@@ -109,12 +167,116 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
 
         // Now compare the updated info with the full info we sent
         tester.assertResponse(infoRequest, fullInfo, 200);
+
+        var invalidBody = "{\"mail\":\"contact1@example.com\", \"mailType\":\"blurb\"}";
+        var resendMailRequest =
+                request("/application/v4/tenant/scoober/info/resend-mail-verification", PUT)
+                        .data(invalidBody)
+                        .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(resendMailRequest, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"Unknown mail type blurb\"}", 400);
+
+        var resendMailBody = "{\"mail\":\"contact2@example.com\", \"mailType\":\"notifications\"}";
+        resendMailRequest =
+                request("/application/v4/tenant/scoober/info/resend-mail-verification", PUT)
+                        .data(resendMailBody)
+                        .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(resendMailRequest, "{\"message\":\"Re-sent verification mail to contact2@example.com\"}", 200);
     }
 
     @Test
-    public void trial_tenant_limit_reached() {
+    void tenant_info_missing_fields() {
+        tester.flagSource().withBooleanFlag(Flags.ENABLED_MAIL_VERIFICATION.id(), true);
+        // tenants can be created with empty tenant info - they're not part of the POST to v4/tenant
+        var infoRequest =
+                request("/application/v4/tenant/scoober/info", GET)
+                        .roles(Set.of(Role.reader(tenantName)));
+        tester.assertResponse(infoRequest, "{}", 200);
+
+        // name needs to be present and not blank
+        var partialInfoMissingName = "{\"contactName\": \" \"}";
+        var missingNameResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(partialInfoMissingName)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(missingNameResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"'contactName' cannot be empty\"}", 400);
+
+        // email needs to be present, not blank, and contain an @
+        var partialInfoMissingEmail = "{\"contactName\": \"Scoober Rentals Inc.\", \"contactEmail\": \" \"}";
+        var missingEmailResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(partialInfoMissingEmail)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(missingEmailResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"Invalid email address\"}", 400);
+
+        var partialInfoBadEmail = "{\"contactName\": \"Scoober Rentals Inc.\", \"contactEmail\": \"somethingweird\"}";
+        var badEmailResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(partialInfoBadEmail)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(badEmailResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"Invalid email address\"}", 400);
+
+        var invalidWebsite = "{\"contactName\": \"Scoober Rentals Inc.\", \"contactEmail\": \"email@scoober.com\", \"website\": \"scoober\" }";
+        var badWebsiteResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(invalidWebsite)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(badWebsiteResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"'website' needs to be a valid address\"}", 400);
+
+        // If any of the address field is set, all fields in address need to be present
+        var addressInfo = "{\n" +
+                "  \"name\": \"Vespa User\",\n" +
+                "  \"email\": \"user@yahooinc.com\",\n" +
+                "  \"website\": \"\",\n" +
+                "  \"contactName\": \"Vespa User\",\n" +
+                "  \"contactEmail\": \"user@yahooinc.com\",\n" +
+                "  \"address\": {\n" +
+                "    \"addressLines\": \"\",\n" +
+                "    \"postalCodeOrZip\": \"7018\",\n" +
+                "    \"city\": \"\",\n" +
+                "    \"stateRegionProvince\": \"\",\n" +
+                "    \"country\": \"\"\n" +
+                "  }\n" +
+                "}";
+        var addressInfoResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(addressInfo)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(addressInfoResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"All address fields must be set\"}", 400);
+
+        // at least one notification activity must be enabled
+        var contactsWithoutAudience = "{\"contacts\": [{\"email\": \"contact1@example.com\"}]}";
+        var contactsWithoutAudienceResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(contactsWithoutAudience)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(contactsWithoutAudienceResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"At least one notification activity must be enabled\"}", 400);
+
+        // email needs to be present, not blank, and contain an @
+        var contactsWithInvalidEmail = "{\"contacts\": [{\"audiences\": [\"tenant\"],\"email\": \"contact1\"}]}";
+        var contactsWithInvalidEmailResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(contactsWithInvalidEmail)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(contactsWithInvalidEmailResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"Invalid email address\"}", 400);
+
+        // duplicate contact is not allowed
+        var contactsWithDuplicateEmail = "{\"contacts\": [{\"audiences\": [\"tenant\"],\"email\": \"contact1@email.com\"}, {\"audiences\": [\"tenant\"],\"email\": \"contact1@email.com\"}]}";
+        var contactsWithDuplicateEmailResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(contactsWithDuplicateEmail)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(contactsWithDuplicateEmailResponse, "{\"error-code\":\"BAD_REQUEST\",\"message\":\"Duplicate contact: email 'contact1@email.com'\"}", 400);
+
+        // updating a tenant that already has the fields set works
+        var basicInfo = "{\"contactName\": \"Scoober Rentals Inc.\", \"contactEmail\": \"foo@example.com\"}";
+        var basicInfoResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(basicInfo)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(basicInfoResponse, "{\"message\":\"Tenant info updated\"}", 200);
+
+        var otherInfo = "{\"billingContact\":{\"name\":\"billingName\"}}";
+        var otherInfoResponse = request("/application/v4/tenant/scoober/info", PUT)
+                .data(otherInfo)
+                .roles(Set.of(Role.administrator(tenantName)));
+        tester.assertResponse(otherInfoResponse, "{\"message\":\"Tenant info updated\"}", 200);
+    }
+
+    @Test
+    void trial_tenant_limit_reached() {
         ((InMemoryFlagSource) tester.controller().flagSource()).withIntFlag(PermanentFlags.MAX_TRIAL_TENANTS.id(), 1);
-        tester.controller().serviceRegistry().billingController().setPlan(tenantName, PlanId.from("pay-as-you-go"), false);
+        tester.controller().serviceRegistry().billingController().setPlan(tenantName, PlanId.from("pay-as-you-go"), false, false);
 
         // tests that we can create the one trial tenant the flag says we can have -- and that the tenant created
         // in @Before does not count towards that limit.
@@ -124,13 +286,13 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
         try {
             tester.controller().tenants().create(tenantSpec("tenant2"), credentials("administrator"));
             fail("Should not be allowed to create tenant that exceed trial limit");
-        } catch (ForbiddenException e) {
+        } catch (RestApiException.Forbidden e) {
             assertEquals("Too many tenants with trial plans, please contact the Vespa support team", e.getMessage());
         }
     }
 
     @Test
-    public void test_secret_store_configuration() {
+    void test_secret_store_configuration() {
         var secretStoreRequest =
                 request("/application/v4/tenant/scoober/secret-store/some-name", PUT)
                         .data("{" +
@@ -160,7 +322,7 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
     }
 
     @Test
-    public void validate_secret_store() {
+    void validate_secret_store() {
         deployApplication();
         var secretStoreRequest =
                 request("/application/v4/tenant/scoober/secret-store/secret-foo/validate?aws-region=us-west-1&parameter-name=foo&application-id=scoober.albums.default&zone=prod.aws-us-east-1c", GET)
@@ -180,10 +342,18 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
                 request("/application/v4/tenant/scoober/secret-store/secret-foo/validate?aws-region=us-west-1&parameter-name=foo&application-id=scoober.albums.default&zone=prod.aws-us-east-1c", GET)
                         .roles(Set.of(Role.developer(tenantName)));
         tester.assertResponse(secretStoreRequest, "{\"target\":\"scoober.albums in prod.aws-us-east-1c\",\"result\":{\"settings\":{\"name\":\"foo\",\"role\":\"vespa-secretstore-access\",\"awsId\":\"892075328880\",\"externalId\":\"*****\",\"region\":\"us-east-1\"},\"status\":\"ok\"}}", 200);
+
+        secretStoreRequest =
+                request("/application/v4/tenant/scoober/secret-store/secret-foo/validate?aws-region=us-west-1&parameter-name=foo&application-id=scober.albums.default&zone=prod.aws-us-east-1c", GET)
+                        .roles(Set.of(Role.developer(tenantName)));
+        tester.assertResponse(secretStoreRequest, "{" +
+                "\"error-code\":\"BAD_REQUEST\"," +
+                "\"message\":\"Invalid application id\"" +
+                "}", 400);
     }
 
     @Test
-    public void delete_secret_store() {
+    void delete_secret_store() {
         var deleteRequest =
                 request("/application/v4/tenant/scoober/secret-store/secret-foo", DELETE)
                         .roles(Set.of(Role.developer(tenantName)));
@@ -204,58 +374,89 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
     }
 
     @Test
-    public void archive_uri_test() {
-        new DeploymentTester(new ControllerTester(tester))
-                .newDeploymentContext(ApplicationId.from(tenantName, applicationName, InstanceName.defaultName()))
+    void archive_uri_test() {
+        ControllerTester wrapped = new ControllerTester(tester);
+        wrapped.upgradeSystem(Version.fromString("7.1"));
+        new DeploymentTester(wrapped).newDeploymentContext(ApplicationId.from(tenantName, applicationName, InstanceName.defaultName()))
                 .submit()
                 .deploy();
 
         tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
                 (response) -> assertFalse(response.getBodyAsString().contains("archiveAccessRole")),
                 200);
-        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access", PUT)
-                .data("{\"role\":\"dummy\"}").roles(Role.administrator(tenantName)),
-                "{\"error-code\":\"BAD_REQUEST\",\"message\":\"Invalid archive access role 'dummy': Must match expected pattern: 'arn:aws:iam::\\\\d{12}:.+'\"}", 400);
 
-        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access", PUT)
+        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access/aws", PUT)
                         .data("{\"role\":\"arn:aws:iam::123456789012:role/my-role\"}").roles(Role.administrator(tenantName)),
-                "{\"message\":\"Archive access role set to 'arn:aws:iam::123456789012:role/my-role' for tenant scoober.\"}", 200);
+                "{\"message\":\"AWS archive access role set to 'arn:aws:iam::123456789012:role/my-role' for tenant scoober.\"}", 200);
         tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
-                (response) -> assertTrue(response.getBodyAsString().contains("\"archiveAccessRole\":\"arn:aws:iam::123456789012:role/my-role\"")),
+                (response) -> assertTrue(response.getBodyAsString().contains("\"awsRole\":\"arn:aws:iam::123456789012:role/my-role\"")),
+                200);
+        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access/aws", DELETE).roles(Role.administrator(tenantName)),
+                "{\"message\":\"AWS archive access role removed for tenant scoober.\"}", 200);
+        tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
+                (response) -> assertFalse(response.getBodyAsString().contains("\"awsRole\":\"arn:aws:iam::123456789012:role/my-role\"")),
+                200);
+
+        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access/gcp", PUT)
+                        .data("{\"member\":\"user:test@example.com\"}").roles(Role.administrator(tenantName)),
+                "{\"message\":\"GCP archive access member set to 'user:test@example.com' for tenant scoober.\"}", 200);
+        tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
+                (response) -> assertTrue(response.getBodyAsString().contains("\"gcpMember\":\"user:test@example.com\"")),
+                200);
+        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access/gcp", DELETE).roles(Role.administrator(tenantName)),
+                "{\"message\":\"GCP archive access member removed for tenant scoober.\"}", 200);
+        tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
+                (response) -> assertFalse(response.getBodyAsString().contains("\"gcpMember\":\"user:test@example.com\"")),
+                200);
+
+        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access/aws", PUT)
+                        .data("{\"role\":\"arn:aws:iam::123456789012:role/my-role\"}").roles(Role.administrator(tenantName)),
+                "{\"message\":\"AWS archive access role set to 'arn:aws:iam::123456789012:role/my-role' for tenant scoober.\"}", 200);
+        tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
+                (response) -> assertTrue(response.getBodyAsString().contains("\"awsRole\":\"arn:aws:iam::123456789012:role/my-role\"")),
+                200);
+
+        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access/aws", PUT)
+                        .data("{\"role\":\"arn:aws:iam::123456789012:role/my-role\"}").roles(Role.administrator(tenantName)),
+                "{\"message\":\"AWS archive access role set to 'arn:aws:iam::123456789012:role/my-role' for tenant scoober.\"}", 200);
+        tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
+                (response) -> assertTrue(response.getBodyAsString().contains("\"awsRole\":\"arn:aws:iam::123456789012:role/my-role\"")),
                 200);
 
         tester.assertResponse(request("/application/v4/tenant/scoober/application/albums/environment/prod/region/aws-us-east-1c/instance/default", GET)
                         .roles(Role.reader(tenantName)),
                 new File("deployment-cloud.json"));
 
-        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access", DELETE).roles(Role.administrator(tenantName)),
-                "{\"message\":\"Archive access role removed for tenant scoober.\"}", 200);
+        tester.assertResponse(request("/application/v4/tenant/scoober/archive-access/aws", DELETE).roles(Role.administrator(tenantName)),
+                "{\"message\":\"AWS archive access role removed for tenant scoober.\"}", 200);
         tester.assertResponse(request("/application/v4/tenant/scoober", GET).roles(Role.reader(tenantName)),
                 (response) -> assertFalse(response.getBodyAsString().contains("archiveAccessRole")),
                 200);
     }
 
     @Test
-    public void create_application_on_deploy() {
+    void create_application_on_deploy() {
         var application = ApplicationName.from("unique");
-        var applicationPackage = new ApplicationPackageBuilder().build();
+        var applicationPackage = new ApplicationPackageBuilder().trustDefaultCertificate().withoutAthenzIdentity().build();
 
+        new ControllerTester(tester).upgradeSystem(new Version("6.1"));
         assertTrue(tester.controller().applications().getApplication(TenantAndApplicationId.from(tenantName, application)).isEmpty());
 
         tester.assertResponse(
                 request("/application/v4/tenant/scoober/application/unique/instance/default/deploy/dev-aws-us-east-1c", POST)
-                    .data(createApplicationDeployData(Optional.of(applicationPackage), Optional.empty(), true))
-                    .roles(Set.of(Role.developer(tenantName))),
+                        .data(createApplicationDeployData(Optional.of(applicationPackage), Optional.empty(), true))
+                        .roles(Set.of(Role.developer(tenantName))),
                 "{\"message\":\"Deployment started in run 1 of dev-aws-us-east-1c for scoober.unique. This may take about 15 minutes the first time.\",\"run\":1}");
 
         assertTrue(tester.controller().applications().getApplication(TenantAndApplicationId.from(tenantName, application)).isPresent());
     }
 
     @Test
-    public void create_application_on_submit() {
+    void create_application_on_submit() {
         var application = ApplicationName.from("unique");
         var applicationPackage = new ApplicationPackageBuilder()
                 .trustDefaultCertificate()
+                .withoutAthenzIdentity()
                 .build();
 
         assertTrue(tester.controller().applications().getApplication(TenantAndApplicationId.from(tenantName, application)).isEmpty());
@@ -266,13 +467,14 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
                 request("/application/v4/tenant/scoober/application/unique/submit", POST)
                         .data(data)
                         .roles(Set.of(Role.developer(tenantName))),
-                "{\"message\":\"Application package version: 1.0.1-commit1, source revision of repository 'repository1', branch 'master' with commit 'commit1', by a@b, built against 6.1 at 1970-01-01T00:00:01Z\"}");
+                "{\"message\":\"application build 1, source revision of repository 'repository1', branch 'master' with commit 'commit1', by a@b, built against 6.1 at 1970-01-01T00:00:01Z\"}");
 
         assertTrue(tester.controller().applications().getApplication(TenantAndApplicationId.from(tenantName, application)).isPresent());
     }
 
     private ApplicationPackageBuilder prodBuilder() {
         return new ApplicationPackageBuilder()
+                .withoutAthenzIdentity()
                 .instances("default")
                 .region("aws-us-east-1c");
     }
@@ -295,12 +497,14 @@ public class ApplicationApiCloudTest extends ControllerContainerCloudTest {
 
     private void deployApplication() {
         var applicationPackage = new ApplicationPackageBuilder()
+                .trustDefaultCertificate()
                 .instances("default")
                 .globalServiceId("foo")
                 .region("aws-us-east-1c")
                 .build();
+        new ControllerTester(tester).upgradeSystem(new Version("6.1"));
         tester.controller().jobController().deploy(ApplicationId.from("scoober", "albums", "default"),
-                                                   JobType.productionAwsUsEast1c,
+                                                   JobType.prod("aws-us-east-1c"),
                                                    Optional.empty(),
                                                    applicationPackage);
     }

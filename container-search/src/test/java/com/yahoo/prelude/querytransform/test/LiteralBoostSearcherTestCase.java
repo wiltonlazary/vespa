@@ -10,69 +10,69 @@ import com.yahoo.search.Query;
 import com.yahoo.prelude.querytransform.LiteralBoostSearcher;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.test.QueryTestCase;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests the complete field match query transformer
  *
- * @author  <a href="mailto:steinar@yahoo-inc.com">Steinar Knutsen</a>
+ * @author Steinar Knutsen
  */
 public class LiteralBoostSearcherTestCase {
 
     @Test
-    public void testSimpleQueryWithBoost() {
-        assertEquals("RANK abc default_literal:abc",
-                     transformQuery("?query=abc&source=cluster1&restrict=type1"));
+    void testSimpleQueryWithBoost() {
+        assertEquals("RANK (WEAKAND(100) abc) default_literal:abc",
+                transformQuery("?query=abc&source=cluster1&restrict=type1"));
     }
 
     @Test
-    public void testSimpleQueryNoBoost() {
-        assertEquals("abc",
+    void testSimpleQueryNoBoost() {
+        assertEquals("WEAKAND(100) abc",
                 transformQuery("?query=abc&source=cluster1&restrict=type2"));
     }
 
     @Test
-    public void testQueryWithExplicitIndex() {
-        assertEquals("RANK absolute:abc absolute_literal:abc",
+    void testQueryWithExplicitIndex() {
+        assertEquals("RANK (WEAKAND(100) absolute:abc) absolute_literal:abc",
                 transformQuery("?query=absolute:abc&source=cluster1&restrict=type1"));
     }
 
     @Test
-    public void testQueryWithExplicitIndexNoBoost() {
-        assertEquals("absolute:abc",
+    void testQueryWithExplicitIndexNoBoost() {
+        assertEquals("WEAKAND(100) absolute:abc",
                 transformQuery("?query=absolute:abc&source=cluster1&restrict=type2"));
     }
 
     @Test
-    public void testQueryWithNegativeBranch() {
-        assertEquals("RANK (+(AND abc def) -ghi) "+
-                     "default_literal:abc default_literal:def",
-                     transformQuery("?query=abc and def andnot ghi&type=adv&source=cluster1&restrict=type1"));
+    void testQueryWithNegativeBranch() {
+        assertEquals("RANK (+(AND abc def) -ghi) " +
+                "default_literal:abc default_literal:def",
+                transformQuery("?query=abc and def andnot ghi&type=adv&source=cluster1&restrict=type1"));
     }
 
     @Test
-    public void testJumbledQuery() {
+    void testJumbledQuery() {
         assertEquals
-            ("RANK (OR (+(OR abc def) -ghi) jkl) " +
-             "default_literal:abc default_literal:def default_literal:jkl",
-             transformQuery("?query=abc or def andnot ghi or jkl&type=adv&source=cluster1&restrict=type1"));
+                ("RANK (OR (+(OR abc def) -ghi) jkl) " +
+                        "default_literal:abc default_literal:def default_literal:jkl",
+                        transformQuery("?query=abc or def andnot ghi or jkl&type=adv&source=cluster1&restrict=type1"));
     }
 
     @Test
-    public void testTermindexQuery() {
-        assertEquals("RANK (+(AND a b d) -c) default_literal:a "+
-                     "default_literal:b default_literal:d",
-                     transformQuery("?query=a b -c d&source=cluster1&restrict=type1"));
+    void testTermindexQuery() {
+        assertEquals("RANK (+(WEAKAND(100) a b d) -c) default_literal:a " +
+                "default_literal:b default_literal:d",
+                transformQuery("?query=a b -c d&source=cluster1&restrict=type1"));
     }
 
     @Test
-    public void testQueryWithoutBoost() {
+    void testQueryWithoutBoost() {
         assertEquals("RANK (AND nonexistant a nonexistant b) default_literal:nonexistant default_literal:a default_literal:nonexistant default_literal:b",
-                     transformQuery("?query=nonexistant:a nonexistant:b&source=cluster1&restrict=type1"));
+                transformQuery("?query=nonexistant:a nonexistant:b&source=cluster1&restrict=type1&type=all"));
     }
 
     private String transformQuery(String rawQuery) {

@@ -4,6 +4,7 @@ package com.yahoo.vespa.model;
 import com.yahoo.config.model.api.ServiceInfo;
 
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -15,11 +16,13 @@ public interface Service extends ConfigProducer, NetworkPortRequestor {
 
     /**
      * Services that should be started by config-sentinel must return
-     * non-null. The returned value will be used in config-sentinel
+     * a non-empty value. The returned value will be used in config-sentinel
      * configuration.
-     * TODO: Should change this to Optional of String
      */
-    String getStartupCommand();
+    Optional<String> getStartupCommand();
+
+    // environment variables specific for this service:
+    Map<String, Object> getEnvVars();
 
     /**
      * Services that wish that a command should be run before shutdown

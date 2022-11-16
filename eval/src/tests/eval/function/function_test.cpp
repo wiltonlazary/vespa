@@ -8,6 +8,7 @@
 #include <vespa/eval/eval/test/eval_spec.h>
 #include <vespa/eval/eval/test/gen_spec.h>
 #include <vespa/eval/eval/check_type.h>
+#include <vespa/vespalib/util/stringfmt.h>
 
 using namespace vespalib::eval;
 using namespace vespalib::eval::nodes;
@@ -107,6 +108,11 @@ TEST("require that scientific numbers can be parsed") {
     EXPECT_EQUAL(3e7,     as_number(*Function::parse(params, "3E+7")));
     EXPECT_EQUAL(1.05e-5, as_number(*Function::parse(params, "1.05E-5")));
     EXPECT_EQUAL(3e-7,    as_number(*Function::parse(params, "3E-7")));
+}
+
+TEST("require that true/false can be parsed") {
+    EXPECT_EQUAL(1.0, as_number(*Function::parse(params, "true")));
+    EXPECT_EQUAL(0.0, as_number(*Function::parse(params, "false")));
 }
 
 TEST("require that number parsing does not eat +/- operators") {
@@ -1035,6 +1041,7 @@ TEST("require that tensor cell cast must have valid cell type") {
 struct CheckExpressions : test::EvalSpec::EvalTest {
     bool failed = false;
     size_t seen_cnt = 0;
+    ~CheckExpressions() override;
     virtual void next_expression(const std::vector<vespalib::string> &param_names,
                                  const vespalib::string &expression) override
     {
@@ -1050,6 +1057,8 @@ struct CheckExpressions : test::EvalSpec::EvalTest {
                              const vespalib::string &,
                              double) override {}
 };
+
+CheckExpressions::~CheckExpressions() = default;
 
 TEST_FF("require that all conformance test expressions can be parsed",
         CheckExpressions(), test::EvalSpec())

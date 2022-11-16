@@ -1,18 +1,19 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.jdisc.http.server.jetty;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.jdisc.Metric;
 import com.yahoo.jdisc.http.ConnectorConfig;
-import com.yahoo.jdisc.http.ssl.SslContextFactoryProvider;
+import com.yahoo.jdisc.http.SslProvider;
+import com.yahoo.jdisc.http.ssl.impl.DefaultConnectorSsl;
 import com.yahoo.security.tls.MixedMode;
 import com.yahoo.security.tls.TransportSecurityUtils;
 import org.eclipse.jetty.alpn.server.ALPNServerConnectionFactory;
-import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.http2.server.AbstractHTTP2ServerConnectionFactory;
 import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory;
 import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
 import org.eclipse.jetty.server.ConnectionFactory;
+import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.DetectorConnectionFactory;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
@@ -21,6 +22,7 @@ import org.eclipse.jetty.server.SecureRequestCustomizer;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.SslConnectionFactory;
+import org.eclipse.jetty.util.HostPort;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 
 import java.util.ArrayList;
@@ -40,21 +42,20 @@ public class ConnectorFactory {
     private static final Logger log = Logger.getLogger(ConnectorFactory.class.getName());
 
     private final ConnectorConfig connectorConfig;
-    private final SslContextFactoryProvider sslContextFactoryProvider;
+    private final SslProvider sslProvider;
 
     @Inject
     public ConnectorFactory(ConnectorConfig connectorConfig,
-                            SslContextFactoryProvider sslContextFactoryProvider) {
+                            SslProvider sslProvider) {
         runtimeConnectorConfigValidation(connectorConfig);
         this.connectorConfig = connectorConfig;
-        this.sslContextFactoryProvider = sslContextFactoryProvider;
+        this.sslProvider = sslProvider;
     }
 
     // Perform extra connector config validation that can only be performed at runtime,
     // e.g. due to TLS configuration through environment variables.
     private static void runtimeConnectorConfigValidation(ConnectorConfig config) {
         validateProxyProtocolConfiguration(config);
-        validateSecureRedirectConfig(config);
     }
 
     private static void validateProxyProtocolConfiguration(ConnectorConfig config) {
@@ -67,28 +68,15 @@ public class ConnectorFactory {
         }
     }
 
-    private static void validateSecureRedirectConfig(ConnectorConfig config) {
-        if (config.secureRedirect().enabled() && isSslEffectivelyEnabled(config)) {
-            throw new IllegalArgumentException("Secure redirect can only be enabled on connectors without HTTPS");
-        }
-    }
-
     public ConnectorConfig getConnectorConfig() {
         return connectorConfig;
     }
 
     public ServerConnector createConnector(final Metric metric, final Server server, JettyConnectionLogger connectionLogger,
                                            ConnectionMetricAggregator connectionMetricAggregator) {
-        ServerConnector connector = new JDiscServerConnector(
+        return new JDiscServerConnector(
                 connectorConfig, metric, server, connectionLogger, connectionMetricAggregator,
                 createConnectionFactories(metric).toArray(ConnectionFactory[]::new));
-        connector.setPort(connectorConfig.listenPort());
-        connector.setName(connectorConfig.name());
-        connector.setAcceptQueueSize(connectorConfig.acceptQueueSize());
-        connector.setReuseAddress(connectorConfig.reuseAddress());
-        connector.setIdleTimeout(toMillis(connectorConfig.idleTimeout()));
-        connector.addBean(HttpCompliance.RFC7230);
-        return connector;
     }
 
     private List<ConnectionFactory> createConnectionFactories(Metric metric) {
@@ -122,10 +110,7 @@ public class ConnectorFactory {
             sslFactory = newSslConnectionFactory(metric, http1Factory);
         }
         if (proxyProtocolConfig.enabled()) {
-            if (proxyProtocolConfig.mixedMode()) {
-                factories.add(newDetectorConnectionFactory(sslFactory));
-            }
-            factories.add(newProxyProtocolConnectionFactory(sslFactory));
+            factories.add(newProxyProtocolConnectionFactory(sslFactory, proxyProtocolConfig.mixedMode()));
         }
         factories.add(sslFactory);
         if (connectorConfig.http2Enabled()) factories.add(alpnFactory);
@@ -155,6 +140,8 @@ public class ConnectorFactory {
         if (isSslEffectivelyEnabled(connectorConfig)) {
             httpConfig.addCustomizer(new SecureRequestCustomizer());
         }
+        String serverNameFallback = connectorConfig.serverName().fallback();
+        if (!serverNameFallback.isBlank()) httpConfig.setServerAuthority(new HostPort(serverNameFallback));
         return httpConfig;
     }
 
@@ -182,10 +169,15 @@ public class ConnectorFactory {
     }
 
     private SslConnectionFactory newSslConnectionFactory(Metric metric, ConnectionFactory wrappedFactory) {
-        SslContextFactory ctxFactory = sslContextFactoryProvider.getInstance(connectorConfig.name(), connectorConfig.listenPort());
-        SslConnectionFactory connectionFactory = new SslConnectionFactory(ctxFactory, wrappedFactory.getProtocol());
+        SslConnectionFactory connectionFactory = new SslConnectionFactory(createSslContextFactory(), wrappedFactory.getProtocol());
         connectionFactory.addBean(new SslHandshakeFailedListener(metric, connectorConfig.name(), connectorConfig.listenPort()));
         return connectionFactory;
+    }
+
+    private SslContextFactory createSslContextFactory() {
+        DefaultConnectorSsl ssl = new DefaultConnectorSsl();
+        sslProvider.configureSsl(ssl, connectorConfig.name(), connectorConfig.listenPort());
+        return ssl.createSslContextFactory();
     }
 
     private ALPNServerConnectionFactory newAlpnConnectionFactory() {
@@ -199,8 +191,10 @@ public class ConnectorFactory {
         return new DetectorConnectionFactory(alternatives);
     }
 
-    private ProxyConnectionFactory newProxyProtocolConnectionFactory(ConnectionFactory wrappedFactory) {
-        return new ProxyConnectionFactory(wrappedFactory.getProtocol());
+    private ProxyConnectionFactory newProxyProtocolConnectionFactory(ConnectionFactory wrapped, boolean mixedMode) {
+        return mixedMode
+                ? new ProxyConnectionFactory(wrapped.getProtocol())
+                : new MandatoryProxyConnectionFactory(wrapped.getProtocol());
     }
 
     private static boolean isSslEffectivelyEnabled(ConnectorConfig config) {
@@ -209,5 +203,15 @@ public class ConnectorFactory {
     }
 
     private static long toMillis(double seconds) { return (long)(seconds * 1000); }
+
+    /**
+     * A {@link ProxyConnectionFactory} which disables the default behaviour of upgrading to
+     * next protocol when proxy protocol is not detected.
+     */
+    private static class MandatoryProxyConnectionFactory extends ProxyConnectionFactory {
+        MandatoryProxyConnectionFactory(String next) { super(next); }
+        @Override protected String findNextProtocol(Connector __) { return null; }
+    }
+
 
 }

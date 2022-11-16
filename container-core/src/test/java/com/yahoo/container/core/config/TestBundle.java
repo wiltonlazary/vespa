@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.core.config;
 
 import com.yahoo.container.bundle.MockBundle;
@@ -16,7 +16,7 @@ import java.util.List;
 /**
  * @author gjoranv
  */
-class TestBundle extends MockBundle {
+public class TestBundle extends MockBundle {
 
     private static final BundleRevision revision = new TestBundleRevision();
 
@@ -24,7 +24,7 @@ class TestBundle extends MockBundle {
 
     boolean started = false;
 
-    TestBundle(String symbolicName) {
+    public TestBundle(String symbolicName) {
         this.symbolicName = symbolicName;
     }
 

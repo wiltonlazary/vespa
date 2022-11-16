@@ -2,8 +2,10 @@
 package com.yahoo.vespa.config.server.model;
 
 import com.yahoo.cloud.config.LbServicesConfig;
+import com.yahoo.cloud.config.LbServicesConfig.Tenants.Applications.Endpoints;
 import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.model.NullConfigModelRegistry;
+import com.yahoo.config.model.api.ApplicationClusterEndpoint;
 import com.yahoo.config.model.api.ApplicationInfo;
 import com.yahoo.config.model.api.ContainerEndpoint;
 import com.yahoo.config.model.api.Model;
@@ -17,7 +19,6 @@ import com.yahoo.config.provision.RegionName;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.vespa.config.ConfigPayload;
-import com.yahoo.vespa.flags.Flags;
 import com.yahoo.vespa.flags.InMemoryFlagSource;
 import com.yahoo.vespa.model.VespaModel;
 import org.junit.Test;
@@ -35,14 +36,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.stream.Collectors;
 
-import static com.yahoo.config.model.api.container.ContainerServiceType.QRSERVER;
-import static org.hamcrest.Matchers.contains;
-import static org.hamcrest.Matchers.containsInAnyOrder;
-import static org.hamcrest.Matchers.is;
+import static com.yahoo.cloud.config.LbServicesConfig.Tenants.Applications.Endpoints.RoutingMethod.Enum.sharedLayer4;
+import static com.yahoo.cloud.config.LbServicesConfig.Tenants.Applications.Endpoints.Scope.Enum.application;
+import static com.yahoo.cloud.config.LbServicesConfig.Tenants.Applications.Endpoints.Scope.Enum.global;
+import static com.yahoo.cloud.config.LbServicesConfig.Tenants.Applications.Endpoints.Scope.Enum.zone;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeFalse;
 
@@ -52,11 +54,12 @@ import static org.junit.Assume.assumeFalse;
 @RunWith(Parameterized.class)
 public class LbServicesProducerTest {
 
-    private static final String rotation1 = "rotation-1";
-    private static final String rotation2 = "rotation-2";
     private static final Set<ContainerEndpoint> endpoints = Set.of(
-            new ContainerEndpoint("mydisc", List.of("rotation-1", "rotation-2"))
+            new ContainerEndpoint("mydisc", ApplicationClusterEndpoint.Scope.global, List.of("rotation-1", "rotation-2")),
+            new ContainerEndpoint("mydisc", ApplicationClusterEndpoint.Scope.application, List.of("app-endpoint"))
     );
+    private static final List<String> zoneDnsSuffixes = List.of(".endpoint1.suffix", ".endpoint2.suffix");
+
     private final InMemoryFlagSource flagSource = new InMemoryFlagSource();
     private final boolean useGlobalServiceId;
 
@@ -84,20 +87,6 @@ public class LbServicesProducerTest {
     }
 
     @Test
-    public void testConfigAliases() {
-        Map<TenantName, Set<ApplicationInfo>> testModel = createTestModel(new DeployState.Builder());
-        LbServicesConfig conf = getLbServicesConfig(Zone.defaultZone(), testModel);
-        LbServicesConfig.Tenants.Applications.Hosts.Services services =
-                conf.tenants("foo").applications("foo:prod:default:default").hosts("foo.foo.yahoo.com").services(QRSERVER.serviceName);
-        assertThat(services.servicealiases().size(), is(1));
-        assertThat(services.endpointaliases().size(), is(2));
-
-        assertThat(services.servicealiases(0), is("service1"));
-        assertThat(services.endpointaliases(0), is("foo1.bar1.com"));
-        assertThat(services.endpointaliases(1), is("foo2.bar2.com"));
-    }
-
-    @Test
     public void testConfigActiveRotation() {
         {
             RegionName regionName = RegionName.from("us-east-1");
@@ -110,18 +99,6 @@ public class LbServicesProducerTest {
             LbServicesConfig conf = createModelAndGetLbServicesConfig(regionName);
             assertFalse(conf.tenants("foo").applications("foo:prod:" + regionName.value() + ":default").activeRotation());
         }
-    }
-
-    @Test
-    public void generate_non_mtls_endpoints_from_feature_flag() {
-        RegionName regionName = RegionName.from("us-east-1");
-
-        LbServicesConfig conf = createModelAndGetLbServicesConfig(regionName);
-        assertTrue(conf.tenants("foo").applications("foo:prod:" + regionName.value() + ":default").generateNonMtlsEndpoint());
-
-        flagSource.withBooleanFlag(Flags.GENERATE_NON_MTLS_ENDPOINT.id(), false);
-        conf = createModelAndGetLbServicesConfig(regionName);
-        assertFalse(conf.tenants("foo").applications("foo:prod:" + regionName.value() + ":default").generateNonMtlsEndpoint());
     }
 
     private LbServicesConfig createModelAndGetLbServicesConfig(RegionName regionName) {
@@ -145,32 +122,53 @@ public class LbServicesProducerTest {
                 .endpoints(endpoints)
                 .properties(new TestProperties().setHostedVespa(true)));
         RegionName regionName = RegionName.from("us-east-1");
+        LbServicesConfig config = getLbServicesConfig(new Zone(Environment.prod, regionName), testModel);
 
-        var services = getLbServicesConfig(new Zone(Environment.prod, regionName), testModel)
-                .tenants("foo")
-                .applications("foo:prod:" + regionName.value() + ":default")
-                .hosts("foo.foo.yahoo.com")
-                .services(QRSERVER.serviceName);
+        List<Endpoints> endpointList = config.tenants("foo").applications("foo:prod:" + regionName.value() + ":default").endpoints();
+        // Expect 2 zone endpoints (2 suffixes), 2 global endpoints and 1 application endpoint
+        assertEquals(5, endpointList.size());
+        List<Endpoints> zoneEndpoints = endpointList.stream().filter(e -> e.scope() == zone).collect(Collectors.toList());
+        assertEquals(2, zoneEndpoints.size());
+        assertTrue(zoneEndpoints.stream()
+                           .filter(e -> e.routingMethod() == sharedLayer4)
+                           .map(Endpoints::dnsName).collect(Collectors.toList())
+                .containsAll(List.of("mydisc.foo.foo.endpoint1.suffix", "mydisc.foo.foo.endpoint2.suffix")));
+        assertContainsEndpoint(zoneEndpoints, "mydisc.foo.foo.endpoint1.suffix", "mydisc", zone, sharedLayer4, 1, List.of("foo.foo.yahoo.com"));
+        assertContainsEndpoint(zoneEndpoints, "mydisc.foo.foo.endpoint2.suffix", "mydisc", zone, sharedLayer4, 1, List.of("foo.foo.yahoo.com"));
 
-        assertThat(services.servicealiases(), contains("service1"));
-        assertThat("Missing endpoints in list: " + services.endpointaliases(), services.endpointaliases(), containsInAnyOrder("foo1.bar1.com", "foo2.bar2.com", rotation1, rotation2));
+        List<Endpoints> globalEndpoints = endpointList.stream().filter(e -> e.scope() == global).collect(Collectors.toList());
+        assertEquals(2, globalEndpoints.size());
+        assertTrue(globalEndpoints.stream().map(Endpoints::dnsName).collect(Collectors.toList()).containsAll(List.of("rotation-1", "rotation-2")));
+        assertContainsEndpoint(globalEndpoints, "rotation-1", "mydisc", global, sharedLayer4, 1, List.of("foo.foo.yahoo.com"));
+        assertContainsEndpoint(globalEndpoints, "rotation-2", "mydisc", global, sharedLayer4, 1, List.of("foo.foo.yahoo.com"));
+
+        List<Endpoints> applicationEndpoints = endpointList.stream().filter(e -> e.scope() == application).collect(Collectors.toList());
+        assertEquals(1, applicationEndpoints.size());
+        assertTrue(applicationEndpoints.stream().map(Endpoints::dnsName).collect(Collectors.toList()).contains("app-endpoint"));
+        assertContainsEndpoint(applicationEndpoints, "app-endpoint", "mydisc", application, sharedLayer4, 1, List.of("foo.foo.yahoo.com"));
     }
-
 
     @Test
     public void testRoutingConfigForTesterApplication() {
         assumeFalse(useGlobalServiceId);
 
         Map<TenantName, Set<ApplicationInfo>> testModel = createTestModel(new DeployState.Builder());
-        LbServicesConfig conf = getLbServicesConfig(Zone.defaultZone(), testModel);
-        LbServicesConfig.Tenants.Applications.Hosts.Services services = conf.tenants("foo").applications("foo:prod:default:default").hosts("foo.foo.yahoo.com").services(QRSERVER.serviceName);
-        assertThat(services.servicealiases().size(), is(1));
-        assertThat(services.endpointaliases().size(), is(2));
 
         // No config for tester application
         assertNull(getLbServicesConfig(Zone.defaultZone(), testModel)
                            .tenants("foo")
                            .applications("baz:prod:default:custom-t"));
+    }
+
+    private void assertContainsEndpoint(List<Endpoints> endpoints, String dnsName, String clusterId, Endpoints.Scope.Enum scope, Endpoints.RoutingMethod.Enum routingMethod, int weight, List<String> hosts) {
+        assertTrue(endpoints.contains(new Endpoints.Builder()
+                                              .dnsName(dnsName)
+                                              .clusterId(clusterId)
+                                              .scope(scope)
+                                              .routingMethod(routingMethod)
+                                              .weight(weight)
+                                              .hosts(hosts)
+                                              .build()));
     }
 
     private Map<TenantName, Set<ApplicationInfo>> randomizeApplications(Map<TenantName, Set<ApplicationInfo>> testModel, int seed) {
@@ -184,15 +182,13 @@ public class LbServicesProducerTest {
     }
 
     private Map<TenantName, Set<ApplicationInfo>> createTestModel(DeployState.Builder deployStateBuilder) {
-        deployStateBuilder.properties(new TestProperties().setHostedVespa(true));
-
         Map<TenantName, Set<ApplicationInfo>> tMap = new LinkedHashMap<>();
         TenantName foo = TenantName.from("foo");
         TenantName bar = TenantName.from("bar");
         TenantName baz = TenantName.from("baz");
         tMap.put(foo, createTestApplications(foo, deployStateBuilder));
         tMap.put(bar, createTestApplications(bar, deployStateBuilder));
-        tMap.put(bar, createTestApplications(baz, deployStateBuilder));
+        tMap.put(baz, createTestApplications(baz, deployStateBuilder));
         return tMap;
     }
 
@@ -207,6 +203,7 @@ public class LbServicesProducerTest {
         Set<ApplicationInfo> applicationInfoSet = new HashSet<>();
         List<String> hostnames = new ArrayList<>();
         appIds.forEach(appId -> {
+            deployStateBuilder.properties(getTestproperties(appId));
             hostnames.add(appId.tenant() + "." + appId.application() + ".yahoo.com");
             hostnames.add(appId.tenant().value() + "." + appId.application().value() + "2.yahoo.com");
             try {
@@ -225,11 +222,6 @@ public class LbServicesProducerTest {
         String services = "<services>" +
                           "<admin version='4.0'><logservers> <nodes count='1' /> </logservers></admin>" +
                           "  <container id='mydisc' version='1.0'>" +
-                          "    <aliases>" +
-                          "      <endpoint-alias>foo2.bar2.com</endpoint-alias>" +
-                          "      <service-alias>service1</service-alias>" +
-                          "      <endpoint-alias>foo1.bar1.com</endpoint-alias>" +
-                          "    </aliases>" +
                           "    <nodes count='1' />" +
                           "    <search/>" +
                           "  </container>" +
@@ -271,8 +263,14 @@ public class LbServicesProducerTest {
     private void assertConfig(LbServicesConfig expected, LbServicesConfig actual) {
         assertFalse(expected.toString().isEmpty());
         assertFalse(actual.toString().isEmpty());
-        assertThat(expected.toString(), is(actual.toString()));
-        assertThat(ConfigPayload.fromInstance(expected).toString(true), is(ConfigPayload.fromInstance(actual).toString(true)));
+        assertEquals(actual.toString(), expected.toString());
+        assertEquals(ConfigPayload.fromInstance(expected).toString(true), ConfigPayload.fromInstance(actual).toString(true));
     }
 
+    private TestProperties getTestproperties(ApplicationId applicationId) {
+        return new TestProperties()
+                .setHostedVespa(true)
+                .setZoneDnsSuffixes(zoneDnsSuffixes)
+                .setApplicationId(applicationId);
+    }
 }

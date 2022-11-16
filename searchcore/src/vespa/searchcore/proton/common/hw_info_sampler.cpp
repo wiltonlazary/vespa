@@ -1,15 +1,18 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include "hw_info_sampler.h"
-#include <vespa/config/config.h>
 #include <vespa/config/print/fileconfigwriter.h>
+#include <vespa/config/subscription/configsubscriber.hpp>
 #include <vespa/fastos/file.h>
 #include <vespa/searchcore/config/config-hwinfo.h>
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/time.h>
+#include <vespa/vespalib/util/resource_limits.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/alloc.h>
 #include <filesystem>
 #include <thread>
+
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.common.hw_info_sampler");
 
@@ -38,24 +41,25 @@ sampleDiskSizeBytes(const std::string &pathStr, const HwInfoSampler::Config &cfg
 }
 
 uint64_t
-sampleMemorySizeBytes(const HwInfoSampler::Config &cfg)
+sampleMemorySizeBytes(const HwInfoSampler::Config &cfg, const vespalib::ResourceLimits& resource_limits)
 {
     if (cfg.memorySizeBytes != 0) {
         return cfg.memorySizeBytes;
     }
-    return sysconf(_SC_PHYS_PAGES) * sysconf(_SC_PAGESIZE);
+    return resource_limits.memory();
 }
 
 uint32_t
-sampleCpuCores(const HwInfoSampler::Config &cfg)
+sampleCpuCores(const HwInfoSampler::Config &cfg, const vespalib::ResourceLimits& resource_limits)
 {
     if (cfg.cpuCores != 0) {
         return cfg.cpuCores;
     }
-    return std::thread::hardware_concurrency();
+    return resource_limits.cpu();
 }
 
-std::unique_ptr<HwinfoConfig> readConfig(const vespalib::string &path) {
+std::unique_ptr<HwinfoConfig>
+readConfig(const vespalib::string &path) {
     FileSpec spec(path + "/" + "hwinfo.cfg");
     ConfigSubscriber s(spec);
     std::unique_ptr<ConfigHandle<HwinfoConfig>> handle = s.subscribe<HwinfoConfig>("hwinfo");
@@ -79,29 +83,31 @@ void writeConfig(const vespalib::string &path,
 double measureDiskWriteSpeed(const vespalib::string &path,
                              size_t diskWriteLen)
 {
-    FastOS_File testFile;
     vespalib::string fileName = path + "/hwinfo-writespeed";
     size_t bufferLen = 1_Mi;
     Alloc buffer(Alloc::allocMMap(bufferLen));
     memset(buffer.get(), 0, buffer.size());
-    testFile.EnableDirectIO();
-    testFile.OpenWriteOnlyTruncate(fileName.c_str());
-    sync();
-    sleep(1);
-    sync();
-    sleep(1);
-    Clock::time_point before = Clock::now();
-    size_t residue = diskWriteLen;
-    while (residue > 0) {
-        size_t writeNow = std::min(residue, bufferLen);
-        testFile.WriteBuf(buffer.get(), writeNow);
-        residue -= writeNow;
+    double diskWriteSpeed;
+    {
+        FastOS_File testFile;
+        testFile.EnableDirectIO();
+        testFile.OpenWriteOnlyTruncate(fileName.c_str());
+        sync();
+        sleep(1);
+        sync();
+        sleep(1);
+        Clock::time_point before = Clock::now();
+        size_t residue = diskWriteLen;
+        while (residue > 0) {
+            size_t writeNow = std::min(residue, bufferLen);
+            testFile.WriteBuf(buffer.get(), writeNow);
+            residue -= writeNow;
+        }
+        Clock::time_point after = Clock::now();
+        double elapsed = vespalib::to_s(after - before);
+        diskWriteSpeed = diskWriteLen / elapsed / 1_Mi;
     }
-    Clock::time_point after = Clock::now();
-    testFile.Close();
     vespalib::unlink(fileName);
-    double elapsed = vespalib::to_s(after - before);
-    double diskWriteSpeed = diskWriteLen / elapsed / 1_Mi;
     return diskWriteSpeed;
 }
 
@@ -114,11 +120,12 @@ HwInfoSampler::HwInfoSampler(const vespalib::string &path,
       _diskWriteSpeed(0.0)
 {
     setDiskWriteSpeed(path, config);
+    auto resource_limits = vespalib::ResourceLimits::create();
     setup(HwInfo::Disk(sampleDiskSizeBytes(path, config),
                        (_diskWriteSpeed < config.slowWriteSpeedLimit),
                        config.diskShared),
-          HwInfo::Memory(sampleMemorySizeBytes(config)),
-          HwInfo::Cpu(sampleCpuCores(config)));
+          HwInfo::Memory(sampleMemorySizeBytes(config, resource_limits)),
+          HwInfo::Cpu(sampleCpuCores(config, resource_limits)));
 }
 
 HwInfoSampler::~HwInfoSampler() = default;
@@ -158,16 +165,3 @@ HwInfoSampler::sampleDiskWriteSpeed(const vespalib::string &path, const Config &
 }
 
 }
-
-#ifdef RHEL_8_2_KLUDGE
-
-// Kludge to avoid unresolved symbols with gcc-toolset-9 on RHEL 8.2
-#include <codecvt>
-
-namespace std {
-
-template class codecvt_utf8<wchar_t>;
-
-}
-
-#endif

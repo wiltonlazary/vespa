@@ -6,7 +6,6 @@ import java.util.jar.JarFile;
 /**
  * Source specifying config as a jar file entry
  * @author Vegard Havdal
- *
  */
 public class JarSource implements ConfigSource {
     private final String path;

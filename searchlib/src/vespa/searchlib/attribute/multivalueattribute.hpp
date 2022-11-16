@@ -2,11 +2,15 @@
 
 #pragma once
 
+#include "multivalueattribute.h"
 #include "address_space_components.h"
-#include <vespa/searchlib/attribute/multivalueattribute.h>
+#include "raw_multi_value_read_view.h"
+#include "copy_multi_value_read_view.h"
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/stllike/hash_map.h>
 #include <vespa/vespalib/stllike/hash_map.hpp>
 #include <vespa/vespalib/util/memory_allocator.h>
+#include <vespa/vespalib/util/stash.h>
 
 namespace search {
 
@@ -28,7 +32,7 @@ MultiValueAttribute(const vespalib::string &baseFileName,
                                                                8 * 1024,
                                                                cfg.getGrowStrategy().getMultiValueAllocGrowFactor(),
                                                                multivalueattribute::enable_free_lists),
-                 cfg.getGrowStrategy().to_generic_strategy())
+                 cfg.getGrowStrategy(), this->get_memory_allocator())
 {
 }
 
@@ -39,7 +43,7 @@ template <typename B, typename M>
 int32_t MultiValueAttribute<B, M>::getWeight(DocId doc, uint32_t idx) const
 {
     MultiValueArrayRef values(this->_mvMapping.get(doc));
-    return ((idx < values.size()) ? values[idx].weight() : 1);
+    return ((idx < values.size()) ? multivalue::get_weight(values[idx]) : 1);
 }
 
 namespace {
@@ -95,7 +99,7 @@ MultiValueAttribute<B, M>::apply_attribute_changes_to_array(DocumentValues& docV
         }
         MultiValueArrayRef old_values(_mvMapping.get(doc));
         ValueVector new_values(old_values.cbegin(), old_values.cend());
-        vespalib::hash_map<ValueType, size_t, typename HashFn<ValueType>::type> tombstones;
+        vespalib::hash_map<NonAtomicValueType, size_t, typename HashFn<NonAtomicValueType>::type> tombstones;
 
         // iterate through all changes for this document
         for (; (current != end) && (current->_doc == doc); ++current) {
@@ -104,13 +108,17 @@ MultiValueAttribute<B, M>::apply_attribute_changes_to_array(DocumentValues& docV
                 tombstones.clear();
                 continue;
             }
-            ValueType data;
+            NonAtomicValueType data;
             bool hasData = extractChangeData(*current, data);
             if (!hasData) {
                 continue;
             }
             if (current->_type == ChangeBase::APPEND) {
-                new_values.emplace_back(data, current->_weight);
+                if constexpr (std::is_same_v<ValueType, NonAtomicValueType>) {
+                    new_values.emplace_back(multivalue::ValueBuilder<MultiValueType>::build(data, current->_weight));
+                } else {
+                    new_values.emplace_back(multivalue::ValueBuilder<MultiValueType>::build(ValueType(data), current->_weight));
+                }
             } else if (current->_type == ChangeBase::REMOVE) {
                 // Defer all removals to the very end by tracking when, during value vector build time,
                 // a removal was encountered for a particular value. All values < this index will be ignored.
@@ -121,10 +129,19 @@ MultiValueAttribute<B, M>::apply_attribute_changes_to_array(DocumentValues& docV
         if (!tombstones.empty()) {
             ValueVector culled;
             culled.reserve(new_values.size());
-            for (size_t i = 0; i < new_values.size(); ++i) {
-                auto iter = tombstones.find(new_values[i].value());
-                if (iter == tombstones.end() || (iter->second <= i)) {
-                    culled.emplace_back(new_values[i]);
+            if constexpr (std::is_same_v<ValueType, NonAtomicValueType>) {
+                for (size_t i = 0; i < new_values.size(); ++i) {
+                    auto iter = tombstones.find(multivalue::get_value(new_values[i]));
+                    if (iter == tombstones.end() || (iter->second <= i)) {
+                        culled.emplace_back(new_values[i]);
+                    }
+                }
+            } else {
+                for (size_t i = 0; i < new_values.size(); ++i) {
+                    auto iter = tombstones.find(multivalue::get_value_ref(new_values[i]).load_relaxed());
+                    if (iter == tombstones.end() || (iter->second <= i)) {
+                        culled.emplace_back(new_values[i]);
+                    }
                 }
             }
             culled.swap(new_values);
@@ -156,10 +173,14 @@ MultiValueAttribute<B, M>::apply_attribute_changes_to_wset(DocumentValues& docVa
             current = last_clear_doc;
         }
         MultiValueArrayRef old_values(_mvMapping.get(doc));
-        vespalib::hash_map<ValueType, int32_t, typename HashFn<ValueType>::type> wset_inserted;
+        vespalib::hash_map<NonAtomicValueType, int32_t, typename HashFn<NonAtomicValueType>::type> wset_inserted;
         wset_inserted.resize((old_values.size() + max_elems_inserted) * 2);
         for (const auto& e : old_values) {
-            wset_inserted[e.value()] = e.weight();
+            if constexpr (std::is_same_v<ValueType, NonAtomicValueType>) {
+                wset_inserted[multivalue::get_value(e)] = multivalue::get_weight(e);
+            } else {
+                wset_inserted[multivalue::get_value_ref(e).load_relaxed()] = multivalue::get_weight(e);
+            }
         }
         // iterate through all changes for this document
         for (; (current != end) && (current->_doc == doc); ++current) {
@@ -167,7 +188,7 @@ MultiValueAttribute<B, M>::apply_attribute_changes_to_wset(DocumentValues& docVa
                 wset_inserted.clear();
                 continue;
             }
-            ValueType data;
+            NonAtomicValueType data;
             bool hasData = extractChangeData(*current, data);
             if (!hasData) {
                 continue;
@@ -193,7 +214,11 @@ MultiValueAttribute<B, M>::apply_attribute_changes_to_wset(DocumentValues& docVa
         }
         std::vector<MultiValueType> new_values;
         new_values.reserve(wset_inserted.size());
-        wset_inserted.for_each([&new_values](const auto& e){ new_values.emplace_back(e.first, e.second); });
+        if constexpr (std::is_same_v<ValueType, NonAtomicValueType>) {
+            wset_inserted.for_each([&new_values](const auto& e){ new_values.emplace_back(multivalue::ValueBuilder<MultiValueType>::build(e.first, e.second)); });
+        } else {
+            wset_inserted.for_each([&new_values](const auto& e){ new_values.emplace_back(multivalue::ValueBuilder<MultiValueType>::build(ValueType(e.first), e.second)); });
+        }
 
         this->checkSetMaxValueCount(new_values.size());
         docValues.emplace_back(doc, std::move(new_values));
@@ -220,7 +245,7 @@ MultiValueAttribute<B, M>::addDoc(DocId & doc)
     if (incGen) {
         this->incGeneration();
     } else
-        this->removeAllOldGenerations();
+        this->reclaim_unused_memory();
     return true;
 }
 
@@ -253,7 +278,7 @@ MultiValueAttribute<B, M>::getTotalValueCount() const
 
 template <typename B, typename M>
 void
-MultiValueAttribute<B, M>::clearDocs(DocId lidLow, DocId lidLimit)
+MultiValueAttribute<B, M>::clearDocs(DocId lidLow, DocId lidLimit, bool)
 {
     _mvMapping.clearDocs(lidLow, lidLimit, [this](uint32_t docId) { this->clearDoc(docId); });
 }
@@ -268,6 +293,34 @@ MultiValueAttribute<B, M>::onShrinkLidSpace()
     this->setNumDocs(committedDocIdLimit);
 }
 
+template <typename B, typename M>
+const attribute::IMultiValueAttribute*
+MultiValueAttribute<B, M>::as_multi_value_attribute() const
+{
+    return this;
+}
+
+template <typename B, typename M>
+const attribute::IArrayReadView<multivalue::ValueType_t<M>>*
+MultiValueAttribute<B, M>::make_read_view(attribute::IMultiValueAttribute::ArrayTag<ValueType>, vespalib::Stash& stash) const
+{
+    if constexpr (std::is_same_v<MultiValueType, ValueType>) {
+        return &stash.create<attribute::RawMultiValueReadView<MultiValueType>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()));
+    } else {
+        return &stash.create<attribute::CopyMultiValueReadView<ValueType, MultiValueType>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()));
+    }
+}
+
+template <typename B, typename M>
+const attribute::IWeightedSetReadView<multivalue::ValueType_t<M>>*
+MultiValueAttribute<B, M>::make_read_view(attribute::IMultiValueAttribute::WeightedSetTag<ValueType>, vespalib::Stash& stash) const
+{
+    if constexpr (std::is_same_v<MultiValueType, multivalue::WeightedValue<ValueType>>) {
+        return &stash.create<attribute::RawMultiValueReadView<MultiValueType>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()));
+    } else {
+        return &stash.create<attribute::CopyMultiValueReadView<multivalue::WeightedValue<ValueType>, MultiValueType>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()));
+    }
+}
 
 } // namespace search
 

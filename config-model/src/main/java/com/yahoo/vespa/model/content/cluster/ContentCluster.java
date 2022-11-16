@@ -51,12 +51,12 @@ import com.yahoo.vespa.model.content.storagecluster.StorageCluster;
 import com.yahoo.vespa.model.search.IndexedSearchCluster;
 import com.yahoo.vespa.model.search.Tuning;
 import org.w3c.dom.Element;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
@@ -117,22 +117,23 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
             RedundancyBuilder redundancyBuilder = new RedundancyBuilder(contentElement);
             Set<NewDocumentType> globallyDistributedDocuments = new GlobalDistributionBuilder(documentDefinitions).build(documentsElement);
 
-            ContentCluster c = new ContentCluster(context.getParentProducer(), getClusterId(contentElement), documentDefinitions,
+            String clusterId = getClusterId(contentElement);
+            ContentCluster c = new ContentCluster(context.getParentProducer(), clusterId, documentDefinitions,
                                                   globallyDistributedDocuments, routingSelection,
                                                   deployState.zone(), deployState.isHosted());
-            boolean enableFeedBlockInDistributor = deployState.getProperties().featureFlags().enableFeedBlockInDistributor();
-            var resourceLimits = new ClusterResourceLimits.Builder(enableFeedBlockInDistributor,
-                                                                   stateIsHosted(deployState),
+            var resourceLimits = new ClusterResourceLimits.Builder(stateIsHosted(deployState),
                                                                    deployState.featureFlags().resourceLimitDisk(),
                                                                    deployState.featureFlags().resourceLimitMemory())
                     .build(contentElement);
-            c.clusterControllerConfig = new ClusterControllerConfig.Builder(getClusterId(contentElement),
-                    contentElement,
-                    resourceLimits.getClusterControllerLimits()).build(deployState, c, contentElement.getXml());
+            c.clusterControllerConfig = new ClusterControllerConfig.Builder(clusterId,
+                                                                            contentElement,
+                                                                            resourceLimits.getClusterControllerLimits())
+                    .build(deployState, c, contentElement.getXml());
             c.search = new ContentSearchCluster.Builder(documentDefinitions,
-                    globallyDistributedDocuments,
-                    isCombined(getClusterId(contentElement), containers),
-                    resourceLimits.getContentNodeLimits()).build(deployState, c, contentElement.getXml());
+                                                        globallyDistributedDocuments,
+                                                        fractionOfMemoryReserved(clusterId, containers),
+                                                        resourceLimits.getContentNodeLimits())
+                    .build(deployState, c, contentElement.getXml());
             c.persistenceFactory = new EngineFactoryBuilder().build(contentElement, c);
             c.storageNodes = new StorageCluster.Builder().build(deployState, c, w3cContentElement);
             c.distributorNodes = new DistributorCluster.Builder(c).build(deployState, c, w3cContentElement);
@@ -142,7 +143,7 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
             setupSearchCluster(c.search, contentElement, deployState.getDeployLogger());
 
             if (c.search.hasIndexedCluster() && !(c.persistenceFactory instanceof ProtonEngine.Factory) )
-                throw new RuntimeException("Indexed search requires proton as engine");
+                throw new IllegalArgumentException("Indexed search requires proton as engine");
 
             if (documentsElement != null) {
                 ModelElement e = documentsElement.child("document-processing");
@@ -175,9 +176,8 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
             if (csc.hasIndexedCluster()) {
                 setupIndexedCluster(csc.getIndexed(), search, element, logger);
             }
-
-
         }
+
         private void setupIndexedCluster(IndexedSearchCluster index, ContentSearch search, ModelElement element, DeployLogger logger) {
             Double queryTimeout = search.getQueryTimeout();
             if (queryTimeout != null) {
@@ -220,14 +220,14 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
             if (distribution != null) {
                 String attr = distribution.stringAttribute("type");
                 if (attr != null) {
-                    if (attr.toLowerCase().equals("strict")) {
+                    if (attr.equalsIgnoreCase("strict")) {
                         c.distributionMode = DistributionMode.STRICT;
-                    } else if (attr.toLowerCase().equals("loose")) {
+                    } else if (attr.equalsIgnoreCase("loose")) {
                         c.distributionMode = DistributionMode.LOOSE;
-                    } else if (attr.toLowerCase().equals("legacy")) {
+                    } else if (attr.equalsIgnoreCase("legacy")) {
                         c.distributionMode = DistributionMode.LEGACY;
                     } else {
-                        throw new IllegalStateException("Distribution type " + attr + " not supported.");
+                        throw new IllegalArgumentException("Distribution type " + attr + " not supported.");
                     }
                 }
             }
@@ -240,12 +240,15 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
             }
         }
 
-        /** Returns whether this hosts one of the given container clusters */
-        private boolean isCombined(String clusterId, Collection<ContainerModel> containers) {
-            return containers.stream()
-                             .map(model -> model.getCluster().getHostClusterId())
-                             .filter(Optional::isPresent)
-                             .anyMatch(id -> id.get().equals(clusterId));
+        /** Returns of memory reserved on a host. Memory is reserved for the jvm if th ecluster is combined */
+        private double fractionOfMemoryReserved(String clusterId, Collection<ContainerModel> containers) {
+            for (ContainerModel containerModel : containers) {
+                Optional<String> hostClusterId = containerModel.getCluster().getHostClusterId();
+                if (hostClusterId.isPresent() && hostClusterId.get().equals(clusterId) && containerModel.getCluster().getMemoryPercentage().isPresent()) {
+                    return containerModel.getCluster().getMemoryPercentage().get() * 0.01;
+                }
+            }
+            return 0.0;
         }
 
         private void setupExperimental(ContentCluster cluster, ModelElement experimental) {
@@ -266,9 +269,8 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
         }
 
         private void validateThatGroupSiblingsAreUnique(String cluster, StorageGroup group) {
-            if (group == null) {
-                return; // Unit testing case
-            }
+            if (group == null) return; // Unit testing case
+
             validateGroupSiblings(cluster, group);
             for (StorageGroup g : group.getSubgroups()) {
                 validateThatGroupSiblingsAreUnique(cluster, g);
@@ -281,24 +283,26 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
                                            DeployState deployState) {
             if (admin == null) return; // only in tests
             if (contentCluster.getPersistence() == null) return;
+
             ClusterControllerContainerCluster clusterControllers;
+            String clusterName = "cluster-controllers";
             if (context.properties().hostedVespa()) {
-                clusterControllers = getDedicatedSharedControllers(contentElement, admin, context, deployState);
+                clusterControllers = getDedicatedSharedControllers(contentElement, admin, context, deployState, clusterName);
             }
-            else if (admin.multitenant()) { // system tests: Put on logserver
+            else if (admin.multitenant()) { // system tests: cluster controllers on logserver host
                 if (admin.getClusterControllers() == null) {
-                    // TODO: logserver == null only obtains in unit tests, disallow it
-                    List<HostResource> host = admin.getLogserver() == null ? List.of() : List.of(admin.getLogserver().getHostResource());
+                    Objects.requireNonNull(admin.getLogserver(), "logserver cannot be null");
+                    List<HostResource> host = List.of(admin.getLogserver().getHostResource());
                     admin.setClusterControllers(createClusterControllers(new ClusterControllerCluster(admin, "standalone", deployState),
                                                                          host,
-                                                                         "cluster-controllers",
+                                                                         clusterName,
                                                                          true,
                                                                          deployState),
                                                 deployState);
                 }
                 clusterControllers = admin.getClusterControllers();
             }
-            else { // self hosted: Put on config servers or explicit cluster controllers
+            else { // self-hosted: Put cluster controller on config servers or use explicit cluster controllers
                 if (admin.getClusterControllers() == null) {
                     var hosts = admin.getConfigservers().stream().map(s -> s.getHostResource()).collect(toList());
                     if (hosts.size() > 1) {
@@ -323,26 +327,25 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
             }
         }
 
-        public static final NodeResources clusterControllerResources = new NodeResources(0.25, 1, 10, 0.3, NodeResources.DiskSpeed.any, NodeResources.StorageType.any);
-
-        private ClusterControllerContainerCluster getDedicatedSharedControllers(ModelElement contentElement, Admin admin,
-                                                                                ConfigModelContext context, DeployState deployState) {
+        private ClusterControllerContainerCluster getDedicatedSharedControllers(ModelElement contentElement,
+                                                                                Admin admin,
+                                                                                ConfigModelContext context,
+                                                                                DeployState deployState,
+                                                                                String clusterName) {
             if (admin.getClusterControllers() == null) {
                 NodesSpecification spec = NodesSpecification.requiredFromSharedParents(deployState.zone().environment().isProduction() ? 3 : 1,
-                                                                                       clusterControllerResources,
+                                                                                       NodeResources.unspecified(),
                                                                                        contentElement,
                                                                                        context);
-
                 Collection<HostResource> hosts = spec.provision(admin.hostSystem(),
                                                                 ClusterSpec.Type.admin,
-                                                                ClusterSpec.Id.from("cluster-controllers"),
+                                                                ClusterSpec.Id.from(clusterName),
                                                                 context.getDeployLogger(),
                                                                 true)
                                                      .keySet();
-
                 admin.setClusterControllers(createClusterControllers(new ClusterControllerCluster(admin, "standalone", deployState),
                                                                      hosts,
-                                                                     "cluster-controllers",
+                                                                     clusterName,
                                                                      true,
                                                                      context.getDeployState()),
                                             deployState);
@@ -357,18 +360,16 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
                                                                            DeployState deployState) {
             var clusterControllers = new ClusterControllerContainerCluster(parent, name, name, deployState);
             List<ClusterControllerContainer> containers = new ArrayList<>();
-            if (clusterControllers.getContainers().isEmpty()) {
-                int index = 0;
-                for (HostResource host : hosts) {
-                    int ccIndex = host.spec().membership().map(ClusterMembership::index).orElse(index);
-                    boolean retired = host.spec().membership().map(ClusterMembership::retired).orElse(false);
-                    var clusterControllerContainer = new ClusterControllerContainer(clusterControllers, ccIndex, runStandaloneZooKeeper, deployState, retired);
-                    clusterControllerContainer.setHostResource(host);
-                    clusterControllerContainer.initService(deployState.getDeployLogger());
-                    clusterControllerContainer.setProp("clustertype", "admin");
-                    containers.add(clusterControllerContainer);
-                    ++index;
-                }
+            int index = 0;
+            for (HostResource host : hosts) {
+                int ccIndex = host.spec().membership().map(ClusterMembership::index).orElse(index);
+                boolean retired = host.spec().membership().map(ClusterMembership::retired).orElse(false);
+                var clusterControllerContainer = new ClusterControllerContainer(clusterControllers, ccIndex, runStandaloneZooKeeper, deployState, retired);
+                clusterControllerContainer.setHostResource(host);
+                clusterControllerContainer.initService(deployState);
+                clusterControllerContainer.setProp("clustertype", "admin");
+                containers.add(clusterControllerContainer);
+                ++index;
             }
             clusterControllers.addContainers(containers);
             return clusterControllers;
@@ -407,10 +408,6 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
     }
 
     public ClusterSpec.Id id() { return ClusterSpec.Id.from(clusterId); }
-
-    public void prepare() {
-        search.prepare();
-    }
 
     public DistributionMode getDistributionMode() {
         if (distributionMode != null) return distributionMode;
@@ -527,8 +524,8 @@ public class ContentCluster extends AbstractConfigProducer<AbstractConfigProduce
             return 16;
         }
         else { // hosted test zone, or self-hosted system
-            // hosted test zones: have few nodes and use visiting in tests: This is slow with 16 bits (to many buckets)
-            // self hosted systems: should probably default to 16 bits, but the transition may cause problems
+            // hosted test zones: have few nodes and use visiting in tests: This is slow with 16 bits (too many buckets)
+            // self-hosted systems: should probably default to 16 bits, but the transition may cause problems
             return DistributionBitCalculator.getDistributionBits(getNodeCountPerGroup(), getDistributionMode());
         }
     }

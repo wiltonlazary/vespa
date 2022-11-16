@@ -14,7 +14,7 @@ namespace feedtoken {
 /**
  * This class is used by the FeedEngine to encapsulate the necessary information
  * for an IFeedHandler to perform an async reply to an operation. A unique
- * instance of this class is passed to every invokation of the IFeedHandler.
+ * instance of this class is passed to every invocation of the IFeedHandler.
  */
 class ITransport {
 public:
@@ -22,19 +22,33 @@ public:
     virtual void send(ResultUP result, bool documentWasFound) = 0;
 };
 
+
+/*
+ * Interface class for feed token state.
+ */
+class IState : public vespalib::IDestructorCallback {
+public:
+    virtual bool is_replay() const noexcept = 0;
+    virtual void fail() = 0;
+    virtual void setResult(ResultUP result, bool documentWasFound) = 0;
+    virtual const storage::spi::Result &getResult() = 0;
+};
+
+
 /**
  * This holds the result of the feed operation until it is either failed or acked.
  * Guarantees that the result is propagated back to the invoker via ITransport interface.
  */
-class State : public vespalib::IDestructorCallback {
+class State : public IState {
 public:
     State(const State &) = delete;
     State & operator = (const State &) = delete;
     State(ITransport & transport);
     ~State() override;
-    void fail();
-    void setResult(ResultUP result, bool documentWasFound);
-    const storage::spi::Result &getResult() { return *_result; }
+    bool is_replay() const noexcept override;
+    void fail() override;
+    void setResult(ResultUP result, bool documentWasFound) override;
+    const storage::spi::Result &getResult() override { return *_result; }
 protected:
     void ack();
 private:
@@ -50,27 +64,28 @@ private:
  */
 class OwningState : public State {
 public:
-    OwningState(std::unique_ptr<ITransport> transport)
+    OwningState(std::shared_ptr<ITransport> transport)
         : State(*transport),
           _owned(std::move(transport))
     {}
     ~OwningState() override;
 private:
-    std::unique_ptr<ITransport> _owned;
+    std::shared_ptr<ITransport> _owned;
 };
 
 inline std::shared_ptr<State>
 make(ITransport & latch) {
     return std::make_shared<State>(latch);
 }
+
 inline std::shared_ptr<State>
-make(std::unique_ptr<ITransport> transport) {
+make(std::shared_ptr<ITransport> transport) {
     return std::make_shared<OwningState>(std::move(transport));
 }
 
 }
 
-using FeedToken = std::shared_ptr<feedtoken::State>;
+using FeedToken = std::shared_ptr<feedtoken::IState>;
 
 } // namespace proton
 

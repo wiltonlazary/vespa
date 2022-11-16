@@ -65,27 +65,6 @@ public class Struct extends StructuredFieldValue {
         return this.version;
     }
 
-    public com.yahoo.compress.CompressionType getCompressionType() {
-        if (getDataType().getCompressionConfig() == null) {
-            return com.yahoo.compress.CompressionType.NONE;
-        }
-        return getDataType().getCompressionConfig().type;
-    }
-
-    public int getCompressionLevel() {
-        if ( getDataType().getCompressionConfig() == null) {
-            return 9;
-        }
-        return getDataType().getCompressionConfig().compressionLevel;
-    }
-
-    public float getCompressionThreshold() {
-        if (getDataType().getCompressionConfig() == null) {
-            return .95f;
-        }
-        return getDataType().getCompressionConfig().threshold;
-    }
-
     @Override
     public Struct clone() {
         Struct struct = (Struct) super.clone();

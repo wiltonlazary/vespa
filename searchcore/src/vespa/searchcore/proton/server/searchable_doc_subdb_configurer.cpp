@@ -1,7 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "reconfig_params.h"
 #include "searchable_doc_subdb_configurer.h"
+#include "reconfig_params.h"
 #include <vespa/searchcore/proton/matching/matcher.h>
 #include <vespa/searchcore/proton/attribute/attribute_writer.h>
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
@@ -89,7 +89,7 @@ SearchableDocSubDBConfigurer(const ISummaryManager::SP &summaryMgr,
                              SearchViewHolder &searchView,
                              FeedViewHolder &feedView,
                              matching::QueryLimiter &queryLimiter,
-                             matching::ConstantValueRepo &constantValueRepo,
+                             matching::RankingAssetsRepo &rankingAssetsRepo,
                              const vespalib::Clock &clock,
                              const vespalib::string &subDbName,
                              uint32_t distributionKey) :
@@ -97,7 +97,7 @@ SearchableDocSubDBConfigurer(const ISummaryManager::SP &summaryMgr,
     _searchView(searchView),
     _feedView(feedView),
     _queryLimiter(queryLimiter),
-    _constantValueRepo(constantValueRepo),
+    _rankingAssetsRepo(rankingAssetsRepo),
     _clock(clock),
     _subDbName(subDbName),
     _distributionKey(distributionKey)
@@ -105,13 +105,11 @@ SearchableDocSubDBConfigurer(const ISummaryManager::SP &summaryMgr,
 
 SearchableDocSubDBConfigurer::~SearchableDocSubDBConfigurer() = default;
 
-Matchers::UP
+std::shared_ptr<Matchers>
 SearchableDocSubDBConfigurer::createMatchers(const Schema::SP &schema,
-                                             const RankProfilesConfig &cfg,
-                                             const RankingExpressions &rankingExpressions,
-                                             const OnnxModels &onnxModels)
+                                             const RankProfilesConfig &cfg)
 {
-    auto newMatchers = std::make_unique<Matchers>(_clock, _queryLimiter, _constantValueRepo);
+    auto newMatchers = std::make_shared<Matchers>(_clock, _queryLimiter, _rankingAssetsRepo);
     for (const auto &profile : cfg.rankprofile) {
         vespalib::string name = profile.name;
         search::fef::Properties properties;
@@ -119,9 +117,9 @@ SearchableDocSubDBConfigurer::createMatchers(const Schema::SP &schema,
             properties.add(property.name, property.value);
         }
         // schema instance only used during call.
-        auto profptr = std::make_shared<Matcher>(*schema, properties, _clock, _queryLimiter, _constantValueRepo,
-                                                 rankingExpressions, onnxModels, _distributionKey);
-        newMatchers->add(name, profptr);
+        auto profptr = std::make_shared<Matcher>(*schema, std::move(properties), _clock, _queryLimiter,
+                                                 _rankingAssetsRepo, _distributionKey);
+        newMatchers->add(name, std::move(profptr));
     }
     return newMatchers;
 }
@@ -144,7 +142,7 @@ reconfigure(const DocumentDBConfig &newConfig,
 {
     assert(!params.shouldAttributeManagerChange());
     AttributeCollectionSpec attrSpec(AttributeCollectionSpec::AttributeList(), 0, 0);
-    reconfigure(newConfig, oldConfig, attrSpec, params, resolver);
+    reconfigure(newConfig, oldConfig, std::move(attrSpec), params, resolver);
 }
 
 namespace {
@@ -174,22 +172,21 @@ createAttributeReprocessingInitializer(const DocumentDBConfig &newConfig,
 IReprocessingInitializer::UP
 SearchableDocSubDBConfigurer::reconfigure(const DocumentDBConfig &newConfig,
                                           const DocumentDBConfig &oldConfig,
-                                          const AttributeCollectionSpec &attrSpec,
+                                          AttributeCollectionSpec && attrSpec,
                                           const ReconfigParams &params,
                                           IDocumentDBReferenceResolver &resolver)
 {
     bool shouldMatchViewChange = false;
     bool shouldSearchViewChange = false;
     bool shouldFeedViewChange = params.shouldSchemaChange();
-
+    search::SerialNum currentSerialNum = attrSpec.getCurrentSerialNum();
     SearchView::SP searchView = _searchView.get();
     Matchers::SP matchers = searchView->getMatchers();
     if (params.shouldMatchersChange()) {
-        _constantValueRepo.reconfigure(newConfig.getRankingConstants());
-        Matchers::SP newMatchers = createMatchers(newConfig.getSchemaSP(),
-                                                  newConfig.getRankProfilesConfig(),
-                                                  newConfig.getRankingExpressions(),
-                                                  newConfig.getOnnxModels());
+        _rankingAssetsRepo.reconfigure(newConfig.getRankingConstantsSP(),
+                                       newConfig.getRankingExpressionsSP(),
+                                       newConfig.getOnnxModelsSP());
+        Matchers::SP newMatchers = createMatchers(newConfig.getSchemaSP(), newConfig.getRankProfilesConfig());
         matchers = newMatchers;
         shouldMatchViewChange = true;
     }
@@ -197,7 +194,7 @@ SearchableDocSubDBConfigurer::reconfigure(const DocumentDBConfig &newConfig,
     IAttributeManager::SP attrMgr = searchView->getAttributeManager();
     IAttributeWriter::SP attrWriter = _feedView.get()->getAttributeWriter();
     if (params.shouldAttributeManagerChange()) {
-        IAttributeManager::SP newAttrMgr = attrMgr->create(attrSpec);
+        IAttributeManager::SP newAttrMgr = attrMgr->create(std::move(attrSpec));
         newAttrMgr->setImportedAttributes(resolver.resolve(*newAttrMgr, *attrMgr,
                                                            searchView->getDocumentMetaStore(),
                                                            newConfig.getMaintenanceConfigSP()->getVisibilityDelay()));
@@ -209,7 +206,7 @@ SearchableDocSubDBConfigurer::reconfigure(const DocumentDBConfig &newConfig,
         attrWriter = newAttrWriter;
         shouldFeedViewChange = true;
         initializer = createAttributeReprocessingInitializer(newConfig, newAttrMgr, oldConfig, oldAttrMgr,
-                                                             _subDbName, attrSpec.getCurrentSerialNum());
+                                                             _subDbName, currentSerialNum);
     } else if (params.shouldAttributeWriterChange()) {
         attrWriter = std::make_shared<AttributeWriter>(attrMgr);
         shouldFeedViewChange = true;
@@ -222,7 +219,6 @@ SearchableDocSubDBConfigurer::reconfigure(const DocumentDBConfig &newConfig,
         ISummaryManager::SP sumMgr(_summaryMgr);
         ISummaryManager::ISummarySetup::SP newSumSetup =
             sumMgr->createSummarySetup(newConfig.getSummaryConfig(),
-                                       newConfig.getSummarymapConfig(),
                                        newConfig.getJuniperrcConfig(),
                                        newConfig.getDocumentTypeRepoSP(),
                                        attrMgr);

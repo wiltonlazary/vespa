@@ -2,10 +2,12 @@
 package com.yahoo.vespa.feed.perf;
 
 import com.yahoo.concurrent.ThreadFactoryFactory;
+import com.yahoo.config.subscription.ConfigSubscriber;
 import com.yahoo.document.Document;
 import com.yahoo.document.DocumentId;
 import com.yahoo.document.DocumentPut;
 import com.yahoo.document.DocumentTypeManager;
+import com.yahoo.document.DocumentTypeManagerConfigurer;
 import com.yahoo.document.DocumentUpdate;
 import com.yahoo.document.TestAndSetCondition;
 import com.yahoo.document.json.JsonFeedReader;
@@ -56,14 +58,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 /**
  * @author Simon Thoresen Hult
  */
 public class SimpleFeeder implements ReplyHandler {
 
-
     private final DocumentTypeManager docTypeMgr = new DocumentTypeManager();
+    private final ConfigSubscriber documentTypeConfigSubscriber;
     private final List<InputStream> inputStreams;
     private final PrintStream out;
     private final RPCMessageBus mbus;
@@ -348,6 +351,9 @@ public class SimpleFeeder implements ReplyHandler {
         }
         return new JsonDestination(params.getDumpStream(), failure, numReplies);
     }
+
+
+    @SuppressWarnings("deprecation")
     SimpleFeeder(FeederParams params) {
         inputStreams = params.getInputStreams();
         out = params.getStdOut();
@@ -355,7 +361,7 @@ public class SimpleFeeder implements ReplyHandler {
         numMessagesToSend = params.getNumMessagesToSend();
         mbus = newMessageBus(docTypeMgr, params);
         session = newSession(mbus, this, params);
-        docTypeMgr.configure(params.getConfigId());
+        documentTypeConfigSubscriber = DocumentTypeManagerConfigurer.configure(docTypeMgr, params.getConfigId());
         benchmarkMode = params.isBenchmarkMode();
         destination = (params.getDumpStream() != null)
                 ? createDumper(params)
@@ -381,7 +387,7 @@ public class SimpleFeeder implements ReplyHandler {
     }
 
 
-    static class RetryExecutionhandler implements RejectedExecutionHandler {
+    static class RetryExecutionHandler implements RejectedExecutionHandler {
 
         @Override
         public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
@@ -396,7 +402,7 @@ public class SimpleFeeder implements ReplyHandler {
                 ? new ThreadPoolExecutor(numThreads, numThreads, 0L, TimeUnit.SECONDS,
                                          new ArrayBlockingQueue<>(numThreads*100),
                                          ThreadFactoryFactory.getDaemonThreadFactory("perf-feeder"),
-                                         new RetryExecutionhandler())
+                                         new RetryExecutionHandler())
                 : null;
         printHeader(out);
         long numMessagesSent = 0;
@@ -441,12 +447,16 @@ public class SimpleFeeder implements ReplyHandler {
         }
     }
 
+    private static boolean containsFatalErrors(Stream<Error> errors) {
+        return errors.anyMatch(e -> e.getCode() != DocumentProtocol.ERROR_TEST_AND_SET_CONDITION_FAILED);
+    }
+
     @Override
     public void handleReply(Reply reply) {
         if (failure.get() != null) {
             return;
         }
-        if (reply.hasErrors()) {
+        if (containsFatalErrors(reply.getErrors())) {
             failure.compareAndSet(null, new IOException(formatErrors(reply)));
             return;
         }

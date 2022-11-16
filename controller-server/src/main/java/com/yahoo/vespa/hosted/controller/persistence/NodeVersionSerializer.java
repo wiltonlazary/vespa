@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.persistence;
 
 import com.yahoo.component.Version;
@@ -46,7 +46,7 @@ public class NodeVersionSerializer {
     public List<NodeVersion> nodeVersionsFromSlime(Inspector array, Version version) {
         List<NodeVersion> nodeVersions = new ArrayList<>();
         array.traverse((ArrayTraverser) (i, entry) -> {
-            var hostname = HostName.from(entry.field(hostnameField).asString());
+            var hostname = HostName.of(entry.field(hostnameField).asString());
             var zone = ZoneId.from(entry.field(zoneField).asString());
             var wantedVersion = Version.fromString(entry.field(wantedVersionField).asString());
             var suspendedAt = SlimeUtils.optionalInstant(entry.field(suspendedAtField));

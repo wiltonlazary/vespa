@@ -25,14 +25,14 @@ private:
     using FieldValue = document::FieldValue;
     const IAttributeManager::SP _mgr;
     vespalib::ISequencedTaskExecutor &_attributeFieldWriter;
-    vespalib::ThreadExecutor& _shared_executor;
+    vespalib::Executor& _shared_executor;
     using ExecutorId = vespalib::ISequencedTaskExecutor::ExecutorId;
 public:
     /**
      * Represents an attribute vector for a field and details about how to write to it.
      */
     class WriteField {
-        FieldPath        _fieldPath;
+        mutable FieldPath _fieldPath;
         AttributeVector &_attribute;
         bool             _structFieldAttribute; // in array/map of struct
         bool             _use_two_phase_put;
@@ -41,7 +41,7 @@ public:
         ~WriteField();
         AttributeVector &getAttribute() const { return _attribute; }
         const FieldPath &getFieldPath() const { return _fieldPath; }
-        void buildFieldPath(const DocumentType &docType);
+        void buildFieldPath(const DocumentType &docType) const;
         bool isStructFieldAttribute() const { return _structFieldAttribute; }
         bool use_two_phase_put() const { return _use_two_phase_put; }
     };
@@ -52,6 +52,8 @@ public:
     class WriteContext {
         ExecutorId _executorId;
         std::vector<WriteField> _fields;
+        mutable const DataType* _data_type;
+        mutable std::shared_ptr<const FieldPath> _two_phase_put_field_path;
         bool _hasStructFieldAttribute;
         // When this is true, the context only contains a single field.
         bool _use_two_phase_put;
@@ -60,12 +62,13 @@ public:
         WriteContext(WriteContext &&rhs) noexcept;
         ~WriteContext();
         WriteContext &operator=(WriteContext &&rhs) noexcept;
-        void buildFieldPaths(const DocumentType &docType);
+        void consider_build_field_paths(const Document& doc) const;
         void add(AttributeVector &attr);
         ExecutorId getExecutorId() const { return _executorId; }
         const std::vector<WriteField> &getFields() const { return _fields; }
         bool hasStructFieldAttribute() const { return _hasStructFieldAttribute; }
         bool use_two_phase_put() const { return _use_two_phase_put; }
+        std::shared_ptr<const FieldPath> get_two_phase_put_field_path() const noexcept { return _two_phase_put_field_path; }
     };
 
     struct AttributeWithInfo {
@@ -80,13 +83,11 @@ public:
 private:
     using AttrMap = vespalib::hash_map<vespalib::string, AttributeWithInfo>;
     std::vector<WriteContext> _writeContexts;
-    const DataType           *_dataType;
     bool                      _hasStructFieldAttribute;
     AttrMap                   _attrMap;
 
     void setupWriteContexts();
     void setupAttributeMapping();
-    void buildFieldPaths(const DocumentType &docType, const DataType *dataType);
     void internalPut(SerialNum serialNum, const Document &doc, DocumentIdT lid,
                      bool allAttributes, OnWriteDoneType onWriteDone);
     void internalRemove(SerialNum serialNum, DocumentIdT lid, OnWriteDoneType onWriteDone);
@@ -108,7 +109,7 @@ public:
     void update(SerialNum serialNum, const DocumentUpdate &upd, DocumentIdT lid,
                 OnWriteDoneType onWriteDone, IFieldUpdateCallback & onUpdate) override;
     void update(SerialNum serialNum, const Document &doc, DocumentIdT lid, OnWriteDoneType onWriteDone) override;
-    void heartBeat(SerialNum serialNum) override;
+    void heartBeat(SerialNum serialNum, OnWriteDoneType onDone) override;
     void compactLidSpace(uint32_t wantedLidLimit, SerialNum serialNum) override;
     const proton::IAttributeManager::SP &getAttributeManager() const override {
         return _mgr;
@@ -117,6 +118,7 @@ public:
 
     void onReplayDone(uint32_t docIdLimit) override;
     bool hasStructFieldAttribute() const override;
+    void drain(OnWriteDoneType onWriteDone) override;
 
     // Should only be used for unit testing.
     const std::vector<WriteContext>& get_write_contexts() const {

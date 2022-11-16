@@ -48,6 +48,8 @@ Field::Field(vespalib::stringref name, const DataType& dataType)
       _fieldId(calculateIdV7())
 { }
 
+Field::~Field() = default;
+
 FieldValue::UP
 Field::createValue() const {
     return _dataType->createFieldValue();
@@ -79,6 +81,7 @@ Field::contains(const FieldSet& fields) const
         case Type::NONE:
         case Type::DOCID:
         return true;
+        case Type::DOCUMENT_ONLY:
         case Type::ALL:
         return false;
     }

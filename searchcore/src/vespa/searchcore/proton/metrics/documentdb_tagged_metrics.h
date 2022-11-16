@@ -5,6 +5,7 @@
 #include "memory_usage_metrics.h"
 #include "executor_threading_service_metrics.h"
 #include "sessionmanager_metrics.h"
+#include "document_db_feeding_metrics.h"
 #include <vespa/metrics/metricset.h>
 #include <vespa/metrics/valuemetric.h>
 #include <vespa/searchcore/proton/matching/matching_stats.h>
@@ -116,7 +117,6 @@ struct DocumentDBTaggedMetrics : metrics::MetricSet
         metrics::LongCountMetric docsReRanked;
         metrics::LongCountMetric queries;
         metrics::LongCountMetric softDoomedQueries;
-        metrics::DoubleAverageMetric queryCollateralTime;
         metrics::DoubleAverageMetric querySetupTime;
         metrics::DoubleAverageMetric queryLatency;
 
@@ -146,7 +146,6 @@ struct DocumentDBTaggedMetrics : metrics::MetricSet
             metrics::DoubleAverageMetric matchTime;
             metrics::DoubleAverageMetric groupingTime;
             metrics::DoubleAverageMetric rerankTime;
-            metrics::DoubleAverageMetric queryCollateralTime;
             metrics::DoubleAverageMetric querySetupTime;
             metrics::DoubleAverageMetric queryLatency;
             DocIdPartitions              partitions;
@@ -202,6 +201,7 @@ struct DocumentDBTaggedMetrics : metrics::MetricSet
     SessionCacheMetrics sessionCache;
     DocumentsMetrics documents;
     BucketMoveMetrics bucketMove;
+    DocumentDBFeedingMetrics feeding;
     MemoryUsageMetrics totalMemoryUsage;
     metrics::LongValueMetric totalDiskUsage;
     metrics::DoubleValueMetric heart_beat_age;

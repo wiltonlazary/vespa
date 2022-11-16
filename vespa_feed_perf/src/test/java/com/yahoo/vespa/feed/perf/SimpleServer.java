@@ -28,10 +28,10 @@ public class SimpleServer {
     private final MessageBus mbus;
     private final DestinationSession session;
 
+    @SuppressWarnings("deprecation")
     public SimpleServer(String configDir, MessageHandler msgHandler) throws IOException, ListenFailedException {
         slobrok = new Slobrok();
-        documentMgr = new DocumentTypeManager();
-        documentMgr.configure("dir:" + configDir);
+        documentMgr = DocumentTypeManager.fromFile(configDir + "/documentmanager.cfg");
         mbus = new MessageBus(new RPCNetwork(new RPCNetworkParams()
                                                      .setSlobrokConfigId(slobrok.configId())
                                                      .setIdentity(new Identity("server"))),
@@ -53,10 +53,10 @@ public class SimpleServer {
         writer.close();
     }
 
+    @SuppressWarnings("deprecation")
     public final void close() {
         session.destroy();
         mbus.destroy();
-        documentMgr.shutdown();
         slobrok.stop();
     }
 

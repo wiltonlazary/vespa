@@ -17,10 +17,6 @@ import com.yahoo.messagebus.SourceSessionParams;
 import com.yahoo.messagebus.shared.SharedSourceSession;
 import com.yahoo.metrics.simple.MetricReceiver;
 import com.yahoo.text.Utf8;
-import com.yahoo.vespa.http.client.config.FeedParams;
-import com.yahoo.vespa.http.client.core.ErrorCode;
-import com.yahoo.vespa.http.client.core.Headers;
-import com.yahoo.vespa.http.client.core.OperationStatus;
 import org.junit.Test;
 import org.mockito.stubbing.Answer;
 
@@ -30,14 +26,14 @@ import java.io.InputStream;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.startsWith;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 public class FeedHandlerV3Test {
+
     final CollectingMetric metric = new CollectingMetric();
     private final Executor simpleThreadpool = Executors.newCachedThreadPool();
 
@@ -47,8 +43,8 @@ public class FeedHandlerV3Test {
         HttpResponse httpResponse = feedHandlerV3.handle(createRequest(1));
         ByteArrayOutputStream outStream = new ByteArrayOutputStream();
         httpResponse.render(outStream);
-        assertThat(httpResponse.getContentType(), is("text/plain"));
-        assertThat(Utf8.toString(outStream.toByteArray()), is("1230 OK message trace\n"));
+        assertEquals(httpResponse.getContentType(), "text/plain");
+        assertEquals(Utf8.toString(outStream.toByteArray()), "1230 OK message trace\n");
     }
 
     @Test
@@ -57,9 +53,9 @@ public class FeedHandlerV3Test {
         HttpResponse httpResponse = feedHandlerV3.handle(createBrokenRequest());
         ByteArrayOutputStream outStream = new ByteArrayOutputStream();
         httpResponse.render(outStream);
-        assertThat(httpResponse.getContentType(), is("text/plain"));
-        assertThat(Utf8.toString(outStream.toByteArray()), startsWith("1230 ERROR "));
-        assertThat(metric.get(MetricNames.PARSE_ERROR), is(1L));
+        assertEquals(httpResponse.getContentType(), "text/plain");
+        assertTrue(Utf8.toString(outStream.toByteArray()).startsWith("1230 ERROR "));
+        assertEquals(1L, metric.get(MetricNames.PARSE_ERROR));
     }
 
     @Test
@@ -68,9 +64,9 @@ public class FeedHandlerV3Test {
         HttpResponse httpResponse = feedHandlerV3.handle(createRequest(100));
         ByteArrayOutputStream outStream = new ByteArrayOutputStream();
         httpResponse.render(outStream);
-        assertThat(httpResponse.getContentType(), is("text/plain"));
+        assertEquals(httpResponse.getContentType(), "text/plain");
         String result = Utf8.toString(outStream.toByteArray());
-        assertThat(Splitter.on("\n").splitToList(result).size(), is(101));
+        assertEquals(101, Splitter.on("\n").splitToList(result).size());
     }
 
     private static DocumentTypeManager createDoctypeManager() {
@@ -106,14 +102,13 @@ public class FeedHandlerV3Test {
         request.getJDiscRequest().headers().add(Headers.DATA_FORMAT, FeedParams.DataFormat.JSON_UTF8.name());
         request.getJDiscRequest().headers().add(Headers.TIMEOUT, "1000000000");
         request.getJDiscRequest().headers().add(Headers.CLIENT_ID, "client123");
-        request.getJDiscRequest().headers().add(Headers.PRIORITY, "LOWEST");
         request.getJDiscRequest().headers().add(Headers.TRACE_LEVEL, "4");
         request.getJDiscRequest().headers().add(Headers.DRAIN, "true");
         return request;
     }
 
     private FeedHandlerV3 setupFeederHandler(Executor threadPool) {
-        DocumentmanagerConfig docMan = new DocumentmanagerConfig(new DocumentmanagerConfig.Builder().enablecompression(true));
+        DocumentTypeManager docMan = new DocumentTypeManager(new DocumentmanagerConfig.Builder().build());
         FeedHandlerV3 feedHandlerV3 = new FeedHandlerV3(
                 threadPool,
                 metric,

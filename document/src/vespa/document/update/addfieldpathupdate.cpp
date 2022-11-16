@@ -17,26 +17,20 @@ namespace document {
 using namespace fieldvalue;
 using vespalib::make_string;
 
-IMPLEMENT_IDENTIFIABLE(AddFieldPathUpdate, FieldPathUpdate);
-
 AddFieldPathUpdate::AddFieldPathUpdate(const DataType& type, stringref fieldPath,
-                                       stringref whereClause, const ArrayFieldValue& values)
-    : FieldPathUpdate(fieldPath, whereClause),
-      _values(vespalib::CloneablePtr<ArrayFieldValue>(values.clone()))
+                                       stringref whereClause, std::unique_ptr<ArrayFieldValue> values)
+    : FieldPathUpdate(Add, fieldPath, whereClause),
+      _values(std::move(values))
 {
     checkCompatibility(*_values, type);
 }
 
 AddFieldPathUpdate::AddFieldPathUpdate()
-    : FieldPathUpdate(), _values()
+    : FieldPathUpdate(Add),
+      _values()
 { }
 
-AddFieldPathUpdate::~AddFieldPathUpdate() { }
-
-FieldPathUpdate*
-AddFieldPathUpdate::clone() const {
-    return new AddFieldPathUpdate(*this);
-}
+AddFieldPathUpdate::~AddFieldPathUpdate() = default;
 
 namespace {
 
@@ -53,13 +47,13 @@ private:
 
 ModificationStatus
 AddIteratorHandler::doModify(FieldValue &fv) {
-    if (fv.inherits(CollectionFieldValue::classId)) {
-        CollectionFieldValue &cf = static_cast<CollectionFieldValue &>(fv);
+    if (fv.isCollection()) {
+        auto &cf = static_cast<CollectionFieldValue &>(fv);
         for (std::size_t i = 0; i < _values.size(); ++i) {
             cf.add(_values[i]);
         }
     } else {
-        vespalib::string err = make_string("Unable to add a value to a \"%s\" field value.", fv.getClass().name());
+        vespalib::string err = make_string("Unable to add a value to a \"%s\" field value.", fv.className());
         throw vespalib::IllegalArgumentException(err, VESPA_STRLOC);
     }
     return ModificationStatus::MODIFIED;
@@ -70,10 +64,8 @@ AddIteratorHandler::doModify(FieldValue &fv) {
 bool
 AddFieldPathUpdate::operator==(const FieldPathUpdate& other) const
 {
-    if (other.getClass().id() != AddFieldPathUpdate::classId) return false;
     if (!FieldPathUpdate::operator==(other)) return false;
-    const AddFieldPathUpdate& addOther
-        = static_cast<const AddFieldPathUpdate&>(other);
+    const auto & addOther = static_cast<const AddFieldPathUpdate&>(other);
     return *addOther._values == *_values;
 }
 
@@ -95,7 +87,7 @@ AddFieldPathUpdate::deserialize(const DocumentTypeRepo& repo, const DataType& ty
     FieldPath path;
     type.buildFieldPath(path, getOriginalFieldPath());
     const DataType& fieldType = getResultingDataType(path);
-    assert(fieldType.inherits(ArrayDataType::classId));
+    assert(fieldType.isArray());
     FieldValue::UP val = fieldType.createFieldValue();
     _values.reset(static_cast<ArrayFieldValue*>(val.release()));
     VespaDocumentDeserializer deserializer(repo, stream, Document::getNewestSerializationVersion());

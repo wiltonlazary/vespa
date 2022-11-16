@@ -1,8 +1,9 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.dns;
 
-import com.yahoo.vespa.curator.Lock;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.hosted.controller.api.integration.dns.AliasTarget;
+import com.yahoo.vespa.hosted.controller.api.integration.dns.DirectTarget;
 import com.yahoo.vespa.hosted.controller.api.integration.dns.NameService;
 import com.yahoo.vespa.hosted.controller.api.integration.dns.Record;
 import com.yahoo.vespa.hosted.controller.api.integration.dns.RecordData;
@@ -42,15 +43,23 @@ public class NameServiceForwarder {
         this.db = Objects.requireNonNull(db, "db must be non-null");
     }
 
-    /** Create or update a CNAME record with given name and data */
-    public void createCname(RecordName name, RecordData canonicalName, NameServiceQueue.Priority priority) {
-        forward(new CreateRecord(new Record(Record.Type.CNAME, name, canonicalName)), priority);
+    /** Create or update a given record */
+    public void createRecord(Record record, NameServiceQueue.Priority priority) {
+        forward(new CreateRecord(record), priority);
     }
 
     /** Create or update an ALIAS record with given name and targets */
     public void createAlias(RecordName name, Set<AliasTarget> targets, NameServiceQueue.Priority priority) {
         var records = targets.stream()
                              .map(target -> new Record(Record.Type.ALIAS, name, target.pack()))
+                             .collect(Collectors.toList());
+        forward(new CreateRecords(records), priority);
+    }
+
+    /** Create or update a DIRECT record with given name and targets */
+    public void createDirect(RecordName name, Set<DirectTarget> targets, NameServiceQueue.Priority priority) {
+        var records = targets.stream()
+                             .map(target -> new Record(Record.Type.DIRECT, name, target.pack()))
                              .collect(Collectors.toList());
         forward(new CreateRecords(records), priority);
     }
@@ -73,8 +82,13 @@ public class NameServiceForwarder {
         forward(new RemoveRecords(type, data), priority);
     }
 
+    /** Remove all records of given type, name and data */
+    public void removeRecords(Record.Type type, RecordName name, RecordData data, NameServiceQueue.Priority priority) {
+        forward(new RemoveRecords(type, name, data), priority);
+    }
+
     protected void forward(NameServiceRequest request, NameServiceQueue.Priority priority) {
-        try (Lock lock = db.lockNameServiceQueue()) {
+        try (Mutex lock = db.lockNameServiceQueue()) {
             NameServiceQueue queue = db.readNameServiceQueue();
             var queued = queue.requests().size();
             if (queued >= QUEUE_CAPACITY) {

@@ -7,13 +7,9 @@
 #include <vespa/vespalib/util/stringfmt.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
-#include <stack>
 #include <cassert>
 #include <set>
 #include <thread>
-
-#include <vespa/log/log.h>
-LOG_SETUP(".fef.blueprintresolver");
 
 using vespalib::make_string_short::fmt;
 using vespalib::ThreadStackExecutor;
@@ -27,6 +23,10 @@ constexpr int MAX_TRACE_SIZE = BlueprintResolver::MAX_TRACE_SIZE;
 constexpr int TRACE_SKIP_POS = 10;
 
 using Accept = Blueprint::AcceptInput;
+
+vespalib::string describe(const vespalib::string &feature_name) {
+    return BlueprintResolver::describe_feature(feature_name);
+}
 
 bool is_compatible(bool is_object, Accept accept_type) {
     return ((accept_type == Accept::ANY) ||
@@ -59,6 +59,7 @@ struct Compiler : public Blueprint::DependencyHandler {
             : spec(std::move(blueprint)), parser(parser_in) {}
     };
     using Stack = std::vector<Frame>;
+    using Errors = std::vector<vespalib::string>;
 
     struct FrameGuard {
         Stack &stack;
@@ -69,15 +70,16 @@ struct Compiler : public Blueprint::DependencyHandler {
         }
     };
 
-    const BlueprintFactory  &factory;
-    const IIndexEnvironment &index_env;
-    Stack                    resolve_stack;
-    ExecutorSpecList        &spec_list;
-    FeatureMap              &feature_map;
-    std::set<vespalib::string> setup_set;
-    std::set<vespalib::string> failed_set;
-    const char *min_stack;
-    const char *max_stack;
+    const BlueprintFactory     &factory;
+    const IIndexEnvironment    &index_env;
+    Stack                       resolve_stack;
+    Errors                      errors;
+    ExecutorSpecList           &spec_list;
+    FeatureMap                 &feature_map;
+    std::set<vespalib::string>  setup_set;
+    std::set<vespalib::string>  failed_set;
+    const char                 *min_stack;
+    const char                 *max_stack;
 
     Compiler(const BlueprintFactory &factory_in,
              const IIndexEnvironment &index_env_in,
@@ -86,6 +88,7 @@ struct Compiler : public Blueprint::DependencyHandler {
         : factory(factory_in),
           index_env(index_env_in),
           resolve_stack(),
+          errors(),
           spec_list(spec_list_out),
           feature_map(feature_map_out),
           setup_set(),
@@ -122,7 +125,7 @@ struct Compiler : public Blueprint::DependencyHandler {
             should_trace |= (i < TRACE_SKIP_POS);
             should_trace |= ((end - pos) < (MAX_TRACE_SIZE - TRACE_SKIP_POS));
             if (should_trace) {
-                trace += fmt("  ... needed by rank feature '%s'\n", pos->parser.featureName().c_str());
+                trace += fmt("  ... needed by %s\n", describe(pos->parser.featureName()).c_str());
             } else if (i == TRACE_SKIP_POS) {
                 trace += fmt("  (skipped %zu entries)\n", (n - MAX_TRACE_SIZE) + 1);
             }
@@ -134,11 +137,13 @@ struct Compiler : public Blueprint::DependencyHandler {
         if (failed_set.count(feature_name) == 0) {
             failed_set.insert(feature_name);
             auto trace = make_trace(skip_self);
+            vespalib::string msg;
             if (trace.empty()) {
-                LOG(warning, "invalid rank feature '%s': %s", feature_name.c_str(), reason.c_str());
+                msg = fmt("invalid %s: %s", describe(feature_name).c_str(), reason.c_str());
             } else {
-                LOG(warning, "invalid rank feature '%s': %s\n%s", feature_name.c_str(), reason.c_str(), trace.c_str());
+                msg = fmt("invalid %s: %s\n%s", describe(feature_name).c_str(), reason.c_str(), trace.c_str());
             }
+            errors.emplace_back(msg);
         }
         probe_stack();
         return FeatureRef();
@@ -182,31 +187,31 @@ struct Compiler : public Blueprint::DependencyHandler {
     }
 
     FeatureRef resolve_feature(const vespalib::string &feature_name, Accept accept_type) {
-        FeatureNameParser parser(feature_name);
-        if (!parser.valid()) {
+        auto parser = std::make_unique<FeatureNameParser>(feature_name);
+        if (!parser->valid()) {
             return fail(feature_name, "malformed name");
         }
-        if (failed_set.count(parser.featureName()) > 0) {
-            return fail(parser.featureName(), "already failed");
+        if (failed_set.count(parser->featureName()) > 0) {
+            return fail(parser->featureName(), "already failed");
         }
-        auto old_feature = feature_map.find(parser.featureName());
+        auto old_feature = feature_map.find(parser->featureName());
         if (old_feature != feature_map.end()) {
-            return verify_type(parser, old_feature->second, accept_type);
+            return verify_type(*parser, old_feature->second, accept_type);
         }
         if ((resolve_stack.size() + 1) > BlueprintResolver::MAX_DEP_DEPTH) {
-            return fail(parser.featureName(), "dependency graph too deep");
+            return fail(parser->featureName(), "dependency graph too deep");
         }
         for (const Frame &frame: resolve_stack) {
-            if (frame.parser.executorName() == parser.executorName()) {
-                return fail(parser.featureName(), "dependency cycle detected");
+            if (frame.parser.executorName() == parser->executorName()) {
+                return fail(parser->featureName(), "dependency cycle detected");
             }
         }
-        setup_executor(parser);
-        auto new_feature = feature_map.find(parser.featureName());
+        setup_executor(*parser);
+        auto new_feature = feature_map.find(parser->featureName());
         if (new_feature != feature_map.end()) {
-            return verify_type(parser, new_feature->second, accept_type);
+            return verify_type(*parser, new_feature->second, accept_type);
         }
-        return fail(parser.featureName(), fmt("unknown output: '%s'", parser.output().c_str()));
+        return fail(parser->featureName(), fmt("unknown output: '%s'", parser->output().c_str()));
     }
 
     std::optional<FeatureType> resolve_input(const vespalib::string &feature_name, Accept accept_type) override {
@@ -260,8 +265,25 @@ BlueprintResolver::BlueprintResolver(const BlueprintFactory &factory,
       _seeds(),
       _executorSpecs(),
       _featureMap(),
-      _seedMap()
+      _seedMap(),
+      _warnings()
 {
+}
+
+vespalib::string
+BlueprintResolver::describe_feature(const vespalib::string &name)
+{
+    auto parser = std::make_unique<FeatureNameParser>(name);
+    if (parser->valid() &&
+        (parser->baseName() == "rankingExpression") &&
+        (parser->parameters().size() == 1) &&
+        parser->output().empty())
+    {
+        auto param = parser->parameters()[0];
+        param = param.substr(0, param.find("@"));
+        return fmt("function %s", param.c_str());
+    }
+    return fmt("rank feature %s", name.c_str());
 }
 
 void
@@ -280,6 +302,7 @@ BlueprintResolver::compile()
                                    for (const auto &seed: _seeds) {
                                        auto ref = compiler.resolve_feature(seed, Blueprint::AcceptInput::ANY);
                                        if (compiler.failed()) {
+                                           _warnings = std::move(compiler.errors);
                                            return;
                                        }
                                        _seedMap.emplace(FeatureNameParser(seed).featureName(), ref);
@@ -291,27 +314,9 @@ BlueprintResolver::compile()
     executor.shutdown();
     size_t stack_usage = compiler.stack_usage();
     if (stack_usage > (128_Ki)) {
-        LOG(warning, "high stack usage: %zu bytes", stack_usage);
+        _warnings.emplace_back(fmt("high stack usage: %zu bytes", stack_usage));
     }
     return !compiler.failed();
-}
-
-const BlueprintResolver::ExecutorSpecList &
-BlueprintResolver::getExecutorSpecs() const
-{
-    return _executorSpecs;
-}
-
-const BlueprintResolver::FeatureMap &
-BlueprintResolver::getFeatureMap() const
-{
-    return _featureMap;
-}
-
-const BlueprintResolver::FeatureMap &
-BlueprintResolver::getSeedMap() const
-{
-    return _seedMap;
 }
 
 }

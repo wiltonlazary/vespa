@@ -4,7 +4,7 @@
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/document/repo/configbuilder.h>
-#include <vespa/config/print/fileconfigreader.h>
+#include <vespa/config/print/fileconfigreader.hpp>
 
 using document::config_builder::Struct;
 using document::config_builder::Wset;
@@ -18,7 +18,7 @@ TestDocRepo::TestDocRepo()
       _repo(new DocumentTypeRepo(_cfg)) {
 }
 
-    TestDocRepo::~TestDocRepo() {}
+TestDocRepo::~TestDocRepo() = default;
 
 DocumenttypesConfig TestDocRepo::getDefaultConfig() {
     const int type1_id = 238423572;
@@ -27,6 +27,7 @@ DocumenttypesConfig TestDocRepo::getDefaultConfig() {
     const int mystruct_id = -2092985851;
     const int structarray_id = 759956026;
     config_builder::DocumenttypesConfigBuilderHelper builder;
+    ::config::StringVector documentfields = { "headerval", "hstringval", "title" };
     builder.document(type1_id, "testdoctype1",
                      Struct("testdoctype1.header")
                      .addField("headerval", DataType::T_INT)
@@ -38,6 +39,7 @@ DocumenttypesConfig TestDocRepo::getDefaultConfig() {
                                .addField("key", DataType::T_INT)
                                .addField("value", DataType::T_STRING))
                      .addField("tags", Array(DataType::T_STRING))
+                     .addField("boolfield", DataType::T_BOOL)
                      .addField("stringweightedset", Wset(DataType::T_STRING))
                      .addField("stringweightedset2", DataType::T_TAG)
                      .addField("byteweightedset", Wset(DataType::T_BYTE))
@@ -55,7 +57,9 @@ DocumenttypesConfig TestDocRepo::getDefaultConfig() {
                      .addTensorField("sparse_tensor", "tensor(x{})")
                      .addTensorField("sparse_xy_tensor", "tensor(x{},y{})")
                      .addTensorField("sparse_float_tensor", "tensor<float>(x{})")
-                     .addTensorField("dense_tensor", "tensor(x[2])"));
+                     .addTensorField("dense_tensor", "tensor(x[2])"))
+        .doc_type.fieldsets["[document]"].fields.swap(documentfields);
+
     builder.document(type2_id, "testdoctype2",
                      Struct("testdoctype2.header")
                      .addField("onlyinchild", DataType::T_INT),
@@ -75,7 +79,7 @@ TestDocRepo::getDocumentType(const vespalib::string &t) const {
 }
 
 DocumenttypesConfig readDocumenttypesConfig(const char *file_name) {
-    config::FileConfigReader<DocumenttypesConfig> reader(file_name);
+    ::config::FileConfigReader<DocumenttypesConfig> reader(file_name);
     return DocumenttypesConfig(*reader.read());
 }
 

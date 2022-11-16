@@ -1,15 +1,15 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.codegen;
 
-import static org.junit.Assert.*;
-import static org.junit.Assert.assertEquals;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
-import org.junit.Test;
-import org.junit.Ignore;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.StringReader;
 
-import static org.hamcrest.CoreMatchers.is;
-
-import java.io.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for DefParser.
@@ -23,12 +23,12 @@ public class DefParserTest {
     private static final String DEF_NAME = TEST_DIR + "configgen.allfeatures.def";
 
     @Test
-    public void testTraverseTree() throws IOException {
+    void testTraverseTree() throws IOException {
         File defFile = new File(DEF_NAME);
         CNode root = new DefParser("test", new FileReader(defFile)).getTree();
         assertNotNull(root);
         CNode[] children = root.getChildren();
-        assertThat(children.length, is(34));
+        assertEquals(37, children.length);
 
         int numGrandChildren = 0;
         int numGreatGrandChildren = 0;
@@ -39,81 +39,71 @@ public class DefParserTest {
                 numGreatGrandChildren += grandChild.getChildren().length;
             }
         }
-        assertThat(numGrandChildren, is(14));
-        assertThat(numGreatGrandChildren, is(6));
+        assertEquals(14, numGrandChildren);
+        assertEquals(6, numGreatGrandChildren);
 
         // Verify that each array creates a sub-tree, and that defaults for leafs are handled correctly.
         CNode myArray = root.getChild("myArray");
-        assertThat(myArray.getChildren().length, is(5));
+        assertEquals(5, myArray.getChildren().length);
         // int within array
         LeafCNode myArrayInt = (LeafCNode) myArray.getChild("intVal");
-        assertThat(myArrayInt.getDefaultValue().getValue(), is("14"));
+        assertEquals("14", myArrayInt.getDefaultValue().getValue());
         // enum within array
         LeafCNode myArrayEnum = (LeafCNode) myArray.getChild("enumVal");
-        assertThat(myArrayEnum.getDefaultValue().getValue(), is("TYPE"));
+        assertEquals("TYPE", myArrayEnum.getDefaultValue().getValue());
 
         // Verify array within array and a default value for a leaf in the inner array.
         CNode anotherArray = myArray.getChild("anotherArray");
-        assertThat(anotherArray.getChildren().length, is(1));
+        assertEquals(1, anotherArray.getChildren().length);
         LeafCNode foo = (LeafCNode) anotherArray.getChild("foo");
-        assertThat(foo.getDefaultValue().getValue(), is("-4"));
+        assertEquals("-4", foo.getDefaultValue().getValue());
     }
 
     @Test
-    public void testFileWithNamespaceInFilename() throws IOException {
+    void testFileWithNamespaceInFilename() throws IOException {
         File defFile = new File(TEST_DIR + "baz.bar.foo.def");
         CNode root = new DefParser("test", new FileReader(defFile)).getTree();
-        assertThat(root.defMd5, is("31a0f9bda0e5ff929762a29569575a7e"));
+        assertEquals("31a0f9bda0e5ff929762a29569575a7e", root.defMd5);
     }
 
     @Test
-    public void testMd5Sum() throws IOException {
+    void testMd5Sum() throws IOException {
         File defFile = new File(DEF_NAME);
         CNode root = new DefParser("test", new FileReader(defFile)).getTree();
-        assertThat(root.defMd5, is("f901bdc5c96e7005130399c63f247823"));
+        assertEquals("0501f9e2c4ecc8c283e100e0b1178ca4", root.defMd5);
     }
 
     @Test
-    public void testMd5Sum2() {
-        String def = "version=1\na string\n";
+    void testMd5Sum2() {
+        String def = "a string\n";
         CNode root = new DefParser("testMd5Sum2", new StringReader(def)).getTree();
-        assertThat(root.defMd5, is("a5e5fdbb2b27e56ba7d5e60e335c598b"));
+        assertEquals("a5e5fdbb2b27e56ba7d5e60e335c598b", root.defMd5);
     }
 
+    // TODO: Version is not used anymore, remove test in Vespa 9
     @Test
-    public void testInvalidType() {
-        String line = "a sting";
-        assertLineFails(line, "Could not create sting a");
-    }
-
-    // Note: Version is not used anymore, so will always be empty
-    @Test
-    public void testValidVersions() {
+    void testValidVersions() {
         try {
-            testExpectedVersion("version=8", "");
-            testExpectedVersion("version=8-1", "");
-            testExpectedVersion("version =8", "");
-            testExpectedVersion("version = 8", "");
-            testExpectedVersion("version = 8 ", "");
-            testExpectedVersion("version =\t8", "");
+            parse("version=8");
+            parse("version=8-1");
+            parse("version =8");
+            parse("version = 8");
+            parse("version = 8 ");
+            parse("version =\t8");
         } catch (Exception e) {
             e.printStackTrace();
             fail();
         }
     }
 
-    private void testExpectedVersion(String versionLine, String expectedVersion) {
-        InnerCNode root = createParser(versionLine).getTree();
-        assertThat(root.defVersion, is(expectedVersion));
+    private void parse(String versionLine) {
+        InnerCNode ignored = createParser(versionLine).getTree();
     }
 
     @Test
-    public void version_is_not_mandatory() {
-        try {
-            createParser("a string\n").parse();
-        } catch (Exception e) {
-            fail("Should not get an exception here");
-        }
+    void testInvalidType() {
+        String line = "a sting";
+        assertLineFails(line, "Could not create sting a");
     }
 
     static DefParser createParser(String def) {
@@ -121,38 +111,23 @@ public class DefParserTest {
     }
 
     @Test
-    public void testInvalidVersion() {
-        Class<?> exceptionClass = DefParser.DefParserException.class;
-        testInvalidVersion("version=a\n", exceptionClass,
-                "Error when parsing line 1: version=a\nversion=a");
-        testInvalidVersion("version = a\n", exceptionClass,
-                "Error when parsing line 1: version = a\n a");
-    }
-
-    private void testInvalidVersion(String versionLine, Class<?> exceptionClass, String exceptionMessage) {
-        try {
-            createParser(versionLine).parse();
-            fail("Didn't find expected exception of type " + exceptionClass);
-        } catch (Exception e) {
-            assertExceptionAndMessage(e, exceptionClass, exceptionMessage);
-        }
+    void verify_fail_on_default_for_file() {
+        assertLineFails("f file default=\"file1.txt\"",
+                "Invalid default value");
     }
 
     @Test
-    public void verify_fail_on_default_for_file() {
-        assertLineFails("f file default=\"file1.txt\"",
-                        "Invalid default value");
-    }
-
-    @Test(expected = CodegenRuntimeException.class)
-    @Ignore("Not implemented yet")
-    public void testInvalidEnum() throws DefParser.DefParserException {
-        DefParser parser = createParser("version=1\nanEnum enum {A, B, A}\n");
+    @Disabled("Not implemented yet")
+    void testInvalidEnum() {
+        assertThrows(CodegenRuntimeException.class, () -> {
+            DefParser parser = createParser("anEnum enum {A, B, A}\n");
+            //parser.validateDef(def);
+        });
         //parser.validateDef(def);
     }
 
     @Test
-    public void testEnum() {
+    void testEnum() {
         StringBuilder sb = createDefTemplate();
         sb.append("enum1 enum {A,B} default=A\n");
         sb.append("enum2 enum {A, B} default=A\n");
@@ -171,24 +146,26 @@ public class DefParserTest {
         CNode root = parser.getTree();
         LeafCNode node = (LeafCNode) root.getChild("enum1");
         assertNotNull(node);
-        assertThat(node.getDefaultValue().getStringRepresentation(), is("A"));
+        assertEquals("A", node.getDefaultValue().getStringRepresentation());
     }
 
-    @Test(expected = DefParser.DefParserException.class)
-    public void testInvalidCommaInEnum() throws DefParser.DefParserException, IOException {
-        String invalidEnum = "anEnum enum {A, B, } default=A\n";
-        String validEnum = "anotherEnum enum {A, B} default=A\n";
-        StringBuilder sb = createDefTemplate();
-        sb.append(invalidEnum);
-        sb.append(validEnum);
-        DefParser parser = createParser(sb.toString());
-        parser.parse();
-    }
-
-    @Ignore //TODO: finish this! The numeric leaf nodes must contain their range.
     @Test
-    public void testRanges() {
-        StringBuilder sb = new StringBuilder("version=1\n");
+    void testInvalidCommaInEnum() throws DefParser.DefParserException, IOException {
+        assertThrows(DefParser.DefParserException.class, () -> {
+            String invalidEnum = "anEnum enum {A, B, } default=A\n";
+            String validEnum = "anotherEnum enum {A, B} default=A\n";
+            StringBuilder sb = createDefTemplate();
+            sb.append(invalidEnum);
+            sb.append(validEnum);
+            DefParser parser = createParser(sb.toString());
+            parser.parse();
+        });
+    }
+
+    @Disabled //TODO: finish this! The numeric leaf nodes must contain their range.
+    @Test
+    void testRanges() {
+        StringBuilder sb = new StringBuilder();
         sb.append("i int range=[0,10]");
         sb.append("l long range=[-1e20,0]");
         sb.append("d double range=[0,1]");
@@ -199,7 +176,7 @@ public class DefParserTest {
     }
 
     @Test
-    public void duplicate_parameter_is_illegal() {
+    void duplicate_parameter_is_illegal() {
         Class<?> exceptionClass = DefParser.DefParserException.class;
         StringBuilder sb = createDefTemplate();
         String duplicateLine = "b int\n";
@@ -210,86 +187,85 @@ public class DefParserTest {
             fail("Didn't find expected exception of type " + exceptionClass);
         } catch (Exception e) {
             assertExceptionAndMessage(e, exceptionClass,
-                    "Error when parsing line 4: " + duplicateLine + "b is already defined");
+                    "Error when parsing line 3: " + duplicateLine + "b is already defined");
         }
     }
 
     @Test
-    public void testIllegalCharacterInName() {
-       assertLineFails("a-b int",
-                       "a-b contains unexpected character");
+    void testIllegalCharacterInName() {
+        assertLineFails("a-b int",
+                "'a-b' contains an unexpected character");
     }
 
     @Test
-    public void parameter_name_starting_with_digit_is_illegal() {
+    void parameter_name_starting_with_digit_is_illegal() {
         assertLineFails("1a int",
-                        "1a must start with a non-digit character");
+                "1a must start with a non-digit character");
     }
 
     @Test
-    public void parameter_name_starting_with_uppercase_is_illegal() {
+    void parameter_name_starting_with_uppercase_is_illegal() {
         assertLineFails("SomeInt int",
-                        "'SomeInt' cannot start with an uppercase letter");
+                "'SomeInt' cannot start with an uppercase letter");
     }
 
     @Test
-    public void parameter_name_starting_with_the_internal_prefix_is_illegal() {
+    void parameter_name_starting_with_the_internal_prefix_is_illegal() {
         String internalPrefix = ReservedWords.INTERNAL_PREFIX;
         assertLineFails(internalPrefix + "i int",
-                        "'" + internalPrefix + "i' cannot start with '" + internalPrefix + "'");
+                "'" + internalPrefix + "i' cannot start with '" + internalPrefix + "'");
     }
 
     @Test
-    public void testIllegalArray() {
+    void testIllegalArray() {
         assertLineFails("intArr[ int",
-                        "intArr[ Expected ] to terminate array definition");
+                "intArr[ Expected ] to terminate array definition");
     }
 
     @Test
-    public void testIllegalDefault() {
+    void testIllegalDefault() {
         assertLineFails("a int deflt 10",
-                        " deflt 10");
+                " deflt 10");
     }
 
     @Test
-    public void testReservedWordInC() {
+    void testReservedWordInC() {
         assertLineFails("auto int",
-                        "auto is a reserved word in C");
+                "auto is a reserved word in C");
     }
 
     @Test
-    public void testReservedWordInCForArray() {
+    void testReservedWordInCForArray() {
         assertLineFails("auto[] int",
-                        "auto is a reserved word in C");
+                "auto is a reserved word in C");
     }
 
     @Test
-    public void testReservedWordInJava() {
+    void testReservedWordInJava() {
         assertLineFails("abstract int",
-                        "abstract is a reserved word in Java");
+                "abstract is a reserved word in Java");
     }
 
     @Test
-    public void testReservedWordInJavaForMap() {
+    void testReservedWordInJavaForMap() {
         assertLineFails("abstract{} int",
-                        "abstract is a reserved word in Java");
+                "abstract is a reserved word in Java");
     }
 
     @Test
-    public void testReservedWordInCAndJava() {
+    void testReservedWordInCAndJava() {
         assertLineFails("continue int",
-                        "continue is a reserved word in C and Java");
+                "continue is a reserved word in C and Java");
     }
 
     @Test
-    public void testReservedWordInCAndJavaForArray() {
+    void testReservedWordInCAndJavaForArray() {
         assertLineFails("continue[] int",
-                        "continue is a reserved word in C and Java");
+                "continue is a reserved word in C and Java");
     }
 
     static StringBuilder createDefTemplate() {
         StringBuilder sb = new StringBuilder();
-        sb.append("version=8\n");
         // Add a comment line to check that we get correct line number with comments
         sb.append("# comment\n");
 
@@ -309,7 +285,7 @@ public class DefParserTest {
             fail("Didn't find expected exception of type " + exceptionClass);
         } catch (Exception e) {
             assertExceptionAndMessage(e, exceptionClass,
-                                      "Error when parsing line 3: " + line + "\n" + message);
+                                      "Error when parsing line 2: " + line + "\n" + message);
         }
     }
 

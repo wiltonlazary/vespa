@@ -46,15 +46,14 @@ void
 BucketHandler::performPopulateActiveBuckets(document::BucketId::List buckets,
                                             IGenericResultHandler *resultHandler)
 {
-    _ready->populateActiveBuckets(buckets);
+    _ready->populateActiveBuckets(std::move(buckets));
     resultHandler->handle(Result());
 }
 
 void
 BucketHandler::deactivateAllActiveBuckets()
 {
-    BucketId::List buckets;
-    _ready->getBucketDB().takeGuard()->getActiveBuckets(buckets);
+    BucketId::List buckets = _ready->getBucketDB().takeGuard()->getActiveBuckets();
     for (auto bucketId : buckets) {
         _ready->setBucketState(bucketId, storage::spi::BucketInfo::NOT_ACTIVE);
         // Don't notify bucket state changed, node is marked down so
@@ -68,7 +67,8 @@ BucketHandler::BucketHandler(vespalib::Executor &executor)
       _executor(executor),
       _ready(nullptr),
       _changedHandlers(),
-      _nodeUp(false)
+      _nodeUp(false),
+      _nodeMaintenance(false)
 {
     LOG(spam, "BucketHandler::BucketHandler");
 }
@@ -90,18 +90,17 @@ BucketHandler::handleListBuckets(IBucketIdListResultHandler &resultHandler)
     // Called by SPI thread.
     // BucketDBOwner ensures synchronization between SPI thread and
     // master write thread in document database.
-    BucketIdListResult::List buckets;
-    _ready->getBucketDB().takeGuard()->getBuckets(buckets);
-    resultHandler.handle(BucketIdListResult(buckets));
+    BucketIdListResult::List buckets = _ready->getBucketDB().takeGuard()->getBuckets();
+    resultHandler.handle(BucketIdListResult(std::move(buckets)));
 }
 
 void
 BucketHandler::handleSetCurrentState(const BucketId &bucketId,
                                      storage::spi::BucketInfo::ActiveState newState,
-                                     IGenericResultHandler &resultHandler)
+                                     std::shared_ptr<IGenericResultHandler> resultHandlerSP)
 {
-    _executor.execute(makeLambdaTask([this, bucketId, newState, resultHandlerP = &resultHandler]() {
-        performSetCurrentState(bucketId, newState, resultHandlerP);
+    _executor.execute(makeLambdaTask([this, bucketId, newState, resultHandler = std::move(resultHandlerSP)]() {
+        performSetCurrentState(bucketId, newState, resultHandler.get());
     }));
 }
 
@@ -129,27 +128,45 @@ BucketHandler::handleListActiveBuckets(IBucketIdListResultHandler &resultHandler
     // Called by SPI thread.
     // BucketDBOwner ensures synchronization between SPI thread and
     // master write thread in document database.
-    BucketIdListResult::List buckets;
-    _ready->getBucketDB().takeGuard()->getActiveBuckets(buckets);
-    resultHandler.handle(BucketIdListResult(buckets));
+
+    resultHandler.handle(BucketIdListResult(_ready->getBucketDB().takeGuard()->getActiveBuckets()));
 }
 
 void
-BucketHandler::handlePopulateActiveBuckets(document::BucketId::List &buckets,
+BucketHandler::handlePopulateActiveBuckets(document::BucketId::List buckets,
                                            IGenericResultHandler &resultHandler)
 {
-    _executor.execute(makeLambdaTask([this, buckets, &resultHandler]() {
-        performPopulateActiveBuckets(std::move(buckets), &resultHandler);
+    _executor.execute(makeLambdaTask([this, moved_buckets=std::move(buckets), &resultHandler]() mutable {
+        performPopulateActiveBuckets(std::move(moved_buckets), &resultHandler);
     }));
+}
+
+namespace {
+constexpr const char* bool_str(bool v) noexcept {
+    return v ? "true" : "false";
+}
 }
 
 void
 BucketHandler::notifyClusterStateChanged(const std::shared_ptr<IBucketStateCalculator> & newCalc)
 {
     bool oldNodeUp = _nodeUp;
-    _nodeUp = newCalc->nodeUp();
-    LOG(spam, "notifyClusterStateChanged: %s -> %s", oldNodeUp ? "up" : "down", _nodeUp ? "up" : "down");
-    if (oldNodeUp && !_nodeUp) {
+    bool oldNodeMaintenance = _nodeMaintenance;
+    _nodeUp = newCalc->nodeUp(); // Up, Retired or Initializing
+    _nodeMaintenance = newCalc->nodeMaintenance();
+    LOG(spam, "notifyClusterStateChanged; up: %s -> %s, maintenance: %s -> %s",
+        bool_str(oldNodeUp), bool_str(_nodeUp),
+        bool_str(oldNodeMaintenance), bool_str(_nodeMaintenance));
+    if (_nodeMaintenance) {
+        return; // Don't deactivate buckets in maintenance mode; let query traffic drain away naturally.
+    }
+    // We implicitly deactivate buckets in two edge cases:
+    //  - Up -> Down (not maintenance; handled above), since the node can not be expected to offer
+    //    any graceful query draining when set Down.
+    //  - Maintenance -> !Maintenance, since we'd otherwise introduce a bunch of transient duplicate
+    //    results into queries if we transition to an available state.
+    //    The assumption is that the system has already activated buckets on other nodes in such a scenario.
+    if ((oldNodeUp && !_nodeUp) || oldNodeMaintenance) {
         deactivateAllActiveBuckets();
     }
 }

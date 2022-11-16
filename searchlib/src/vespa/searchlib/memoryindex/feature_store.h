@@ -2,8 +2,8 @@
 
 #pragma once
 
+#include <vespa/vespalib/datastore/aligner.h>
 #include <vespa/searchlib/index/docidandfeatures.h>
-#include <vespa/searchlib/bitcompression/compression.h>
 #include <vespa/searchlib/bitcompression/posocccompression.h>
 #include <vespa/searchlib/bitcompression/posocc_fields_params.h>
 #include <vespa/vespalib/datastore/datastore.h>
@@ -15,18 +15,20 @@ namespace search::memoryindex {
  */
 class FeatureStore {
 public:
-    using DataStoreType = vespalib::datastore::DataStoreT<vespalib::datastore::AlignedEntryRefT<22, 2>>;
+    using DataStoreType = vespalib::datastore::DataStoreT<vespalib::datastore::EntryRefT<22>>;
     using RefType = DataStoreType::RefType;
     using EncodeContext = bitcompression::EG2PosOccEncodeContext<true>;
     using DecodeContextCooked = bitcompression::EG2PosOccDecodeContextCooked<true>;
     using generation_t = vespalib::GenerationHandler::generation_t;
+    static constexpr uint32_t buffer_array_size = 4u; // Must be a power of 2
+    using Aligner = vespalib::datastore::Aligner<buffer_array_size>;
 
 private:
     using Schema = index::Schema;
     using DocIdAndFeatures = index::DocIdAndFeatures;
     using PosOccFieldsParams = bitcompression::PosOccFieldsParams;
 
-    static const uint32_t DECODE_SAFETY = 16;
+    static constexpr uint32_t DECODE_SAFETY = 16;
 
     DataStoreType _store;
 
@@ -106,6 +108,20 @@ public:
      */
     std::pair<vespalib::datastore::EntryRef, uint64_t> addFeatures(uint32_t packedIndex, const DocIdAndFeatures &features);
 
+    /*
+     * Decoding of bitwise compressed data can read up to DECODE_SAFETY
+     * bytes beyond end of compressed data. This can cause issues with future
+     * features being written after new features are made visible for readers.
+     * Adding guard bytes when flushing OrderedFieldIndexInserter before
+     * updating the posting lists and dictionary ensures that the decoder
+     * overrun beyond the compressed data either goes into other features
+     * already written or into the guard area.
+     *
+     * If buffer type is changed to have a nonzero numArraysForNewBuffer then
+     * extra logic to add guard bytes is needed when switching primary buffer
+     * to avoid issues if the buffer is resumed as primary buffer later on.
+     */
+    void add_features_guard_bytes();
 
     /**
      * Get features from feature store.
@@ -141,7 +157,7 @@ public:
         uint32_t bufferId = RefType(ref).bufferId();
         const vespalib::datastore::BufferState &state = _store.getBufferState(bufferId);
         decoder.setEnd(
-                ((_store.getEntry<uint8_t>(RefType(state.size(), bufferId)) -
+                ((_store.getEntryArray<uint8_t>(RefType(0, bufferId), buffer_array_size) + state.size() -
                   bits) + 7) / 8,
                 false);
     }
@@ -175,7 +191,7 @@ public:
      */
     const uint8_t *getBits(vespalib::datastore::EntryRef ref) const {
         RefType iRef(ref);
-        return _store.getEntry<uint8_t>(iRef);
+        return _store.getEntryArray<uint8_t>(iRef, buffer_array_size);
     }
 
     /**
@@ -189,13 +205,12 @@ public:
 
     const std::vector<PosOccFieldsParams> &getFieldsParams() const { return _fieldsParams; }
 
-    void trimHoldLists(generation_t usedGen) { _store.trimHoldLists(usedGen); }
-    void transferHoldLists(generation_t generation) { _store.transferHoldLists(generation); }
-    void clearHoldLists() { _store.clearHoldLists();}
-    std::vector<uint32_t> startCompact() { return _store.startCompact(_typeId); }
-    void finishCompact(const std::vector<uint32_t> & toHold) { _store.finishCompact(toHold); }
+    void reclaim_memory(generation_t oldest_used_gen) { _store.reclaim_memory(oldest_used_gen); }
+    void assign_generation(generation_t current_gen) { _store.assign_generation(current_gen); }
+    void reclaim_all_memory() { _store.reclaim_all_memory();}
+    std::unique_ptr<vespalib::datastore::CompactingBuffers> start_compact();
     vespalib::MemoryUsage getMemoryUsage() const { return _store.getMemoryUsage(); }
-    vespalib::datastore::DataStoreBase::MemStats getMemStats() const { return _store.getMemStats(); }
+    vespalib::datastore::MemoryStats getMemStats() const { return _store.getMemStats(); }
 };
 
 }

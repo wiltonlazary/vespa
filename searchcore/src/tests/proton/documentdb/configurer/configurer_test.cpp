@@ -2,31 +2,35 @@
 
 #include <vespa/vespalib/testkit/testapp.h>
 
+#include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/repo/documenttyperepo.h>
 #include <vespa/searchcore/proton/attribute/attribute_writer.h>
 #include <vespa/searchcore/proton/attribute/attributemanager.h>
 #include <vespa/searchcore/proton/attribute/imported_attributes_repo.h>
+#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
 #include <vespa/searchcore/proton/docsummary/summarymanager.h>
 #include <vespa/searchcore/proton/index/index_writer.h>
 #include <vespa/searchcore/proton/index/indexmanager.h>
-#include <vespa/searchcore/proton/reprocessing/attribute_reprocessing_initializer.h>
-#include <vespa/searchcore/proton/server/searchable_doc_subdb_configurer.h>
-#include <vespa/searchcore/proton/server/executorthreadingservice.h>
-#include <vespa/searchcore/proton/server/fast_access_doc_subdb_configurer.h>
-#include <vespa/searchcore/proton/server/summaryadapter.h>
-#include <vespa/searchcore/proton/server/attribute_writer_factory.h>
-#include <vespa/searchcore/proton/server/reconfig_params.h>
-#include <vespa/searchcore/proton/bucketdb/bucket_db_owner.h>
-#include <vespa/searchcore/proton/matching/sessionmanager.h>
 #include <vespa/searchcore/proton/matching/querylimiter.h>
-#include <vespa/searchcore/proton/test/documentdb_config_builder.h>
-#include <vespa/searchcore/proton/test/mock_summary_adapter.h>
-#include <vespa/searchcore/proton/test/mock_gid_to_lid_change_handler.h>
+#include <vespa/searchcore/proton/matching/sessionmanager.h>
 #include <vespa/searchcore/proton/reference/dummy_gid_to_lid_change_handler.h>
+#include <vespa/searchcore/proton/reprocessing/attribute_reprocessing_initializer.h>
+#include <vespa/searchcore/proton/server/attribute_writer_factory.h>
+#include <vespa/searchcore/proton/server/fast_access_doc_subdb_configurer.h>
+#include <vespa/searchcore/proton/server/reconfig_params.h>
+#include <vespa/searchcore/proton/server/searchable_doc_subdb_configurer.h>
+#include <vespa/searchcore/proton/server/summaryadapter.h>
+#include <vespa/searchcore/proton/test/documentdb_config_builder.h>
+#include <vespa/searchcore/proton/test/mock_gid_to_lid_change_handler.h>
+#include <vespa/searchcore/proton/test/mock_summary_adapter.h>
+#include <vespa/searchcore/proton/test/transport_helper.h>
+#include <vespa/searchlib/attribute/interlock.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/transactionlog/nosyncproxy.h>
-#include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/size_literals.h>
+#include <vespa/vespalib/util/testclock.h>
+#include <vespa/vespalib/util/threadstackexecutor.h>
+#include <filesystem>
 
 using namespace config;
 using namespace document;
@@ -84,9 +88,8 @@ ViewPtrs::~ViewPtrs() = default;
 struct ViewSet
 {
     IndexManagerDummyReconfigurer _reconfigurer;
-    DummyFileHeaderContext _fileHeaderContext;
-    vespalib::ThreadStackExecutor _sharedExecutor;
-    ExecutorThreadingService _writeService;
+    DummyFileHeaderContext        _fileHeaderContext;
+    TransportAndExecutorService   _service;
     SearchableFeedView::SerialNum serialNum;
     std::shared_ptr<const DocumentTypeRepo> repo;
     DocTypeName _docTypeName;
@@ -113,8 +116,7 @@ struct ViewSet
 ViewSet::ViewSet()
     : _reconfigurer(),
       _fileHeaderContext(),
-      _sharedExecutor(1, 0x10000),
-      _writeService(_sharedExecutor),
+      _service(1),
       serialNum(1),
       repo(createRepo()),
       _docTypeName(DOC_TYPE),
@@ -147,10 +149,10 @@ struct MyDocumentDBReferenceResolver : public IDocumentDBReferenceResolver {
 
 struct Fixture
 {
-    vespalib::Clock _clock;
+    vespalib::TestClock _clock;
     matching::QueryLimiter _queryLimiter;
     EmptyConstantValueFactory _constantValueFactory;
-    ConstantValueRepo _constantValueRepo;
+    RankingAssetsRepo _constantValueRepo;
     vespalib::ThreadStackExecutor _summaryExecutor;
     std::shared_ptr<PendingLidTrackerBase> _pendingLidsForCommit;
     ViewSet _views;
@@ -172,11 +174,11 @@ Fixture::Fixture()
       _resolver(),
       _configurer()
 {
-    vespalib::rmdir(BASE_DIR, true);
-    vespalib::mkdir(BASE_DIR);
+    std::filesystem::remove_all(std::filesystem::path(BASE_DIR));
+    std::filesystem::create_directory(std::filesystem::path(BASE_DIR));
     initViewSet(_views);
     _configurer = std::make_unique<Configurer>(_views._summaryMgr, _views.searchView, _views.feedView, _queryLimiter,
-                                               _constantValueRepo, _clock, "test", 0);
+                                               _constantValueRepo, _clock.clock(), "test", 0);
 }
 Fixture::~Fixture() = default;
 
@@ -185,14 +187,15 @@ Fixture::initViewSet(ViewSet &views)
 {
     using IndexManager = proton::index::IndexManager;
     using IndexConfig = proton::index::IndexConfig;
-    auto matchers = std::make_shared<Matchers>(_clock, _queryLimiter, _constantValueRepo);
+    auto matchers = std::make_shared<Matchers>(_clock.clock(), _queryLimiter, _constantValueRepo);
     auto indexMgr = make_shared<IndexManager>(BASE_DIR, IndexConfig(searchcorespi::index::WarmupConfig(), 2, 0), Schema(), 1,
-                                              views._reconfigurer, views._writeService, _summaryExecutor,
+                                              views._reconfigurer, views._service.write(), _summaryExecutor,
                                               TuneFileIndexManager(), TuneFileAttributes(), views._fileHeaderContext);
-    auto attrMgr = make_shared<AttributeManager>(BASE_DIR, "test.subdb", TuneFileAttributes(), views._fileHeaderContext,
-                                                 views._writeService.attributeFieldWriter(), views._writeService.shared(), views._hwInfo);
+    auto attrMgr = make_shared<AttributeManager>(BASE_DIR, "test.subdb", TuneFileAttributes(),
+                                                 views._fileHeaderContext, std::make_shared<search::attribute::Interlock>(),
+                                                 views._service.write().attributeFieldWriter(), views._service.write().shared(), views._hwInfo);
     auto summaryMgr = make_shared<SummaryManager>
-            (_summaryExecutor, search::LogDocumentStore::Config(), search::GrowStrategy(), BASE_DIR, views._docTypeName,
+            (_summaryExecutor, search::LogDocumentStore::Config(), search::GrowStrategy(), BASE_DIR,
              TuneFileSummary(), views._fileHeaderContext,views._noTlSyncer, search::IBucketizer::SP());
     auto sesMgr = make_shared<SessionManager>(100);
     auto metaStore = make_shared<DocumentMetaStoreContext>(make_shared<bucketdb::BucketDBOwner>());
@@ -206,7 +209,7 @@ Fixture::initViewSet(ViewSet &views)
     IndexSearchable::SP indexSearchable;
     auto matchView = std::make_shared<MatchView>(matchers, indexSearchable, attrMgr, sesMgr, metaStore, views._docIdLimit);
     views.searchView.set(SearchView::create
-                                 (summaryMgr->createSummarySetup(SummaryConfig(), SummarymapConfig(),
+                                 (summaryMgr->createSummarySetup(SummaryConfig(),
                                                                  JuniperrcConfig(), views.repo, attrMgr),
                                   std::move(matchView)));
     views.feedView.set(
@@ -216,7 +219,7 @@ Fixture::initViewSet(ViewSet &views)
                                                                        views.repo,
                                                                        _pendingLidsForCommit,
                                                                        *views._gidToLidChangeHandler,
-                                                                       views._writeService),
+                                                                       views._service.write()),
                                             SearchableFeedView::PersistentParams(views.serialNum, views.serialNum,
                                                                                  views._docTypeName, 0u, SubDbType::READY),
                                             FastAccessFeedView::Context(attrWriter, views._docIdLimit),
@@ -261,7 +264,8 @@ struct MyFastAccessFeedView
         StoreOnlyFeedView::Context storeOnlyCtx(summaryAdapter, schema, _dmsc, repo,
                                                 _pendingLidsForCommit, *_gidToLidChangeHandler, _writeService);
         StoreOnlyFeedView::PersistentParams params(1, 1, DocTypeName(DOC_TYPE), 0, SubDbType::NOTREADY);
-        auto mgr = make_shared<AttributeManager>(BASE_DIR, "test.subdb", TuneFileAttributes(), _fileHeaderContext,
+        auto mgr = make_shared<AttributeManager>(BASE_DIR, "test.subdb", TuneFileAttributes(),
+                                                 _fileHeaderContext, std::make_shared<search::attribute::Interlock>(),
                                                  _writeService.attributeFieldWriter(), _writeService.shared(), _hwInfo);
         auto writer = std::make_shared<AttributeWriter>(mgr);
         FastAccessFeedView::Context fastUpdateCtx(writer, _docIdLimit);
@@ -273,21 +277,19 @@ MyFastAccessFeedView::~MyFastAccessFeedView() = default;
 
 struct FastAccessFixture
 {
-    vespalib::ThreadStackExecutor _sharedExecutor;
-    ExecutorThreadingService _writeService;
-    MyFastAccessFeedView _view;
+    TransportAndExecutorService  _service;
+    MyFastAccessFeedView          _view;
     FastAccessDocSubDBConfigurer _configurer;
     FastAccessFixture()
-        : _sharedExecutor(1, 0x10000),
-          _writeService(_sharedExecutor),
-          _view(_writeService),
+        : _service(1),
+          _view(_service.write()),
           _configurer(_view._feedView, std::make_unique<AttributeWriterFactory>(), "test")
     {
-        vespalib::rmdir(BASE_DIR, true);
-        vespalib::mkdir(BASE_DIR);
+        std::filesystem::remove_all(std::filesystem::path(BASE_DIR));
+        std::filesystem::create_directory(std::filesystem::path(BASE_DIR));
     }
     ~FastAccessFixture() {
-        _writeService.sync();
+        _service.shutdown();
     }
 };
 
@@ -377,17 +379,11 @@ struct FeedViewComparer
     void expect_equal_index_adapter() {
         EXPECT_EQUAL(_old->getIndexWriter().get(), _new->getIndexWriter().get());
     }
-    void expect_equal_attribute_writer() {
-        EXPECT_EQUAL(_old->getAttributeWriter().get(), _new->getAttributeWriter().get());
-    }
     void expect_not_equal_attribute_writer() {
         EXPECT_NOT_EQUAL(_old->getAttributeWriter().get(), _new->getAttributeWriter().get());
     }
     void expect_equal_summary_adapter() {
         EXPECT_EQUAL(_old->getSummaryAdapter().get(), _new->getSummaryAdapter().get());
-    }
-    void expect_equal_schema() {
-        EXPECT_EQUAL(_old->getSchema().get(), _new->getSchema().get());
     }
     void expect_not_equal_schema() {
         EXPECT_NOT_EQUAL(_old->getSchema().get(), _new->getSchema().get());
@@ -460,11 +456,11 @@ asAttributeManager(const proton::IAttributeManager::SP &attrMgr)
 TEST_F("require that we can reconfigure attribute manager", Fixture)
 {
     ViewPtrs o = f._views.getViewPtrs();
-    AttributeCollectionSpec::AttributeList specList;
-    AttributeCollectionSpec spec(specList, 1, 0);
     ReconfigParams params(CCR().setAttributesChanged(true).setSchemaChanged(true));
     // Use new config snapshot == old config snapshot (only relevant for reprocessing)
-    f._configurer->reconfigure(*createConfig(), *createConfig(), spec, params, f._resolver);
+    f._configurer->reconfigure(*createConfig(), *createConfig(),
+                               AttributeCollectionSpec(AttributeCollectionSpec::AttributeList(), 1, 0),
+                               params, f._resolver);
 
     ViewPtrs n = f._views.getViewPtrs();
     { // verify search view
@@ -499,11 +495,11 @@ void
 checkAttributeWriterChangeOnRepoChange(Fixture &f, bool docTypeRepoChanged)
 {
     auto oldAttributeWriter = getAttributeWriter(f);
-    AttributeCollectionSpec::AttributeList specList;
-    AttributeCollectionSpec spec(specList, 1, 0);
     ReconfigParams params(CCR().setDocumentTypeRepoChanged(docTypeRepoChanged));
     // Use new config snapshot == old config snapshot (only relevant for reprocessing)
-    f._configurer->reconfigure(*createConfig(), *createConfig(), spec, params, f._resolver);
+    f._configurer->reconfigure(*createConfig(), *createConfig(),
+                               AttributeCollectionSpec(AttributeCollectionSpec::AttributeList(), 1, 0),
+                               params, f._resolver);
     auto newAttributeWriter = getAttributeWriter(f);
     if (docTypeRepoChanged) {
         EXPECT_NOT_EQUAL(oldAttributeWriter, newAttributeWriter);
@@ -520,11 +516,11 @@ TEST_F("require that we get new attribute writer if document type repo changes",
 
 TEST_F("require that reconfigure returns reprocessing initializer when changing attributes", Fixture)
 {
-    AttributeCollectionSpec::AttributeList specList;
-    AttributeCollectionSpec spec(specList, 1, 0);
     ReconfigParams params(CCR().setAttributesChanged(true).setSchemaChanged(true));
     IReprocessingInitializer::UP init =
-            f._configurer->reconfigure(*createConfig(), *createConfig(), spec, params, f._resolver);
+            f._configurer->reconfigure(*createConfig(), *createConfig(),
+                                       AttributeCollectionSpec(AttributeCollectionSpec::AttributeList(), 1, 0),
+                                       params, f._resolver);
 
     EXPECT_TRUE(init.get() != nullptr);
     EXPECT_TRUE((dynamic_cast<AttributeReprocessingInitializer *>(init.get())) != nullptr);
@@ -533,10 +529,9 @@ TEST_F("require that reconfigure returns reprocessing initializer when changing 
 
 TEST_F("require that we can reconfigure attribute writer", FastAccessFixture)
 {
-    AttributeCollectionSpec::AttributeList specList;
-    AttributeCollectionSpec spec(specList, 1, 0);
     FastAccessFeedView::SP o = f._view._feedView.get();
-    f._configurer.reconfigure(*createConfig(), *createConfig(), spec);
+    f._configurer.reconfigure(*createConfig(), *createConfig(),
+                              AttributeCollectionSpec(AttributeCollectionSpec::AttributeList(), 1, 0));
     FastAccessFeedView::SP n = f._view._feedView.get();
 
     FastAccessFeedViewComparer cmp(o, n);
@@ -548,10 +543,8 @@ TEST_F("require that we can reconfigure attribute writer", FastAccessFixture)
 
 TEST_F("require that reconfigure returns reprocessing initializer", FastAccessFixture)
 {
-    AttributeCollectionSpec::AttributeList specList;
-    AttributeCollectionSpec spec(specList, 1, 0);
-    IReprocessingInitializer::UP init =
-            f._configurer.reconfigure(*createConfig(), *createConfig(), spec);
+    IReprocessingInitializer::UP init = f._configurer.reconfigure(*createConfig(), *createConfig(),
+                                                                  AttributeCollectionSpec(AttributeCollectionSpec::AttributeList(), 1, 0));
 
     EXPECT_TRUE(init.get() != nullptr);
     EXPECT_TRUE((dynamic_cast<AttributeReprocessingInitializer *>(init.get())) != nullptr);
@@ -561,7 +554,7 @@ TEST_F("require that reconfigure returns reprocessing initializer", FastAccessFi
 TEST_F("require that we can reconfigure summary manager", Fixture)
 {
     ViewPtrs o = f._views.getViewPtrs();
-    ReconfigParams params(CCR().setSummarymapChanged(true));
+    ReconfigParams params(CCR().setSummaryChanged(true));
     // Use new config snapshot == old config snapshot (only relevant for reprocessing)
     f._configurer->reconfigure(*createConfig(), *createConfig(), params, f._resolver);
 
@@ -648,7 +641,6 @@ TEST("require that maintenance controller should change if some config has chang
     TEST_DO(assertMaintenanceControllerShouldChange(CCR().setIndexschemaChanged(true)));
     TEST_DO(assertMaintenanceControllerShouldChange(CCR().setAttributesChanged(true)));
     TEST_DO(assertMaintenanceControllerShouldChange(CCR().setSummaryChanged(true)));
-    TEST_DO(assertMaintenanceControllerShouldChange(CCR().setSummarymapChanged(true)));
     TEST_DO(assertMaintenanceControllerShouldChange(CCR().setJuniperrcChanged(true)));
     TEST_DO(assertMaintenanceControllerShouldChange(CCR().setDocumenttypesChanged(true)));
     TEST_DO(assertMaintenanceControllerShouldChange(CCR().setDocumentTypeRepoChanged(true)));
@@ -684,7 +676,6 @@ TEST("require that subdbs should change if relevant config changed")
     TEST_DO(assertSubDbsShouldChange(CCR().setDocumenttypesChanged(true)));
     TEST_DO(assertSubDbsShouldChange(CCR().setDocumentTypeRepoChanged(true)));
     TEST_DO(assertSubDbsShouldChange(CCR().setSummaryChanged(true)));
-    TEST_DO(assertSubDbsShouldChange(CCR().setSummarymapChanged(true)));
     TEST_DO(assertSubDbsShouldChange(CCR().setJuniperrcChanged(true)));
     TEST_DO(assertSubDbsShouldChange(CCR().setAttributesChanged(true)));
     TEST_DO(assertSubDbsShouldChange(CCR().setImportedFieldsChanged(true)));
@@ -700,5 +691,5 @@ TEST("require that subdbs should change if relevant config changed")
 TEST_MAIN()
 {
     TEST_RUN_ALL();
-    vespalib::rmdir(BASE_DIR, true);
+    std::filesystem::remove_all(std::filesystem::path(BASE_DIR));
 }

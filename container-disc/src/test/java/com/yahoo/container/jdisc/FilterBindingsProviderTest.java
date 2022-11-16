@@ -9,10 +9,15 @@ import com.yahoo.jdisc.http.ServerConfig;
 import com.yahoo.jdisc.http.filter.RequestFilter;
 import com.yahoo.jdisc.http.filter.ResponseFilter;
 import com.yahoo.jdisc.http.server.jetty.FilterBindings;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.fail;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -23,7 +28,7 @@ public class FilterBindingsProviderTest {
     final ServerConfig.Builder configBuilder = new ServerConfig.Builder();
 
     @Test
-    public void requireThatEmptyInputGivesEmptyOutput() {
+    void requireThatEmptyInputGivesEmptyOutput() {
         final FilterChainRepository filterChainRepository = new FilterChainRepository(
                 new ChainsConfig(new ChainsConfig.Builder()),
                 new ComponentRegistry<>(),
@@ -39,13 +44,13 @@ public class FilterBindingsProviderTest {
 
         final FilterBindings filterBindings = provider.get();
 
-        assertThat(filterBindings).isNotNull();
-        assertThat(filterBindings.requestFilterIds()).isEmpty();
-        assertThat(filterBindings.responseFilterIds()).isEmpty();
+        assertNotNull(filterBindings);
+        assertTrue(filterBindings.requestFilterIds().isEmpty());
+        assertTrue(filterBindings.responseFilterIds().isEmpty());
     }
 
     @Test
-    public void requireThatCorrectlyConfiguredFiltersAreIncluded() {
+    void requireThatCorrectlyConfiguredFiltersAreIncluded() {
         final String requestFilter1Id = "requestFilter1";
         final String requestFilter2Id = "requestFilter2";
         final String requestFilter3Id = "requestFilter3";
@@ -92,17 +97,17 @@ public class FilterBindingsProviderTest {
         final FilterBindings filterBindings = provider.get();
 
         // Verify.
-        assertThat(filterBindings).isNotNull();
-        assertThat(filterBindings.requestFilters())
-                .containsExactlyInAnyOrder(requestFilter1Instance, requestFilter2Instance);
-        assertThat(filterBindings.responseFilters())
-                .containsExactlyInAnyOrder(responseFilter1Instance, responseFilter3Instance);
+        assertNotNull(filterBindings);
+        assertEquals(filterBindings.requestFilters().stream().collect(Collectors.toSet()),
+                Set.of(requestFilter1Instance, requestFilter2Instance));
+        assertEquals(filterBindings.responseFilters().stream().collect(Collectors.toSet()),
+                Set.of(responseFilter1Instance, responseFilter3Instance));
     }
 
     private interface DualRoleFilter extends RequestFilter, ResponseFilter {}
 
     @Test
-    public void requireThatInstanceCanNotBeBothRequestAndResponseFilter() {
+    void requireThatInstanceCanNotBeBothRequestAndResponseFilter() {
         final String filterId = "filter";
 
         // Set up config.
@@ -127,12 +132,12 @@ public class FilterBindingsProviderTest {
                     new ComponentRegistry<>());
             fail("Dual-role filter should not be accepted");
         } catch (RuntimeException e) {
-            assertThat(e.getMessage()).contains("Invalid config");
+            assertTrue(e.getMessage().contains("Invalid config"));
         }
     }
 
     @Test
-    public void requireThatConfigWithUnknownReferenceFails() {
+    void requireThatConfigWithUnknownReferenceFails() {
         // Set up config.
         configBuilder.filter(new ServerConfig.Filter.Builder().id("someFilter").binding("http://*/*"));
 
@@ -152,7 +157,7 @@ public class FilterBindingsProviderTest {
                     new ComponentRegistry<>());
             fail("Config with unknown filter reference should not be accepted");
         } catch (RuntimeException e) {
-            assertThat(e.getMessage()).contains("Invalid config");
+            assertTrue(e.getMessage().contains("Invalid config"));
         }
     }
 

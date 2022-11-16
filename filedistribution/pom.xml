@@ -8,12 +8,12 @@
     <parent>
         <groupId>com.yahoo.vespa</groupId>
         <artifactId>parent</artifactId>
-        <version>7-SNAPSHOT</version>
+        <version>8-SNAPSHOT</version>
         <relativePath>../parent/pom.xml</relativePath>
   </parent>
 
     <artifactId>filedistribution</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <packaging>container-plugin</packaging>
     <name>${project.artifactId}</name>
 
@@ -21,6 +21,12 @@
         <dependency>
             <groupId>com.yahoo.vespa</groupId>
             <artifactId>container-apache-http-client-bundle</artifactId>
+            <version>${project.version}</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.yahoo.vespa</groupId>
+            <artifactId>http-utils</artifactId>
             <version>${project.version}</version>
             <scope>compile</scope>
         </dependency>
@@ -90,30 +96,13 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <configuration>
-                    <compilerArgs>
-                        <arg>-Xlint:all</arg>
-                        <arg>-Xlint:-serial</arg>
-                        <arg>-Werror</arg>
-                    </compilerArgs>
-                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <configuration>
                     <finalName>${project.artifactId}-jar-with-dependencies</finalName>
-                    <filters>
-                        <filter>
-                            <!-- Don't include signature files from bouncycastle in uber jar.  -->
-                            <artifact>*:*</artifact>
-                            <excludes>
-                                <exclude>META-INF/*.SF</exclude>
-                                <exclude>META-INF/*.DSA</exclude>
-                                <exclude>META-INF/*.RSA</exclude>
-                            </excludes>
-                        </filter>
-                    </filters>
+                    <createDependencyReducedPom>false</createDependencyReducedPom>
                 </configuration>
                 <executions>
                     <execution>

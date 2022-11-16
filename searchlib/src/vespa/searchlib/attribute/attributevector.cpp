@@ -1,28 +1,28 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "attributevector.hpp"
 #include "address_space_components.h"
 #include "attribute_read_guard.h"
 #include "attributefilesavetarget.h"
-#include "attributeiterators.hpp"
 #include "attributesaver.h"
-#include "attributevector.h"
-#include "attributevector.hpp"
 #include "floatbase.h"
 #include "interlock.h"
 #include "ipostinglistattributebase.h"
-#include "ipostinglistsearchcontext.h"
 #include "stringbase.h"
+#include "enummodifier.h"
+#include "valuemodifier.h"
 #include <vespa/document/update/assignvalueupdate.h>
 #include <vespa/document/update/mapvalueupdate.h>
 #include <vespa/fastlib/io/bufferedfile.h>
 #include <vespa/searchcommon/attribute/attribute_utils.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/searchlib/common/tunefileinfo.h>
 #include <vespa/searchlib/index/dummyfileheadercontext.h>
 #include <vespa/searchlib/query/query_term_decoder.h>
-#include <vespa/searchlib/queryeval/emptysearch.h>
 #include <vespa/searchlib/util/file_settings.h>
-#include <vespa/searchlib/util/logutil.h>
+#include <vespa/vespalib/util/jsonwriter.h>
 #include <vespa/vespalib/util/exceptions.h>
+#include <vespa/vespalib/util/mmap_file_allocator_factory.h>
 #include <vespa/vespalib/util/size_literals.h>
 #include <thread>
 
@@ -33,13 +33,12 @@ using vespalib::getLastErrorString;
 
 using document::ValueUpdate;
 using document::AssignValueUpdate;
-using vespalib::make_string;
-using vespalib::Array;
 using vespalib::IllegalStateException;
 using search::attribute::SearchContextParams;
 using search::common::FileHeaderContext;
 using search::index::DummyFileHeaderContext;
 using search::queryeval::SearchIterator;
+using namespace vespalib::make_string_short;
 
 namespace {
 
@@ -52,65 +51,38 @@ const vespalib::string docIdLimitTag = "docIdLimit";
 
 namespace search {
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(AttributeVector, vespalib::Identifiable);
+namespace {
 
-AttributeVector::BaseName::BaseName(vespalib::stringref base, vespalib::stringref name)
-    : string(base),
-      _name(name)
+bool
+allow_paged(const search::attribute::Config& config)
 {
-    if (!empty()) {
-        push_back('/');
+    if (!config.paged()) {
+        return false;
     }
-    append(name);
+    using Type = search::attribute::BasicType::Type;
+    if (config.basicType() == Type::PREDICATE) {
+        return false;
+    }
+    if (config.basicType() == Type::TENSOR) {
+        return (!config.tensorType().is_error() && (config.tensorType().is_dense() || !config.fastSearch()));
+    }
+    return true;
 }
 
-AttributeVector::BaseName::~BaseName() = default;
-
-
-AttributeVector::BaseName::string
-AttributeVector::BaseName::createAttributeName(vespalib::stringref s)
+std::unique_ptr<vespalib::alloc::MemoryAllocator>
+make_memory_allocator(const vespalib::string& name, const search::attribute::Config& config)
 {
-    size_t p(s.rfind('/'));
-    if (p == string::npos) {
-       return s;
-    } else {
-        return s.substr(p+1);
+    if (allow_paged(config)) {
+        return vespalib::alloc::MmapFileAllocatorFactory::instance().make_memory_allocator(name);
     }
+    return {};
 }
 
-
-AttributeVector::BaseName::string
-AttributeVector::BaseName::getDirName() const
-{
-    size_t p = rfind('/');
-    if (p == string::npos) {
-       return "";
-    } else {
-        return substr(0, p);
-    }
 }
-
-
-AttributeVector::ValueModifier::ValueModifier(AttributeVector &attr)
-    : _attr(&attr)
-{ }
-
-
-AttributeVector::ValueModifier::ValueModifier(const ValueModifier &rhs)
-    : _attr(rhs.stealAttr())
-{ }
-
-
-AttributeVector::ValueModifier::~ValueModifier() {
-    if (_attr) {
-        _attr->incGeneration();
-    }
-}
-
 
 AttributeVector::AttributeVector(vespalib::stringref baseFileName, const Config &c)
     : _baseFileName(baseFileName),
-      _config(c),
+      _config(std::make_unique<Config>(c)),
       _interlock(std::make_shared<attribute::Interlock>()),
       _enumLock(),
       _genHandler(),
@@ -124,7 +96,9 @@ AttributeVector::AttributeVector(vespalib::stringref baseFileName, const Config 
       _compactLidSpaceGeneration(0u),
       _hasEnum(false),
       _loaded(false),
-      _isUpdateableInMemoryOnly(attribute::isUpdateableInMemoryOnly(getName(), getConfig()))
+      _isUpdateableInMemoryOnly(attribute::isUpdateableInMemoryOnly(getName(), getConfig())),
+      _nextStatUpdateTime(),
+      _memory_allocator(make_memory_allocator(_baseFileName.getAttributeName(), c))
 {
 }
 
@@ -141,7 +115,17 @@ AttributeVector::updateStat(bool force) {
 }
 
 bool AttributeVector::hasEnum() const { return _hasEnum; }
-uint32_t AttributeVector::getMaxValueCount() const { return _highestValueCount; }
+uint32_t AttributeVector::getMaxValueCount() const { return _highestValueCount.load(std::memory_order_relaxed); }
+bool AttributeVector::hasMultiValue() const { return _config->collectionType().isMultiValue(); }
+bool AttributeVector::hasWeightedSetType() const { return _config->collectionType().isWeightedSet(); }
+size_t AttributeVector::getFixedWidth() const { return _config->basicType().fixedSize(); }
+attribute::BasicType AttributeVector::getInternalBasicType() const { return _config->basicType(); }
+attribute::CollectionType AttributeVector::getInternalCollectionType() const { return _config->collectionType(); }
+bool AttributeVector::hasArrayType() const { return _config->collectionType().isArray(); }
+bool AttributeVector::getIsFilter() const  { return _config->getIsFilter(); }
+bool AttributeVector::getIsFastSearch() const { return _config->fastSearch(); }
+bool AttributeVector::isMutable() const { return _config->isMutable(); }
+bool AttributeVector::getEnableOnlyBitVector() const { return _config->getEnableOnlyBitVector(); }
 
 bool
 AttributeVector::isEnumerated(const vespalib::GenericHeader &header)
@@ -189,7 +173,6 @@ AttributeVector::addDocs(DocId &startDoc, DocId &lastDoc, uint32_t numDocs)
     return true;
 }
 
-
 bool
 AttributeVector::addDocs(uint32_t numDocs)
 {
@@ -197,17 +180,15 @@ AttributeVector::addDocs(uint32_t numDocs)
     return addDocs(doc, doc, numDocs);
 }
 
-
 void
 AttributeVector::incGeneration()
 {
     // Freeze trees etc, to stop new readers from accessing currently held data
-    onGenerationChange(_genHandler.getNextGeneration());
+    before_inc_generation(_genHandler.getCurrentGeneration());
     _genHandler.incGeneration();
     // Remove old data on hold lists that can no longer be reached by readers
-    removeAllOldGenerations();
+    reclaim_unused_memory();
 }
-
 
 void
 AttributeVector::updateStatistics(uint64_t numValues, uint64_t numUniqueValue, uint64_t allocated,
@@ -256,8 +237,8 @@ AttributeVector::headerTypeOK(const vespalib::GenericHeader &header) const
         getConfig().collectionType().asString();
 }
 
-void AttributeVector::removeOldGenerations(generation_t firstUsed) { (void) firstUsed; }
-void AttributeVector::onGenerationChange(generation_t generation) { (void) generation; }
+void AttributeVector::reclaim_memory(generation_t oldest_used_gen) { (void) oldest_used_gen; }
+void AttributeVector::before_inc_generation(generation_t current_gen) { (void) current_gen; }
 const IEnumStore* AttributeVector::getEnumStoreBase() const { return nullptr; }
 IEnumStore* AttributeVector::getEnumStoreBase() { return nullptr; }
 const attribute::MultiValueMappingBase * AttributeVector::getMultiValueBase() const { return nullptr; }
@@ -323,21 +304,21 @@ void AttributeVector::onSave(IAttributeSaveTarget &)
 bool
 AttributeVector::hasLoadData() const {
     FastOS_StatInfo statInfo;
-    if (!FastOS_File::Stat(make_string("%s.dat", getBaseFileName().c_str()).c_str(), &statInfo)) {
+    if (!FastOS_File::Stat(fmt("%s.dat", getBaseFileName().c_str()).c_str(), &statInfo)) {
         return false;
     }
     if (hasMultiValue() &&
-        !FastOS_File::Stat(make_string("%s.idx", getBaseFileName().c_str()).c_str(), &statInfo))
+        !FastOS_File::Stat(fmt("%s.idx", getBaseFileName().c_str()).c_str(), &statInfo))
     {
         return false;
     }
     if (hasWeightedSetType() &&
-        !FastOS_File::Stat(make_string("%s.weight", getBaseFileName().c_str()).c_str(), &statInfo))
+        !FastOS_File::Stat(fmt("%s.weight", getBaseFileName().c_str()).c_str(), &statInfo))
     {
         return false;
     }
     if (isEnumeratedSaveFormat() &&
-        !FastOS_File::Stat(make_string("%s.udat", getBaseFileName().c_str()).c_str(), &statInfo))
+        !FastOS_File::Stat(fmt("%s.udat", getBaseFileName().c_str()).c_str(), &statInfo))
     {
         return false;
     }
@@ -348,12 +329,12 @@ AttributeVector::hasLoadData() const {
 bool
 AttributeVector::isEnumeratedSaveFormat() const
 {
-    vespalib::string datName(vespalib::make_string("%s.dat", getBaseFileName().c_str()));
+    vespalib::string datName(fmt("%s.dat", getBaseFileName().c_str()));
     Fast_BufferedFile   datFile;
     vespalib::FileHeader datHeader(FileSettings::DIRECTIO_ALIGNMENT);
     if ( ! datFile.OpenReadOnly(datName.c_str()) ) {
         LOG(error, "could not open %s: %s", datFile.GetFileName(), getLastErrorString().c_str());
-        throw IllegalStateException(make_string("Failed opening attribute data file '%s' for reading",
+        throw IllegalStateException(fmt("Failed opening attribute data file '%s' for reading",
                                                 datFile.GetFileName()));
     }
     datHeader.readFile(datFile);
@@ -390,70 +371,16 @@ AttributeVector::findFoldedEnums(const char *) const {
 
 const char * AttributeVector::getStringFromEnum(EnumHandle) const { return nullptr; }
 
-AttributeVector::SearchContext::SearchContext(const AttributeVector &attr) :
-    _attr(attr),
-    _plsc(nullptr)
-{ }
-
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 AttributeVector::getSearch(QueryPacketT searchSpec, const SearchContextParams &params) const
 {
     return getSearch(QueryTermDecoder::decodeTerm(searchSpec), params);
 }
 
-attribute::ISearchContext::UP
+std::unique_ptr<attribute::ISearchContext>
 AttributeVector::createSearchContext(QueryTermSimpleUP term, const attribute::SearchContextParams &params) const
 {
     return getSearch(std::move(term), params);
-}
-
-AttributeVector::SearchContext::~SearchContext() = default;
-
-unsigned int
-AttributeVector::SearchContext::approximateHits() const
-{
-    if (_plsc != nullptr) {
-        return _plsc->approximateHits();
-    }
-    return std::max(uint64_t(_attr.getNumDocs()),
-                    _attr.getStatus().getNumValues());
-}
-
-SearchIterator::UP
-AttributeVector::SearchContext::
-createIterator(fef::TermFieldMatchData *matchData, bool strict)
-{
-    if (_plsc != nullptr) {
-        SearchIterator::UP res = _plsc->createPostingIterator(matchData, strict);
-        if (res) {
-            return res;
-        }
-    }
-    return createFilterIterator(matchData, strict);
-}
-
-
-SearchIterator::UP
-AttributeVector::SearchContext::
-createFilterIterator(fef::TermFieldMatchData *matchData, bool strict)
-{
-    if (!valid())
-        return std::make_unique<queryeval::EmptySearch>();
-    if (getIsFilter()) {
-        return SearchIterator::UP(strict ?
-            new FilterAttributeIteratorStrict<AttributeVector::SearchContext>(*this, matchData) :
-            new FilterAttributeIteratorT<AttributeVector::SearchContext>(*this, matchData));
-    }
-    return SearchIterator::UP(strict ?
-            new AttributeIteratorStrict<AttributeVector::SearchContext>(*this, matchData) :
-            new AttributeIteratorT<AttributeVector::SearchContext>(*this, matchData));
-}
-
-
-void
-AttributeVector::SearchContext::fetchPostings(const queryeval::ExecuteInfo &execInfo) {
-    if (_plsc != nullptr)
-        _plsc->fetchPostings(execInfo);
 }
 
 
@@ -462,10 +389,10 @@ AttributeVector::apply(DocId doc, const MapValueUpdate &map) {
     bool retval(doc < getNumDocs());
     if (retval) {
         const ValueUpdate & vu(map.getUpdate());
-        if (vu.inherits(ArithmeticValueUpdate::classId)) {
+        if (vu.getType() == ValueUpdate::Arithmetic) {
             const ArithmeticValueUpdate &au(static_cast<const ArithmeticValueUpdate &>(vu));
             retval = applyWeight(doc, map.getKey(), au);
-        } else if (vu.inherits(AssignValueUpdate::classId)) {
+        } else if (vu.getType() == ValueUpdate::Assign) {
             const AssignValueUpdate &au(static_cast<const AssignValueUpdate &>(vu));
             retval = applyWeight(doc, map.getKey(), au);
         } else {
@@ -481,9 +408,9 @@ bool AttributeVector::applyWeight(DocId, const FieldValue &, const ArithmeticVal
 bool AttributeVector::applyWeight(DocId, const FieldValue&, const AssignValueUpdate&) { return false; }
 
 void
-AttributeVector::removeAllOldGenerations() {
-    _genHandler.updateFirstUsedGeneration();
-    removeOldGenerations(_genHandler.getFirstUsedGeneration());
+AttributeVector::reclaim_unused_memory() {
+    _genHandler.update_oldest_used_generation();
+    reclaim_memory(_genHandler.get_oldest_used_generation());
 }
 
 
@@ -515,16 +442,14 @@ AttributeVector::addReservedDoc()
     assert(docId < getNumDocs());
     clearDoc(docId);
     commit();
-    const vespalib::Identifiable::RuntimeClass &info = getClass();
-    if (info.inherits(search::FloatingPointAttribute::classId)) {
-        FloatingPointAttribute &vec =
-            static_cast<FloatingPointAttribute &>(*this);
+    FloatingPointAttribute * vec = dynamic_cast<FloatingPointAttribute *>(this);
+    if (vec) {
         if (hasMultiValue()) {
-            bool appendedUndefined = vec.append(0, attribute::getUndefined<double>(), 1);
+            bool appendedUndefined = vec->append(0, attribute::getUndefined<double>(), 1);
             assert(appendedUndefined);
             (void) appendedUndefined;
         } else {
-            bool updatedUndefined = vec.update(0, attribute::getUndefined<double>());
+            bool updatedUndefined = vec->update(0, attribute::getUndefined<double>());
             assert(updatedUndefined);
             (void) updatedUndefined;
         }
@@ -536,6 +461,7 @@ attribute::IPostingListAttributeBase *AttributeVector::getIPostingListAttributeB
 const attribute::IPostingListAttributeBase *AttributeVector::getIPostingListAttributeBase() const { return nullptr; }
 const IDocumentWeightAttribute * AttributeVector::asDocumentWeightAttribute() const { return nullptr; }
 const tensor::ITensorAttribute *AttributeVector::asTensorAttribute() const { return nullptr; }
+const attribute::IMultiValueAttribute* AttributeVector::as_multi_value_attribute() const { return nullptr; }
 bool AttributeVector::hasPostings() { return getIPostingListAttributeBase() != nullptr; }
 uint64_t AttributeVector::getUniqueValueCount() const { return getTotalValueCount(); }
 uint64_t AttributeVector::getTotalValueCount() const { return getNumDocs(); }
@@ -546,40 +472,40 @@ uint32_t AttributeVector::getVersion() const { return 0; }
 void
 AttributeVector::compactLidSpace(uint32_t wantedLidLimit) {
     commit();
-    assert(_committedDocIdLimit >= wantedLidLimit);
-    if (wantedLidLimit < _committedDocIdLimit) {
-        clearDocs(wantedLidLimit, _committedDocIdLimit);
+    uint32_t committed_doc_id_limit = _committedDocIdLimit.load(std::memory_order_relaxed);
+    assert(committed_doc_id_limit >= wantedLidLimit);
+    if (wantedLidLimit < committed_doc_id_limit) {
+        clearDocs(wantedLidLimit, committed_doc_id_limit, false);
     }
     commit();
-    _committedDocIdLimit = wantedLidLimit;
-    _compactLidSpaceGeneration = _genHandler.getCurrentGeneration();
+    _committedDocIdLimit.store(wantedLidLimit, std::memory_order_release);
+    _compactLidSpaceGeneration.store(_genHandler.getCurrentGeneration(), std::memory_order_relaxed);
     incGeneration();
 }
-
 
 bool
 AttributeVector::canShrinkLidSpace() const {
     return wantShrinkLidSpace() &&
-        _compactLidSpaceGeneration < getFirstUsedGeneration();
+        _compactLidSpaceGeneration.load(std::memory_order_relaxed) < get_oldest_used_generation();
 }
-
 
 void
 AttributeVector::shrinkLidSpace()
 {
     commit();
-    removeAllOldGenerations();
+    reclaim_unused_memory();
     if (!canShrinkLidSpace()) {
         return;
     }
-    uint32_t committedDocIdLimit = _committedDocIdLimit;
-    clearDocs(committedDocIdLimit, getNumDocs());
+    uint32_t committed_doc_id_limit = _committedDocIdLimit.load(std::memory_order_relaxed);
+    clearDocs(committed_doc_id_limit, getNumDocs(), true);
+    clear_uncommitted_doc_id_limit();
     commit();
-    _committedDocIdLimit = committedDocIdLimit;
+    assert(committed_doc_id_limit == _committedDocIdLimit.load(std::memory_order_relaxed));
     onShrinkLidSpace();
     attribute::IPostingListAttributeBase *pab = getIPostingListAttributeBase();
     if (pab != NULL) {
-        pab->forwardedShrinkLidSpace(_committedDocIdLimit);
+        pab->forwardedShrinkLidSpace(committed_doc_id_limit);
     }
     incGeneration();
     updateStat(true);
@@ -588,7 +514,7 @@ AttributeVector::shrinkLidSpace()
 void AttributeVector::onShrinkLidSpace() {}
 
 void
-AttributeVector::clearDocs(DocId lidLow, DocId lidLimit)
+AttributeVector::clearDocs(DocId lidLow, DocId lidLimit, bool in_shrink_lid_space)
 {
     assert(lidLow <= lidLimit);
     assert(lidLimit <= getNumDocs());
@@ -597,16 +523,24 @@ AttributeVector::clearDocs(DocId lidLow, DocId lidLimit)
     for (DocId lid = lidLow; lid < lidLimit; ++lid) {
         clearDoc(lid);
         if ((++count % commit_interval) == 0) {
+            if (in_shrink_lid_space) {
+                clear_uncommitted_doc_id_limit();
+            }
             commit();
         }
     }
 }
 
-AttributeVector::EnumModifier
+attribute::EnumModifier
 AttributeVector::getEnumModifier()
 {
     attribute::InterlockGuard interlockGuard(*_interlock);
-    return EnumModifier(_enumLock, interlockGuard);
+    return attribute::EnumModifier(_enumLock, interlockGuard);
+}
+
+attribute::ValueModifier
+AttributeVector::getValueModifier() {
+    return ValueModifier(*this);
 }
 
 
@@ -756,6 +690,15 @@ AttributeVector::getChangeVectorMemoryUsage() const
     return vespalib::MemoryUsage(0, 0, 0, 0);
 }
 
+bool
+AttributeVector::commitIfChangeVectorTooLarge() {
+    bool needCommit = getChangeVectorMemoryUsage().usedBytes() > getConfig().getMaxUnCommittedMemory();
+    if (needCommit) {
+        commit(false);
+    }
+    return needCommit;
+}
+
 void
 AttributeVector::logEnumStoreEvent(const char *reason, const char *stage)
 {
@@ -763,7 +706,7 @@ AttributeVector::logEnumStoreEvent(const char *reason, const char *stage)
     jstr.beginObject();
     jstr.appendKey("path").appendString(getBaseFileName());
     jstr.endObject();
-    vespalib::string eventName(make_string("%s.attribute.enumstore.%s", reason, stage));
+    vespalib::string eventName(fmt("%s.attribute.enumstore.%s", reason, stage));
     EV_STATE(eventName.c_str(), jstr.toString().data());
 }
 
@@ -772,7 +715,7 @@ AttributeVector::drain_hold(uint64_t hold_limit)
 {
     incGeneration();
     for (int retry = 0; retry < 40; ++retry) {
-        removeAllOldGenerations();
+        reclaim_unused_memory();
         updateStat(true);
         if (_status.getOnHold() <= hold_limit) {
             return;
@@ -785,14 +728,21 @@ void
 AttributeVector::update_config(const Config& cfg)
 {
     commit(true);
-    _config.setGrowStrategy(cfg.getGrowStrategy());
-    if (cfg.getCompactionStrategy() == _config.getCompactionStrategy()) {
+    _config->setGrowStrategy(cfg.getGrowStrategy());
+    if (cfg.getCompactionStrategy() == _config->getCompactionStrategy()) {
         return;
     }
     drain_hold(1_Mi); // Wait until 1MiB or less on hold
-    _config.setCompactionStrategy(cfg.getCompactionStrategy());
+    _config->setCompactionStrategy(cfg.getCompactionStrategy());
+    updateStat(true);
     commit(); // might trigger compaction
     drain_hold(1_Mi); // Wait until 1MiB or less on hold
+}
+
+vespalib::alloc::Alloc
+AttributeVector::get_initial_alloc()
+{
+    return (_memory_allocator ? vespalib::alloc::Alloc::alloc_with_allocator(_memory_allocator.get()) : vespalib::alloc::Alloc::alloc());
 }
 
 template bool AttributeVector::append<StringChangeData>(ChangeVectorT< ChangeTemplate<StringChangeData> > &changes, uint32_t , const StringChangeData &, int32_t, bool);

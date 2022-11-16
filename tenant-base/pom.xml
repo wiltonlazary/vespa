@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root. -->
+<!-- Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -7,7 +7,7 @@
 
     <groupId>com.yahoo.vespa</groupId>
     <artifactId>tenant-base</artifactId>
-    <version>7-SNAPSHOT</version>
+    <version>8-SNAPSHOT</version>
     <name>Hosted Vespa tenant base</name>
     <description>Parent POM for all hosted Vespa applications.</description>
     <url>https://github.com/vespa-engine</url>
@@ -37,10 +37,11 @@
              compile version set with "-D vespaversion=...", and is instead the newest version.
              When it is "${vespaversion}", it is coupled, which should be the default. -->
         <test-framework.version>${vespaversion}</test-framework.version>
-        <target_jdk_version>11</target_jdk_version>
-        <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
-        <maven-surefire-plugin.version>2.22.0</maven-surefire-plugin.version>
-        <junit.version>5.7.0</junit.version> <!-- Keep in sync with hosted-tenant-base and tenant-cd until all direct use is removed -->
+        <target_jdk_version>17</target_jdk_version>
+        <maven-compiler-plugin.version>3.10.1</maven-compiler-plugin.version>
+        <maven-dependency-plugin.version>3.3.0</maven-dependency-plugin.version>
+        <maven-surefire-plugin.version>2.22.2</maven-surefire-plugin.version>
+        <junit.version>5.8.1</junit.version> <!-- Keep in sync with hosted-tenant-base and tenant-cd until all direct use is removed -->
         <endpoint>https://api.vespa-external.aws.oath.cloud:4443</endpoint>
         <test.categories>!integration</test.categories>
     </properties>
@@ -144,7 +145,7 @@
                         <!-- dependencies, see (3) above -->
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-dependency-plugin</artifactId>
-                        <version>3.1.1</version>
+                        <version>3.3.0</version>
                         <executions>
                             <execution>
                                 <!-- JAR-like dependencies -->
@@ -155,6 +156,8 @@
                                 </goals>
                                 <configuration>
                                     <includeTypes>jar,test-jar</includeTypes>
+                                    <!-- felix is not needed in the fat jar -->
+                                    <excludeGroupIds>org.apache.felix</excludeGroupIds>
                                     <outputDirectory>target/fat-test-classes</outputDirectory>
                                     <!-- WARNING(2018-06-27): bcpkix-jdk15on-1.58.jar and
                                          bcprov-jdk15on-1.58.jar are pulled in via
@@ -310,6 +313,12 @@
             <plugins>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>${maven-dependency-plugin.version}</version>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
@@ -346,7 +355,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
-                <version>3.0.0-M2</version>
+                <version>3.0.0</version>
                 <executions>
                     <execution>
                         <id>enforce-java</id>
@@ -356,11 +365,30 @@
                         <configuration>
                             <rules>
                                 <requireJavaVersion>
-                                    <version>[11, )</version>
+                                    <version>[17, )</version>
                                 </requireJavaVersion>
                                 <requireMavenVersion>
-                                    <version>[3.5, )</version>
+                                    <version>[3.6, )</version>
                                 </requireMavenVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>enforce-no-log4j</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <!-- Fail validation for apps with log4j deps in compile or provided scope. -->
+                                    <excludes>
+                                        <exclude>log4j:log4j:*:jar:compile</exclude>
+                                        <exclude>log4j:log4j:*:jar:provided</exclude>
+                                        <exclude>org.apache.logging.log4j:log4j-core:(,2.17.0]:jar:compile</exclude>
+                                        <exclude>org.apache.logging.log4j:log4j-core:(,2.17.0]:jar:provided</exclude>
+                                    </excludes>
+                                </bannedDependencies>
                             </rules>
                         </configuration>
                     </execution>
@@ -372,8 +400,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
-                    <source>${target_jdk_version}</source>
-                    <target>${target_jdk_version}</target>
+                    <release>${target_jdk_version}</release>
                     <showWarnings>true</showWarnings>
                     <showDeprecation>true</showDeprecation>
                     <compilerArgs>

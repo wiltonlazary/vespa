@@ -1,13 +1,13 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.proxy;
 
-import com.google.inject.Inject;
 import com.yahoo.component.AbstractComponent;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.jdisc.http.HttpRequest.Method;
 import com.yahoo.text.Text;
 import com.yahoo.vespa.athenz.api.AthenzIdentity;
-import com.yahoo.vespa.athenz.identity.ServiceIdentityProvider;
 import com.yahoo.vespa.athenz.tls.AthenzIdentityVerifier;
+import com.yahoo.vespa.hosted.controller.api.integration.ControllerIdentityProvider;
 import com.yahoo.vespa.hosted.controller.api.integration.zone.ZoneRegistry;
 import com.yahoo.yolean.concurrent.Sleeper;
 import org.apache.http.Header;
@@ -20,6 +20,7 @@ import org.apache.http.client.methods.HttpPatch;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.entity.InputStreamEntity;
 import org.apache.http.impl.DefaultConnectionReuseStrategy;
 import org.apache.http.impl.client.CloseableHttpClient;
@@ -29,7 +30,6 @@ import org.apache.http.protocol.HttpCoreContext;
 import org.apache.http.util.EntityUtils;
 
 import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSession;
 import java.io.IOException;
 import java.io.InputStream;
@@ -58,7 +58,7 @@ import static com.yahoo.yolean.Exceptions.uncheck;
 public class ConfigServerRestExecutorImpl extends AbstractComponent implements ConfigServerRestExecutor {
 
     private static final Logger LOG = Logger.getLogger(ConfigServerRestExecutorImpl.class.getName());
-    private static final Duration PROXY_REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration PROXY_REQUEST_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration PING_REQUEST_TIMEOUT = Duration.ofMillis(500);
     private static final Duration SINGLE_TARGET_WAIT = Duration.ofSeconds(2);
     private static final int SINGLE_TARGET_RETRIES = 3;
@@ -68,16 +68,15 @@ public class ConfigServerRestExecutorImpl extends AbstractComponent implements C
     private final Sleeper sleeper;
 
     @Inject
-    public ConfigServerRestExecutorImpl(ZoneRegistry zoneRegistry, ServiceIdentityProvider sslContextProvider) {
-        this(zoneRegistry, sslContextProvider.getIdentitySslContext(), Sleeper.DEFAULT,
-             new ConnectionReuseStrategy(zoneRegistry));
+    public ConfigServerRestExecutorImpl(ZoneRegistry zoneRegistry, ControllerIdentityProvider identityProvider) {
+        this(new SSLConnectionSocketFactory(identityProvider.getConfigServerSslSocketFactory(), new ControllerOrConfigserverHostnameVerifier(zoneRegistry)),
+                Sleeper.DEFAULT,
+                new ConnectionReuseStrategy(zoneRegistry));
     }
 
-    ConfigServerRestExecutorImpl(ZoneRegistry zoneRegistry, SSLContext sslContext,
+    ConfigServerRestExecutorImpl(SSLConnectionSocketFactory connectionSocketFactory,
                                  Sleeper sleeper, ConnectionReuseStrategy connectionReuseStrategy) {
-        this.client = createHttpClient(sslContext,
-                                       new ControllerOrConfigserverHostnameVerifier(zoneRegistry),
-                                       connectionReuseStrategy);
+        this.client = createHttpClient(connectionSocketFactory, connectionReuseStrategy);
         this.sleeper = sleeper;
     }
 
@@ -105,7 +104,7 @@ public class ConfigServerRestExecutorImpl extends AbstractComponent implements C
             }
         }
 
-        throw new RuntimeException("Failed talking to config servers: " + errorBuilder.toString());
+        throw new RuntimeException("Failed talking to config servers: " + errorBuilder);
     }
 
     private Optional<ProxyResponse> proxy(ProxyRequest request, URI url, StringBuilder errorBuilder) {
@@ -118,9 +117,9 @@ public class ConfigServerRestExecutorImpl extends AbstractComponent implements C
             String content = getContent(response);
             int status = response.getStatusLine().getStatusCode();
             if (status / 100 == 5) {
-                errorBuilder.append("Talking to server ").append(url.getHost());
-                errorBuilder.append(", got ").append(status).append(" ")
-                        .append(content).append("\n");
+                errorBuilder.append("Talking to server ").append(url.getHost())
+                            .append(", got ").append(status).append(" ")
+                            .append(content).append("\n");
                 LOG.log(Level.FINE, () -> Text.format("Got response from %s with status code %d and content:\n %s",
                                                         url.getHost(), status, content));
                 return Optional.empty();
@@ -135,8 +134,9 @@ public class ConfigServerRestExecutorImpl extends AbstractComponent implements C
             // Send response back
             return Optional.of(new ProxyResponse(request, content, status, url, contentType));
         } catch (Exception e) {
-            errorBuilder.append("Talking to server ").append(url.getHost());
-            errorBuilder.append(" got exception ").append(e.getMessage());
+            errorBuilder.append("Talking to server ").append(url.getHost())
+                        .append(" got exception ").append(e.getMessage())
+                        .append("\n");
             LOG.log(Level.FINE, e, () -> "Got exception while sending request to " + url.getHost());
             return Optional.empty();
         }
@@ -226,8 +226,7 @@ public class ConfigServerRestExecutorImpl extends AbstractComponent implements C
         }
     }
 
-    private static CloseableHttpClient createHttpClient(SSLContext sslContext,
-                                                        HostnameVerifier hostnameVerifier,
+    private static CloseableHttpClient createHttpClient(SSLConnectionSocketFactory connectionSocketFactory,
                                                         org.apache.http.ConnectionReuseStrategy connectionReuseStrategy) {
 
         RequestConfig config = RequestConfig.custom()
@@ -236,8 +235,7 @@ public class ConfigServerRestExecutorImpl extends AbstractComponent implements C
                                             .setSocketTimeout((int) PROXY_REQUEST_TIMEOUT.toMillis()).build();
         return HttpClientBuilder.create()
                                 .setUserAgent("config-server-proxy-client")
-                                .setSSLContext(sslContext)
-                                .setSSLHostnameVerifier(hostnameVerifier)
+                                .setSSLSocketFactory(connectionSocketFactory)
                                 .setDefaultRequestConfig(config)
                                 .setMaxConnPerRoute(10)
                                 .setMaxConnTotal(500)

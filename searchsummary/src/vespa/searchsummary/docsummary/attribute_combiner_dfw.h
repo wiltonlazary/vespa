@@ -2,13 +2,16 @@
 
 #pragma once
 
-#include "docsumfieldwriter.h"
+#include "simple_dfw.h"
+#include <memory>
 
 namespace search {
 class MatchingElements;
 class MatchingElementsFields;
 }
 namespace search::attribute { class IAttributeContext; }
+
+namespace vespalib { class Stash; }
 
 namespace search::docsummary {
 
@@ -19,7 +22,7 @@ class DynamicDocsumWriter;
  * This class reads values from multiple struct field attributes and
  * inserts them as an array of struct or a map of struct.
  */
-class AttributeCombinerDFW : public ISimpleDFW
+class AttributeCombinerDFW : public SimpleDFW
 {
 protected:
     uint32_t _stateIndex;
@@ -29,14 +32,14 @@ protected:
     AttributeCombinerDFW(const vespalib::string &fieldName, bool filter_elements,
                          std::shared_ptr<MatchingElementsFields> matching_elems_fields);
 protected:
-    virtual std::unique_ptr<DocsumFieldWriterState> allocFieldWriterState(search::attribute::IAttributeContext &context, const MatchingElements* matching_elements) = 0;
+    virtual DocsumFieldWriterState* allocFieldWriterState(search::attribute::IAttributeContext &context, vespalib::Stash& stash, const MatchingElements* matching_elements) const = 0;
 public:
     ~AttributeCombinerDFW() override;
-    bool IsGenerated() const override;
+    bool isGenerated() const override { return true; }
     bool setFieldWriterStateIndex(uint32_t fieldWriterStateIndex) override;
-    static std::unique_ptr<IDocsumFieldWriter> create(const vespalib::string &fieldName, search::attribute::IAttributeContext &attrCtx,
-                                                      bool filter_elements, std::shared_ptr<MatchingElementsFields> matching_elems_fields);
-    void insertField(uint32_t docid, GetDocsumsState *state, ResType type, vespalib::slime::Inserter &target) override;
+    static std::unique_ptr<DocsumFieldWriter> create(const vespalib::string &fieldName, search::attribute::IAttributeContext &attrCtx,
+                                                     bool filter_elements, std::shared_ptr<MatchingElementsFields> matching_elems_fields);
+    void insertField(uint32_t docid, GetDocsumsState& state, vespalib::slime::Inserter &target) const override;
 };
 
 }

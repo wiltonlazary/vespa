@@ -23,17 +23,23 @@ public class DocumentDatabaseChangeValidator {
     private final NewDocumentType currentDocType;
     private final DocumentDatabase nextDatabase;
     private final NewDocumentType nextDocType;
+    private final ValidationOverrides overrides;
+    private final Instant now;
 
     public DocumentDatabaseChangeValidator(ClusterSpec.Id id,
                                            DocumentDatabase currentDatabase,
                                            NewDocumentType currentDocType,
                                            DocumentDatabase nextDatabase,
-                                           NewDocumentType nextDocType) {
+                                           NewDocumentType nextDocType,
+                                           ValidationOverrides overrides,
+                                           Instant now) {
         this.id = id;
         this.currentDatabase = currentDatabase;
         this.currentDocType = currentDocType;
         this.nextDatabase = nextDatabase;
         this.nextDocType = nextDocType;
+        this.overrides = overrides;
+        this.now = now;
     }
 
     public List<VespaConfigChangeAction> validate() {
@@ -50,7 +56,8 @@ public class DocumentDatabaseChangeValidator {
                                             currentDatabase.getDerivedConfiguration().getAttributeFields(),
                                             currentDatabase.getDerivedConfiguration().getIndexSchema(), currentDocType,
                                             nextDatabase.getDerivedConfiguration().getAttributeFields(),
-                                            nextDatabase.getDerivedConfiguration().getIndexSchema(), nextDocType)
+                                            nextDatabase.getDerivedConfiguration().getIndexSchema(), nextDocType,
+                                            overrides, now)
                        .validate();
     }
 
@@ -65,8 +72,8 @@ public class DocumentDatabaseChangeValidator {
 
     private List<VespaConfigChangeAction> validateIndexingScriptChanges() {
         return new IndexingScriptChangeValidator(id,
-                                                 currentDatabase.getDerivedConfiguration().getSearch(),
-                                                 nextDatabase.getDerivedConfiguration().getSearch())
+                                                 currentDatabase.getDerivedConfiguration().getSchema(),
+                                                 nextDatabase.getDerivedConfiguration().getSchema())
                        .validate();
     }
 

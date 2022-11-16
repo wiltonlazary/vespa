@@ -1,9 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.prelude.semantics;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.chain.dependencies.After;
 import com.yahoo.component.chain.dependencies.Before;
+import com.yahoo.language.Linguistics;
 import com.yahoo.prelude.ConfigurationException;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
@@ -13,7 +14,9 @@ import com.yahoo.search.result.ErrorMessage;
 import com.yahoo.search.searchchain.Execution;
 import com.yahoo.search.searchchain.PhaseNames;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 import static com.yahoo.prelude.querytransform.StemmingSearcher.STEMMING;
 
@@ -38,7 +41,7 @@ public class SemanticSearcher extends Searcher {
 
     /** Creates a semantic searcher using the given default rule base */
     public SemanticSearcher(RuleBase ruleBase) {
-        this(Collections.singletonList(ruleBase));
+        this(List.of(ruleBase));
         defaultRuleBase = ruleBase;
     }
 
@@ -47,8 +50,8 @@ public class SemanticSearcher extends Searcher {
     }
 
     @Inject
-    public SemanticSearcher(SemanticRulesConfig config) {
-        this(toList(config));
+    public SemanticSearcher(SemanticRulesConfig config, Linguistics linguistics) {
+        this(toList(config, linguistics));
     }
 
     public SemanticSearcher(List<RuleBase> ruleBases) {
@@ -59,9 +62,9 @@ public class SemanticSearcher extends Searcher {
         }
     }
 
-    private static List<RuleBase> toList(SemanticRulesConfig config) {
+    private static List<RuleBase> toList(SemanticRulesConfig config, Linguistics linguistics) {
         try {
-            RuleImporter ruleImporter = new RuleImporter(config);
+            RuleImporter ruleImporter = new RuleImporter(config, linguistics);
             List<RuleBase> ruleBaseList = new java.util.ArrayList<>();
             for (SemanticRulesConfig.Rulebase ruleBaseConfig : config.rulebase()) {
                 RuleBase ruleBase = ruleImporter.importConfig(ruleBaseConfig);
@@ -81,7 +84,7 @@ public class SemanticSearcher extends Searcher {
         if (query.properties().getBoolean(rulesOff))
             return execution.search(query);
 
-        int traceLevel = query.properties().getInteger(tracelevelRules, query.getTraceLevel() - 2);
+        int traceLevel = query.properties().getInteger(tracelevelRules, query.getTrace().getLevel() - 2);
         if (traceLevel < 0) traceLevel = 0;
         RuleBase ruleBase = resolveRuleBase(query);
         if (ruleBase == null)

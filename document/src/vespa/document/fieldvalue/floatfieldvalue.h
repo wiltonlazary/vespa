@@ -7,17 +7,16 @@
  */
 #pragma once
 
-#include <vespa/document/datatype/numericdatatype.h>
-#include <vespa/document/fieldvalue/numericfieldvalue.h>
+#include "numericfieldvalue.h"
+#include <vespa/document/datatype/datatype.h>
 
 namespace document {
 
-class FloatFieldValue : public NumericFieldValue<float> {
+class FloatFieldValue final : public NumericFieldValue<float> {
 public:
-    typedef std::unique_ptr<FloatFieldValue> UP;
     typedef float Number;
 
-    FloatFieldValue(Number value = 0) : NumericFieldValue<Number>(value) {}
+    FloatFieldValue(Number value = 0) : NumericFieldValue<Number>(Type::FLOAT, value) {}
 
     void accept(FieldValueVisitor &visitor) override { visitor.visit(*this); }
     void accept(ConstFieldValueVisitor &visitor) const override { visitor.visit(*this); }
@@ -26,9 +25,7 @@ public:
     FloatFieldValue* clone() const override { return new FloatFieldValue(*this); }
 
     using NumericFieldValue<Number>::operator=;
-
-    DECLARE_IDENTIFIABLE(FloatFieldValue);
-
+    static std::unique_ptr<FloatFieldValue> make(Number value = 0) { return std::make_unique<FloatFieldValue>(value); }
 };
 
 } // document

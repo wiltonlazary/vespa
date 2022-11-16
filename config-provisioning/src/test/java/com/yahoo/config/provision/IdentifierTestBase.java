@@ -1,19 +1,20 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.config.provision;
 
-import com.google.common.testing.EqualsTester;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.not;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Generic test for identifiers such as {@link Environment} and {@link RegionName}.
  * @author Ulf Lilleengen
- * @since 5.23
  */
 public abstract class IdentifierTestBase<ID_TYPE> {
 
@@ -22,23 +23,21 @@ public abstract class IdentifierTestBase<ID_TYPE> {
     protected abstract boolean isDefault(ID_TYPE instance);
 
     @Test
-    public void testDefault() {
+    void testDefault() {
         ID_TYPE def = createDefaultInstance();
         ID_TYPE def2 = createInstance("default");
         ID_TYPE notdef = createInstance("default2");
         assertTrue(isDefault(def));
         assertTrue(isDefault(def2));
         assertFalse(isDefault(notdef));
-        assertThat(def, is(def2));
-        assertThat(def2, is(not(notdef)));
+        assertEquals(def, def2);
+        assertNotEquals(def2, notdef);
     }
 
     @Test
-    public void testEquals() {
-        new EqualsTester()
-                .addEqualityGroup(createInstance("foo"), createInstance("foo"))
-                .addEqualityGroup(createInstance("bar"))
-                .addEqualityGroup(createInstance("baz"))
-                .testEquals();
+    void testEquals() {
+        assertEquals(Set.of(createInstance("foo"), createInstance("bar"), createInstance("baz")),
+                               new HashSet<>(List.of(createInstance("foo"), createInstance("foo"), createInstance("bar"), createInstance("baz"))));
     }
+
 }

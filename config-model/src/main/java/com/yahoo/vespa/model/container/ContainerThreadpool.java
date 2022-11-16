@@ -4,7 +4,7 @@ package com.yahoo.vespa.model.container;
 import com.yahoo.container.bundle.BundleInstantiationSpecification;
 import com.yahoo.container.handler.threadpool.ContainerThreadPool;
 import com.yahoo.container.handler.threadpool.ContainerThreadpoolConfig;
-import com.yahoo.container.handler.threadpool.DefaultContainerThreadpool;
+import com.yahoo.container.handler.threadpool.ContainerThreadpoolImpl;
 import com.yahoo.osgi.provider.model.ComponentModel;
 import com.yahoo.text.XML;
 import com.yahoo.vespa.model.container.component.SimpleComponent;
@@ -17,23 +17,28 @@ import java.util.Optional;
  *
  * @author bjorncs
  */
-public class ContainerThreadpool extends SimpleComponent implements ContainerThreadpoolConfig.Producer {
+public abstract class ContainerThreadpool extends SimpleComponent implements ContainerThreadpoolConfig.Producer {
 
     private final String name;
     private final UserOptions userOptions;
 
     public ContainerThreadpool(String name, UserOptions userOptions) {
         super(new ComponentModel(
-                BundleInstantiationSpecification.getFromStrings(
+                BundleInstantiationSpecification.fromStrings(
                         "threadpool@" + name,
-                        DefaultContainerThreadpool.class.getName(),
+                        ContainerThreadpoolImpl.class.getName(),
                         null)));
         this.name = name;
         this.userOptions = userOptions;
     }
 
+    // Must be implemented by subclasses to set values that may be overridden by user options.
+    protected abstract void setDefaultConfigValues(ContainerThreadpoolConfig.Builder builder);
+
     @Override
     public void getConfig(ContainerThreadpoolConfig.Builder builder) {
+        setDefaultConfigValues(builder);
+
         builder.name(this.name);
         if (userOptions != null) {
             builder.maxThreads(userOptions.maxThreads);
@@ -41,9 +46,6 @@ public class ContainerThreadpool extends SimpleComponent implements ContainerThr
             builder.queueSize(userOptions.queueSize);
         }
     }
-
-    protected Optional<UserOptions> userOptions() { return Optional.ofNullable(userOptions); }
-    protected boolean hasUserOptions() { return userOptions().isPresent(); }
 
     public static class UserOptions {
         private final int maxThreads;

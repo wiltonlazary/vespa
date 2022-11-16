@@ -5,7 +5,6 @@
 #include "transport_latch.h"
 #include <vespa/persistence/spi/bucketexecutor.h>
 #include <vespa/persistence/spi/catchresult.h>
-#include <vespa/vespalib/stllike/hash_set.h>
 #include <vespa/document/fieldvalue/document.h>
 #include <vespa/document/datatype/documenttype.h>
 #include <vespa/document/update/documentupdate.h>
@@ -29,7 +28,7 @@ using storage::spi::Result;
 using storage::spi::OperationComplete;
 using vespalib::IllegalStateException;
 using vespalib::Sequence;
-using vespalib::make_string;
+using vespalib::make_string_short::fmt;
 using std::make_unique;
 
 using namespace std::chrono_literals;
@@ -107,19 +106,21 @@ public:
         : _bucketSet()
     { }
     ~BucketIdListResultHandler() override;
-    void handle(const BucketIdListResult &result) override {
+    void
+    handle(BucketIdListResult result) override {
         const BucketIdListResult::List &buckets = result.getList();
         for (size_t i = 0; i < buckets.size(); ++i) {
             _bucketSet.insert(buckets[i]);
         }
     }
-    std::unique_ptr<BucketIdListResult> getResult() const {
+    std::unique_ptr<BucketIdListResult>
+    getResult() const {
         BucketIdListResult::List buckets;
         buckets.reserve(_bucketSet.size());
         for (document::BucketId bucketId : _bucketSet) {
             buckets.push_back(bucketId);
         }
-        return std::make_unique<BucketIdListResult>(buckets);
+        return std::make_unique<BucketIdListResult>(std::move(buckets));
     }
 };
 
@@ -139,10 +140,10 @@ public:
         }
     }
     ~SynchronizedBucketIdListResultHandler() override;
-    void handle(const BucketIdListResult &result) override {
+    void handle(BucketIdListResult result) override {
         {
             std::lock_guard<std::mutex> guard(_lock);
-            BucketIdListResultHandler::handle(result);
+            BucketIdListResultHandler::handle(std::move(result));
         }
         countDown();
     }
@@ -198,9 +199,14 @@ PersistenceEngine::getHandlerSnapshot(const WriteGuard &) const
 }
 
 PersistenceEngine::HandlerSnapshot
-PersistenceEngine::getHandlerSnapshot(const ReadGuard &, document::BucketSpace bucketSpace) const
+PersistenceEngine::getSafeHandlerSnapshot(const ReadGuard &, document::BucketSpace bucketSpace) const
 {
     return _handlers.getHandlerSnapshot(bucketSpace);
+}
+
+PersistenceEngine::UnsafeHandlerSnapshot
+PersistenceEngine::getHandlerSnapshot(const ReadGuard &, document::BucketSpace bucketSpace) const {
+    return _handlers.getUnsafeHandlerSnapshot(bucketSpace);
 }
 
 PersistenceEngine::HandlerSnapshot
@@ -277,13 +283,13 @@ PersistenceEngine::listBuckets(BucketSpace bucketSpace) const
     // Runs in SPI thread.
     // No handover to write threads in persistence handlers.
     ReadGuard rguard(_rwMutex);
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, bucketSpace);
+    auto snap = getHandlerSnapshot(rguard, bucketSpace);
     BucketIdListResultHandler resultHandler;
     for (; snap.handlers().valid(); snap.handlers().next()) {
         IPersistenceHandler *handler = snap.handlers().get();
         handler->handleListBuckets(resultHandler);
     }
-    return *resultHandler.getResult();
+    return std::move(*resultHandler.getResult());
 }
 
 
@@ -292,7 +298,7 @@ PersistenceEngine::setClusterState(BucketSpace bucketSpace, const ClusterState &
 {
     ReadGuard rguard(_rwMutex);
     saveClusterState(bucketSpace, calc);
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, bucketSpace);
+    auto snap = getHandlerSnapshot(rguard, bucketSpace);
     auto catchResult = std::make_unique<storage::spi::CatchResult>();
     auto futureResult = catchResult->future_result();
     GenericResultHandler resultHandler(snap.size(), std::move(catchResult));
@@ -306,20 +312,21 @@ PersistenceEngine::setClusterState(BucketSpace bucketSpace, const ClusterState &
 }
 
 
-Result
-PersistenceEngine::setActiveState(const Bucket& bucket,
-                                  storage::spi::BucketInfo::ActiveState newState)
+void
+PersistenceEngine::setActiveStateAsync(const Bucket & bucket, BucketInfo::ActiveState newState, OperationComplete::UP onComplete)
 {
     ReadGuard rguard(_rwMutex);
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, bucket.getBucketSpace());
-    auto catchResult = std::make_unique<storage::spi::CatchResult>();
-    auto futureResult = catchResult->future_result();
-    GenericResultHandler resultHandler(snap.size(), std::move(catchResult));
-    for (; snap.handlers().valid(); snap.handlers().next()) {
+    auto snap = getHandlerSnapshot(rguard, bucket.getBucketSpace());
+    auto resultHandler = std::make_shared<GenericResultHandler>(snap.size(), std::move(onComplete));
+    while (snap.handlers().valid()) {
         IPersistenceHandler *handler = snap.handlers().get();
-        handler->handleSetActiveState(bucket, newState, resultHandler);
+        snap.handlers().next();
+        if (snap.handlers().valid()) {
+            handler->handleSetActiveState(bucket, newState, resultHandler);
+        } else {
+            handler->handleSetActiveState(bucket, newState, std::move(resultHandler));
+        }
     }
-    return *futureResult.get();
 }
 
 
@@ -329,7 +336,7 @@ PersistenceEngine::getBucketInfo(const Bucket& b) const
     // Runs in SPI thread.
     // No handover to write threads in persistence handlers.
     ReadGuard rguard(_rwMutex);
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, b.getBucketSpace());
+    auto snap = getHandlerSnapshot(rguard, b.getBucketSpace());
     BucketInfoResultHandler resultHandler;
     for (; snap.handlers().valid(); snap.handlers().next()) {
         IPersistenceHandler *handler = snap.handlers().get();
@@ -340,14 +347,13 @@ PersistenceEngine::getBucketInfo(const Bucket& b) const
 
 
 void
-PersistenceEngine::putAsync(const Bucket &bucket, Timestamp ts, storage::spi::DocumentSP doc, Context &, OperationComplete::UP onComplete)
+PersistenceEngine::putAsync(const Bucket &bucket, Timestamp ts, storage::spi::DocumentSP doc, OperationComplete::UP onComplete)
 {
     if (!_writeFilter.acceptWriteOperation()) {
         IResourceWriteFilter::State state = _writeFilter.getAcceptState();
         if (!state.acceptWriteOperation()) {
             return onComplete->onComplete(std::make_unique<Result>(Result::ErrorType::RESOURCE_EXHAUSTED,
-                          make_string("Put operation rejected for document '%s': '%s'",
-                                      doc->getId().toString().c_str(), state.message().c_str())));
+                    fmt("Put operation rejected for document '%s': '%s'", doc->getId().toString().c_str(), state.message().c_str())));
         }
     }
     ReadGuard rguard(_rwMutex);
@@ -356,66 +362,101 @@ PersistenceEngine::putAsync(const Bucket &bucket, Timestamp ts, storage::spi::Do
         docType.toString().c_str(), doc->getId().toString().c_str());
     if (!doc->getId().hasDocType()) {
         return onComplete->onComplete(std::make_unique<Result>(Result::ErrorType::PERMANENT_ERROR,
-                      make_string("Old id scheme not supported in elastic mode (%s)", doc->getId().toString().c_str())));
+                    fmt("Old id scheme not supported in elastic mode (%s)", doc->getId().toString().c_str())));
     }
     IPersistenceHandler * handler = getHandler(rguard, bucket.getBucketSpace(), docType);
     if (!handler) {
         return onComplete->onComplete(std::make_unique<Result>(Result::ErrorType::PERMANENT_ERROR,
-                      make_string("No handler for document type '%s'", docType.toString().c_str())));
+                    fmt("No handler for document type '%s'", docType.toString().c_str())));
     }
-    auto transportContext = std::make_unique<AsyncTranportContext>(1, std::move(onComplete));
+    auto transportContext = std::make_shared<AsyncTransportContext>(1, std::move(onComplete));
     handler->handlePut(feedtoken::make(std::move(transportContext)), bucket, ts, std::move(doc));
 }
 
 void
-PersistenceEngine::removeAsync(const Bucket& b, Timestamp t, const DocumentId& did, Context&, OperationComplete::UP onComplete)
+PersistenceEngine::removeAsync(const Bucket& b, std::vector<storage::spi::IdAndTimestamp> ids, OperationComplete::UP onComplete)
+{
+    if (ids.size() == 1) {
+        removeAsyncSingle(b, ids[0].timestamp, ids[0].id, std::move(onComplete));
+    } else {
+        removeAsyncMulti(b, std::move(ids), std::move(onComplete));
+    }
+}
+
+void
+PersistenceEngine::removeAsyncMulti(const Bucket& b, std::vector<storage::spi::IdAndTimestamp> ids, OperationComplete::UP onComplete) {
+    ReadGuard rguard(_rwMutex);
+    //TODO Group per document type/handler and handle in one go.
+    for (const auto & stampedId : ids) {
+        const document::DocumentId & id = stampedId.id;
+        if (!id.hasDocType()) {
+            return onComplete->onComplete(
+                    std::make_unique<RemoveResult>(Result::ErrorType::PERMANENT_ERROR,
+                                                   fmt("Old id scheme not supported in elastic mode (%s)", id.toString().c_str())));
+        }
+        DocTypeName docType(id.getDocType());
+        IPersistenceHandler *handler = getHandler(rguard, b.getBucketSpace(), docType);
+        if (!handler) {
+            return onComplete->onComplete(std::make_unique<RemoveResult>(Result::ErrorType::PERMANENT_ERROR,
+                                                                         fmt("No handler for document type '%s'",
+                                                                             docType.toString().c_str())));
+        }
+    }
+    auto transportContext = std::make_shared<AsyncRemoveTransportContext>(ids.size(), std::move(onComplete));
+    for (const auto & stampedId : ids) {
+        const document::DocumentId & id = stampedId.id;
+        DocTypeName docType(id.getDocType());
+        IPersistenceHandler *handler = getHandler(rguard, b.getBucketSpace(), docType);
+        handler->handleRemove(feedtoken::make(transportContext), b, stampedId.timestamp, id);
+    }
+}
+
+void
+PersistenceEngine::removeAsyncSingle(const Bucket& b, Timestamp t, const DocumentId& id, OperationComplete::UP onComplete)
 {
     ReadGuard rguard(_rwMutex);
     LOG(spam, "remove(%s, %" PRIu64 ", \"%s\")", b.toString().c_str(),
-        static_cast<uint64_t>(t.getValue()), did.toString().c_str());
-    if (!did.hasDocType()) {
+        static_cast<uint64_t>(t.getValue()), id.toString().c_str());
+    if (!id.hasDocType()) {
         return onComplete->onComplete(std::make_unique<RemoveResult>(Result::ErrorType::PERMANENT_ERROR,
-                            make_string("Old id scheme not supported in elastic mode (%s)", did.toString().c_str())));
+                    fmt("Old id scheme not supported in elastic mode (%s)", id.toString().c_str())));
     }
-    DocTypeName docType(did.getDocType());
+    DocTypeName docType(id.getDocType());
     IPersistenceHandler * handler = getHandler(rguard, b.getBucketSpace(), docType);
     if (!handler) {
         return onComplete->onComplete(std::make_unique<RemoveResult>(Result::ErrorType::PERMANENT_ERROR,
-                            make_string("No handler for document type '%s'", docType.toString().c_str())));
+                    fmt("No handler for document type '%s'", docType.toString().c_str())));
     }
-    auto transportContext = std::make_unique<AsyncTranportContext>(1, std::move(onComplete));
-    handler->handleRemove(feedtoken::make(std::move(transportContext)), b, t, did);
+    auto transportContext = std::make_shared<AsyncTransportContext>(1, std::move(onComplete));
+    handler->handleRemove(feedtoken::make(std::move(transportContext)), b, t, id);
 }
 
 
 void
-PersistenceEngine::updateAsync(const Bucket& b, Timestamp t, DocumentUpdate::SP upd, Context&, OperationComplete::UP onComplete)
+PersistenceEngine::updateAsync(const Bucket& b, Timestamp t, DocumentUpdate::SP upd, OperationComplete::UP onComplete)
 {
     if (!_writeFilter.acceptWriteOperation()) {
         IResourceWriteFilter::State state = _writeFilter.getAcceptState();
         if (!state.acceptWriteOperation() && document::FeedRejectHelper::mustReject(*upd)) {
             return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::RESOURCE_EXHAUSTED,
-                                make_string("Update operation rejected for document '%s': '%s'",
-                                            upd->getId().toString().c_str(), state.message().c_str())));
+                    fmt("Update operation rejected for document '%s': '%s'", upd->getId().toString().c_str(), state.message().c_str())));
         }
     }
     try {
         upd->eagerDeserialize();
     } catch (document::FieldNotFoundException & e) {
         return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::TRANSIENT_ERROR,
-                            make_string("Update operation rejected for document '%s' of type '%s': 'Field not found'",
-                                        upd->getId().toString().c_str(), upd->getType().getName().c_str())));
+                    fmt("Update operation rejected for document '%s' of type '%s': 'Field not found'",
+                        upd->getId().toString().c_str(), upd->getType().getName().c_str())));
     } catch (document::DocumentTypeNotFoundException & e) {
         return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::TRANSIENT_ERROR,
-                            make_string("Update operation rejected for document '%s' of type '%s'.",
-                                        upd->getId().toString().c_str(), e.getDocumentTypeName().c_str())));
+                    fmt("Update operation rejected for document '%s' of type '%s'.",
+                        upd->getId().toString().c_str(), e.getDocumentTypeName().c_str())));
 
     } catch (document::WrongTensorTypeException &e) {
         return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::TRANSIENT_ERROR,
-                            make_string("Update operation rejected for document '%s' of type '%s': 'Wrong tensor type: %s'",
-                                        upd->getId().toString().c_str(),
-                                        upd->getType().getName().c_str(),
-                                        e.getMessage().c_str())));
+                    fmt("Update operation rejected for document '%s' of type '%s': 'Wrong tensor type: %s'",
+                        upd->getId().toString().c_str(), upd->getType().getName().c_str(), e.getMessage().c_str())));
     }
     ReadGuard rguard(_rwMutex);
     DocTypeName docType(upd->getType());
@@ -424,18 +465,19 @@ PersistenceEngine::updateAsync(const Bucket& b, Timestamp t, DocumentUpdate::SP 
         upd->getId().toString().c_str(), (upd->getCreateIfNonExistent() ? "true" : "false"));
     if (!upd->getId().hasDocType()) {
         return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::PERMANENT_ERROR,
-                            make_string("Old id scheme not supported in elastic mode (%s)", upd->getId().toString().c_str())));
+                    fmt("Old id scheme not supported in elastic mode (%s)", upd->getId().toString().c_str())));
     }
     if (upd->getId().getDocType() != docType.getName()) {
         return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::PERMANENT_ERROR,
-                            make_string("Update operation rejected due to bad id (%s, %s)", upd->getId().toString().c_str(), docType.getName().c_str())));
+                    fmt("Update operation rejected due to bad id (%s, %s)", upd->getId().toString().c_str(), docType.getName().c_str())));
     }
     IPersistenceHandler * handler = getHandler(rguard, b.getBucketSpace(), docType);
 
     if (handler == nullptr) {
-        return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::PERMANENT_ERROR, make_string("No handler for document type '%s'", docType.toString().c_str())));
+        return onComplete->onComplete(std::make_unique<UpdateResult>(Result::ErrorType::PERMANENT_ERROR,
+                    fmt("No handler for document type '%s'", docType.toString().c_str())));
     }
-    auto transportContext = std::make_unique<AsyncTranportContext>(1, std::move(onComplete));
+    auto transportContext = std::make_shared<AsyncTransportContext>(1, std::move(onComplete));
     handler->handleUpdate(feedtoken::make(std::move(transportContext)), b, t, std::move(upd));
 }
 
@@ -444,25 +486,26 @@ PersistenceEngine::GetResult
 PersistenceEngine::get(const Bucket& b, const document::FieldSet& fields, const DocumentId& did, Context& context) const
 {
     ReadGuard rguard(_rwMutex);
-    HandlerSnapshot snapshot = getHandlerSnapshot(rguard, b.getBucketSpace());
+    auto snap = getHandlerSnapshot(rguard, b.getBucketSpace());
 
-    for (PersistenceHandlerSequence & handlers = snapshot.handlers(); handlers.valid(); handlers.next()) {
-        IPersistenceHandler::RetrieversSP retrievers = handlers.get()->getDocumentRetrievers(context.getReadConsistency());
+    for (;snap.handlers().valid(); snap.handlers().next()) {
+        IPersistenceHandler::RetrieversSP retrievers = snap.handlers().get()->getDocumentRetrievers(context.getReadConsistency());
         for (size_t i = 0; i < retrievers->size(); ++i) {
             IDocumentRetriever &retriever = *(*retrievers)[i];
             search::DocumentMetaData meta = retriever.getDocumentMetaData(did);
-            if (meta.timestamp != 0 && meta.bucketId == b.getBucketId()) {
+            storage::spi::Timestamp timestamp(meta.timestamp);
+            if (timestamp != 0 && meta.bucketId == b.getBucketId()) {
                 if (meta.removed) {
-                    return GetResult::make_for_tombstone(meta.timestamp);
+                    return GetResult::make_for_tombstone(timestamp);
                 }
                 if (document::FieldSet::Type::NONE == fields.getType()) {
-                    return GetResult::make_for_metadata_only(meta.timestamp);
+                    return GetResult::make_for_metadata_only(timestamp);
                 }
                 document::Document::UP doc = retriever.getPartialDocument(meta.lid, did, fields);
                 if (!doc || doc->getId().getGlobalId() != meta.gid) {
                     return GetResult();
                 }
-                return GetResult(std::move(doc), meta.timestamp);
+                return GetResult(std::move(doc), timestamp);
             }
         }
     }
@@ -475,20 +518,20 @@ PersistenceEngine::createIterator(const Bucket &bucket, FieldSetSP fields, const
                                   IncludedVersions versions, Context &context)
 {
     ReadGuard rguard(_rwMutex);
-    HandlerSnapshot snapshot = getHandlerSnapshot(rguard, bucket.getBucketSpace());
+    auto snap = getSafeHandlerSnapshot(rguard, bucket.getBucketSpace());
 
     auto entry = std::make_unique<IteratorEntry>(context.getReadConsistency(), bucket, std::move(fields), selection,
                                                  versions, _defaultSerializedSize, _ignoreMaxBytes);
-    for (PersistenceHandlerSequence & handlers = snapshot.handlers(); handlers.valid(); handlers.next()) {
-        IPersistenceHandler::RetrieversSP retrievers = handlers.get()->getDocumentRetrievers(context.getReadConsistency());
+    for (; snap.handlers().valid(); snap.handlers().next()) {
+        IPersistenceHandler::RetrieversSP retrievers = snap.handlers().get()->getDocumentRetrievers(context.getReadConsistency());
         for (const auto & retriever : *retrievers) {
             entry->it.add(retriever);
         }
     }
-    entry->handler_sequence = HandlerSnapshot::release(std::move(snapshot));
+    entry->handler_sequence = HandlerSnapshot::release(std::move(snap));
 
     std::lock_guard<std::mutex> guard(_iterators_lock);
-    static IteratorId id_counter(0);
+    static std::atomic<IteratorId::Type> id_counter(0);
     IteratorId id(++id_counter);
     _iterators[id] = entry.release();
     return CreateIteratorResult(id);
@@ -496,7 +539,7 @@ PersistenceEngine::createIterator(const Bucket &bucket, FieldSetSP fields, const
 
 
 PersistenceEngine::IterateResult
-PersistenceEngine::iterate(IteratorId id, uint64_t maxByteSize, Context&) const
+PersistenceEngine::iterate(IteratorId id, uint64_t maxByteSize) const
 {
     ReadGuard rguard(_rwMutex);
     IteratorEntry *iteratorEntry;
@@ -504,11 +547,11 @@ PersistenceEngine::iterate(IteratorId id, uint64_t maxByteSize, Context&) const
         std::lock_guard<std::mutex> guard(_iterators_lock);
         auto it = _iterators.find(id);
         if (it == _iterators.end()) {
-            return IterateResult(Result::ErrorType::PERMANENT_ERROR, make_string("Unknown iterator with id %" PRIu64, id.getValue()));
+            return IterateResult(Result::ErrorType::PERMANENT_ERROR, fmt("Unknown iterator with id %" PRIu64, id.getValue()));
         }
         iteratorEntry = it->second;
         if (iteratorEntry->in_use) {
-            return IterateResult(Result::ErrorType::TRANSIENT_ERROR, make_string("Iterator with id %" PRIu64 " is already in use", id.getValue()));
+            return IterateResult(Result::ErrorType::TRANSIENT_ERROR, fmt("Iterator with id %" PRIu64 " is already in use", id.getValue()));
         }
         iteratorEntry->in_use = true;
     }
@@ -520,7 +563,7 @@ PersistenceEngine::iterate(IteratorId id, uint64_t maxByteSize, Context&) const
         iteratorEntry->in_use = false;
         return result;
     } catch (const std::exception & e) {
-        IterateResult result(Result::ErrorType::PERMANENT_ERROR, make_string("Caught exception during visitor iterator.iterate() = '%s'", e.what()));
+        IterateResult result(Result::ErrorType::PERMANENT_ERROR, fmt("Caught exception during visitor iterator.iterate() = '%s'", e.what()));
         LOG(warning, "Caught exception during visitor iterator.iterate() = '%s'", e.what());
         std::lock_guard<std::mutex> guard(_iterators_lock);
         iteratorEntry->in_use = false;
@@ -530,7 +573,7 @@ PersistenceEngine::iterate(IteratorId id, uint64_t maxByteSize, Context&) const
 
 
 Result
-PersistenceEngine::destroyIterator(IteratorId id, Context&)
+PersistenceEngine::destroyIterator(IteratorId id)
 {
     ReadGuard rguard(_rwMutex);
     std::lock_guard<std::mutex> guard(_iterators_lock);
@@ -539,7 +582,7 @@ PersistenceEngine::destroyIterator(IteratorId id, Context&)
         return Result();
     }
     if (it->second->in_use) {
-        return Result(Result::ErrorType::TRANSIENT_ERROR, make_string("Iterator with id %" PRIu64 " is currently in use", id.getValue()));
+        return Result(Result::ErrorType::TRANSIENT_ERROR, fmt("Iterator with id %" PRIu64 " is currently in use", id.getValue()));
     }
     delete it->second;
     _iterators.erase(it);
@@ -547,35 +590,43 @@ PersistenceEngine::destroyIterator(IteratorId id, Context&)
 }
 
 
-Result
-PersistenceEngine::createBucket(const Bucket &b, Context &)
+void
+PersistenceEngine::createBucketAsync(const Bucket &b, OperationComplete::UP onComplete) noexcept
 {
     ReadGuard rguard(_rwMutex);
     LOG(spam, "createBucket(%s)", b.toString().c_str());
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, b.getBucketSpace());
-    TransportLatch latch(snap.size());
-    for (; snap.handlers().valid(); snap.handlers().next()) {
+    auto snap = getHandlerSnapshot(rguard, b.getBucketSpace());
+
+    auto transportContext = std::make_shared<AsyncTransportContext>(snap.size(), std::move(onComplete));
+    while (snap.handlers().valid()) {
         IPersistenceHandler *handler = snap.handlers().get();
-        handler->handleCreateBucket(feedtoken::make(latch), b);
+        snap.handlers().next();
+        if (snap.handlers().valid()) {
+            handler->handleCreateBucket(feedtoken::make(transportContext), b);
+        } else {
+            handler->handleCreateBucket(feedtoken::make(std::move(transportContext)), b);
+        }
     }
-    latch.await();
-    return latch.getResult();
 }
 
 
-Result
-PersistenceEngine::deleteBucket(const Bucket& b, Context&)
+void
+PersistenceEngine::deleteBucketAsync(const Bucket& b, OperationComplete::UP onComplete) noexcept
 {
     ReadGuard rguard(_rwMutex);
     LOG(spam, "deleteBucket(%s)", b.toString().c_str());
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, b.getBucketSpace());
-    TransportLatch latch(snap.size());
-    for (; snap.handlers().valid(); snap.handlers().next()) {
+    auto snap = getHandlerSnapshot(rguard, b.getBucketSpace());
+
+    auto transportContext = std::make_shared<AsyncTransportContext>(snap.size(), std::move(onComplete));
+    while (snap.handlers().valid()) {
         IPersistenceHandler *handler = snap.handlers().get();
-        handler->handleDeleteBucket(feedtoken::make(latch), b);
+        snap.handlers().next();
+        if (snap.handlers().valid()) {
+            handler->handleDeleteBucket(feedtoken::make(transportContext), b);
+        } else {
+            handler->handleDeleteBucket(feedtoken::make(std::move(transportContext)), b);
+        }
     }
-    latch.await();
-    return latch.getResult();
 }
 
 
@@ -589,7 +640,7 @@ PersistenceEngine::getModifiedBuckets(BucketSpace bucketSpace) const
         std::lock_guard<std::mutex> guard(_lock);
         extraModifiedBuckets.swap(_extraModifiedBuckets[bucketSpace]);
     }
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, bucketSpace);
+    auto snap = getHandlerSnapshot(rguard, bucketSpace);
     auto catchResult = std::make_unique<storage::spi::CatchResult>();
     auto futureResult = catchResult->future_result();
     SynchronizedBucketIdListResultHandler resultHandler(snap.size() + extraModifiedBuckets.size(), std::move(catchResult));
@@ -597,21 +648,21 @@ PersistenceEngine::getModifiedBuckets(BucketSpace bucketSpace) const
         IPersistenceHandler *handler = snap.handlers().get();
         handler->handleGetModifiedBuckets(resultHandler);
     }
-    for (const auto & item : extraModifiedBuckets) {
-        resultHandler.handle(*item);
+    for (auto & item : extraModifiedBuckets) {
+        resultHandler.handle(std::move(*item));
     }
-    return dynamic_cast<BucketIdListResult &>(*futureResult.get());
+    return std::move(dynamic_cast<BucketIdListResult &>(*futureResult.get()));
 }
 
 
 Result
-PersistenceEngine::split(const Bucket& source, const Bucket& target1, const Bucket& target2, Context&)
+PersistenceEngine::split(const Bucket& source, const Bucket& target1, const Bucket& target2)
 {
     ReadGuard rguard(_rwMutex);
     LOG(spam, "split(%s, %s, %s)", source.toString().c_str(), target1.toString().c_str(), target2.toString().c_str());
     assert(source.getBucketSpace() == target1.getBucketSpace());
     assert(source.getBucketSpace() == target2.getBucketSpace());
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, source.getBucketSpace());
+    auto snap = getHandlerSnapshot(rguard, source.getBucketSpace());
     TransportLatch latch(snap.size());
     for (; snap.handlers().valid(); snap.handlers().next()) {
         IPersistenceHandler *handler = snap.handlers().get();
@@ -623,13 +674,13 @@ PersistenceEngine::split(const Bucket& source, const Bucket& target1, const Buck
 
 
 Result
-PersistenceEngine::join(const Bucket& source1, const Bucket& source2, const Bucket& target, Context&)
+PersistenceEngine::join(const Bucket& source1, const Bucket& source2, const Bucket& target)
 {
     ReadGuard rguard(_rwMutex);
     LOG(spam, "join(%s, %s, %s)", source1.toString().c_str(), source2.toString().c_str(), target.toString().c_str());
     assert(source1.getBucketSpace() == target.getBucketSpace());
     assert(source2.getBucketSpace() == target.getBucketSpace());
-    HandlerSnapshot snap = getHandlerSnapshot(rguard, target.getBucketSpace());
+    auto snap = getHandlerSnapshot(rguard, target.getBucketSpace());
     TransportLatch latch(snap.size());
     for (; snap.handlers().valid(); snap.handlers().next()) {
         IPersistenceHandler *handler = snap.handlers().get();
@@ -648,7 +699,6 @@ PersistenceEngine::register_resource_usage_listener(IResourceUsageListener& list
 void
 PersistenceEngine::destroyIterators()
 {
-    Context context(storage::spi::Priority(0x80), 0);
     for (;;) {
         IteratorId id;
         {
@@ -657,7 +707,7 @@ PersistenceEngine::destroyIterators()
                 break;
             id = _iterators.begin()->first;
         }
-        Result res(destroyIterator(id, context));
+        Result res(destroyIterator(id));
         if (res.hasError()) {
             LOG(debug, "%zu iterator left. Can not destroy iterator '%" PRIu64 "'. Reason='%s'", _iterators.size(), id.getValue(), res.toString().c_str());
             std::this_thread::sleep_for(100ms);
@@ -719,7 +769,7 @@ private:
 public:
     ActiveBucketIdListResultHandler() : _bucketMap() { }
 
-    void handle(const BucketIdListResult &result) override {
+    void handle(BucketIdListResult result) override {
         const BucketIdListResult::List &buckets = result.getList();
         for (size_t i = 0; i < buckets.size(); ++i) {
             IR ir(_bucketMap.insert(std::make_pair(buckets[i], 1u)));
@@ -761,7 +811,7 @@ PersistenceEngine::populateInitialBucketDB(const WriteGuard & guard, BucketSpace
     auto catchResult = std::make_unique<storage::spi::CatchResult>();
     auto futureResult = catchResult->future_result();
     GenericResultHandler trHandler(1, std::move(catchResult));
-    targetHandler.handlePopulateActiveBuckets(buckets, trHandler);
+    targetHandler.handlePopulateActiveBuckets(std::move(buckets), trHandler);
     futureResult.get();
 }
 

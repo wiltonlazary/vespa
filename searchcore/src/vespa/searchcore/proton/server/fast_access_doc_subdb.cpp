@@ -1,8 +1,8 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "fast_access_doc_subdb.h"
 #include "attribute_writer_factory.h"
 #include "emptysearchview.h"
-#include "fast_access_doc_subdb.h"
 #include "fast_access_document_retriever.h"
 #include "document_subdb_initializer.h"
 #include "reconfig_params.h"
@@ -10,15 +10,14 @@
 #include <vespa/searchcore/proton/attribute/attribute_collection_spec_factory.h>
 #include <vespa/searchcore/proton/attribute/attribute_factory.h>
 #include <vespa/searchcore/proton/attribute/attribute_manager_initializer.h>
-#include <vespa/searchcore/proton/attribute/attribute_populator.h>
 #include <vespa/searchcore/proton/attribute/filter_attribute_manager.h>
 #include <vespa/searchcore/proton/attribute/sequential_attributes_initializer.h>
 #include <vespa/searchcore/proton/common/alloc_config.h>
 #include <vespa/searchcore/proton/matching/sessionmanager.h>
 #include <vespa/searchcore/proton/reprocessing/attribute_reprocessing_initializer.h>
-#include <vespa/searchcore/proton/reprocessing/document_reprocessing_handler.h>
 #include <vespa/searchcore/proton/reprocessing/reprocess_documents_task.h>
-#include <vespa/searchlib/docstore/document_store_visitor_progress.h>
+#include <vespa/vespalib/util/destructor_callbacks.h>
+
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.server.fast_access_doc_subdb");
 
@@ -56,6 +55,8 @@ extractAttributeManager(const FastAccessFeedView::SP &feedView)
 
 }
 
+FastAccessDocSubDB::Context::~Context() = default;
+
 InitializerTask::SP
 FastAccessDocSubDB::createAttributeManagerInitializer(const DocumentDBConfig &configSnapshot,
                                                       SerialNum configSerialNum,
@@ -70,6 +71,7 @@ FastAccessDocSubDB::createAttributeManagerInitializer(const DocumentDBConfig &co
                                                getSubDbName(),
                                                configSnapshot.getTuneFileDocumentDBSP()->_attr,
                                                _fileHeaderContext,
+                                               _attribute_interlock,
                                                _writeService.attributeFieldWriter(),
                                                _writeService.shared(),
                                                attrFactory,
@@ -77,7 +79,7 @@ FastAccessDocSubDB::createAttributeManagerInitializer(const DocumentDBConfig &co
     return std::make_shared<AttributeManagerInitializer>(configSerialNum,
                                                          documentMetaStoreInitTask,
                                                          documentMetaStore,
-                                                         baseAttrMgr,
+                                                         *baseAttrMgr,
                                                          (_hasAttributes ? configSnapshot.getAttributesConfig() : AttributesConfig()),
                                                          alloc_strategy,
                                                          _fastAccessAttributesOnly,
@@ -101,7 +103,7 @@ FastAccessDocSubDB::setupAttributeManager(AttributeManager::SP attrMgrResult)
 }
 
 
-AttributeCollectionSpec::UP
+std::unique_ptr<AttributeCollectionSpec>
 FastAccessDocSubDB::createAttributeSpec(const AttributesConfig &attrCfg, const AllocStrategy& alloc_strategy, SerialNum serialNum) const
 {
     uint32_t docIdLimit(_dms->getCommittedDocIdLimit());
@@ -200,8 +202,10 @@ FastAccessDocSubDB::FastAccessDocSubDB(const Config &cfg, const Context &ctx)
       _subAttributeMetrics(ctx._subAttributeMetrics),
       _addMetrics(cfg._addMetrics),
       _metricsWireService(ctx._metricsWireService),
+      _attribute_interlock(std::move(ctx._attribute_interlock)),
       _docIdLimit(0)
-{ }
+{
+}
 
 FastAccessDocSubDB::~FastAccessDocSubDB() = default;
 
@@ -262,10 +266,10 @@ FastAccessDocSubDB::applyConfig(const DocumentDBConfig &newConfigSnapshot, const
         FastAccessDocSubDBConfigurer configurer(_fastAccessFeedView,
                 std::make_unique<AttributeWriterFactory>(), getSubDbName());
         proton::IAttributeManager::SP oldMgr = extractAttributeManager(_fastAccessFeedView.get());
-        AttributeCollectionSpec::UP attrSpec =
+        std::unique_ptr<AttributeCollectionSpec> attrSpec =
             createAttributeSpec(newConfigSnapshot.getAttributesConfig(), alloc_strategy, serialNum);
         IReprocessingInitializer::UP initializer =
-                configurer.reconfigure(newConfigSnapshot, oldConfigSnapshot, *attrSpec);
+                configurer.reconfigure(newConfigSnapshot, oldConfigSnapshot, std::move(*attrSpec));
         if (initializer->hasReprocessors()) {
             tasks.push_back(IReprocessingTask::SP(createReprocessingTask(*initializer,
                     newConfigSnapshot.getDocumentTypeRepoSP()).release()));
@@ -275,6 +279,12 @@ FastAccessDocSubDB::applyConfig(const DocumentDBConfig &newConfigSnapshot, const
             reconfigureAttributeMetrics(*newMgr, *oldMgr);
         }
         _iFeedView.set(_fastAccessFeedView.get());
+        if (isNodeRetired()) {
+            // TODO Should probably ahve a similar OnDone callback to applyConfig too.
+            vespalib::Gate gate;
+            reconfigureAttributesConsideringNodeState(std::make_shared<vespalib::GateCallback>(gate));
+            gate.await();
+        }
     }
     return tasks;
 }
@@ -313,9 +323,13 @@ FastAccessDocSubDB::onReprocessDone(SerialNum serialNum)
 {
     IFeedView::SP feedView = _iFeedView.get();
     IAttributeWriter::SP attrWriter = static_cast<FastAccessFeedView &>(*feedView).getAttributeWriter();
-    attrWriter->forceCommit(serialNum, std::shared_ptr<vespalib::IDestructorCallback>());
-    _writeService.attributeFieldWriter().sync();
-    _writeService.summary().sync();
+    vespalib::Gate gate;
+    {
+        auto onDone = std::make_shared<vespalib::GateCallback>(gate);
+        attrWriter->forceCommit(serialNum, onDone);
+        _writeService.summary().execute(vespalib::makeLambdaTask([done = std::move(onDone)]() { (void) done; }));
+    }
+    gate.await();
     Parent::onReprocessDone(serialNum);
 }
 

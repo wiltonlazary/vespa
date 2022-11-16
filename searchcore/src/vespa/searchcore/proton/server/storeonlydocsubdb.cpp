@@ -1,5 +1,6 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
+#include "storeonlydocsubdb.h"
 #include "docstorevalidator.h"
 #include "document_subdb_initializer.h"
 #include "document_subdb_initializer_result.h"
@@ -7,7 +8,7 @@
 #include "i_document_subdb_owner.h"
 #include "minimal_document_retriever.h"
 #include "reconfig_params.h"
-#include "storeonlydocsubdb.h"
+#include "ibucketstatecalculator.h"
 #include <vespa/searchcore/proton/attribute/attribute_writer.h>
 #include <vespa/searchcore/proton/bucketdb/ibucketdbhandlerinitializer.h>
 #include <vespa/searchcore/proton/common/alloc_config.h>
@@ -23,19 +24,16 @@
 #include <vespa/searchlib/common/flush_token.h>
 #include <vespa/searchlib/docstore/document_store_visitor_progress.h>
 #include <vespa/searchlib/util/fileheadertk.h>
+#include <vespa/searchcommon/attribute/config.h>
 #include <vespa/vespalib/io/fileutil.h>
 #include <vespa/vespalib/util/exceptions.h>
+#include <filesystem>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".proton.server.storeonlydocsubdb");
 
-using search::CompactionStrategy;
 using search::GrowStrategy;
-using search::AttributeGuard;
-using search::AttributeVector;
-using search::IndexMetaInfo;
 using vespalib::makeLambdaTask;
-using search::TuneFileDocumentDB;
 using search::index::Schema;
 using search::SerialNum;
 using vespalib::IllegalStateException;
@@ -46,6 +44,7 @@ using vespalib::GenericHeader;
 using search::common::FileHeaderContext;
 using proton::initializer::InitializerTask;
 using searchcorespi::IFlushTarget;
+using vespalib::datastore::CompactionStrategy;
 
 namespace proton {
 
@@ -115,12 +114,14 @@ StoreOnlyDocSubDB::StoreOnlyDocSubDB(const Config &cfg, const Context &ctx)
       _dmsFlushTarget(),
       _dmsShrinkTarget(),
       _pendingLidsForCommit(std::make_shared<PendingLidTracker>()),
+      _nodeRetired(false),
+      _lastConfiguredCompactionStrategy(),
       _subDbId(cfg._subDbId),
       _subDbType(cfg._subDbType),
       _fileHeaderContext(ctx._fileHeaderContext, _docTypeName, _baseDir),
       _gidToLidChangeHandler(std::make_shared<DummyGidToLidChangeHandler>())
 {
-    vespalib::mkdir(_baseDir, false); // Assume parent is created.
+    std::filesystem::create_directory(std::filesystem::path(_baseDir)); // Assume parent is created.
     vespalib::File::sync(vespalib::dirname(_baseDir));
 }
 
@@ -143,7 +144,11 @@ StoreOnlyDocSubDB::clearViews() {
 size_t
 StoreOnlyDocSubDB::getNumDocs() const
 {
-    return (_metaStoreCtx) ? _metaStoreCtx->get().getNumUsedLids() : 0u;
+    if (_metaStoreCtx) {
+        auto guard = _metaStoreCtx->getReadGuard();
+        return guard->get().getNumUsedLids();
+    }
+    return 0u;
 }
 
 size_t
@@ -227,7 +232,7 @@ createSummaryManagerInitializer(const search::LogDocumentStore::Config & storeCf
     GrowStrategy grow = alloc_strategy.get_grow_strategy();
     vespalib::string baseDir(_baseDir + "/summary");
     return std::make_shared<SummaryManagerInitializer>
-        (grow, baseDir, getSubDbName(), _docTypeName, _writeService.shared(),
+        (grow, baseDir, getSubDbName(), _writeService.shared(),
          storeCfg, tuneFile, _fileHeaderContext, _tlSyncer, std::move(bucketizer), std::move(result));
 }
 
@@ -237,7 +242,7 @@ StoreOnlyDocSubDB::setupSummaryManager(SummaryManager::SP summaryManager)
     _rSummaryMgr = std::move(summaryManager);
     _iSummaryMgr = _rSummaryMgr; // Upcast allowed with std::shared_ptr
     _flushedDocumentStoreSerialNum = _iSummaryMgr->getBackingStore().lastSyncToken();
-    _summaryAdapter.reset(new SummaryAdapter(_rSummaryMgr));
+    _summaryAdapter = std::make_shared<SummaryAdapter>(_rSummaryMgr);
 }
 
 
@@ -249,7 +254,7 @@ createDocumentMetaStoreInitializer(const AllocStrategy& alloc_strategy,
 {
     GrowStrategy grow = alloc_strategy.get_grow_strategy();
     // Amortize memory spike cost over N docs
-    grow.setDocsGrowDelta(grow.getDocsGrowDelta() + alloc_strategy.get_amortize_count());
+    grow.setGrowDelta(grow.getGrowDelta() + alloc_strategy.get_amortize_count());
     vespalib::string baseDir(_baseDir + "/documentmetastore");
     vespalib::string name = DocumentMetaStore::getFixedName();
     vespalib::string attrFileName = baseDir + "/" + name; // XXX: Wrong
@@ -284,6 +289,7 @@ StoreOnlyDocSubDB::setupDocumentMetaStore(DocumentMetaStoreInitializerResult::SP
     _dmsShrinkTarget = std::make_shared<ShrinkLidSpaceFlushTarget>("documentmetastore.shrink", Type::GC,
                                                                    Component::ATTRIBUTE, _flushedDocumentMetaStoreSerialNum,
                                                                    _dmsFlushTarget->getLastFlushTime(), dms);
+    _lastConfiguredCompactionStrategy = dms->getConfig().getCompactionStrategy();
 }
 
 DocumentSubDbInitializer::UP
@@ -337,9 +343,8 @@ StoreOnlyDocSubDB::getFlushTargetsInternal()
 StoreOnlyFeedView::Context
 StoreOnlyDocSubDB::getStoreOnlyFeedViewContext(const DocumentDBConfig &configSnapshot)
 {
-    return StoreOnlyFeedView::Context(getSummaryAdapter(), configSnapshot.getSchemaSP(), _metaStoreCtx,
-                                      configSnapshot.getDocumentTypeRepoSP(), _pendingLidsForCommit,
-                                      *_gidToLidChangeHandler, _writeService);
+    return { getSummaryAdapter(), configSnapshot.getSchemaSP(), _metaStoreCtx, configSnapshot.getDocumentTypeRepoSP(),
+             _pendingLidsForCommit, *_gidToLidChangeHandler, _writeService};
 }
 
 StoreOnlyFeedView::PersistentParams
@@ -347,7 +352,7 @@ StoreOnlyDocSubDB::getFeedViewPersistentParams()
 {
     SerialNum flushedDMSSN(_flushedDocumentMetaStoreSerialNum);
     SerialNum flushedDSSN(_flushedDocumentStoreSerialNum);
-    return StoreOnlyFeedView::PersistentParams(flushedDMSSN, flushedDSSN, _docTypeName, _subDbId, _subDbType);
+    return { flushedDMSSN, flushedDSSN, _docTypeName, _subDbId, _subDbType };
 }
 
 void
@@ -414,31 +419,77 @@ StoreOnlyDocSubDB::applyConfig(const DocumentDBConfig &newConfigSnapshot, const 
     AllocStrategy alloc_strategy = newConfigSnapshot.get_alloc_config().make_alloc_strategy(_subDbType);
     reconfigure(newConfigSnapshot.getStoreConfig(), alloc_strategy);
     initFeedView(newConfigSnapshot);
-    return IReprocessingTask::List();
+    return {};
+}
+
+namespace {
+
+constexpr double RETIRED_DEAD_RATIO = 0.5;
+
+struct UpdateConfig : public search::attribute::IAttributeFunctor {
+    explicit UpdateConfig(CompactionStrategy compactionStrategy) noexcept
+        : _compactionStrategy(compactionStrategy)
+    {}
+    void operator()(search::attribute::IAttributeVector &iAttributeVector) override {
+        auto attributeVector = dynamic_cast<search::AttributeVector *>(&iAttributeVector);
+        if (attributeVector != nullptr) {
+            auto cfg = attributeVector->getConfig();
+            cfg.setCompactionStrategy(_compactionStrategy);
+            attributeVector->update_config(cfg);
+        }
+    }
+    CompactionStrategy _compactionStrategy;
+};
+
+}
+
+CompactionStrategy
+StoreOnlyDocSubDB::computeCompactionStrategy(CompactionStrategy strategy) const {
+    return isNodeRetired()
+           ? CompactionStrategy(RETIRED_DEAD_RATIO, RETIRED_DEAD_RATIO)
+           : strategy;
 }
 
 void
 StoreOnlyDocSubDB::reconfigure(const search::LogDocumentStore::Config & config, const AllocStrategy& alloc_strategy)
 {
+    _lastConfiguredCompactionStrategy = alloc_strategy.get_compaction_strategy();
     auto cfg = _dms->getConfig();
     GrowStrategy grow = alloc_strategy.get_grow_strategy();
     // Amortize memory spike cost over N docs
-    grow.setDocsGrowDelta(grow.getDocsGrowDelta() + alloc_strategy.get_amortize_count());
+    grow.setGrowDelta(grow.getGrowDelta() + alloc_strategy.get_amortize_count());
     cfg.setGrowStrategy(grow);
-    cfg.setCompactionStrategy(alloc_strategy.get_compaction_strategy());
+    cfg.setCompactionStrategy(computeCompactionStrategy(alloc_strategy.get_compaction_strategy()));
     _dms->update_config(cfg); // Update grow and compaction config
     _rSummaryMgr->reconfigure(config);
 }
 
 void
-StoreOnlyDocSubDB::setBucketStateCalculator(const std::shared_ptr<IBucketStateCalculator> &)
-{
+StoreOnlyDocSubDB::setBucketStateCalculator(const std::shared_ptr<IBucketStateCalculator> & calc, OnDone onDone) {
+    bool wasNodeRetired = isNodeRetired();
+    _nodeRetired = calc->nodeRetired();
+    if (wasNodeRetired != isNodeRetired()) {
+        CompactionStrategy compactionStrategy = computeCompactionStrategy(_lastConfiguredCompactionStrategy);
+        auto cfg = _dms->getConfig();
+        cfg.setCompactionStrategy(compactionStrategy);
+        _dms->update_config(cfg);
+        reconfigureAttributesConsideringNodeState(std::move(onDone));
+    }
+}
+
+void
+StoreOnlyDocSubDB::reconfigureAttributesConsideringNodeState(OnDone onDone) {
+    CompactionStrategy compactionStrategy = computeCompactionStrategy(_lastConfiguredCompactionStrategy);
+    auto attrMan = getAttributeManager();
+    if (attrMan) {
+        attrMan->asyncForEachAttribute(std::make_shared<UpdateConfig>(compactionStrategy), std::move(onDone));
+    }
 }
 
 proton::IAttributeManager::SP
 StoreOnlyDocSubDB::getAttributeManager() const
 {
-    return proton::IAttributeManager::SP();
+    return {};
 }
 
 const searchcorespi::IIndexManager::SP &
@@ -467,7 +518,7 @@ StoreOnlyDocSubDB::setIndexSchema(const Schema::SP &, SerialNum )
 search::SearchableStats
 StoreOnlyDocSubDB::getSearchableStats() const
 {
-    return search::SearchableStats();
+    return {};
 }
 
 IDocumentRetriever::UP
@@ -482,7 +533,7 @@ MatchingStats
 StoreOnlyDocSubDB::getMatcherStats(const vespalib::string &rankProfile) const
 {
     (void) rankProfile;
-    return MatchingStats();
+    return {};
 }
 
 void
@@ -502,7 +553,7 @@ StoreOnlyDocSubDB::close()
 std::shared_ptr<IDocumentDBReference>
 StoreOnlyDocSubDB::getDocumentDBReference()
 {
-    return std::shared_ptr<IDocumentDBReference>();
+    return {};
 }
 
 StoreOnlySubDBFileHeaderContext::

@@ -5,9 +5,29 @@
 package main
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/vespa-engine/vespa/client/go/cmd"
 )
 
+func fatal(status int, err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Exit(status)
+}
+
 func main() {
-	cmd.Execute()
+	cli, err := cmd.New(os.Stdout, os.Stderr, os.Environ())
+	if err != nil {
+		fatal(1, err)
+	}
+	if err := cli.Run(); err != nil {
+		if cliErr, ok := err.(cmd.ErrCLI); ok {
+			fatal(cliErr.Status, nil)
+		} else {
+			fatal(1, nil)
+		}
+	}
 }

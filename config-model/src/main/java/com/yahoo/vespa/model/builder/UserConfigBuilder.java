@@ -1,31 +1,30 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.builder;
 
-import com.yahoo.config.model.deploy.ConfigDefinitionStore;
 import com.yahoo.config.application.api.DeployLogger;
+import com.yahoo.config.model.deploy.ConfigDefinitionStore;
 import com.yahoo.config.model.producer.UserConfigRepo;
-import java.util.logging.Level;
 import com.yahoo.text.XML;
-import com.yahoo.vespa.config.*;
+import com.yahoo.vespa.config.ConfigDefinition;
+import com.yahoo.vespa.config.ConfigDefinitionKey;
+import com.yahoo.vespa.config.ConfigPayloadBuilder;
 import com.yahoo.vespa.model.builder.xml.dom.DomConfigPayloadBuilder;
 import org.w3c.dom.Element;
-
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
  * @author Ulf Lilleengen
- * @since 5.1
  */
 public class UserConfigBuilder {
 
     public static final Logger log = Logger.getLogger(UserConfigBuilder.class.getPackage().toString());
 
     public static UserConfigRepo build(Element producerSpec, ConfigDefinitionStore configDefinitionStore, DeployLogger deployLogger) {
-        final Map<ConfigDefinitionKey, ConfigPayloadBuilder> builderMap = new LinkedHashMap<>();
-        if (producerSpec == null) {
-            log.log(Level.FINEST, "In getUserConfigs. producerSpec is null");
-        }
+        Map<ConfigDefinitionKey, ConfigPayloadBuilder> builderMap = new LinkedHashMap<>();
         log.log(Level.FINE, () -> "getUserConfigs for " + producerSpec);
         for (Element configE : XML.getChildren(producerSpec, "config")) {
             buildElement(configE, builderMap, configDefinitionStore, deployLogger);

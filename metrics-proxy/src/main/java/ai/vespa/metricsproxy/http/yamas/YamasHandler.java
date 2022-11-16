@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.http.yamas;
 
 import ai.vespa.metricsproxy.core.MetricsConsumers;
@@ -11,7 +11,7 @@ import ai.vespa.metricsproxy.metric.model.json.JsonRenderingException;
 import ai.vespa.metricsproxy.metric.model.json.YamasJsonUtil;
 import ai.vespa.metricsproxy.node.NodeMetricGatherer;
 import ai.vespa.metricsproxy.service.VespaServices;
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.container.handler.metrics.ErrorResponse;
 import com.yahoo.container.handler.metrics.HttpHandlerBase;
 import com.yahoo.container.handler.metrics.JsonResponse;
@@ -61,7 +61,7 @@ public class YamasHandler extends HttpHandlerBase {
         try {
             List<MetricsPacket> metrics = consumer == null ? valuesFetcher.fetchAllMetrics() : valuesFetcher.fetch(consumer);
             metrics.addAll(nodeMetricGatherer.gatherMetrics()); // TODO: Currently only add these metrics in this handler. Eventually should be included in all handlers
-            return new YamasResponse(OK, YamasJsonUtil.toYamasArray(metrics, true));
+            return new YamasResponse(OK, metrics);
         } catch (JsonRenderingException e) {
             return new ErrorResponse(INTERNAL_SERVER_ERROR, e.getMessage());
         }

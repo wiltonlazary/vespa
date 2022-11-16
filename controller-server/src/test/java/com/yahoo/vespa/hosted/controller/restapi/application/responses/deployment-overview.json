@@ -5,7 +5,7 @@
   "steps": [
     {
       "type": "instance",
-      "dependencies": [],
+      "dependencies": [ ],
       "declared": true,
       "instance": "instance1",
       "readyAt": 0,
@@ -20,9 +20,15 @@
       "latestVersions": {
         "platform": {
           "platform": "6.1.0",
-          "at": "(ignore)",
-          "upgrade": false,
-          "blockers": []
+          "at": 1600000000000,
+          "upgrade": true,
+          "available": [
+            {
+              "platform": "6.1.0",
+              "upgrade": true
+            }
+          ],
+          "blockers": [ ]
         },
         "application": {
           "application": {
@@ -33,26 +39,35 @@
           },
           "at": 1000,
           "upgrade": false,
-          "blockers": []
+          "available": [
+            {
+              "application": {
+                "build": 4,
+                "compileVersion": "6.1.0",
+                "sourceUrl": "repository1/tree/commit1",
+                "commit": "commit1"
+              }
+            }
+          ],
+          "blockers": [ ]
         }
       }
     },
     {
       "type": "test",
-      "dependencies": [],
+      "dependencies": [ ],
       "declared": false,
       "instance": "instance1",
       "readyAt": 0,
       "jobName": "system-test",
       "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/system-test",
       "environment": "test",
-      "region": "test.us-east-1",
-      "toRun": [],
+      "toRun": [ ],
       "runs": [
         {
           "id": 2,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/system-test/run/2",
-          "start": "(ignore)",
+          "start": 1600000000000,
           "status": "running",
           "versions": {
             "targetPlatform": "6.1.0",
@@ -109,8 +124,8 @@
         {
           "id": 1,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/system-test/run/1",
-          "start": "(ignore)",
-          "end": "(ignore)",
+          "start": 1600000000000,
+          "end": 1600000000000,
           "status": "success",
           "versions": {
             "targetPlatform": "6.1.0",
@@ -168,20 +183,19 @@
     },
     {
       "type": "test",
-      "dependencies": [],
+      "dependencies": [ ],
       "declared": false,
       "instance": "instance1",
       "readyAt": 0,
       "jobName": "staging-test",
       "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/staging-test",
       "environment": "staging",
-      "region": "staging.us-east-3",
-      "toRun": [],
+      "toRun": [ ],
       "runs": [
         {
           "id": 2,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/staging-test/run/2",
-          "start": "(ignore)",
+          "start": 1600000000000,
           "status": "running",
           "versions": {
             "targetPlatform": "6.1.0",
@@ -254,8 +268,8 @@
         {
           "id": 1,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/staging-test/run/1",
-          "start": "(ignore)",
-          "end": "(ignore)",
+          "start": 1600000000000,
+          "end": 1600000000000,
           "status": "success",
           "versions": {
             "targetPlatform": "6.1.0",
@@ -355,8 +369,8 @@
         {
           "id": 1,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/production-us-central-1/run/1",
-          "start": "(ignore)",
-          "end": "(ignore)",
+          "start": 1600000000000,
+          "end": 1600000000000,
           "status": "success",
           "versions": {
             "targetPlatform": "6.1.0",
@@ -412,8 +426,9 @@
         {
           "id": 1,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/production-us-west-1/run/1",
-          "start": "(ignore)",
+          "start": 1600000000000,
           "status": "running",
+          "reason": "triggered by user.myuser",
           "versions": {
             "targetPlatform": "6.1.0",
             "targetApplication": {
@@ -468,7 +483,7 @@
         {
           "id": 2,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/production-us-east-3/run/2",
-          "start": "(ignore)",
+          "start": 1600000000000,
           "status": "running",
           "versions": {
             "targetPlatform": "6.1.0",
@@ -497,13 +512,14 @@
         {
           "id": 1,
           "url": "http://localhost:8080/application/v4/tenant/tenant1/application/application1/instance/instance1/job/production-us-east-3/run/1",
-          "start": "(ignore)",
-          "end": "(ignore)",
+          "start": 1600000000000,
+          "end": 1600000000000,
           "status": "success",
           "versions": {
             "targetPlatform": "6.1.0",
             "targetApplication": {
-              "build": 1
+              "build": 1,
+              "compileVersion": "6.1.0"
             }
           },
           "steps": [
@@ -531,13 +547,19 @@
       ],
       "declared": true,
       "instance": "instance2",
-      "deploying": {},
+      "deploying": { },
       "latestVersions": {
         "platform": {
           "platform": "6.1.0",
-          "at": "(ignore)",
-          "upgrade": false,
-          "blockers": []
+          "at": 1600000000000,
+          "upgrade": true,
+          "available": [
+            {
+              "platform": "6.1.0",
+              "upgrade": true
+            }
+          ],
+          "blockers": [ ]
         },
         "application": {
           "application": {
@@ -547,8 +569,18 @@
             "commit": "commit1"
           },
           "at": 1000,
-          "upgrade": false,
-          "blockers": []
+          "upgrade": true,
+          "available": [
+            {
+              "application": {
+                "build": 4,
+                "compileVersion": "6.1.0",
+                "sourceUrl": "repository1/tree/commit1",
+                "commit": "commit1"
+              }
+            }
+          ],
+          "blockers": [ ]
         }
       }
     },
@@ -576,7 +608,7 @@
           }
         }
       ],
-      "runs": []
+      "runs": [ ]
     },
     {
       "type": "deployment",
@@ -602,7 +634,7 @@
           }
         }
       ],
-      "runs": []
+      "runs": [ ]
     },
     {
       "type": "deployment",
@@ -628,8 +660,36 @@
           }
         }
       ],
-      "runs": []
+      "runs": [ ]
+    }
+  ],
+  "builds": [
+    {
+      "build": 4,
+      "compileVersion": "6.1.0",
+      "sourceUrl": "repository1/tree/commit1",
+      "commit": "commit1",
+      "description": "my best commit yet",
+      "risk": 9001,
+      "deployable": true
+    },
+    {
+      "build": 3,
+      "compileVersion": "6.1.0",
+      "sourceUrl": "repository1/tree/commit1",
+      "commit": "commit1",
+      "description": "my best commit yet",
+      "risk": 9001,
+      "deployable": false
+    },
+    {
+      "build": 2,
+      "compileVersion": "6.1.0",
+      "sourceUrl": "repository1/tree/commit1",
+      "commit": "commit1",
+      "description": "my best commit yet",
+      "risk": 9001,
+      "deployable": false
     }
   ]
 }
-

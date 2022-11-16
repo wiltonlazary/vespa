@@ -75,9 +75,12 @@ public class Join<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETYP
     }
 
     @Override
-    public String toString(ToStringContext context) {
+    public String toString(ToStringContext<NAMETYPE> context) {
         return "join(" + argumentA.toString(context) + ", " + argumentB.toString(context) + ", " + combinator + ")";
     }
+
+    @Override
+    public int hashCode() { return Objects.hash("join", argumentA, argumentB, combinator); }
 
     @Override
     public TensorType type(TypeContext<NAMETYPE> context) {
@@ -301,7 +304,7 @@ public class Join<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETYP
             for (Iterator<Tensor.Cell> bIterator = b.cellIterator(); bIterator.hasNext(); ) {
                 Map.Entry<TensorAddress, Double> bCell = bIterator.next();
                 TensorAddress combinedAddress = joinAddresses(aCell.getKey(), aToIndexes,
-                        bCell.getKey(), bToIndexes, joinedType);
+                                                              bCell.getKey(), bToIndexes, joinedType);
                 if (combinedAddress == null) continue; // not combinable
                 builder.cell(combinedAddress, combinator.applyAsDouble(aCell.getValue(), bCell.getValue()));
             }
@@ -344,7 +347,7 @@ public class Join<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETYP
             TensorAddress partialCommonAddress = partialCommonAddress(bCell, bIndexesInCommon);
             for (Tensor.Cell aCell : aCellsByCommonAddress.getOrDefault(partialCommonAddress, Collections.emptyList())) {
                 TensorAddress combinedAddress = joinAddresses(aCell.getKey(), aIndexesInJoined,
-                        bCell.getKey(), bIndexesInJoined, joinedType);
+                                                              bCell.getKey(), bIndexesInJoined, joinedType);
                 if (combinedAddress == null) continue; // not combinable
                 double combinedValue = swapTensors ?
                         combinator.applyAsDouble(bCell.getValue(), aCell.getValue()) :
@@ -355,7 +358,6 @@ public class Join<NAMETYPE extends Name> extends PrimitiveTensorFunction<NAMETYP
 
         return builder.build();
     }
-
 
     /**
      * Returns the an array having one entry in order for each dimension of fromType

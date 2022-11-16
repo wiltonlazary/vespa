@@ -57,11 +57,6 @@ import java.util.List;
  * threads at any time.
  * </p>
  *
- * <p>
- * Refer to e.g. com.yahoo.search.statistics.PeakQpsSearcher for a production
- * example.
- * </p>
- *
  * @param <AGGREGATOR> the type input data is aggregated into
  * @param <SAMPLE> the type of input data
  *
@@ -144,7 +139,7 @@ public final class ThreadLocalDirectory<AGGREGATOR, SAMPLE> {
          *
          * <p>
          * The method may or may not return a fresh instance of the current
-         * value for each invokation, if using a mutable aggregator the typical
+         * value for each invocation, if using a mutable aggregator the typical
          * case will be returning the same instance for the new and old value of
          * current, while if using an immutable aggregator, one is forced to
          * return new instances.

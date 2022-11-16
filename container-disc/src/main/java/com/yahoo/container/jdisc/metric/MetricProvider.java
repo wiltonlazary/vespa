@@ -3,12 +3,11 @@ package com.yahoo.container.jdisc.metric;
 
 import com.yahoo.container.di.componentgraph.Provider;
 import com.yahoo.jdisc.Metric;
-import com.yahoo.jdisc.application.MetricConsumer;
 
 /**
- * <p>This class implements a {@link Provider} component of <code>Metric</code>. Because this class depends on {@link
+ * An implementation of {@link Provider} component of <code>Metric</code>. Because this class depends on {@link
  * MetricConsumerProvider}, any change to the consumer configuration will trigger reconfiguration of this component,
- * which in turn triggers reconfiguration of any component that depends on <code>Metric</code>.</p>
+ * which in turn triggers reconfiguration of any component that depends on <code>Metric</code>.
  *
  * @author Simon Thoresen Hult
  */
@@ -17,13 +16,7 @@ public final class MetricProvider implements Provider<Metric> {
     private final Metric metric;
 
     public MetricProvider(MetricConsumerProvider provider) {
-        metric = new com.yahoo.jdisc.application.MetricProvider(new com.google.inject.Provider<MetricConsumer>() {
-
-            @Override
-            public MetricConsumer get() {
-                return provider.newInstance();
-            }
-        }).get();
+        metric = new com.yahoo.jdisc.application.MetricProvider(provider::newInstance).get();
     }
 
     @Override

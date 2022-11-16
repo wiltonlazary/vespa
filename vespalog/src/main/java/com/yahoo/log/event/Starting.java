@@ -5,7 +5,7 @@ package com.yahoo.log.event;
  *
  * @author  Bjorn Borud
  */
-public class Starting extends Event {
+class Starting extends Event {
     public Starting () {
     }
 

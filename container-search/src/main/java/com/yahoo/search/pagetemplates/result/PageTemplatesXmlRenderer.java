@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.search.pagetemplates.result;
 
 import com.yahoo.io.ByteWriter;
@@ -122,7 +122,7 @@ public class PageTemplatesXmlRenderer extends AsynchronousSectionedRenderer<Resu
     }
 
     private void queryContext(XMLWriter writer, Query owner) {
-        if (owner.getTraceLevel()!=0) {
+        if (owner.getTrace().getLevel()!=0) {
             XMLWriter xmlWriter=XMLWriter.from(writer);
             xmlWriter.openTag("meta").attribute("type", QueryContext.ID);
             TraceNode traceRoot = owner.getModel().getExecution().trace().traceNode().root();

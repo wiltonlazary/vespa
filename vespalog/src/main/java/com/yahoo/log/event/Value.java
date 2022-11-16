@@ -5,7 +5,7 @@ package com.yahoo.log.event;
  *
  * @author  Bjorn Borud
  */
-public class Value extends Event {
+class Value extends Event {
     public Value () {
     }
 

@@ -6,6 +6,7 @@
 #include "lidstatevector.h"
 #include <vespa/searchlib/attribute/attributeguard.h>
 #include <vespa/searchlib/queryeval/blueprint.h>
+#include <atomic>
 
 namespace proton::documentmetastore {
 
@@ -25,7 +26,7 @@ private:
     LidStateVector              _pendingHoldLids;
     bool                        _lidFreeListConstructed;
     LidStateVector              _activeLids;
-    uint32_t                    _numActiveLids;
+    std::atomic<uint32_t>       _numActiveLids;
 
 public:
     LidAllocator(uint32_t size,
@@ -38,11 +39,13 @@ public:
     void ensureSpace(uint32_t newSize, uint32_t newCapacity);
     void registerLid(DocId lid) { _usedLids.setBit(lid); }
     void unregisterLid(DocId lid);
-    size_t getUsedLidsSize() const;
-    void trimHoldLists(generation_t firstUsed);
+    void unregister_lids(const std::vector<DocId>& lids);
+    size_t getUsedLidsSize() const { return _usedLids.byteSize(); }
+    void reclaim_memory(generation_t oldest_used_gen) {
+        _holdLids.reclaim_memory(oldest_used_gen, _freeLids);
+    }
     void moveLidBegin(DocId fromLid, DocId toLid);
     void moveLidEnd(DocId fromLid, DocId toLid);
-    void holdLid(DocId lid, DocId lidLimit, generation_t currentGeneration);
     void holdLids(const std::vector<DocId> &lids, DocId lidLimit,
                   generation_t currentGeneration);
     bool holdLidOK(DocId lid, DocId lidLimit) const;
@@ -51,9 +54,9 @@ public:
     void updateActiveLids(DocId lid, bool active);
     void clearDocs(DocId lidLow, DocId lidLimit);
     void shrinkLidSpace(DocId committedDocIdLimit);
-    uint32_t getNumUsedLids() const;
-    uint32_t getNumActiveLids() const {
-        return _numActiveLids;
+    uint32_t getNumUsedLids() const { return _usedLids.count(); }
+    uint32_t getNumActiveLids() const noexcept {
+        return _numActiveLids.load(std::memory_order_relaxed);
     }
     void setFreeListConstructed() {
         _lidFreeListConstructed = true;
@@ -65,7 +68,11 @@ public:
         return lid < _usedLids.size();
     }
     bool validLid(DocId lid) const {
-        return (lid < _usedLids.size() && _usedLids.testBit(lid));
+        auto &vector = _usedLids.getBitVector();
+        return (lid < vector.getSizeAcquire() && vector.testBitAcquire(lid));
+    }
+    bool validLid(DocId lid, uint32_t limit) const {
+        return (lid < limit && _usedLids.testBitAcquire(lid));
     }
     DocId getLowestFreeLid() const {
         return _freeLids.getLowest();
@@ -74,7 +81,7 @@ public:
         return _usedLids.getHighest();
     }
 
-    const search::GrowableBitVector &getActiveLids() const { return _activeLids.getBitVector(); }
+    const search::BitVector &getActiveLids() const { return _activeLids.getBitVector(); }
 };
 
 }

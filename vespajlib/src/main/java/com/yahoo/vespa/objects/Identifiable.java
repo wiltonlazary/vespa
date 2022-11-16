@@ -27,7 +27,7 @@ public class Identifiable extends Selectable implements Cloneable {
      * Returns the class identifier of this class. This proxies the {@link #onGetClassId()} method that must be
      * implemented by every subclass.
      *
-     * @return The class identifier.
+     * @return the class identifier
      */
     public final int getClassId() {
         return onGetClassId();
@@ -354,10 +354,13 @@ public class Identifiable extends Selectable implements Cloneable {
         }
     }
 
-    protected String getUtf8(Deserializer buf) {
+    protected static byte[] getRawUtf8Bytes(Deserializer buf) {
         int len = buf.getInt(null);
-        byte[] arr = buf.getBytes(null, len);
-        return Utf8.toString(arr);
+        return buf.getBytes(null, len);
+    }
+
+    protected String getUtf8(Deserializer buf) {
+        return Utf8.toString(getRawUtf8Bytes(buf));
     }
 
     protected void putUtf8(Serializer buf, String val) {

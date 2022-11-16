@@ -9,9 +9,8 @@ namespace document {
 /**
  * Represent the value in a field of type 'bool' which can be either true or false.
  **/
-class BoolFieldValue : public FieldValue {
+class BoolFieldValue final : public FieldValue {
     bool _value;
-    bool _altered;
 
 public:
     BoolFieldValue(bool value=false);
@@ -27,7 +26,6 @@ public:
     void print(std::ostream &out, bool verbose, const std::string &indent) const override;
 
     const DataType *getDataType() const override;
-    bool hasChanged() const override;
 
     bool getValue() const { return _value; }
     void setValue(bool v) { _value = v; }
@@ -42,12 +40,7 @@ public:
     vespalib::string getAsString() const override;
 
     BoolFieldValue& operator=(vespalib::stringref) override;
-    BoolFieldValue& operator=(int32_t) override;
-    BoolFieldValue& operator=(int64_t) override;
-    BoolFieldValue& operator=(float) override;
-    BoolFieldValue& operator=(double) override;
-
-    DECLARE_IDENTIFIABLE(BoolFieldValue);
+    static std::unique_ptr<BoolFieldValue> make(bool value=false) { return std::make_unique<BoolFieldValue>(value); }
 };
 
 }

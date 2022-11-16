@@ -4,22 +4,15 @@
 
 #include "multi_value_mapping.h"
 #include <vespa/vespalib/datastore/array_store.hpp>
-#include <vespa/vespalib/util/rcuvector.hpp>
 
 namespace search::attribute {
 
 template <typename EntryT, typename RefT>
 MultiValueMapping<EntryT,RefT>::MultiValueMapping(const vespalib::datastore::ArrayStoreConfig &storeCfg,
-                                                  const vespalib::GrowStrategy &gs)
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wuninitialized"
-#endif
-    : MultiValueMappingBase(gs, _store.getGenerationHolder()),
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
-      _store(storeCfg)
+                                                  const vespalib::GrowStrategy &gs,
+                                                  std::shared_ptr<vespalib::alloc::MemoryAllocator> memory_allocator)
+  : MultiValueMappingBase(gs, ArrayStore::getGenerationHolderLocation(_store), memory_allocator),
+    _store(storeCfg, std::move(memory_allocator))
 {
 }
 
@@ -31,34 +24,28 @@ void
 MultiValueMapping<EntryT,RefT>::set(uint32_t docId, ConstArrayRef values)
 {
     _indices.ensure_size(docId + 1);
-    EntryRef oldRef(_indices[docId]);
+    EntryRef oldRef(_indices[docId].load_relaxed());
     ConstArrayRef oldValues = _store.get(oldRef);
-    _indices[docId] = _store.add(values);
+    _indices[docId].store_release(_store.add(values));
     updateValueCount(oldValues.size(), values.size());
     _store.remove(oldRef);
 }
 
 template <typename EntryT, typename RefT>
 void
-MultiValueMapping<EntryT,RefT>::replace(uint32_t docId, ConstArrayRef values)
+MultiValueMapping<EntryT,RefT>::compactWorst(CompactionSpec compaction_spec, const CompactionStrategy& compaction_strategy)
 {
-    auto oldValues = _store.get_writable(_indices[docId]);
-    assert(oldValues.size() == values.size());
-    EntryT *dst = &oldValues[0];
-    for (auto &src : values) {
-        *dst = src;
-        ++dst;
+    vespalib::datastore::ICompactionContext::UP compactionContext(_store.compactWorst(compaction_spec, compaction_strategy));
+    if (compactionContext) {
+        compactionContext->compact(vespalib::ArrayRef<AtomicEntryRef>(&_indices[0], _indices.size()));
     }
 }
 
 template <typename EntryT, typename RefT>
-void
-MultiValueMapping<EntryT,RefT>::compactWorst(bool compactMemory, bool compactAddressSpace)
+bool
+MultiValueMapping<EntryT,RefT>::has_held_buffers() const noexcept
 {
-    vespalib::datastore::ICompactionContext::UP compactionContext(_store.compactWorst(compactMemory, compactAddressSpace));
-    if (compactionContext) {
-        compactionContext->compact(vespalib::ArrayRef<EntryRef>(&_indices[0], _indices.size()));
-    }
+    return _store.has_held_buffers();
 }
 
 template <typename EntryT, typename RefT>

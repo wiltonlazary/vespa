@@ -2,8 +2,8 @@
 
 #pragma once
 
+#include "item_creator.h"
 #include <vespa/searchlib/query/weight.h>
-#include <vespa/searchlib/util/rawbuf.h>
 #include <vespa/vespalib/stllike/string.h>
 
 namespace search {
@@ -24,7 +24,7 @@ class ParseItem
 {
 public:
     /** The type of the item is from this set of values.
-        It is important that these defines match those in prelude/source/com/yahoo/prelude/query/Item.java */
+        It is important that these defines match those in container-search/src/main/java/com/yahoo/prelude/query/Item.java */
     enum ItemType {
         ITEM_OR                    =   0,
         ITEM_AND                   =   1,
@@ -33,7 +33,7 @@ public:
         ITEM_TERM                  =   4,
         ITEM_NUMTERM               =   5,
         ITEM_PHRASE                =   6,
-        /* removed: ITEM_PAREN     =   7, */
+        ITEM_MULTI_TERM            =   7,
         ITEM_PREFIXTERM            =   8,
         ITEM_SUBSTRINGTERM         =   9,
         ITEM_ANY                   =   10,
@@ -53,21 +53,18 @@ public:
         ITEM_REGEXP                =   24,
         ITEM_WORD_ALTERNATIVES     =   25,
         ITEM_NEAREST_NEIGHBOR      =   26,
-        ITEM_GEO_LOCATION_TERM         =   27,
-        ITEM_MAX                   =   28,  // Indicates how long tables must be.
-        ITEM_UNDEF                 =   31,
+        ITEM_GEO_LOCATION_TERM     =   27,
+        ITEM_TRUE                  =   28,
+        ITEM_FALSE                 =   29,
+        ITEM_FUZZY                 =   30,
+        ITEM_UNDEF                 =   32,
+        // NOTE: Only 5 bits are used to encode the item type in the protocol, and 31 is the last available value.
+        // We might need to use 31 to signal a protocol extension in order to support more item types.
     };
 
     /** A tag identifying the origin of this query node.
-     *  Note that descendants may origin from elsewhere.
-     *  If changes necessary:
-     *  NB! Append at end of list - corresponding type
-     *  used in Juniper and updates of these two types must be synchronized.
-     *  (juniper/src/query.h)
      */
-    enum ItemCreator {
-        CREA_ORIG = 0  // Original user query
-    };
+    using ItemCreator = parseitem::ItemCreator;
 
     enum ItemFeatures {
         IF_WEIGHT         = 0x20, // item has rank weight

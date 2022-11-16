@@ -1,7 +1,8 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.hosted.cd.commons;
 
 import ai.vespa.hosted.api.Properties;
+import ai.vespa.hosted.cd.EndpointAuthenticator;
 import com.yahoo.config.provision.SystemName;
 import com.yahoo.security.KeyUtils;
 import com.yahoo.security.SslContextBuilder;

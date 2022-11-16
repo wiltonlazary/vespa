@@ -1,8 +1,10 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.concurrent;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Helper for {@link java.util.concurrent.CompletableFuture} / {@link java.util.concurrent.CompletionStage}.
@@ -64,4 +66,20 @@ public class CompletableFutures {
         return combiner.combined;
     }
 
+    /** Similar to {@link CompletableFuture#allOf(CompletableFuture[])} but returns a list of the results */
+    public static <T> CompletableFuture<List<T>> allOf(List<CompletableFuture<T>> futures) {
+        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                .thenApply(__ -> {
+                    List<T> results = new ArrayList<>();
+                    for (CompletableFuture<T> f : futures) {
+                        try {
+                            results.add(f.get());
+                        } catch (InterruptedException | ExecutionException e) {
+                            // Should not happen since all futures are completed without exception
+                            throw new IllegalStateException(e);
+                        }
+                    }
+                    return results;
+                });
+    }
 }

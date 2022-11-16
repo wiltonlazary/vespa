@@ -25,9 +25,6 @@ import java.util.jar.JarEntry;
  * Represents an application package, that is, used as input when creating a VespaModel and as
  * a general reference to all contents in an application.
  *
- * The class hides detail as to whether the source is local files or ZooKeeper
- * data in config server.
- *
  * @author Vegard Havdal
  */
 public interface ApplicationPackage {
@@ -51,6 +48,8 @@ public interface ApplicationPackage {
     Path MODELS_GENERATED_DIR = Path.fromString("models.generated");
     /** Files generated from machine-learned models which should be replicated in ZooKeeper */
     Path MODELS_GENERATED_REPLICATED_DIR = MODELS_GENERATED_DIR.append("replicated");
+    /** Constant tensors */
+    Path CONSTANTS_DIR = Path.fromString("constants");
 
     // NOTE: this directory is created in serverdb during deploy, and should not exist in the original user application
     /** Do not use */
@@ -68,19 +67,11 @@ public interface ApplicationPackage {
 
     String SD_NAME_SUFFIX = ".sd";
     String RANKEXPRESSION_NAME_SUFFIX = ".expression";
+    String RANKPROFILE_NAME_SUFFIX = ".profile";
     String RULES_NAME_SUFFIX = ".sr";
     String EXT_DIR = "ext";
 
     String PERMANENT_SERVICES = "permanent-services.xml";
-
-    /**
-     * The name of the application package
-     *
-     * @return the name of the application (i.e the directory where the application package was deployed from)
-     * @deprecated do not use
-     */
-    @Deprecated // TODO: Remove in Vespa 8
-    String getApplicationName();
 
     ApplicationId getApplicationId();
 
@@ -112,15 +103,6 @@ public interface ApplicationPackage {
     }
 
     /**
-     * Readers for all the search definition files for this.
-     * @deprecated use {@link #getSchemas()} instead
-     * @return a list of readers for search definitions
-     */
-    @Deprecated
-    // TODO: Remove in Vespa 8
-    default Collection<NamedReader> searchDefinitionContents() { return getSchemas(); }
-
-    /**
      * Returns all the config definitions available in this package as unparsed data.
      */
     Map<ConfigDefinitionKey, UnparsedConfigDefinition> getAllExistingConfigDefs();
@@ -128,7 +110,6 @@ public interface ApplicationPackage {
     /**
      * Returns the files in a directory as readers. The readers <b>must</b>
      * be closed by the caller.
-     *
      *
      * @param  pathFromRoot the relative path string from the root of the application package
      * @param  suffix the suffix of files to return, or null to return all
@@ -141,7 +122,7 @@ public interface ApplicationPackage {
 
     /** Same as getFiles(pathFromRoot, suffix, false) */
     default List<NamedReader> getFiles(Path pathFromRoot, String suffix) {
-        return getFiles(pathFromRoot,suffix,false);
+        return getFiles(pathFromRoot, suffix, false);
     }
 
     /** Returns the major version this application is valid for, or empty if it is valid for all versions */
@@ -238,12 +219,9 @@ public interface ApplicationPackage {
         return Collections.emptyMap();
     }
 
-    /**
-     * @deprecated use {@link #getSchemas()} instead
-     */
-    @Deprecated
-    // TODO: Remove in Vespa 8
-    default Collection<NamedReader> getSearchDefinitions() { return getSchemas(); }
+    default Map<String, String> legacyOverrides() {
+        return Collections.emptyMap();
+    }
 
     /**
      * Readers for all the schema files.

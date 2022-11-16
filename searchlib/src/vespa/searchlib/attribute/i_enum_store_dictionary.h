@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -13,12 +13,12 @@ class BufferWriter;
 
 using EnumTreeTraits = vespalib::btree::BTreeTraits<16, 16, 10, true>;
 
-using EnumTree = vespalib::btree::BTree<IEnumStore::Index, vespalib::btree::BTreeNoLeafData,
+using EnumTree = vespalib::btree::BTree<vespalib::datastore::AtomicEntryRef, vespalib::btree::BTreeNoLeafData,
                               vespalib::btree::NoAggregated,
                               const vespalib::datastore::EntryComparatorWrapper,
                               EnumTreeTraits>;
 
-using EnumPostingTree = vespalib::btree::BTree<IEnumStore::Index, uint32_t,
+using EnumPostingTree = vespalib::btree::BTree<vespalib::datastore::AtomicEntryRef, vespalib::datastore::AtomicEntryRef,
                                      vespalib::btree::NoAggregated,
                                      const vespalib::datastore::EntryComparatorWrapper,
                                      EnumTreeTraits>;
@@ -28,8 +28,10 @@ using EnumPostingTree = vespalib::btree::BTree<IEnumStore::Index, uint32_t,
  */
 class IEnumStoreDictionary : public vespalib::datastore::IUniqueStoreDictionary {
 public:
+    using AtomicEntryRef = vespalib::datastore::AtomicEntryRef;
     using EntryRef = vespalib::datastore::EntryRef;
     using EntryComparator = vespalib::datastore::EntryComparator;
+    using EntryRefFilter = vespalib::datastore::EntryRefFilter;
     using EnumVector = IEnumStore::EnumVector;
     using Index = IEnumStore::Index;
     using IndexList = IEnumStore::IndexList;
@@ -52,7 +54,25 @@ public:
     virtual Index remap_index(Index idx) = 0;
     virtual void clear_all_posting_lists(std::function<void(EntryRef)> clearer) = 0;
     virtual void update_posting_list(Index idx, const EntryComparator& cmp, std::function<EntryRef(EntryRef)> updater) = 0;
+    /*
+     * Scan dictionary and call normalize function for each value. If
+     * returned value is different then write back the modified value to
+     * the dictionary. Only used by unit tests.
+     */
     virtual bool normalize_posting_lists(std::function<EntryRef(EntryRef)> normalize) = 0;
+    /*
+     * Scan dictionary and call normalize function for batches of values
+     * that pass the filter. Write back modified values to the dictionary.
+     * Used by compaction of posting lists when moving short arrays,
+     * bitvectors or btree roots.
+     */
+    virtual bool normalize_posting_lists(std::function<void(std::vector<EntryRef>&)> normalize, const EntryRefFilter& filter) = 0;
+    /*
+     * Scan dictionary and call callback function for batches of values
+     * that pass the filter. Used by compaction of posting lists when
+     * moving btree nodes.
+     */
+    virtual void foreach_posting_list(std::function<void(const std::vector<EntryRef>&)> callback, const EntryRefFilter& filter) = 0;
     virtual const EnumPostingTree& get_posting_dictionary() const = 0;
 };
 

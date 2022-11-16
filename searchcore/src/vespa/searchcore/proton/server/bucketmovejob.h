@@ -8,9 +8,9 @@
 #include "ibucketstatechangedhandler.h"
 #include "iclusterstatechangedhandler.h"
 #include "maintenancedocumentsubdb.h"
-#include <vespa/searchcore/proton/bucketdb/bucketscaniterator.h>
 #include <vespa/searchcore/proton/bucketdb/i_bucket_create_listener.h>
-#include <vespa/searchcore/proton/common/monitored_refcount.h>
+#include <vespa/vespalib/util/retain_guard.h>
+#include <map>
 
 
 namespace storage::spi { struct BucketExecutor; }
@@ -36,12 +36,12 @@ namespace bucketdb { class IBucketCreateNotifier; }
  * 3 - Actual movement is then done in master thread while still holding bucket lock. Once bucket has fully moved
  *     bucket modified notification is sent.
  */
-class BucketMoveJob : public BlockableMaintenanceJob,
-                      public IClusterStateChangedHandler,
-                      public bucketdb::IBucketCreateListener,
-                      public IBucketStateChangedHandler,
-                      public IDiskMemUsageListener,
-                      public std::enable_shared_from_this<BucketMoveJob>
+class BucketMoveJob final : public BlockableMaintenanceJob,
+                            public IClusterStateChangedHandler,
+                            public bucketdb::IBucketCreateListener,
+                            public IBucketStateChangedHandler,
+                            public IDiskMemUsageListener,
+                            public std::enable_shared_from_this<BucketMoveJob>
 {
 private:
     using BucketExecutor = storage::spi::BucketExecutor;
@@ -49,7 +49,6 @@ private:
     using IDestructorCallbackSP = std::shared_ptr<IDestructorCallback>;
     using IThreadService = searchcorespi::index::IThreadService;
     using BucketId = document::BucketId;
-    using ScanIterator = bucketdb::ScanIterator;
     using BucketMoveSet = std::map<BucketId, bool>;
     using NeedResult = std::pair<bool, bool>;
     using ActiveState = storage::spi::BucketInfo::ActiveState;
@@ -59,7 +58,7 @@ private:
     using Movers = std::vector<BucketMoverSP>;
     using GuardedMoveOps = BucketMover::GuardedMoveOps;
     std::shared_ptr<IBucketStateCalculator>   _calc;
-    RetainGuard                               _dbRetainer;
+    vespalib::RetainGuard                     _dbRetainer;
     IDocumentMoveHandler                     &_moveHandler;
     IBucketModifiedHandler                   &_modifiedHandler;
     IThreadService                           &_master;
@@ -79,8 +78,19 @@ private:
     IBucketStateChangedNotifier       &_bucketStateChangedNotifier;
     IDiskMemUsageNotifier             &_diskMemUsageNotifier;
 
-    BucketMoveJob(const std::shared_ptr<IBucketStateCalculator> &calc,
-                  RetainGuard dbRetainer,
+    class BucketStateWrapper {
+    private:
+        const bucketdb::BucketState & _state;
+
+    public:
+        explicit BucketStateWrapper(const bucketdb::BucketState & state) noexcept : _state(state) {}
+
+        bool                isActive() const noexcept { return _state.isActive(); }
+        bool      hasReadyBucketDocs() const noexcept { return _state.getReadyCount() != 0; }
+        bool   hasNotReadyBucketDocs() const noexcept { return _state.getNotReadyCount() != 0; }
+    };
+    BucketMoveJob(std::shared_ptr<IBucketStateCalculator> calc,
+                  vespalib::RetainGuard dbRetainer,
                   IDocumentMoveHandler &moveHandler,
                   IBucketModifiedHandler &modifiedHandler,
                   IThreadService & master,
@@ -103,7 +113,7 @@ private:
     void reconsiderBucket(const bucketdb::Guard & guard, BucketId bucket);
     void updatePending();
     void cancelBucket(BucketId bucket); // True if something to cancel
-    NeedResult needMove(const ScanIterator &itr) const;
+    NeedResult needMove(BucketId bucketId, const BucketStateWrapper &itr) const;
     BucketMoveSet computeBuckets2Move(const bucketdb::Guard & guard);
     BucketMoverSP createMover(BucketId bucket, bool wantReady);
     BucketMoverSP greedyCreateMover();
@@ -114,8 +124,8 @@ private:
     class StartMove;
 public:
     static std::shared_ptr<BucketMoveJob>
-    create(const std::shared_ptr<IBucketStateCalculator> &calc,
-           RetainGuard dbRetainer,
+    create(std::shared_ptr<IBucketStateCalculator> calc,
+           vespalib::RetainGuard dbRetainer,
            IDocumentMoveHandler &moveHandler,
            IBucketModifiedHandler &modifiedHandler,
            IThreadService & master,

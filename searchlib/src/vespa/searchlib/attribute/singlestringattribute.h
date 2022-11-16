@@ -2,10 +2,9 @@
 
 #pragma once
 
-#include <vespa/searchlib/attribute/stringbase.h>
-#include <vespa/searchlib/attribute/enumattribute.h>
-#include <vespa/searchlib/attribute/singleenumattribute.h>
-#include "enumhintsearchcontext.h"
+#include "enumattribute.h"
+#include "singleenumattribute.h"
+#include "stringbase.h"
 
 namespace search {
 
@@ -26,7 +25,6 @@ protected:
     using EnumStore = typename SingleValueEnumAttribute<B>::EnumStore;
     using LoadedVector = StringAttribute::LoadedVector;
     using QueryTermSimpleUP = AttributeVector::QueryTermSimpleUP;
-    using SearchContext = StringAttribute::SearchContext;
     using ValueModifier = StringAttribute::ValueModifier;
     using WeightedConstChar = StringAttribute::WeightedConstChar;
     using WeightedEnum = StringAttribute::WeightedEnum;
@@ -34,8 +32,8 @@ protected:
     using generation_t = StringAttribute::generation_t;
 
 public:
-    SingleValueStringAttributeT(const vespalib::string & name, const AttributeVector::Config & c =
-                                AttributeVector::Config(AttributeVector::BasicType::STRING));
+    SingleValueStringAttributeT(const vespalib::string & name, const AttributeVector::Config & c);
+    SingleValueStringAttributeT(const vespalib::string & name);
     ~SingleValueStringAttributeT();
 
     void freezeEnumDictionary() override;
@@ -45,7 +43,7 @@ public:
     //-------------------------------------------------------------------------
     bool isUndefined(DocId doc) const override { return get(doc)[0] == '\0'; }
     const char * get(DocId doc) const override {
-        return this->_enumStore.get_value(this->_enumIndices[doc]);
+        return this->_enumStore.get_value(this->acquire_enum_entry_ref(doc));
     }
     std::vector<EnumHandle> findFoldedEnums(const char *value) const override {
         return this->_enumStore.find_folded_enums(value);
@@ -78,36 +76,8 @@ public:
         return 1;
     }
 
-    AttributeVector::SearchContext::UP
+    std::unique_ptr<attribute::SearchContext>
     getSearch(QueryTermSimpleUP term, const attribute::SearchContextParams & params) const override;
-
-    class StringSingleImplSearchContext : public StringAttribute::StringSearchContext {
-    public:
-        StringSingleImplSearchContext(QueryTermSimpleUP qTerm, const StringAttribute & toBeSearched) :
-            StringSearchContext(std::move(qTerm), toBeSearched)
-        { }
-    protected:
-        int32_t onFind(DocId doc, int32_t elemId, int32_t &weight) const override {
-            weight = 1;
-            return onFind(doc, elemId);
-        }
-
-        int32_t onFind(DocId doc, int32_t elemId) const override {
-            if ( elemId != 0) return -1;
-            const SingleValueStringAttributeT<B> & attr(static_cast<const SingleValueStringAttributeT<B> &>(attribute()));
-            return isMatch(attr._enumStore.get_value(attr._enumIndices[doc])) ? 0 : -1;
-        }
-
-    };
-
-    class StringTemplSearchContext : public StringSingleImplSearchContext,
-                                     public attribute::EnumHintSearchContext
-    {
-        using AttrType = SingleValueStringAttributeT<B>;
-        using StringSingleImplSearchContext::queryTerm;
-    public:
-        StringTemplSearchContext(QueryTermSimpleUP qTerm, const AttrType & toBeSearched);
-    };
 };
 
 using SingleValueStringAttribute = SingleValueStringAttributeT<EnumAttribute<StringAttribute> >;

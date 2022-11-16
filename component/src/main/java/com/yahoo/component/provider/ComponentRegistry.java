@@ -20,7 +20,7 @@ import java.util.Set;
  * <p>
  * This registry supports the <i>freeze</i> pattern - changes can be made
  * to this registry until {@link #freeze} is called. Subsequent change attempts will cause an
- * exception. Freezing a registry after building makes it possible toi avoid locking and memory
+ * exception. Freezing a registry after building makes it possible to avoid locking and memory
  * synchronization on lookups.
  *
  * @author bratseth
@@ -28,10 +28,10 @@ import java.util.Set;
 public class ComponentRegistry<COMPONENT> {
 
     /** All versions of all components, indexed by name and namespace */
-    private Map<ComponentId, Map<String, Map<Version, COMPONENT>>> componentsByNameByNamespace = new LinkedHashMap<>();
+    private final Map<ComponentId, Map<String, Map<Version, COMPONENT>>> componentsByNameByNamespace = new LinkedHashMap<>();
 
     /** All versions of all components indexed by id */
-    private Map<ComponentId, COMPONENT> componentsById =new LinkedHashMap<>();
+    private final Map<ComponentId, COMPONENT> componentsById =new LinkedHashMap<>();
 
     /** True when this cannot be changed any more */
     private boolean frozen = false;

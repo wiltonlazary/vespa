@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 package com.yahoo.vespa.model.admin.metricsproxy;
 
@@ -8,6 +8,7 @@ import com.yahoo.vespa.model.admin.monitoring.Metric;
 import com.yahoo.vespa.model.admin.monitoring.MetricSet;
 import com.yahoo.vespa.model.admin.monitoring.MetricsConsumer;
 
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,7 +72,7 @@ class ConsumersConfigGenerator {
 
     static Consumer.Builder toConsumerBuilder(MetricsConsumer consumer) {
         Consumer.Builder builder = new Consumer.Builder().name(consumer.id());
-        consumer.metrics().values().forEach(metric -> builder.metric(toConsumerMetricBuilder(metric)));
+        consumer.metrics().values().stream().sorted(Comparator.comparing(a -> a.name)).forEach(metric -> builder.metric(toConsumerMetricBuilder(metric)));
         return builder;
     }
 

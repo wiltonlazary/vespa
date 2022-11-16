@@ -4,6 +4,8 @@ vespa_add_library(vespamalloc_malloc OBJECT
     malloc.cpp
     allocchunk.cpp
     common.cpp
+    freelist.cpp
+    mmappool.cpp
     threadproxy.cpp
     memblock.cpp
     datasegment.cpp
@@ -17,10 +19,12 @@ vespa_add_library(vespamalloc_mallocd OBJECT
     mallocd.cpp
     allocchunk.cpp
     common.cpp
+    freelist.cpp
+    mmappool.cpp
     threadproxy.cpp
     memblockboundscheck.cpp
     memblockboundscheck_d.cpp
-    datasegmentd.cpp
+    datasegment.cpp
     globalpoold.cpp
     threadpoold.cpp
     threadlistd.cpp
@@ -31,10 +35,12 @@ vespa_add_library(vespamalloc_mallocdst16 OBJECT
     mallocdst16.cpp
     allocchunk.cpp
     common.cpp
+    freelist.cpp
+    mmappool.cpp
     threadproxy.cpp
     memblockboundscheck.cpp
     memblockboundscheck_dst.cpp
-    datasegmentdst.cpp
+    datasegment.cpp
     globalpooldst.cpp
     threadpooldst.cpp
     threadlistdst.cpp
@@ -46,10 +52,12 @@ vespa_add_library(vespamalloc_mallocdst16_nl OBJECT
     mallocdst16_nl.cpp
     allocchunk.cpp
     common.cpp
+    freelist.cpp
+    mmappool.cpp
     threadproxy.cpp
     memblockboundscheck.cpp
     memblockboundscheck_dst.cpp
-    datasegmentdst.cpp
+    datasegment.cpp
     globalpooldst.cpp
     threadpooldst.cpp
     threadlistdst.cpp
@@ -59,5 +67,10 @@ vespa_workaround_gcc_bug_67055(mallocdst16_nl.cpp)
 vespa_add_library(vespamalloc_mmap OBJECT
     SOURCES
     mmap.cpp
+    DEPENDS
+)
+vespa_add_library(vespamalloc_load_as_huge OBJECT
+    SOURCES
+    load_as_huge.cpp
     DEPENDS
 )

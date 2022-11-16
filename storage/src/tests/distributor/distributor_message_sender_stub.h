@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -102,6 +102,11 @@ public:
     }
 
     const distributor::OperationSequencer& operation_sequencer() const noexcept override {
+        assert(_operation_sequencer);
+        return *_operation_sequencer;
+    }
+
+    distributor::OperationSequencer& operation_sequencer() noexcept override {
         assert(_operation_sequencer);
         return *_operation_sequencer;
     }

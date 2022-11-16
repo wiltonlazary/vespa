@@ -1,46 +1,58 @@
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.maintenance;
 
-import com.yahoo.config.provision.ApplicationName;
-import com.yahoo.config.provision.TenantName;
+import com.yahoo.config.provision.SystemName;
 import com.yahoo.vespa.hosted.controller.ControllerTester;
-import com.yahoo.vespa.hosted.controller.api.integration.stubs.MockUserManagement;
-import com.yahoo.vespa.hosted.controller.api.integration.user.Roles;
-import com.yahoo.vespa.hosted.controller.api.integration.user.UserManagement;
-import com.yahoo.vespa.hosted.controller.api.role.Role;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author olaa
  */
 public class UserManagementMaintainerTest {
 
-    private final ControllerTester tester = new ControllerTester();
-    private final UserManagement userManagement = new MockUserManagement();
-    private final UserManagementMaintainer userManagementMaintainer = new UserManagementMaintainer(tester.controller(), Duration.ofMinutes(1), userManagement);
-
-    private final TenantName tenant = TenantName.from("tenant1");
-    private final ApplicationName app = ApplicationName.from("app1");
-    private final TenantName deletedTenant = TenantName.from("deleted-tenant");
+    private final String TENANT_1 = "tenant1";
+    private final String TENANT_2 = "tenant2";
+    private final String APP_NAME = "some-app";
 
     @Test
-    public void finds_superfluous_roles() {
-        tester.createTenant(tenant.value());
-        tester.createApplication(tenant.value(), app.value());
+    void deletes_tenant_when_not_public() {
+        var tester = createTester(SystemName.main);
+        var maintainer = new UserManagementMaintainer(tester.controller(), Duration.ofMinutes(5), tester.serviceRegistry().roleMaintainer());
+        maintainer.maintain();
 
-        Roles.tenantRoles(tenant).forEach(userManagement::createRole);
-        Roles.applicationRoles(tenant, app).forEach(userManagement::createRole);
-        Roles.tenantRoles(deletedTenant).forEach(userManagement::createRole);
-        userManagement.createRole(Role.hostedSupporter());
+        var tenants = tester.controller().tenants().asList();
+        var apps = tester.controller().applications().asList();
+        assertEquals(1, tenants.size());
+        assertEquals(1, apps.size());
+        assertEquals(TENANT_2, tenants.get(0).name().value());
+    }
 
-        var expectedRoles = Roles.tenantRoles(deletedTenant);
-        var actualRoles = userManagementMaintainer.findLeftoverRoles();
+    @Test
+    void no_tenant_deletion_in_public() {
+        var tester = createTester(SystemName.Public);
+        var maintainer = new UserManagementMaintainer(tester.controller(), Duration.ofMinutes(5), tester.serviceRegistry().roleMaintainer());
+        maintainer.maintain();
 
-        assertEquals(expectedRoles.size(), actualRoles.size());
-        assertTrue(expectedRoles.containsAll(actualRoles) && actualRoles.containsAll(expectedRoles));
+        var tenants = tester.controller().tenants().asList();
+        var apps = tester.controller().applications().asList();
+        assertEquals(2, tenants.size());
+        assertEquals(2, apps.size());
+    }
+
+    private ControllerTester createTester(SystemName systemName) {
+        var tester = new ControllerTester(systemName);
+        tester.createTenant(TENANT_1);
+        tester.createTenant(TENANT_2);
+        tester.createApplication(TENANT_1, APP_NAME);
+        tester.createApplication(TENANT_2, APP_NAME);
+
+        var tenantToDelete = tester.controller().tenants().get(TENANT_1).get();
+        tester.serviceRegistry().roleMaintainerMock().mockTenantToDelete(tenantToDelete);
+        return tester;
     }
 
 }

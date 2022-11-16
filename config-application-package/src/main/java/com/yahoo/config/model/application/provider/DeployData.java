@@ -2,6 +2,9 @@
 package com.yahoo.config.model.application.provider;
 
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.Tags;
+
+import java.util.Set;
 
 /**
  * Data generated or computed during deployment
@@ -10,10 +13,9 @@ import com.yahoo.config.provision.ApplicationId;
  */
 public class DeployData {
 
-    /** Which user deployed */
-    private final String deployedByUser;
-
     private final ApplicationId applicationId;
+
+    private final Tags tags;
 
     /** The absolute path to the directory holding the application */
     private final String deployedFromDir;
@@ -28,23 +30,21 @@ public class DeployData {
     private final long generation;
     private final long currentlyActiveGeneration;
 
-    public DeployData(String deployedByUser,
-                      String deployedFromDir,
+    public DeployData(String deployedFromDir,
                       ApplicationId applicationId,
+                      Tags tags,
                       Long deployTimestamp,
                       boolean internalRedeploy,
                       Long generation,
                       long currentlyActiveGeneration) {
-        this.deployedByUser = deployedByUser;
         this.deployedFromDir = deployedFromDir;
         this.applicationId = applicationId;
+        this.tags = tags;
         this.deployTimestamp = deployTimestamp;
         this.internalRedeploy = internalRedeploy;
         this.generation = generation;
         this.currentlyActiveGeneration = currentlyActiveGeneration;
     }
-
-    public String getDeployedByUser() { return deployedByUser; }
 
     public String getDeployedFromDir() { return deployedFromDir; }
 
@@ -57,5 +57,7 @@ public class DeployData {
     public long getCurrentlyActiveGeneration() { return currentlyActiveGeneration; }
 
     public ApplicationId getApplicationId() { return applicationId; }
+
+    public Tags getTags() { return tags; }
 
 }

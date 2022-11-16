@@ -6,6 +6,8 @@
 #include "searchable_feed_view.h"
 #include "searchview.h"
 #include "summaryadapter.h"
+#include "igetserialnum.h"
+#include "document_db_flush_config.h"
 #include <vespa/eval/eval/value_cache/constant_tensor_loader.h>
 #include <vespa/eval/eval/value_cache/constant_value_cache.h>
 #include <vespa/searchcore/proton/attribute/attributemanager.h>
@@ -14,10 +16,9 @@
 #include <vespa/searchcore/proton/documentmetastore/documentmetastorecontext.h>
 #include <vespa/searchcore/proton/index/i_index_writer.h>
 #include <vespa/searchcore/proton/index/indexmanager.h>
-#include <vespa/searchcore/proton/matching/constant_value_repo.h>
+#include <vespa/searchcore/proton/matching/ranking_assets_repo.h>
 #include <vespa/searchcorespi/index/iindexmanager.h>
 #include <vespa/vespalib/util/blockingthreadstackexecutor.h>
-#include <vespa/vespalib/util/varholder.h>
 
 namespace proton {
 
@@ -39,26 +40,17 @@ SearchableDocSubDB : public FastAccessDocSubDB,
 
 {
 public:
-    struct Config {
-        const FastAccessDocSubDB::Config _fastUpdCfg;
-        const size_t _numSearcherThreads;
-
-        Config(const FastAccessDocSubDB::Config &fastUpdCfg, size_t numSearcherThreads)
-            : _fastUpdCfg(fastUpdCfg),
-              _numSearcherThreads(numSearcherThreads)
-        { }
-    };
 
     struct Context {
         const FastAccessDocSubDB::Context  _fastUpdCtx;
         matching::QueryLimiter            &_queryLimiter;
         const vespalib::Clock             &_clock;
-        vespalib::SyncableThreadExecutor  &_warmupExecutor;
+        vespalib::Executor                &_warmupExecutor;
 
         Context(const FastAccessDocSubDB::Context &fastUpdCtx,
                 matching::QueryLimiter &queryLimiter,
                 const vespalib::Clock &clock,
-                vespalib::SyncableThreadExecutor &warmupExecutor)
+                vespalib:: Executor &warmupExecutor)
             : _fastUpdCtx(fastUpdCtx),
               _queryLimiter(queryLimiter),
               _clock(clock),
@@ -76,12 +68,11 @@ private:
     vespalib::VarHolder<SearchableFeedView::SP> _rFeedView;
     vespalib::eval::ConstantTensorLoader        _tensorLoader;
     vespalib::eval::ConstantValueCache          _constantValueCache;
-    matching::ConstantValueRepo                 _constantValueRepo;
+    matching::RankingAssetsRepo                 _rankingAssetsRepo;
     SearchableDocSubDBConfigurer                _configurer;
-    vespalib::SyncableThreadExecutor           &_warmupExecutor;
+    vespalib::Executor                         &_warmupExecutor;
     std::shared_ptr<GidToLidChangeHandler>      _realGidToLidChangeHandler;
     DocumentDBFlushConfig                       _flushConfig;
-    bool                                        _nodeRetired;
 
     // Note: lifetime of indexManager must be handled by caller.
     std::shared_ptr<initializer::InitializerTask>
@@ -114,7 +105,7 @@ public:
     IReprocessingTask::List
     applyConfig(const DocumentDBConfig &newConfigSnapshot, const DocumentDBConfig &oldConfigSnapshot,
                 SerialNum serialNum, const ReconfigParams &params, IDocumentDBReferenceResolver &resolver) override;
-    void setBucketStateCalculator(const std::shared_ptr<IBucketStateCalculator> &calc) override;
+    void setBucketStateCalculator(const std::shared_ptr<IBucketStateCalculator> &calc, OnDone onDone) override;
 
     void clearViews() override;
 

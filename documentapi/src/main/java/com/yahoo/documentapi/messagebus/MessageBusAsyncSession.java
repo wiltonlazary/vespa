@@ -6,7 +6,7 @@ import com.yahoo.document.DocumentId;
 import com.yahoo.document.DocumentPut;
 import com.yahoo.document.DocumentRemove;
 import com.yahoo.document.DocumentUpdate;
-import com.yahoo.document.fieldset.AllFields;
+import com.yahoo.document.fieldset.DocumentOnly;
 import com.yahoo.documentapi.AsyncParameters;
 import com.yahoo.documentapi.AsyncSession;
 import com.yahoo.documentapi.DocumentIdResponse;
@@ -26,12 +26,14 @@ import com.yahoo.documentapi.messagebus.protocol.RemoveDocumentMessage;
 import com.yahoo.documentapi.messagebus.protocol.RemoveDocumentReply;
 import com.yahoo.documentapi.messagebus.protocol.UpdateDocumentMessage;
 import com.yahoo.documentapi.messagebus.protocol.UpdateDocumentReply;
+import com.yahoo.messagebus.Error;
 import com.yahoo.messagebus.ErrorCode;
 import com.yahoo.messagebus.Message;
 import com.yahoo.messagebus.MessageBus;
 import com.yahoo.messagebus.Reply;
 import com.yahoo.messagebus.ReplyHandler;
 import com.yahoo.messagebus.SourceSession;
+import com.yahoo.messagebus.SourceSessionParams;
 import com.yahoo.messagebus.StaticThrottlePolicy;
 import com.yahoo.messagebus.ThrottlePolicy;
 
@@ -65,7 +67,6 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
     private static final Logger log = Logger.getLogger(MessageBusAsyncSession.class.getName());
     private final AtomicLong requestId = new AtomicLong(0);
     private final BlockingQueue<Response> responses = new LinkedBlockingQueue<>();
-    private final ThrottlePolicy throttlePolicy;
     private final SourceSession session;
     private final String routeForGet;
     private String route;
@@ -95,11 +96,12 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
         route = mbusParams.getRoute();
         routeForGet = mbusParams.getRouteForGet();
         traceLevel = mbusParams.getTraceLevel();
-        throttlePolicy = mbusParams.getSourceSessionParams().getThrottlePolicy();
-        if (handler == null) {
-            handler = new MyReplyHandler(asyncParams.getResponseHandler(), responses);
+        SourceSessionParams sourceSessionParams = new SourceSessionParams(mbusParams.getSourceSessionParams());
+        if (asyncParams.getThrottlePolicy() != null) {
+            sourceSessionParams.setThrottlePolicy(asyncParams.getThrottlePolicy());
         }
-        session = bus.createSourceSession(handler, mbusParams.getSourceSessionParams());
+        sourceSessionParams.setReplyHandler((handler != null) ? handler : new MyReplyHandler(asyncParams.getResponseHandler(), responses));
+        session = bus.createSourceSession(sourceSessionParams);
     }
 
     @Override
@@ -110,7 +112,6 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
     @Override
     public Result put(DocumentPut documentPut, DocumentOperationParameters parameters) {
         PutDocumentMessage msg = new PutDocumentMessage(documentPut);
-        msg.setPriority(parameters.priority().orElse(DocumentProtocol.Priority.NORMAL_3));
         return send(msg, parameters);
     }
 
@@ -120,15 +121,8 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
     }
 
     @Override
-    @Deprecated // TODO: Remove on Vespa 8
-    public Result get(DocumentId id, boolean headersOnly, DocumentProtocol.Priority pri) {
-        return get(id, pri);
-    }
-
-    @Override
     public Result get(DocumentId id, DocumentOperationParameters parameters) {
-        GetDocumentMessage msg = new GetDocumentMessage(id, parameters.fieldSet().orElse(AllFields.NAME));
-        msg.setPriority(parameters.priority().orElse(DocumentProtocol.Priority.NORMAL_1));
+        GetDocumentMessage msg = new GetDocumentMessage(id, parameters.fieldSet().orElse(DocumentOnly.NAME));
         return send(msg, parameters);
     }
 
@@ -140,7 +134,6 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
     @Override
     public Result remove(DocumentRemove remove, DocumentOperationParameters parameters) {
         RemoveDocumentMessage msg = new RemoveDocumentMessage(remove);
-        msg.setPriority(parameters.priority().orElse(DocumentProtocol.Priority.NORMAL_2));
         return send(msg, parameters);
     }
 
@@ -152,7 +145,6 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
     @Override
     public Result update(DocumentUpdate update, DocumentOperationParameters parameters) {
         UpdateDocumentMessage msg = new UpdateDocumentMessage(update);
-        msg.setPriority(parameters.priority().orElse(DocumentProtocol.Priority.NORMAL_2));
         return send(msg, parameters);
     }
 
@@ -180,7 +172,7 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
                 return toResult(reqId, session.send(msg));
             }
         } catch (Exception e) {
-            return new Result(Result.ResultType.FATAL_ERROR, new Error(e.getMessage(), e));
+            return new Result(Result.ResultType.FATAL_ERROR, new Error(ErrorCode.FATAL_ERROR, e.toString()));
         }
     }
 
@@ -241,11 +233,13 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
 
     @Override
     public double getCurrentWindowSize() {
-        if (throttlePolicy instanceof StaticThrottlePolicy) {
-            return ((StaticThrottlePolicy)throttlePolicy).getMaxPendingCount();
+        if (getThrottlePolicy() instanceof StaticThrottlePolicy) {
+            return ((StaticThrottlePolicy)getThrottlePolicy()).getMaxPendingCount();
         }
         return 0;
     }
+
+    ThrottlePolicy getThrottlePolicy() { return session.getThrottlePolicy(); }
 
     /**
      * Returns a concatenated error string from the errors contained in a reply.
@@ -276,8 +270,7 @@ public class MessageBusAsyncSession implements MessageBusSession, AsyncSession {
             return new Result(reqId);
         }
         return new Result(
-                messageBusErrorToResultType(mbusResult.getError().getCode()),
-                new Error(mbusResult.getError().getMessage() + " (" + mbusResult.getError().getCode() + ")"));
+                messageBusErrorToResultType(mbusResult.getError().getCode()), mbusResult.getError());
     }
 
     private static Response.Outcome toOutcome(Reply reply) {

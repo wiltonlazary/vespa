@@ -1,14 +1,14 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.model.container.xml;
 
+import com.yahoo.cloud.config.CuratorConfig;
 import com.yahoo.cloud.config.ZookeeperServerConfig;
 import com.yahoo.component.ComponentId;
 import com.yahoo.config.application.api.ApplicationPackage;
 import com.yahoo.config.model.NullConfigModelRegistry;
+import com.yahoo.config.model.api.ApplicationClusterEndpoint;
 import com.yahoo.config.model.api.ContainerEndpoint;
-import com.yahoo.config.model.api.EndpointCertificateSecrets;
 import com.yahoo.config.model.api.ModelContext;
-import com.yahoo.config.model.api.TenantSecretStore;
 import com.yahoo.config.model.builder.xml.test.DomBuilderTest;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.deploy.TestProperties;
@@ -17,10 +17,10 @@ import com.yahoo.config.model.provision.InMemoryProvisioner;
 import com.yahoo.config.model.provision.SingleNodeProvisioner;
 import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.config.model.test.MockRoot;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.Flavor;
 import com.yahoo.config.provision.RegionName;
-import com.yahoo.config.provision.SystemName;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.config.provisioning.FlavorsConfig;
 import com.yahoo.container.ComponentsConfig;
@@ -32,43 +32,28 @@ import com.yahoo.container.handler.VipStatusHandler;
 import com.yahoo.container.handler.metrics.MetricsV2Handler;
 import com.yahoo.container.handler.observability.ApplicationStatusHandler;
 import com.yahoo.container.jdisc.JdiscBindingsConfig;
-import com.yahoo.container.jdisc.secretstore.SecretStoreConfig;
-import com.yahoo.container.servlet.ServletConfigConfig;
 import com.yahoo.container.usability.BindingsOverviewHandler;
-import com.yahoo.jdisc.http.ConnectorConfig;
-import com.yahoo.jdisc.http.ServletPathsConfig;
 import com.yahoo.net.HostName;
-import com.yahoo.path.Path;
 import com.yahoo.prelude.cluster.QrMonitorConfig;
 import com.yahoo.search.config.QrStartConfig;
-import com.yahoo.security.X509CertificateUtils;
-import com.yahoo.security.tls.TlsContext;
-import com.yahoo.vespa.defaults.Defaults;
 import com.yahoo.vespa.model.AbstractService;
 import com.yahoo.vespa.model.VespaModel;
 import com.yahoo.vespa.model.container.ApplicationContainer;
 import com.yahoo.vespa.model.container.ApplicationContainerCluster;
 import com.yahoo.vespa.model.container.ContainerCluster;
 import com.yahoo.vespa.model.container.ContainerModelEvaluation;
-import com.yahoo.vespa.model.container.SecretStore;
 import com.yahoo.vespa.model.container.component.Component;
-import com.yahoo.vespa.model.container.http.ConnectorFactory;
+import com.yahoo.vespa.model.container.component.Handler;
 import com.yahoo.vespa.model.content.utils.ContentClusterUtils;
 import com.yahoo.vespa.model.test.VespaModelTester;
 import com.yahoo.vespa.model.test.utils.VespaModelCreatorWithFilePkg;
-import org.hamcrest.Matchers;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
 import org.w3c.dom.Element;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
-import java.io.StringReader;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -77,25 +62,18 @@ import java.util.stream.Collectors;
 import static com.yahoo.config.model.test.TestUtil.joinLines;
 import static com.yahoo.test.LinePatternMatcher.containsLineWithPattern;
 import static com.yahoo.vespa.defaults.Defaults.getDefaults;
-import static com.yahoo.vespa.model.container.ContainerCluster.ROOT_HANDLER_BINDING;
-import static com.yahoo.vespa.model.container.ContainerCluster.STATE_HANDLER_BINDING_1;
-import static org.hamcrest.CoreMatchers.is;
+import static com.yahoo.vespa.model.container.component.chain.ProcessingHandler.PROCESSING_HANDLER_CLASS;
 import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
-import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.hasItem;
-import static org.hamcrest.Matchers.isEmptyString;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Tests for "core functionality" of the container model, e.g. ports, or the 'components' and 'bundles' configs.
@@ -106,107 +84,89 @@ import static org.junit.Assert.fail;
  * @author gjoranv
  */
 public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
-    @Rule
-    public TemporaryFolder applicationFolder = new TemporaryFolder();
 
     @Test
-    public void model_evaluation_bundles_are_deployed() {
+    void model_evaluation_bundles_are_deployed() {
         createBasicContainerModel();
         PlatformBundlesConfig config = root.getConfig(PlatformBundlesConfig.class, "default");
-        assertThat(config.bundlePaths(), hasItem(ContainerModelEvaluation.MODEL_EVALUATION_BUNDLE_FILE.toString()));
-        assertThat(config.bundlePaths(), hasItem(ContainerModelEvaluation.MODEL_INTEGRATION_BUNDLE_FILE.toString()));
+        assertTrue(config.bundlePaths().contains(ContainerModelEvaluation.MODEL_EVALUATION_BUNDLE_FILE.toString()));
+        assertTrue(config.bundlePaths().contains(ContainerModelEvaluation.MODEL_INTEGRATION_BUNDLE_FILE.toString()));
     }
 
     @Test
-    public void deprecated_jdisc_tag_is_allowed() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<jdisc version='1.0'>",
-                nodesXml,
-                "</jdisc>" );
-        TestLogger logger = new TestLogger();
-        createModel(root, logger, clusterElem);
-        AbstractService container = (AbstractService)root.getProducer("jdisc/container.0");
-        assertNotNull(container);
-
-        assertFalse(logger.msgs.isEmpty());
-        assertEquals(Level.WARNING, logger.msgs.get(0).getFirst());
-        assertEquals("'jdisc' is deprecated as tag name. Use 'container' instead.", logger.msgs.get(0).getSecond());
-    }
-
-    @Test
-    public void default_port_is_4080() {
+    void default_port_is_4080() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container version='1.0'>",
-                  nodesXml,
-                "</container>" );
+                nodesXml,
+                "</container>");
         createModel(root, clusterElem);
-        AbstractService container = (AbstractService)root.getProducer("container/container.0");
-        assertThat(container.getRelativePort(0), is(getDefaults().vespaWebServicePort()));
+        AbstractService container = (AbstractService) root.getProducer("container/container.0");
+        assertEquals(getDefaults().vespaWebServicePort(), container.getRelativePort(0));
     }
 
     @Test
-    public void http_server_port_is_configurable_and_does_not_affect_other_ports() {
+    void http_server_port_is_configurable_and_does_not_affect_other_ports() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container version='1.0'>",
                 "  <http>",
                 "    <server port='9000' id='foo' />",
                 "  </http>",
-                  nodesXml,
-                "</container>" );
+                nodesXml,
+                "</container>");
         createModel(root, clusterElem);
-        AbstractService container = (AbstractService)root.getProducer("container/container.0");
-        assertThat(container.getRelativePort(0), is(9000));
-        assertThat(container.getRelativePort(1), is(not(9001)));
+        AbstractService container = (AbstractService) root.getProducer("container/container.0");
+        assertEquals(9000, container.getRelativePort(0));
+        assertNotEquals(9001, container.getRelativePort(1));
     }
 
     @Test
-    public void omitting_http_server_port_gives_default() {
+    void omitting_http_server_port_gives_default() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container version='1.0'>",
                 "  <http>",
                 "    <server id='foo'/>",
                 "  </http>",
                 nodesXml,
-                "</container>" );
+                "</container>");
         createModel(root, clusterElem);
-        AbstractService container = (AbstractService)root.getProducer("container/container.0");
-        assertEquals(Defaults.getDefaults().vespaWebServicePort(), container.getRelativePort(0));
+        AbstractService container = (AbstractService) root.getProducer("container/container.0");
+        assertEquals(getDefaults().vespaWebServicePort(), container.getRelativePort(0));
     }
 
     @Test
-    public void fail_if_http_port_is_not_default_in_hosted_vespa() throws Exception {
+    void fail_if_http_port_is_not_default_in_hosted_vespa() throws Exception {
         try {
             String servicesXml =
                     "<services>" +
-                    "<admin version='3.0'>" +
-                    "    <nodes count='1'/>" +
-                    "</admin>" +
-                    "<container version='1.0'>" +
-                    "  <http>" +
-                    "    <server port='9000' id='foo' />" +
-                    "  </http>" +
-                    nodesXml +
-                    "</container>" +
-                    "</services>";
+                            "<admin version='3.0'>" +
+                            "    <nodes count='1'/>" +
+                            "</admin>" +
+                            "<container version='1.0'>" +
+                            "  <http>" +
+                            "    <server port='9000' id='foo' />" +
+                            "  </http>" +
+                            nodesXml +
+                            "</container>" +
+                            "</services>";
             ApplicationPackage applicationPackage = new MockApplicationPackage.Builder().withServices(servicesXml).build();
             // Need to create VespaModel to make deploy properties have effect
             TestLogger logger = new TestLogger();
             new VespaModel(new NullConfigModelRegistry(), new DeployState.Builder()
-                                                                  .applicationPackage(applicationPackage)
-                                                                  .deployLogger(logger)
-                                                                  .properties(new TestProperties().setHostedVespa(true))
-                                                                  .build());
+                    .applicationPackage(applicationPackage)
+                    .deployLogger(logger)
+                    .properties(new TestProperties().setHostedVespa(true))
+                    .build());
             fail("Expected exception");
         }
         catch (IllegalArgumentException e) {
             // Success
-            assertEquals("Illegal port 9000 in http server 'foo': Port must be set to " + Defaults.getDefaults().vespaWebServicePort(),
-                         e.getMessage());
+            assertEquals("Illegal port 9000 in http server 'foo': Port must be set to " + getDefaults().vespaWebServicePort(),
+                    e.getMessage());
         }
     }
 
     @Test
-    public void one_cluster_with_explicit_port_and_one_without_is_ok() {
+    void one_cluster_with_explicit_port_and_one_without_is_ok() {
         Element cluster1Elem = DomBuilderTest.parse(
                 "<container id='cluster1' version='1.0' />");
         Element cluster2Elem = DomBuilderTest.parse(
@@ -219,15 +179,15 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void two_clusters_without_explicit_port_throws_exception() {
+    void two_clusters_without_explicit_port_throws_exception() {
         Element cluster1Elem = DomBuilderTest.parse(
                 "<container id='cluster1' version='1.0'>",
-                  nodesXml,
-                "</container>" );
+                nodesXml,
+                "</container>");
         Element cluster2Elem = DomBuilderTest.parse(
                 "<container id='cluster2' version='1.0'>",
-                  nodesXml,
-                "</container>" );
+                nodesXml,
+                "</container>");
         try {
             createModel(root, cluster1Elem, cluster2Elem);
             fail("Expected exception");
@@ -237,7 +197,18 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void verify_bindings_for_builtin_handlers() {
+    void builtin_handlers_get_default_threadpool() {
+        createBasicContainerModel();
+
+        Handler h1 = getHandler("default", ApplicationStatusHandler.class.getName());
+        assertTrue(h1.getInjectedComponentIds().contains("threadpool@default-handler-common"));
+
+        Handler h2 = getHandler("default", BindingsOverviewHandler.class.getName());
+        assertTrue(h2.getInjectedComponentIds().contains("threadpool@default-handler-common"));
+    }
+
+    @Test
+    void verify_bindings_for_builtin_handlers() {
         createBasicContainerModel();
         JdiscBindingsConfig config = root.getConfig(JdiscBindingsConfig.class, "default/container.0");
 
@@ -255,106 +226,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void default_root_handler_binding_can_be_stolen_by_user_configured_handler() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container id='default' version='1.0'>" +
-                        "  <handler id='userRootHandler'>" +
-                        "    <binding>" + ROOT_HANDLER_BINDING.patternString() + "</binding>" +
-                        "  </handler>" +
-                        "</container>");
-        createModel(root, clusterElem);
-
-        // The handler is still set up.
-        ComponentsConfig.Components userRootHandler = getComponent(componentsConfig(), BindingsOverviewHandler.class.getName());
-        assertThat(userRootHandler, notNullValue());
-
-        // .. but it has no bindings
-        var discBindingsConfig = root.getConfig(JdiscBindingsConfig.class, "default");
-        assertThat(discBindingsConfig.handlers(BindingsOverviewHandler.class.getName()), is(nullValue()));
-    }
-
-    @Test
-    public void reserved_binding_cannot_be_stolen_by_user_configured_handler() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container id='default' version='1.0'>" +
-                        "  <handler id='userHandler'>" +
-                        "    <binding>" + STATE_HANDLER_BINDING_1.patternString() + "</binding>" +
-                        "  </handler>" +
-                        "</container>");
-        try {
-            createModel(root, clusterElem);
-            fail("Expected exception when stealing a reserved binding.");
-        } catch (IllegalArgumentException e) {
-            assertThat(e.getMessage(), is("Binding 'http://*/state/v1' is a reserved Vespa binding " +
-                                                  "and cannot be used by handler: userHandler"));
-        }
-    }
-
-    @Test
-    public void handler_bindings_are_included_in_discBindings_config() {
-        createClusterWithJDiscHandler();
-        String discBindingsConfig = root.getConfig(JdiscBindingsConfig.class, "default").toString();
-        assertThat(discBindingsConfig, containsString("{discHandler}"));
-        assertThat(discBindingsConfig, containsString(".serverBindings[0] \"http://*/binding0\""));
-        assertThat(discBindingsConfig, containsString(".serverBindings[1] \"http://*/binding1\""));
-        assertThat(discBindingsConfig, containsString(".clientBindings[0] \"http://*/clientBinding\""));
-    }
-
-    @Test
-    public void handlers_are_included_in_components_config() {
-        createClusterWithJDiscHandler();
-        assertThat(componentsConfig().toString(), containsString(".id \"discHandler\""));
-    }
-
-    private void createClusterWithJDiscHandler() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container id='default' version='1.0'>",
-                "  <handler id='discHandler'>",
-                "    <binding>http://*/binding0</binding>",
-                "    <binding>http://*/binding1</binding>",
-                "    <clientBinding>http://*/clientBinding</clientBinding>",
-                "  </handler>",
-                "</container>");
-
-        createModel(root, clusterElem);
-    }
-
-    @Test
-    public void servlets_are_included_in_ServletPathConfig() {
-        createClusterWithServlet();
-        ServletPathsConfig servletPathsConfig = root.getConfig(ServletPathsConfig.class, "default");
-        assertThat(servletPathsConfig.servlets().values().iterator().next().path(), is("p/a/t/h"));
-    }
-
-    @Test
-    public void servletconfig_is_produced() {
-        createClusterWithServlet();
-
-        String configId = getContainerCluster("default").getServletMap().
-                               values().iterator().next().getConfigId();
-
-        ServletConfigConfig servletConfig = root.getConfig(ServletConfigConfig.class, configId);
-
-        assertThat(servletConfig.map().get("myKey"), is("myValue"));
-    }
-
-    private void createClusterWithServlet() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container id='default' version='1.0'>",
-                "  <servlet id='myServlet' class='myClass' bundle='myBundle'>",
-                "    <path>p/a/t/h</path>",
-                "    <servlet-config>",
-                "      <myKey>myValue</myKey>",
-                "    </servlet-config>",
-                "  </servlet>",
-                "</container>");
-
-        createModel(root, clusterElem);
-    }
-
-
-    @Test
-    public void processing_handler_bindings_can_be_overridden() {
+    void processing_handler_bindings_can_be_overridden() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container id='default' version='1.0'>",
                 "  <processing>",
@@ -372,40 +244,11 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void clientProvider_bindings_are_included_in_discBindings_config() {
-        createModelWithClientProvider();
-        String discBindingsConfig = root.getConfig(JdiscBindingsConfig.class, "default").toString();
-        assertThat(discBindingsConfig, containsString("{discClient}"));
-        assertThat(discBindingsConfig, containsString(".clientBindings[0] \"http://*/binding0\""));
-        assertThat(discBindingsConfig, containsString(".clientBindings[1] \"http://*/binding1\""));
-        assertThat(discBindingsConfig, containsString(".serverBindings[0] \"http://*/serverBinding\""));
-    }
-
-    @Test
-    public void clientProviders_are_included_in_components_config() {
-        createModelWithClientProvider();
-        assertThat(componentsConfig().toString(), containsString(".id \"discClient\""));
-    }
-
-    private void createModelWithClientProvider() {
+    void serverProviders_are_included_in_components_config() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container id='default' version='1.0'>" +
-                "  <client id='discClient'>" +
-                "    <binding>http://*/binding0</binding>" +
-                "    <binding>http://*/binding1</binding>" +
-                "    <serverBinding>http://*/serverBinding</serverBinding>" +
-                "  </client>" +
-                "</container>" );
-
-        createModel(root, clusterElem);
-    }
-
-    @Test
-    public void serverProviders_are_included_in_components_config() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container id='default' version='1.0'>" +
-                "  <server id='discServer' />" +
-                "</container>" );
+                        "  <server id='discServer' />" +
+                        "</container>");
 
         createModel(root, clusterElem);
 
@@ -418,7 +261,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void searchHandler_gets_only_search_chains_in_chains_config()  {
+    void searchHandler_gets_only_search_chains_in_chains_config()  {
         createClusterWithProcessingAndSearchChains();
         String searchHandlerConfigId = "default/component/com.yahoo.search.handler.SearchHandler";
         String chainsConfig = getChainsConfig(searchHandlerConfigId);
@@ -427,12 +270,19 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void processingHandler_gets_only_processing_chains_in_chains_config()  {
+    void processingHandler_gets_only_processing_chains_in_chains_config()  {
         createClusterWithProcessingAndSearchChains();
-        String processingHandlerConfigId = "default/component/com.yahoo.processing.handler.ProcessingHandler";
+        String processingHandlerConfigId = "default/component/" + PROCESSING_HANDLER_CLASS;
         String chainsConfig = getChainsConfig(processingHandlerConfigId);
         assertThat(chainsConfig, containsLineWithPattern(".*\\.id \"testProcessor@default\"$"));
         assertThat(chainsConfig, not(containsLineWithPattern(".*\\.id \"testSearcher@default\"$")));
+    }
+
+    @Test
+    void processingHandler_is_instantiated_from_the_default_bundle() {
+        createClusterWithProcessingAndSearchChains();
+        ComponentsConfig.Components config = getComponentInConfig(componentsConfig(), PROCESSING_HANDLER_CLASS);
+        assertEquals(PROCESSING_HANDLER_CLASS, config.bundle());
     }
 
     private void createClusterWithProcessingAndSearchChains() {
@@ -455,13 +305,13 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void user_config_can_be_overridden_on_node() {
+    void user_config_can_be_overridden_on_node() {
         Element containerElem = DomBuilderTest.parse(
                 "<container id='default' version='1.0'>",
                 "  <config name=\"prelude.cluster.qr-monitor\">" +
-                "    <requesttimeout>111</requesttimeout>",
+                        "    <requesttimeout>111</requesttimeout>",
                 "  </config> " +
-                "  <nodes>",
+                        "  <nodes>",
                 "    <node hostalias='host1' />",
                 "    <node hostalias='host2'>",
                 "      <config name=\"prelude.cluster.qr-monitor\">",
@@ -473,45 +323,25 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
 
         root = ContentClusterUtils.createMockRoot(new String[]{"host1", "host2"});
         createModel(root, containerElem);
-        ContainerCluster cluster = (ContainerCluster)root.getChildren().get("default");
-        assertThat(cluster.getContainers().size(), is(2));
+        ContainerCluster cluster = (ContainerCluster) root.getChildren().get("default");
+        assertEquals(2, cluster.getContainers().size());
         assertEquals(root.getConfig(QrMonitorConfig.class, "default/container.0").requesttimeout(), 111);
         assertEquals(root.getConfig(QrMonitorConfig.class, "default/container.1").requesttimeout(), 222);
     }
 
     @Test
-    public void nested_components_are_injected_to_handlers() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container id='default' version='1.0'>",
-                "  <handler id='myHandler'>",
-                "    <component id='injected' />",
-                "  </handler>",
-                "  <client id='myClient'>",  // remember, a client is also a request handler
-                "    <component id='injected' />",
-                "  </client>",
-                "</container>");
-
-        createModel(root, clusterElem);
-        Component<?,?> handler = getContainerComponent("default", "myHandler");
-        assertThat(handler.getInjectedComponentIds(), hasItem("injected@myHandler"));
-
-        Component<?,?> client = getContainerComponent("default", "myClient");
-        assertThat(client.getInjectedComponentIds(), hasItem("injected@myClient"));
-    }
-
-    @Test
-    public void component_includes_are_added() {
+    void component_includes_are_added() {
         VespaModelCreatorWithFilePkg creator = new VespaModelCreatorWithFilePkg("src/test/cfg/application/include_dirs");
         VespaModel model = creator.create(true);
         ContainerCluster cluster = model.getContainerClusters().get("default");
         Map<ComponentId, Component<?, ?>> componentsMap = cluster.getComponentsMap();
-        Component<?,?> example = componentsMap.get(
+        Component<?, ?> example = componentsMap.get(
                 ComponentId.fromString("test.Exampledocproc"));
-        assertThat(example.getComponentId().getName(), is("test.Exampledocproc"));
+        assertEquals("test.Exampledocproc", example.getComponentId().getName());
     }
 
     @Test
-    public void affinity_is_set() {
+    void affinity_is_set() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container id='default' version='1.0'>",
                 "  <http>",
@@ -520,14 +350,14 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
                 "  <nodes cpu-socket-affinity='true'>",
                 "    <node hostalias='node1' />",
                 "  </nodes>" +
-                "</container>");
+                        "</container>");
         createModel(root, clusterElem);
         assertTrue(getContainerCluster("default").getContainers().get(0).getAffinity().isPresent());
-        assertThat(getContainerCluster("default").getContainers().get(0).getAffinity().get().cpuSocket(), is(0));
+        assertEquals(0, getContainerCluster("default").getContainers().get(0).getAffinity().get().cpuSocket());
     }
 
     @Test
-    public void singlenode_servicespec_is_used_with_hosts_xml() throws IOException, SAXException {
+    void singlenode_servicespec_is_used_with_hosts_xml() throws IOException, SAXException {
         String servicesXml = "<container id='default' version='1.0' />";
         String hostsXml = "<hosts>\n" +
                 "    <host name=\"test1.yahoo.com\">\n" +
@@ -539,58 +369,11 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
                 .withServices(servicesXml)
                 .build();
         VespaModel model = new VespaModel(applicationPackage);
-        assertThat(model.hostSystem().getHosts().size(), is(1));
+        assertEquals(1, model.hostSystem().getHosts().size());
     }
 
     @Test
-    public void http_aliases_are_stored_on_cluster_and_on_service_properties() {
-        Element clusterElem = DomBuilderTest.parse(
-                        "<container id='default' version='1.0'>",
-                        "  <aliases>",
-                        "    <service-alias>service1</service-alias>",
-                        "    <service-alias>service2</service-alias>",
-                        "    <endpoint-alias>foo1.bar1.com</endpoint-alias>",
-                        "    <endpoint-alias>foo2.bar2.com</endpoint-alias>",
-                        "  </aliases>",
-                        "  <nodes>",
-                        "    <node hostalias='host1' />",
-                        "  </nodes>",
-                        "</container>");
-
-        createModel(root, clusterElem);
-        assertEquals(getContainerCluster("default").serviceAliases().get(0), "service1");
-        assertEquals(getContainerCluster("default").endpointAliases().get(0), "foo1.bar1.com");
-        assertEquals(getContainerCluster("default").serviceAliases().get(1), "service2");
-        assertEquals(getContainerCluster("default").endpointAliases().get(1), "foo2.bar2.com");
-
-        assertEquals(getContainerCluster("default").getContainers().get(0).getServicePropertyString("servicealiases"), "service1,service2");
-        assertEquals(getContainerCluster("default").getContainers().get(0).getServicePropertyString("endpointaliases"), "foo1.bar1.com,foo2.bar2.com");
-    }
-
-    @Test
-    public void http_aliases_are_only_honored_in_prod_environment() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container id='default' version='1.0'>",
-                "  <aliases>",
-                "    <service-alias>service1</service-alias>",
-                "    <endpoint-alias>foo1.bar1.com</endpoint-alias>",
-                "  </aliases>",
-                "  <nodes>",
-                "    <node hostalias='host1' />",
-                "  </nodes>",
-                "</container>");
-
-        DeployState deployState = new DeployState.Builder().zone(new Zone(Environment.dev, RegionName.from("us-east-1"))).build();
-        createModel(root, deployState, null, clusterElem);
-        assertEquals(0, getContainerCluster("default").serviceAliases().size());
-        assertEquals(0, getContainerCluster("default").endpointAliases().size());
-
-        assertNull(getContainerCluster("default").getContainers().get(0).getServicePropertyString("servicealiases"));
-        assertNull(getContainerCluster("default").getContainers().get(0).getServicePropertyString("endpointaliases"));
-    }
-
-    @Test
-    public void endpoints_are_added_to_containers() throws IOException, SAXException {
+    void endpoints_are_added_to_containers() throws IOException, SAXException {
         final var servicesXml = joinLines("",
                 "<container id='comics-search' version='1.0'>",
                 "  <nodes>",
@@ -613,7 +396,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
         final var deployState = new DeployState.Builder()
                 .applicationPackage(applicationPackage)
                 .zone(new Zone(Environment.prod, RegionName.from("us-east-1")))
-                .endpoints(Set.of(new ContainerEndpoint("comics-search", List.of("nalle", "balle"))))
+                .endpoints(Set.of(new ContainerEndpoint("comics-search", ApplicationClusterEndpoint.Scope.global, List.of("nalle", "balle"))))
                 .properties(new TestProperties().setHostedVespa(true))
                 .build();
 
@@ -622,7 +405,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
                 .flatMap(cluster -> cluster.getContainers().stream())
                 .collect(Collectors.toList());
 
-        assertFalse("Missing container objects based on configuration", containers.isEmpty());
+        assertFalse(containers.isEmpty(), "Missing container objects based on configuration");
 
         containers.forEach(container -> {
             final var rotations = container.getServicePropertyString("rotations").split(",");
@@ -632,7 +415,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void singlenode_servicespec_is_used_with_hosted_vespa() throws IOException, SAXException {
+    void singlenode_servicespec_is_used_with_hosted_vespa() throws IOException, SAXException {
         String servicesXml = "<container id='default' version='1.0' />";
         ApplicationPackage applicationPackage = new MockApplicationPackage.Builder().withServices(servicesXml).build();
         VespaModel model = new VespaModel(new NullConfigModelRegistry(), new DeployState.Builder()
@@ -645,23 +428,48 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
         assertEquals(2, model.hostSystem().getHosts().size());
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void renderers_named_JsonRenderer_are_not_allowed() {
-        createModel(root, generateContainerElementWithRenderer("JsonRenderer"));
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void renderers_named_DefaultRenderer_are_not_allowed() {
-        createModel(root, generateContainerElementWithRenderer("XmlRenderer"));
+    @Test
+    void cloud_account_without_nodes_tag() throws Exception {
+        String servicesXml = "<container id='default' version='1.0' />";
+        ApplicationPackage applicationPackage = new MockApplicationPackage.Builder().withServices(servicesXml).build();
+        CloudAccount cloudAccount = CloudAccount.from("000000000000");
+        InMemoryProvisioner provisioner = new InMemoryProvisioner(true, false, "host1.yahoo.com", "host2.yahoo.com");
+        VespaModel model = new VespaModel(new NullConfigModelRegistry(), new DeployState.Builder()
+                .modelHostProvisioner(provisioner)
+                .provisioned(provisioner.startProvisionedRecording())
+                .applicationPackage(applicationPackage)
+                .properties(new TestProperties().setMultitenant(true)
+                                                .setHostedVespa(true)
+                                                .setCloudAccount(cloudAccount))
+                .build());
+        assertEquals(2, model.hostSystem().getHosts().size());
+        assertEquals(List.of(cloudAccount), model.provisioned().all().values()
+                                                 .stream()
+                                                 .map(capacity -> capacity.cloudAccount().get())
+                                                 .collect(Collectors.toList()));
     }
 
     @Test
-    public void renderers_named_something_else_are_allowed() {
+    void renderers_named_JsonRenderer_are_not_allowed() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            createModel(root, generateContainerElementWithRenderer("JsonRenderer"));
+        });
+    }
+
+    @Test
+    void renderers_named_DefaultRenderer_are_not_allowed() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            createModel(root, generateContainerElementWithRenderer("XmlRenderer"));
+        });
+    }
+
+    @Test
+    void renderers_named_something_else_are_allowed() {
         createModel(root, generateContainerElementWithRenderer("my-little-renderer"));
     }
 
     @Test
-    public void vip_status_handler_uses_file_for_hosted_vespa() throws Exception {
+    void vip_status_handler_uses_file_for_hosted_vespa() throws Exception {
         String servicesXml = "<services>" +
                 "<container version='1.0'>" +
                 nodesXml +
@@ -681,7 +489,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void qrconfig_is_produced() throws IOException, SAXException {
+    void qrconfig_is_produced() throws IOException, SAXException {
         QrConfig qr = getQrConfig(new TestProperties());
         String hostname = HostName.getLocalhost();  // Using the same way of getting hostname as filedistribution model
         assertEquals("default.container.0", qr.discriminator());
@@ -694,6 +502,7 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
         assertEquals(50.0, qr.shutdown().timeout(), 0.00000000000001);
         assertFalse(qr.shutdown().dumpHeapOnTimeout());
     }
+
     private QrConfig getQrConfig(ModelContext.Properties properties) throws IOException, SAXException {
         String servicesXml =
                 "<services>" +
@@ -719,179 +528,30 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void control_container_shutdown() throws IOException, SAXException {
+    void control_container_shutdown() throws IOException, SAXException {
         QrConfig qr = getQrConfig(new TestProperties().containerShutdownTimeout(133).containerDumpHeapOnShutdownTimeout(true));
         assertEquals(133.0, qr.shutdown().timeout(), 0.00000000000001);
         assertTrue(qr.shutdown().dumpHeapOnTimeout());
     }
 
     @Test
-    public void secret_store_can_be_set_up() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container version='1.0'>",
-                "  <secret-store type='oath-ckms'>",
-                "    <group name='group1' environment='env1'/>",
-                "  </secret-store>",
-                "</container>");
-        createModel(root, clusterElem);
-        SecretStore secretStore = getContainerCluster("container").getSecretStore().get();
-        assertEquals("group1", secretStore.getGroups().get(0).name);
-        assertEquals("env1", secretStore.getGroups().get(0).environment);
-    }
-
-    @Test
-    public void cloud_secret_store_requires_configured_secret_store() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container version='1.0'>",
-                "  <secret-store type='cloud'>",
-                "    <store id='store'>",
-                "      <aws-parameter-store account='store1' region='eu-north-1'/>",
-                "    </store>",
-                "  </secret-store>",
-                "</container>");
-        try {
-            DeployState state = new DeployState.Builder()
-                    .properties(new TestProperties().setHostedVespa(true))
-                    .zone(new Zone(SystemName.Public, Environment.prod, RegionName.defaultName()))
-                    .build();
-            createModel(root, state, null, clusterElem);
-            fail("secret store not defined");
-        } catch (RuntimeException e) {
-            assertEquals("No configured secret store named store1", e.getMessage());
-        }
-    }
-
-
-    @Test
-    public void cloud_secret_store_can_be_set_up() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container version='1.0'>",
-                "  <secret-store type='cloud'>",
-                "    <store id='store'>",
-                "      <aws-parameter-store account='store1' region='eu-north-1'/>",
-                "    </store>",
-                "  </secret-store>",
-                "</container>");
-
-        DeployState state = new DeployState.Builder()
-                .properties(
-                        new TestProperties()
-                                .setHostedVespa(true)
-                                .setTenantSecretStores(List.of(new TenantSecretStore("store1", "1234", "role", Optional.of("externalid")))))
-                .zone(new Zone(SystemName.Public, Environment.prod, RegionName.defaultName()))
-                .build();
-        createModel(root, state, null, clusterElem);
-
-        ApplicationContainerCluster container = getContainerCluster("container");
-        assertComponentConfigured(container, "com.yahoo.jdisc.cloud.aws.AwsParameterStore");
-        CloudSecretStore secretStore = (CloudSecretStore) container.getComponentsMap().get(ComponentId.fromString("com.yahoo.jdisc.cloud.aws.AwsParameterStore"));
-
-
-        SecretStoreConfig.Builder configBuilder = new SecretStoreConfig.Builder();
-        secretStore.getConfig(configBuilder);
-        SecretStoreConfig secretStoreConfig = configBuilder.build();
-
-        assertEquals(1, secretStoreConfig.awsParameterStores().size());
-        assertEquals("store1", secretStoreConfig.awsParameterStores().get(0).name());
-    }
-
-    @Test
-    public void missing_security_clients_pem_fails_in_public() {
-        Element clusterElem = DomBuilderTest.parse("<container version='1.0' />");
-
-        try {
-            DeployState state = new DeployState.Builder()
-                    .properties(
-                        new TestProperties()
-                                .setHostedVespa(true)
-                                .setEndpointCertificateSecrets(Optional.of(new EndpointCertificateSecrets("CERT", "KEY"))))
-                    .zone(new Zone(SystemName.Public, Environment.prod, RegionName.defaultName()))
-                    .build();
-            createModel(root, state, null, clusterElem);
-        } catch (RuntimeException e) {
-            assertEquals("Client certificate authority security/clients.pem is missing - see: https://cloud.vespa.ai/en/security-model#data-plane",
-                         e.getMessage());
-            return;
-        }
-        fail();
-    }
-
-    @Test
-    public void security_clients_pem_is_picked_up() {
-        var applicationPackage = new MockApplicationPackage.Builder()
-                .withRoot(applicationFolder.getRoot())
-                .build();
-
-        applicationPackage.getFile(Path.fromString("security")).createDirectory();
-        applicationPackage.getFile(Path.fromString("security/clients.pem")).writeFile(new StringReader("I am a very nice certificate"));
-
-        var deployState = DeployState.createTestState(applicationPackage);
-
-        Element clusterElem = DomBuilderTest.parse("<container version='1.0' />");
-
-        createModel(root, deployState, null, clusterElem);
-        assertEquals(Optional.of("I am a very nice certificate"), getContainerCluster("container").getTlsClientAuthority());
-    }
-
-    @Test
-    public void operator_certificates_are_joined_with_clients_pem() {
-        var applicationPackage = new MockApplicationPackage.Builder()
-                .withRoot(applicationFolder.getRoot())
-                .build();
-
-        var applicationTrustCert = X509CertificateUtils.toPem(
-                X509CertificateUtils.createSelfSigned("CN=application", Duration.ofDays(1)).certificate());
-        var operatorCert = X509CertificateUtils.createSelfSigned("CN=operator", Duration.ofDays(1)).certificate();
-
-        applicationPackage.getFile(Path.fromString("security")).createDirectory();
-        applicationPackage.getFile(Path.fromString("security/clients.pem")).writeFile(new StringReader(applicationTrustCert));
-
-        var deployState = new DeployState.Builder().properties(
-                new TestProperties()
-                        .setOperatorCertificates(List.of(operatorCert))
-                        .setHostedVespa(true)
-                        .setEndpointCertificateSecrets(Optional.of(new EndpointCertificateSecrets("CERT", "KEY"))))
-                .zone(new Zone(SystemName.PublicCd, Environment.dev, RegionName.defaultName()))
-                .applicationPackage(applicationPackage)
-                .build();
-
-        Element clusterElem = DomBuilderTest.parse("<container version='1.0' />");
-
-        createModel(root, deployState, null, clusterElem);
-
-        ApplicationContainer container = (ApplicationContainer)root.getProducer("container/container.0");
-        List<ConnectorFactory> connectorFactories = container.getHttp().getHttpServer().get().getConnectorFactories();
-        ConnectorFactory tlsPort = connectorFactories.stream().filter(connectorFactory -> connectorFactory.getListenPort() == 4443).findFirst().orElseThrow();
-
-        ConnectorConfig.Builder builder = new ConnectorConfig.Builder();
-        tlsPort.getConfig(builder);
-
-        ConnectorConfig connectorConfig = new ConnectorConfig(builder);
-        var caCerts = X509CertificateUtils.certificateListFromPem(connectorConfig.ssl().caCertificate());
-        assertEquals(2, caCerts.size());
-        List<String> certnames = caCerts.stream()
-                .map(cert -> cert.getSubjectX500Principal().getName())
-                .collect(Collectors.toList());
-        assertThat(certnames, containsInAnyOrder("CN=operator", "CN=application"));
-    }
-
-    @Test
-    public void environment_vars_are_honoured() {
+    void environment_vars_are_honoured() {
         Element clusterElem = DomBuilderTest.parse(
                 "<container version='1.0'>",
                 "  <nodes>",
                 "    <environment-variables>",
                 "      <KMP_SETTING>1</KMP_SETTING>",
+                "      <valid_name>some value</valid_name>",
                 "      <KMP_AFFINITY>granularity=fine,verbose,compact,1,0</KMP_AFFINITY>",
                 "    </environment-variables>",
                 "    <node hostalias='mockhost'/>",
                 "  </nodes>",
-                "</container>" );
+                "</container>");
         createModel(root, clusterElem);
-        QrStartConfig.Builder qrStartBuilder = new QrStartConfig.Builder();
-        root.getConfig(qrStartBuilder, "container/container.0");
-        QrStartConfig qrStartConfig = new QrStartConfig(qrStartBuilder);
-        assertEquals("KMP_SETTING=1 KMP_AFFINITY=granularity=fine,verbose,compact,1,0 ", qrStartConfig.qrs().env());
+        var container = (AbstractService) root.getProducer("container/container.0");
+        var env = container.getEnvVars();
+        assertEquals("1", env.get("KMP_SETTING"));
+        assertEquals("granularity=fine,verbose,compact,1,0", env.get("KMP_AFFINITY"));
     }
 
     private void verifyAvailableprocessors(boolean isHosted, Flavor flavor, int expectProcessors) {
@@ -918,120 +578,28 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
     }
 
     @Test
-    public void requireThatAvailableProcessorsFollowFlavor() {
-        verifyAvailableprocessors(false, null,0);
-        verifyAvailableprocessors(true, null,0);
+    void requireThatAvailableProcessorsFollowFlavor() {
+        verifyAvailableprocessors(false, null, 0);
+        verifyAvailableprocessors(true, null, 0);
         verifyAvailableprocessors(true, new Flavor(new FlavorsConfig.Flavor.Builder().name("test-flavor").minCpuCores(9).build()), 9);
         verifyAvailableprocessors(true, new Flavor(new FlavorsConfig.Flavor.Builder().name("test-flavor").minCpuCores(1).build()), 2);
     }
 
     @Test
-    public void requireThatProvidingEndpointCertificateSecretsOpensPort4443() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container version='1.0'>",
-                nodesXml,
-                "</container>" );
-
-        DeployState state = new DeployState.Builder().properties(new TestProperties().setHostedVespa(true).setEndpointCertificateSecrets(Optional.of(new EndpointCertificateSecrets("CERT", "KEY")))).build();
-        createModel(root, state, null, clusterElem);
-        ApplicationContainer container = (ApplicationContainer)root.getProducer("container/container.0");
-
-        // Verify that there are two connectors
-        List<ConnectorFactory> connectorFactories = container.getHttp().getHttpServer().get().getConnectorFactories();
-        assertEquals(2, connectorFactories.size());
-        List<Integer> ports = connectorFactories.stream()
-                .map(ConnectorFactory::getListenPort)
-                .collect(Collectors.toList());
-        assertThat(ports, Matchers.containsInAnyOrder(8080, 4443));
-
-        ConnectorFactory tlsPort = connectorFactories.stream().filter(connectorFactory -> connectorFactory.getListenPort() == 4443).findFirst().orElseThrow();
-
-        ConnectorConfig.Builder builder = new ConnectorConfig.Builder();
-        tlsPort.getConfig(builder);
-
-
-        ConnectorConfig connectorConfig = new ConnectorConfig(builder);
-        assertTrue(connectorConfig.ssl().enabled());
-        assertEquals(ConnectorConfig.Ssl.ClientAuth.Enum.WANT_AUTH, connectorConfig.ssl().clientAuth());
-        assertEquals("CERT", connectorConfig.ssl().certificate());
-        assertEquals("KEY", connectorConfig.ssl().privateKey());
-        assertEquals(4443, connectorConfig.listenPort());
-
-        assertThat("Connector must use Athenz truststore in a non-public system.",
-                   connectorConfig.ssl().caCertificateFile(), equalTo("/opt/yahoo/share/ssl/certs/athenz_certificate_bundle.pem"));
-        assertThat(connectorConfig.ssl().caCertificate(), isEmptyString());
-    }
-
-    @Test
-    public void requireThatClientAuthenticationIsEnforced() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container version='1.0'>",
-                nodesXml,
-                "   <http><filtering>" +
-                "      <access-control domain=\"vespa\" tls-handshake-client-auth=\"need\"/>" +
-                "   </filtering></http>" +
-                "</container>" );
-
-        DeployState state = new DeployState.Builder().properties(
-                new TestProperties()
-                        .setHostedVespa(true)
-                        .setEndpointCertificateSecrets(Optional.of(new EndpointCertificateSecrets("CERT", "KEY"))))
-                .build();
-        createModel(root, state, null, clusterElem);
-        ApplicationContainer container = (ApplicationContainer)root.getProducer("container/container.0");
-
-        List<ConnectorFactory> connectorFactories = container.getHttp().getHttpServer().get().getConnectorFactories();
-        ConnectorFactory tlsPort = connectorFactories.stream().filter(connectorFactory -> connectorFactory.getListenPort() == 4443).findFirst().orElseThrow();
-
-        ConnectorConfig.Builder builder = new ConnectorConfig.Builder();
-        tlsPort.getConfig(builder);
-
-        ConnectorConfig connectorConfig = new ConnectorConfig(builder);
-        assertTrue(connectorConfig.ssl().enabled());
-        assertEquals(ConnectorConfig.Ssl.ClientAuth.Enum.NEED_AUTH, connectorConfig.ssl().clientAuth());
-        assertEquals("CERT", connectorConfig.ssl().certificate());
-        assertEquals("KEY", connectorConfig.ssl().privateKey());
-        assertEquals(4443, connectorConfig.listenPort());
-
-        assertThat("Connector must use Athenz truststore in a non-public system.",
-                connectorConfig.ssl().caCertificateFile(), equalTo("/opt/yahoo/share/ssl/certs/athenz_certificate_bundle.pem"));
-        assertThat(connectorConfig.ssl().caCertificate(), isEmptyString());
-    }
-
-    @Test
-    public void require_allowed_ciphers() {
-        Element clusterElem = DomBuilderTest.parse(
-                "<container version='1.0'>",
-                nodesXml,
-                "</container>" );
-
-        DeployState state = new DeployState.Builder().properties(new TestProperties().setHostedVespa(true).setEndpointCertificateSecrets(Optional.of(new EndpointCertificateSecrets("CERT", "KEY")))).build();
-        createModel(root, state, null, clusterElem);
-        ApplicationContainer container = (ApplicationContainer)root.getProducer("container/container.0");
-
-        List<ConnectorFactory> connectorFactories = container.getHttp().getHttpServer().get().getConnectorFactories();
-        ConnectorFactory tlsPort = connectorFactories.stream().filter(connectorFactory -> connectorFactory.getListenPort() == 4443).findFirst().orElseThrow();
-        ConnectorConfig.Builder builder = new ConnectorConfig.Builder();
-        tlsPort.getConfig(builder);
-
-        ConnectorConfig connectorConfig = new ConnectorConfig(builder);
-
-        assertThat(connectorConfig.ssl().enabledCipherSuites(), containsInAnyOrder(TlsContext.ALLOWED_CIPHER_SUITES.toArray()));
-    }
-
-    @Test
-    public void cluster_with_zookeeper() {
+    void cluster_with_zookeeper() {
         Function<Integer, String> servicesXml = (nodeCount) -> "<container version='1.0' id='default'>" +
-                                                               "<nodes count='" + nodeCount + "'/>" +
-                                                               "<zookeeper/>" +
-                                                               "</container>";
+                "<nodes count='" + nodeCount + "'/>" +
+                "<zookeeper session-timeout-seconds='30'/>" +
+                "</container>";
         VespaModelTester tester = new VespaModelTester();
         tester.addHosts(3);
         {
             VespaModel model = tester.createModel(servicesXml.apply(3), true);
             ApplicationContainerCluster cluster = model.getContainerClusters().get("default");
             assertNotNull(cluster);
-            assertComponentConfigured(cluster,"com.yahoo.vespa.curator.Curator");
+            assertComponentConfigured(cluster, "com.yahoo.vespa.curator.Curator");
+            assertComponentConfigured(cluster, "com.yahoo.vespa.curator.CuratorWrapper");
+            assertEquals(30, model.getConfig(CuratorConfig.class, cluster.getConfigId()).zookeeperSessionTimeoutSeconds());
             cluster.getContainers().forEach(container -> {
                 assertComponentConfigured(container, "com.yahoo.vespa.zookeeper.ReconfigurableVespaZooKeeperServer");
                 assertComponentConfigured(container, "com.yahoo.vespa.zookeeper.Reconfigurer");
@@ -1046,30 +614,63 @@ public class ContainerModelBuilderTest extends ContainerModelBuilderTestBase {
             try {
                 tester.createModel(servicesXml.apply(2), true);
                 fail("Expected exception");
-            } catch (IllegalArgumentException ignored) {}
+            } catch (IllegalArgumentException ignored) {
+            }
         }
         {
             String xmlWithNodes =
                     "<?xml version='1.0' encoding='utf-8' ?>" +
-                    "<services>" +
-                    "  <container version='1.0' id='container1'>" +
-                    "     <zookeeper/>" +
-                    "     <nodes of='content1'/>" +
-                    "  </container>" +
-                    "  <content version='1.0' id='content1'>" +
-                    "     <nodes count='3'/>" +
-                    "   </content>" +
-                    "</services>";
+                            "<services>" +
+                            "  <container version='1.0' id='container1'>" +
+                            "     <zookeeper/>" +
+                            "     <nodes of='content1'/>" +
+                            "  </container>" +
+                            "  <content version='1.0' id='content1'>" +
+                            "     <nodes count='3'/>" +
+                            "   </content>" +
+                            "</services>";
             try {
                 tester.createModel(xmlWithNodes, true);
                 fail("Expected exception");
-            } catch (IllegalArgumentException ignored) {}
+            } catch (IllegalArgumentException ignored) {
+            }
         }
     }
 
-    private void assertComponentConfigured(ApplicationContainerCluster cluster, String componentId) {
-        Component<?, ?> component = cluster.getComponentsMap().get(ComponentId.fromString(componentId));
-        assertNotNull(component);
+    @Test
+    void logs_deployment_spec_deprecations() throws Exception {
+        String containerService = joinLines("<container id='foo' version='1.0'>",
+                "  <nodes>",
+                "    <node hostalias='host1' />",
+                "  </nodes>",
+                "</container>");
+        String deploymentXml = joinLines("<deployment version='1.0'>",
+                "  <prod global-service-id='foo'>",
+                "    <region active='true'>us-east-1</region>",
+                "  </prod>",
+                "</deployment>");
+
+        ApplicationPackage applicationPackage = new MockApplicationPackage.Builder()
+                .withServices(containerService)
+                .withDeploymentSpec(deploymentXml)
+                .build();
+
+        TestLogger logger = new TestLogger();
+        DeployState deployState = new DeployState.Builder()
+                .applicationPackage(applicationPackage)
+                .zone(new Zone(Environment.prod, RegionName.from("us-east-1")))
+                .properties(new TestProperties().setHostedVespa(true))
+                .deployLogger(logger)
+                .build();
+
+        createModel(root, deployState, null, DomBuilderTest.parse(containerService));
+        assertFalse(logger.msgs.isEmpty());
+        assertEquals(Level.WARNING, logger.msgs.get(0).getFirst());
+        assertEquals(Level.WARNING, logger.msgs.get(1).getFirst());
+        assertEquals("Element 'prod' contains attribute 'global-service-id' deprecated since major version 7. See https://cloud.vespa.ai/en/reference/routing#deprecated-syntax",
+                logger.msgs.get(0).getSecond());
+        assertEquals("Element 'region' contains attribute 'active' deprecated since major version 7. See https://cloud.vespa.ai/en/reference/routing#deprecated-syntax",
+                logger.msgs.get(1).getSecond());
     }
 
     private void assertComponentConfigured(ApplicationContainer container, String id) {

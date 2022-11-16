@@ -22,6 +22,7 @@ import com.yahoo.vespa.objects.BufferSerializer;
 public class ProgressToken {
 
     private static final Logger log = Logger.getLogger(ProgressToken.class.getName());
+
     /**
      * Any bucket kept track of by a <code>ProgressToken</code> instance may
      * be in one of two states: pending or active. <em>Pending</em> means that
@@ -387,6 +388,18 @@ public class ProgressToken {
     }
 
     /**
+     * Marks the current bucket as finished and advances the bucket cursor;
+     * throws instead if the current bucket is already {@link #addBucket added}.
+     */
+    void skipCurrentBucket() {
+        if (buckets.containsKey(bucketToKeyWrapper(getCurrentBucketId())))
+            throw new IllegalStateException("Current bucket was already added to the explicit bucket set");
+
+        ++finishedBucketCount;
+        ++bucketCursor;
+    }
+
+    /**
      * Directly generate a bucket Id key for the <code>n</code>th bucket in
      * reverse sorted order.
      *
@@ -426,6 +439,14 @@ public class ProgressToken {
 
     public long getBucketCursor() {
         return bucketCursor;
+    }
+
+    static BucketId toBucketId(long bucketCursor, int distributionBits) {
+        return new BucketId(keyToBucketId(makeNthBucketKey(bucketCursor, distributionBits)));
+    }
+
+    BucketId getCurrentBucketId() {
+        return toBucketId(getBucketCursor(), getDistributionBitCount());
     }
 
     protected void setBucketCursor(long bucketCursor) {
@@ -828,4 +849,5 @@ public class ProgressToken {
         pendingBucketCount = 0;
         activeBucketCount = 0;
     }
+
 }

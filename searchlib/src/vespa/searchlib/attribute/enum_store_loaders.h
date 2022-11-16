@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #pragma once
 
@@ -21,6 +21,10 @@ protected:
     void release_enum_indexes();
 public:
     EnumeratedLoaderBase(IEnumStore& store);
+    EnumeratedLoaderBase(const EnumeratedLoaderBase &) = delete;
+    EnumeratedLoaderBase & operator =(const EnumeratedLoaderBase &) = delete;
+    EnumeratedLoaderBase(EnumeratedLoaderBase &&) = delete;
+    EnumeratedLoaderBase & operator =(EnumeratedLoaderBase &&) = delete;
     ~EnumeratedLoaderBase();
     const IndexVector& get_enum_indexes() const { return _indexes; }
     const EnumVector& get_enum_value_remapping() const noexcept { return _enum_value_remapping; }
@@ -39,6 +43,11 @@ private:
 
 public:
     EnumeratedLoader(IEnumStore& store);
+    EnumeratedLoader(const EnumeratedLoader &) = delete;
+    EnumeratedLoader & operator =(const EnumeratedLoader &) = delete;
+    EnumeratedLoader(EnumeratedLoader &&) = delete;
+    EnumeratedLoader & operator =(EnumeratedLoader &&) = delete;
+    ~EnumeratedLoader();
     EnumVector& get_enums_histogram() { return _enums_histogram; }
     void allocate_enums_histogram() {
         EnumVector(_indexes.size(), 0).swap(_enums_histogram);
@@ -52,12 +61,18 @@ public:
  */
 class EnumeratedPostingsLoader : public EnumeratedLoaderBase {
 private:
+    using EntryRef = vespalib::datastore::EntryRef;
+    using EntryRefVector = std::vector<EntryRef, vespalib::allocator_large<EntryRef>>;
     attribute::LoadedEnumAttributeVector _loaded_enums;
-    vespalib::Array<uint32_t>            _posting_indexes;
+    EntryRefVector                       _posting_indexes;
     bool                                 _has_btree_dictionary;
 
 public:
     EnumeratedPostingsLoader(IEnumStore& store);
+    EnumeratedPostingsLoader(const EnumeratedPostingsLoader &) = delete;
+    EnumeratedPostingsLoader & operator =(const EnumeratedPostingsLoader &) = delete;
+    EnumeratedPostingsLoader(EnumeratedPostingsLoader &&) = delete;
+    EnumeratedPostingsLoader & operator =(EnumeratedPostingsLoader &&) = delete;
     ~EnumeratedPostingsLoader();
     attribute::LoadedEnumAttributeVector& get_loaded_enums() { return _loaded_enums; }
     void reserve_loaded_enums(size_t num_values) {
@@ -68,7 +83,7 @@ public:
     }
     bool is_folded_change(Index lhs, Index rhs) const;
     void set_ref_count(Index idx, uint32_t ref_count);
-    vespalib::ArrayRef<uint32_t> initialize_empty_posting_indexes();
+    vespalib::ArrayRef<EntryRef> initialize_empty_posting_indexes();
     void build_dictionary();
 };
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/vespa-engine/vespa/client/go/util"
 )
 
 // Version represents a semantic version number.
@@ -13,6 +15,11 @@ type Version struct {
 	Minor int
 	Patch int
 	Label string
+}
+
+// IsZero returns whether v is the zero version, 0.0.0.
+func (v Version) IsZero() bool {
+	return v.Major == 0 && v.Minor == 0 && v.Patch == 0
 }
 
 func (v Version) String() string {
@@ -62,6 +69,15 @@ func (v1 Version) Compare(v2 Version) int {
 
 // Less returns true if v1 is lower than v2.
 func (v1 Version) Less(v2 Version) bool { return v1.Compare(v2) < 0 }
+
+// MustParse is like Parse, but panics if s cannot be parsed.
+func MustParse(s string) Version {
+	v, err := Parse(s)
+	if err != nil {
+		util.JustExitWith(err)
+	}
+	return v
+}
 
 // Parse parses a semantic version number from string s.
 func Parse(s string) (Version, error) {

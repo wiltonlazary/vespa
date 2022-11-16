@@ -41,7 +41,6 @@ Memory DOCSUM("docsum");
 Memory ERRORS("errors");
 Memory TYPE("type");
 Memory MESSAGE("message");
-Memory DETAILS("details");
 Memory TIMEOUT("timeout");
 
 }
@@ -51,14 +50,10 @@ DocsumContext::initState()
 {
     const DocsumRequest & req = _request;
     _docsumState._args.initFromDocsumRequest(req);
-    _docsumState._docsumcnt = req.hits.size();
-
-    _docsumState._docsumbuf = (_docsumState._docsumcnt > 0)
-                              ? (uint32_t*)malloc(sizeof(uint32_t) * _docsumState._docsumcnt)
-                              : nullptr;
-
-    for (uint32_t i = 0; i < _docsumState._docsumcnt; i++) {
-        _docsumState._docsumbuf[i] = req.hits[i].docid;
+    _docsumState._docsumbuf.clear();
+    _docsumState._docsumbuf.reserve(req.hits.size());
+    for (uint32_t i = 0; i < req.hits.size(); i++) {
+        _docsumState._docsumbuf.push_back(req.hits[i].docid);
     }
 }
 
@@ -76,26 +71,27 @@ makeSlimeParams(size_t chunkSize) {
 vespalib::Slime::UP
 DocsumContext::createSlimeReply()
 {
-    _docsumWriter.InitState(_attrMgr, &_docsumState);
-    const size_t estimatedChunkSize(std::min(0x200000ul, _docsumState._docsumcnt*0x400ul));
+    IDocsumWriter::ResolveClassInfo rci = _docsumWriter.resolveClassInfo(_docsumState._args.getResultClassName(),
+                                                                         _docsumState._args.get_fields());
+    _docsumWriter.initState(_attrMgr, _docsumState, rci);
+    const size_t estimatedChunkSize(std::min(0x200000ul, _docsumState._docsumbuf.size()*0x400ul));
     vespalib::Slime::UP response(std::make_unique<vespalib::Slime>(makeSlimeParams(estimatedChunkSize)));
     Cursor & root = response->setObject();
     Cursor & array = root.setArray(DOCSUMS);
     const Symbol docsumSym = response->insert(DOCSUM);
-    IDocsumWriter::ResolveClassInfo rci = _docsumWriter.resolveClassInfo(_docsumState._args.getResultClassName(),
-                                                                         _docsumStore.getSummaryClassId());
-    _docsumState._omit_summary_features = rci.outputClass->omit_summary_features();
-    uint32_t i(0);
-    for (i = 0; (i < _docsumState._docsumcnt) && !_request.expired(); ++i) {
-        uint32_t docId = _docsumState._docsumbuf[i];
-        Cursor & docSumC = array.addObject();
+    _docsumState._omit_summary_features = (rci.res_class != nullptr) ? rci.res_class->omit_summary_features() : true;
+    uint32_t num_ok(0);
+    for (uint32_t docId : _docsumState._docsumbuf) {
+        if (_request.expired() ) { break; }
+        Cursor &docSumC = array.addObject();
         ObjectSymbolInserter inserter(docSumC, docsumSym);
-        if ((docId != search::endDocId) && !rci.mustSkip) {
-            _docsumWriter.insertDocsum(rci, docId, &_docsumState, &_docsumStore, *response, inserter);
+        if ((docId != search::endDocId) && rci.res_class != nullptr) {
+            _docsumWriter.insertDocsum(rci, docId, _docsumState, _docsumStore, inserter);
         }
+        num_ok++;
     }
-    if (i != _docsumState._docsumcnt) {
-        const uint32_t numTimedOut = _docsumState._docsumcnt - i;
+    if (num_ok != _docsumState._docsumbuf.size()) {
+        const uint32_t numTimedOut = _docsumState._docsumbuf.size() - num_ok;
         Cursor & errors = root.setArray(ERRORS);
         Cursor & timeout = errors.addObject();
         timeout.setString(TYPE, TIMEOUT);
@@ -108,7 +104,7 @@ DocsumContext::createSlimeReply()
 DocsumContext::DocsumContext(const DocsumRequest & request, IDocsumWriter & docsumWriter,
                              IDocsumStore & docsumStore, std::shared_ptr<Matcher> matcher,
                              ISearchContext & searchCtx, IAttributeContext & attrCtx,
-                             IAttributeManager & attrMgr, SessionManager & sessionMgr) :
+                             const IAttributeManager & attrMgr, SessionManager & sessionMgr) :
     _request(request),
     _docsumWriter(docsumWriter),
     _docsumStore(docsumStore),
@@ -129,24 +125,24 @@ DocsumContext::getDocsums()
 }
 
 void
-DocsumContext::FillSummaryFeatures(search::docsummary::GetDocsumsState * state, search::docsummary::IDocsumEnvironment *)
+DocsumContext::fillSummaryFeatures(search::docsummary::GetDocsumsState& state)
 {
-    assert(&_docsumState == state);
+    assert(&_docsumState == &state);
     if (_matcher->canProduceSummaryFeatures()) {
-        state->_summaryFeatures = _matcher->getSummaryFeatures(_request, _searchCtx, _attrCtx, _sessionMgr);
+        state._summaryFeatures = _matcher->getSummaryFeatures(_request, _searchCtx, _attrCtx, _sessionMgr);
     }
-    state->_summaryFeaturesCached = false;
+    state._summaryFeaturesCached = false;
 }
 
 void
-DocsumContext::FillRankFeatures(search::docsummary::GetDocsumsState * state, search::docsummary::IDocsumEnvironment *)
+DocsumContext::fillRankFeatures(search::docsummary::GetDocsumsState& state)
 {
-    assert(&_docsumState == state);
+    assert(&_docsumState == &state);
     // check if we are allowed to run
-    if ( ! state->_args.dumpFeatures()) {
+    if ( ! state._args.dumpFeatures()) {
         return;
     }
-    state->_rankFeatures = _matcher->getRankFeatures(_request, _searchCtx, _attrCtx, _sessionMgr);
+    state._rankFeatures = _matcher->getRankFeatures(_request, _searchCtx, _attrCtx, _sessionMgr);
 }
 
 std::unique_ptr<MatchingElements>

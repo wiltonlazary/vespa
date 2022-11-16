@@ -5,11 +5,13 @@ import com.yahoo.component.Version;
 import com.yahoo.text.Text;
 import com.yahoo.vespa.hosted.controller.Application;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationVersion;
+import com.yahoo.vespa.hosted.controller.api.integration.deployment.RevisionId;
 import com.yahoo.vespa.hosted.controller.application.Change;
 import com.yahoo.vespa.hosted.controller.application.Deployment;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import static java.util.Objects.requireNonNull;
 
@@ -22,19 +24,24 @@ import static java.util.Objects.requireNonNull;
 public class Versions {
 
     private final Version targetPlatform;
-    private final ApplicationVersion targetApplication;
+    private final RevisionId targetRevision;
     private final Optional<Version> sourcePlatform;
-    private final Optional<ApplicationVersion> sourceApplication;
+    private final Optional<RevisionId> sourceRevision;
 
-    public Versions(Version targetPlatform, ApplicationVersion targetApplication, Optional<Version> sourcePlatform,
-                    Optional<ApplicationVersion> sourceApplication) {
-        if (sourcePlatform.isPresent() ^ sourceApplication.isPresent())
+    public Versions(Version targetPlatform, RevisionId targetRevision, Optional<Version> sourcePlatform,
+                    Optional<RevisionId> sourceRevision) {
+        if (sourcePlatform.isPresent() ^ sourceRevision.isPresent())
             throw new IllegalArgumentException("Sources must both be present or absent.");
 
         this.targetPlatform = requireNonNull(targetPlatform);
-        this.targetApplication = requireNonNull(targetApplication);
+        this.targetRevision = requireNonNull(targetRevision);
         this.sourcePlatform = requireNonNull(sourcePlatform);
-        this.sourceApplication = requireNonNull(sourceApplication);
+        this.sourceRevision = requireNonNull(sourceRevision);
+    }
+
+    /** A copy of this, without source versions. */
+    public Versions withoutSources() {
+        return new Versions(targetPlatform, targetRevision, Optional.empty(), Optional.empty());
     }
 
     /** Target platform version for this */
@@ -42,9 +49,9 @@ public class Versions {
         return targetPlatform;
     }
 
-    /** Target application version for this */
-    public ApplicationVersion targetApplication() {
-        return targetApplication;
+    /** Target revision for this */
+    public RevisionId targetRevision() {
+        return targetRevision;
     }
 
     /** Source platform version for this */
@@ -53,21 +60,27 @@ public class Versions {
     }
 
     /** Source application version for this */
-    public Optional<ApplicationVersion> sourceApplication() {
-        return sourceApplication;
+    public Optional<RevisionId> sourceRevision() {
+        return sourceRevision;
     }
 
     /** Returns whether source versions are present and match those of the given job other versions. */
     public boolean sourcesMatchIfPresent(Versions versions) {
         return (sourcePlatform.map(targetPlatform::equals).orElse(true) ||
                 sourcePlatform.equals(versions.sourcePlatform())) &&
-               (sourceApplication.map(targetApplication::equals).orElse(true) ||
-                sourceApplication.equals(versions.sourceApplication()));
+               (sourceRevision.map(targetRevision::equals).orElse(true) ||
+                sourceRevision.equals(versions.sourceRevision()));
     }
 
     public boolean targetsMatch(Versions versions) {
         return targetPlatform.equals(versions.targetPlatform()) &&
-               targetApplication.equals(versions.targetApplication());
+               targetRevision.equals(versions.targetRevision());
+    }
+
+    /** Returns whether this change could result in the given target versions. */
+    public boolean targetsMatch(Change change) {
+        return    change.platform().map(targetPlatform::equals).orElse(true)
+               && change.revision().map(targetRevision::equals).orElse(true);
     }
 
     @Override
@@ -76,64 +89,61 @@ public class Versions {
         if ( ! (o instanceof Versions)) return false;
         Versions versions = (Versions) o;
         return Objects.equals(targetPlatform, versions.targetPlatform) &&
-               Objects.equals(targetApplication, versions.targetApplication) &&
+               Objects.equals(targetRevision, versions.targetRevision) &&
                Objects.equals(sourcePlatform, versions.sourcePlatform) &&
-               Objects.equals(sourceApplication, versions.sourceApplication);
+               Objects.equals(sourceRevision, versions.sourceRevision);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(targetPlatform, targetApplication, sourcePlatform, sourceApplication);
+        return Objects.hash(targetPlatform, targetRevision, sourcePlatform, sourceRevision);
     }
 
     @Override
     public String toString() {
-        return Text.format("platform %s%s, application %s%s",
-                             sourcePlatform.filter(source -> !source.equals(targetPlatform))
+        return Text.format("platform %s%s, revision %s%s",
+                             sourcePlatform.filter(source -> ! source.equals(targetPlatform))
                                            .map(source -> source + " -> ").orElse(""),
                              targetPlatform,
-                             sourceApplication.filter(source -> !source.equals(targetApplication))
-                                              .map(source -> source.id() + " -> ").orElse(""),
-                             targetApplication.id());
+                             sourceRevision.filter(source -> ! source.equals(targetRevision))
+                                              .map(source -> source + " -> ").orElse(""),
+                             targetRevision);
     }
 
     /** Create versions using given change and application */
-    public static Versions from(Change change, Application application, Optional<Deployment> deployment,
-                                Version defaultPlatformVersion) {
-        return new Versions(targetPlatform(application, change, deployment, defaultPlatformVersion),
-                            targetApplication(application, change, deployment),
-                            deployment.map(Deployment::version),
-                            deployment.map(Deployment::applicationVersion));
+    public static Versions from(Change change, Application application, Optional<Version> existingPlatform,
+                                Optional<RevisionId> existingRevision, Supplier<Version> defaultPlatformVersion) {
+        return new Versions(targetPlatform(application, change, existingPlatform, defaultPlatformVersion),
+                            targetRevision(application, change, existingRevision),
+                            existingPlatform,
+                            existingRevision);
     }
 
-    public static Versions from(Change change, Deployment deployment) {
-        return new Versions(change.platform().filter(version -> change.isPinned() || deployment.version().isBefore(version))
-                                  .orElse(deployment.version()),
-                            change.application().filter(version -> deployment.applicationVersion().compareTo(version) < 0)
-                                  .orElse(deployment.applicationVersion()),
-                            Optional.of(deployment.version()),
-                            Optional.of(deployment.applicationVersion()));
+    /** Create versions using given change and application */
+    public static Versions from(Change change, Application application, Optional<Deployment> deployment, Supplier<Version> defaultPlatformVersion) {
+        return from(change, application, deployment.map(Deployment::version), deployment.map(Deployment::revision), defaultPlatformVersion);
     }
 
-    private static Version targetPlatform(Application application, Change change, Optional<Deployment> deployment,
-                                          Version defaultVersion) {
+    private static Version targetPlatform(Application application, Change change, Optional<Version> existing,
+                                          Supplier<Version> defaultVersion) {
         if (change.isPinned() && change.platform().isPresent())
             return change.platform().get();
 
-        return max(change.platform(), deployment.map(Deployment::version))
-                .orElseGet(() -> application.oldestDeployedPlatform().orElse(defaultVersion));
+        return max(change.platform(), existing)
+                .orElseGet(() -> application.oldestDeployedPlatform().orElseGet(defaultVersion));
     }
 
-    private static ApplicationVersion targetApplication(Application application, Change change,
-                                                        Optional<Deployment> deployment) {
-        return max(change.application(), deployment.map(Deployment::applicationVersion))
-                .orElseGet(() -> defaultApplicationVersion(application));
+    private static RevisionId targetRevision(Application application, Change change,
+                                             Optional<RevisionId> existing) {
+        return change.revision()
+                     .or(() -> existing)
+                     .orElseGet(() -> defaultRevision(application));
     }
 
-    private static ApplicationVersion defaultApplicationVersion(Application application) {
-        return application.oldestDeployedApplication()
-                          .or(application::latestVersion)
-                          .orElse(ApplicationVersion.unknown);
+    private static RevisionId defaultRevision(Application application) {
+        return application.oldestDeployedRevision()
+                          .or(() -> application.revisions().last().map(ApplicationVersion::id))
+                          .orElseThrow(() -> new IllegalStateException("no known prod revisions, but asked for one, for " + application));
     }
 
     private static <T extends Comparable<T>> Optional<T> max(Optional<T> o1, Optional<T> o2) {

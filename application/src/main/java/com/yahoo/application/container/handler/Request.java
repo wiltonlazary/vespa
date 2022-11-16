@@ -1,8 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.application.container.handler;
 
-import com.google.common.annotations.Beta;
-import net.jcip.annotations.Immutable;
+import com.yahoo.api.annotations.Beta;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
@@ -16,7 +15,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Einar M R Rosenvinge
  * @see Response
  */
-@Immutable
 @Beta
 public class Request {
 

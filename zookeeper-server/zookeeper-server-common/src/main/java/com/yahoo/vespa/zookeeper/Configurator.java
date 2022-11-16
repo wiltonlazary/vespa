@@ -2,11 +2,10 @@
 package com.yahoo.vespa.zookeeper;
 
 import com.yahoo.cloud.config.ZookeeperServerConfig;
+import com.yahoo.security.tls.ConfigFileBasedTlsContext;
 import com.yahoo.security.tls.MixedMode;
 import com.yahoo.security.tls.TlsContext;
 import com.yahoo.security.tls.TransportSecurityUtils;
-import com.yahoo.vespa.defaults.Defaults;
-
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -35,15 +34,32 @@ public class Configurator {
         this.zookeeperServerConfig = zookeeperServerConfig;
         this.configFilePath = makeAbsolutePath(zookeeperServerConfig.zooKeeperConfigFile());
         System.setProperty(ZOOKEEPER_JMX_LOG4J_DISABLE, "true");
-        System.setProperty("zookeeper.snapshot.trust.empty", Boolean.valueOf(zookeeperServerConfig.trustEmptySnapshot()).toString());
+        System.setProperty("zookeeper.snapshot.trust.empty", String.valueOf(zookeeperServerConfig.trustEmptySnapshot()));
+        // Max serialization length. Has effect for both client and server.
+        // Doc says that it is max size of data in a zookeeper node, but it goes for everything that
+        // needs to be serialized, see https://issues.apache.org/jira/browse/ZOOKEEPER-1162 for details
         System.setProperty(ZOOKEEPER_JUTE_MAX_BUFFER, Integer.valueOf(zookeeperServerConfig.juteMaxBuffer()).toString());
         // Need to set this as a system property instead of config, config does not work
         System.setProperty("zookeeper.authProvider.x509", "com.yahoo.vespa.zookeeper.VespaMtlsAuthenticationProvider");
         // Need to set this as a system property, otherwise it will be parsed for _every_ packet and an exception will be thrown (and handled)
         System.setProperty("zookeeper.globalOutstandingLimit", "1000");
+        System.setProperty("zookeeper.snapshot.compression.method", zookeeperServerConfig.snapshotMethod());
+        System.setProperty("zookeeper.leader.closeSocketAsync", String.valueOf(zookeeperServerConfig.leaderCloseSocketAsync()));
+        System.setProperty("zookeeper.learner.asyncSending", String.valueOf(zookeeperServerConfig.learnerAsyncSending()));
+        // Enable creation of TTL Nodes.
+        System.setProperty("zookeeper.extendedTypesEnabled", "true");
     }
 
-    void writeConfigToDisk() { writeConfigToDisk(VespaTlsConfig.fromSystem()); }
+    void writeConfigToDisk() {
+        VespaTlsConfig config;
+        String cfgFile = zookeeperServerConfig.vespaTlsConfigFile();
+        if (cfgFile.isBlank()) {
+            config = VespaTlsConfig.fromSystem();
+        } else {
+            config = VespaTlsConfig.fromConfig(Paths.get(cfgFile));
+        }
+        writeConfigToDisk(config);
+    }
 
     // override of Vespa TLS config for unit testing
     void writeConfigToDisk(VespaTlsConfig vespaTlsConfig) {
@@ -85,7 +101,7 @@ public class Configurator {
         sb.append("reconfigEnabled=true").append("\n");
         sb.append("skipACL=yes").append("\n");
         ensureThisServerIsRepresented(config.myid(), config.server());
-        config.server().forEach(server -> addServerToCfg(sb, server, config.clientPort()));
+        config.server().forEach(server -> sb.append(serverSpec(server, server.joining())).append("\n"));
         sb.append(new TlsQuorumConfig().createConfig(vespaTlsConfig));
         sb.append(new TlsClientServerConfig().createConfig(vespaTlsConfig));
         return sb.toString();
@@ -110,7 +126,8 @@ public class Configurator {
         }
     }
 
-    private void addServerToCfg(StringBuilder sb, ZookeeperServerConfig.Server server, int clientPort) {
+    static String serverSpec(ZookeeperServerConfig.Server server, boolean joining) {
+        StringBuilder sb = new StringBuilder();
         sb.append("server.")
           .append(server.id())
           .append("=")
@@ -119,7 +136,7 @@ public class Configurator {
           .append(server.quorumPort())
           .append(":")
           .append(server.electionPort());
-        if (server.joining()) {
+        if (joining) {
             // Servers that are joining an existing cluster must be marked as observers. Note that this will NOT
             // actually make the server an observer, but prevent it from forming an ensemble independently of the
             // existing cluster.
@@ -129,8 +146,8 @@ public class Configurator {
               .append("observer");
         }
         sb.append(";")
-          .append(clientPort)
-          .append("\n");
+          .append(server.clientPort());
+        return sb.toString();
     }
 
     static List<String> zookeeperServerHostnames(ZookeeperServerConfig zookeeperServerConfig) {
@@ -142,10 +159,7 @@ public class Configurator {
 
     Path makeAbsolutePath(String filename) {
         Path path = Paths.get(filename);
-        if (path.isAbsolute())
-            return path;
-        else
-            return Paths.get(Defaults.getDefaults().underVespaHome(filename));
+        return path.isAbsolute() ? path : Paths.get(getDefaults().underVespaHome(filename));
     }
 
     private interface TlsConfig {
@@ -153,6 +167,7 @@ public class Configurator {
 
         default void appendSharedTlsConfig(StringBuilder builder, VespaTlsConfig vespaTlsConfig) {
             vespaTlsConfig.context().ifPresent(ctx -> {
+                VespaSslContextProvider.set(ctx);
                 builder.append(configFieldPrefix()).append(".context.supplier.class=").append(VespaSslContextProvider.class.getName()).append("\n");
                 String enabledCiphers = Arrays.stream(ctx.parameters().getCipherSuites()).sorted().collect(Collectors.joining(","));
                 builder.append(configFieldPrefix()).append(".ciphersuites=").append(enabledCiphers).append("\n");
@@ -218,6 +233,13 @@ public class Configurator {
                     TransportSecurityUtils.getSystemTlsContext().orElse(null),
                     TransportSecurityUtils.getInsecureMixedMode());
         }
+
+        static VespaTlsConfig fromConfig(Path file) {
+            return new VespaTlsConfig(
+                    new ConfigFileBasedTlsContext(file, TransportSecurityUtils.getInsecureAuthorizationMode()),
+                    TransportSecurityUtils.getInsecureMixedMode());
+        }
+
 
         static VespaTlsConfig tlsDisabled() { return new VespaTlsConfig(null, MixedMode.defaultValue()); }
 

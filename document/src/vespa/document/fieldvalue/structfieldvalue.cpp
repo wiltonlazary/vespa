@@ -23,15 +23,12 @@ using std::vector;
 using vespalib::nbostream;
 using vespalib::nbostream_longlivedbuf;
 using vespalib::make_string;
-using vespalib::compression::CompressionConfig;
 using namespace vespalib::xml;
 
 namespace document {
 
-IMPLEMENT_IDENTIFIABLE_ABSTRACT(StructFieldValue, StructuredFieldValue);
-
 StructFieldValue::StructFieldValue(const DataType &type)
-    : StructuredFieldValue(type),
+    : StructuredFieldValue(Type::STRUCT, type),
       _fields(),
       _repo(nullptr),
       _doc_type(nullptr),
@@ -50,24 +47,14 @@ StructFieldValue::getStructType() const {
     return static_cast<const StructDataType &>(getType());
 }
 
-const CompressionConfig &
-StructFieldValue::getCompressionConfig() const {
-    return getStructType().getCompressionConfig();
-}
-
 void
-StructFieldValue::lazyDeserialize(const FixedTypeRepo &repo,
-                                  uint16_t version,
-                                  SerializableArray::EntryMap && fm,
-                                  ByteBuffer buffer,
-                                  CompressionConfig::Type comp_type,
-                                  int32_t uncompressed_length)
+StructFieldValue::lazyDeserialize(const FixedTypeRepo &repo, uint16_t version, SerializableArray::EntryMap && fm, ByteBuffer buffer)
 {
-    _repo = &repo.getDocumentTypeRepo();
-    _doc_type = &repo.getDocumentType();
+    _repo = repo.getDocumentTypeRepoPtr();
+    _doc_type = repo.getDocumentTypePtr();
     _version = version;
 
-    _fields.set(std::move(fm), std::move(buffer), comp_type, uncompressed_length);
+    _fields.set(std::move(fm), std::move(buffer));
     _hasChanged = false;
 }
 
@@ -90,14 +77,16 @@ bool StructFieldValue::serializeField(int field_id, uint16_t version, FieldValue
     }
 }
 
-void StructFieldValue::getRawFieldIds(vector<int> &raw_ids) const {
-    raw_ids.clear();
+vector<int>
+StructFieldValue::getRawFieldIds() const {
+    vector<int> raw_ids;
     raw_ids.reserve(_fields.getEntries().size());
     for (const SerializableArray::Entry & entry : _fields.getEntries()) {
         raw_ids.emplace_back(entry.id());
     }
     sort(raw_ids.begin(), raw_ids.end());
     raw_ids.erase(unique(raw_ids.begin(), raw_ids.end()), raw_ids.end());
+    return raw_ids;
 }
 
 void
@@ -128,7 +117,7 @@ StructFieldValue::getField(vespalib::stringref name) const
 namespace {
 
 void
-createFV(FieldValue & value, const DocumentTypeRepo & repo, nbostream & stream, const DocumentType & doc_type, uint32_t version)
+createFV(FieldValue & value, const DocumentTypeRepo * repo, nbostream & stream, const DocumentType * doc_type, uint32_t version)
 {
     FixedTypeRepo frepo(repo, doc_type);
     try {
@@ -153,9 +142,9 @@ StructFieldValue::getFieldValue(const Field& field) const
         FieldValue::UP value(field.getDataType().createFieldValue());
         if ((_repo == nullptr) && (_doc_type != nullptr)) {
             DocumentTypeRepo tmpRepo(*_doc_type);
-            createFV(*value, tmpRepo, stream, *_doc_type, _version);
+            createFV(*value, &tmpRepo, stream, _doc_type, _version);
         } else {
-            createFV(*value, *_repo, stream, *_doc_type, _version);
+            createFV(*value, _repo, stream, _doc_type, _version);
         }
         return value;
     }
@@ -183,9 +172,9 @@ StructFieldValue::getFieldValue(const Field& field, FieldValue& value) const
         nbostream_longlivedbuf stream(buf.c_str(), buf.size());
         if ((_repo == nullptr) && (_doc_type != nullptr)) {
             DocumentTypeRepo tmpRepo(*_doc_type);
-            createFV(value, tmpRepo, stream, *_doc_type, _version);
+            createFV(value, &tmpRepo, stream, _doc_type, _version);
         } else {
-            createFV(value, *_repo, stream, *_doc_type, _version);
+            createFV(value, _repo, stream, _doc_type, _version);
         }
         return true;
     }
@@ -253,10 +242,8 @@ StructFieldValue::compare(const FieldValue& otherOrg) const
     }
     const auto & other = static_cast<const StructFieldValue&>(otherOrg);
 
-    std::vector<int> a;
-    getRawFieldIds(a);
-    std::vector<int> b;
-    other.getRawFieldIds(b);
+    std::vector<int> a = getRawFieldIds();
+    std::vector<int> b = other.getRawFieldIds();
 
     for (size_t i(0); i < std::min(a.size(), b.size()); i++) {
         if (a[i] != b[i]) {
@@ -348,12 +335,9 @@ struct StructFieldValue::FieldIterator : public StructuredIterator {
 
     explicit FieldIterator(const StructFieldValue& s)
         : _struct(s),
-          _ids(),
+          _ids(s.getRawFieldIds()),
           _cur(_ids.begin())
-    {
-        s.getRawFieldIds(_ids);
-        _cur = _ids.begin();
-    }
+    { }
 
     void skipTo(int fieldId) {
         while (_cur != _ids.end() && fieldId != *_cur) {

@@ -1,6 +1,7 @@
 // Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
 #include <vespa/eval/eval/typed_cells.h>
+#include <vespa/searchlib/common/geo_gcd.h>
 #include <vespa/searchlib/tensor/distance_functions.h>
 #include <vespa/searchlib/tensor/distance_function_factory.h>
 #include <vespa/vespalib/gtest/gtest.h>
@@ -33,6 +34,10 @@ void verify_geo_miles(const DistanceFunction *dist_fun,
         EXPECT_LE(d_miles, exp_miles*1.01);
         double threshold = dist_fun->convert_threshold(km);
         EXPECT_DOUBLE_EQ(threshold, abstract_distance);
+        // compare with common Great Circle Distance implementation:
+        search::common::GeoGcd gp1{p1[0], p1[1]};
+        double km_gcd = gp1.km_great_circle_distance(p2[0], p2[1]);
+        EXPECT_NEAR(km, km_gcd, 1e-9); // EXPECT_DOUBLE_EQ does not work on arm64 for some reason
     } else {
         EXPECT_LE(d_miles, 7e-13);
         EXPECT_LE(abstract_distance, 6e-33);
@@ -71,7 +76,6 @@ TEST(DistanceFunctionsTest, euclidean_int8_smoketest)
 
     auto euclid = make_distance_function(DistanceMetric::Euclidean, ct);
 
-    std::vector<double> p00{0.0, 0.0, 0.0};
     std::vector<Int8Float> p0{0.0, 0.0, 0.0};
     std::vector<Int8Float> p1{1.0, 0.0, 0.0};
     std::vector<Int8Float> p5{0.0,-1.0, 0.0};
@@ -85,9 +89,6 @@ TEST(DistanceFunctionsTest, euclidean_int8_smoketest)
     EXPECT_DOUBLE_EQ(12.0, euclid->calc(t(p1), t(p7)));
     EXPECT_DOUBLE_EQ(14.0, euclid->calc(t(p5), t(p7)));
 
-    EXPECT_DOUBLE_EQ(1.0, euclid->calc(t(p00), t(p1)));
-    EXPECT_DOUBLE_EQ(1.0, euclid->calc(t(p00), t(p5)));
-    EXPECT_DOUBLE_EQ(9.0, euclid->calc(t(p00), t(p7)));
 }
 
 TEST(DistanceFunctionsTest, angular_gives_expected_score)

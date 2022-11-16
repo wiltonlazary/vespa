@@ -1,5 +1,5 @@
 # Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
-search test {
+schema test {
   document test {
     struct elem {
       field name type string {}
@@ -15,5 +15,8 @@ search test {
         indexing: attribute
       }
     }
+  }
+  document-summary rename {
+    summary new_elem_array type array<elem> { source: elem_array }
   }
 }

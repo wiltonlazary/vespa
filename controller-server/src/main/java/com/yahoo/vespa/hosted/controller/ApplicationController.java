@@ -1,64 +1,69 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller;
 
 import com.yahoo.component.Version;
+import com.yahoo.component.VersionCompatibility;
+import com.yahoo.config.application.api.DeploymentInstanceSpec;
 import com.yahoo.config.application.api.DeploymentSpec;
+import com.yahoo.config.application.api.DeploymentSpec.UpgradePolicy;
 import com.yahoo.config.application.api.ValidationId;
 import com.yahoo.config.application.api.ValidationOverrides;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.CloudAccount;
 import com.yahoo.config.provision.DockerImage;
-import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.InstanceName;
+import com.yahoo.config.provision.Tags;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.zone.ZoneId;
-import com.yahoo.log.LogLevel;
 import com.yahoo.text.Text;
+import com.yahoo.transaction.Mutex;
 import com.yahoo.vespa.athenz.api.AthenzDomain;
 import com.yahoo.vespa.athenz.api.AthenzIdentity;
 import com.yahoo.vespa.athenz.api.AthenzPrincipal;
 import com.yahoo.vespa.athenz.api.AthenzService;
 import com.yahoo.vespa.athenz.api.AthenzUser;
-import com.yahoo.vespa.curator.Lock;
 import com.yahoo.vespa.flags.FetchVector;
 import com.yahoo.vespa.flags.FlagSource;
+import com.yahoo.vespa.flags.ListFlag;
 import com.yahoo.vespa.flags.PermanentFlags;
 import com.yahoo.vespa.flags.StringFlag;
 import com.yahoo.vespa.hosted.controller.api.application.v4.model.DeploymentData;
 import com.yahoo.vespa.hosted.controller.api.identifiers.DeploymentId;
 import com.yahoo.vespa.hosted.controller.api.identifiers.InstanceId;
-import com.yahoo.vespa.hosted.controller.api.identifiers.RevisionId;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.BillingController;
 import com.yahoo.vespa.hosted.controller.api.integration.billing.Quota;
 import com.yahoo.vespa.hosted.controller.api.integration.certificates.EndpointCertificateMetadata;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ApplicationReindexing;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ConfigServer;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.ContainerEndpoint;
-import com.yahoo.vespa.hosted.controller.api.integration.configserver.Log;
+import com.yahoo.vespa.hosted.controller.api.integration.configserver.DeploymentResult;
+import com.yahoo.vespa.hosted.controller.api.integration.configserver.DeploymentResult.LogEntry;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.Node;
 import com.yahoo.vespa.hosted.controller.api.integration.configserver.NodeFilter;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationStore;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.ApplicationVersion;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.ArtifactRepository;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.JobId;
+import com.yahoo.vespa.hosted.controller.api.integration.deployment.RevisionId;
 import com.yahoo.vespa.hosted.controller.api.integration.deployment.TesterId;
 import com.yahoo.vespa.hosted.controller.api.integration.noderepository.RestartFilter;
 import com.yahoo.vespa.hosted.controller.api.integration.secrets.TenantSecretStore;
-import com.yahoo.vespa.hosted.controller.application.ActivateResult;
-import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
-import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackageValidator;
 import com.yahoo.vespa.hosted.controller.application.Deployment;
 import com.yahoo.vespa.hosted.controller.application.DeploymentMetrics;
+import com.yahoo.vespa.hosted.controller.application.DeploymentMetrics.Warning;
 import com.yahoo.vespa.hosted.controller.application.DeploymentQuotaCalculator;
 import com.yahoo.vespa.hosted.controller.application.QuotaUsage;
 import com.yahoo.vespa.hosted.controller.application.SystemApplication;
 import com.yahoo.vespa.hosted.controller.application.TenantAndApplicationId;
+import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackage;
+import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackageStream;
+import com.yahoo.vespa.hosted.controller.application.pkg.ApplicationPackageValidator;
 import com.yahoo.vespa.hosted.controller.athenz.impl.AthenzFacade;
 import com.yahoo.vespa.hosted.controller.certificate.EndpointCertificates;
 import com.yahoo.vespa.hosted.controller.concurrent.Once;
 import com.yahoo.vespa.hosted.controller.deployment.DeploymentTrigger;
 import com.yahoo.vespa.hosted.controller.deployment.JobStatus;
 import com.yahoo.vespa.hosted.controller.deployment.Run;
-import com.yahoo.vespa.hosted.controller.deployment.RunStatus;
 import com.yahoo.vespa.hosted.controller.notification.Notification;
 import com.yahoo.vespa.hosted.controller.notification.NotificationSource;
 import com.yahoo.vespa.hosted.controller.persistence.CuratorDb;
@@ -70,8 +75,10 @@ import com.yahoo.vespa.hosted.controller.tenant.CloudTenant;
 import com.yahoo.vespa.hosted.controller.tenant.Tenant;
 import com.yahoo.vespa.hosted.controller.versions.VersionStatus;
 import com.yahoo.vespa.hosted.controller.versions.VespaVersion;
+import com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence;
 import com.yahoo.yolean.Exceptions;
 
+import java.io.ByteArrayInputStream;
 import java.security.Principal;
 import java.security.cert.X509Certificate;
 import java.time.Clock;
@@ -80,24 +87,36 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
+import static com.yahoo.vespa.flags.FetchVector.Dimension.APPLICATION_ID;
 import static com.yahoo.vespa.hosted.controller.api.integration.configserver.Node.State.active;
 import static com.yahoo.vespa.hosted.controller.api.integration.configserver.Node.State.reserved;
+import static com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence.broken;
+import static com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence.high;
+import static com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence.low;
+import static com.yahoo.vespa.hosted.controller.versions.VespaVersion.Confidence.normal;
 import static java.util.Comparator.naturalOrder;
+import static java.util.stream.Collectors.collectingAndThen;
+import static java.util.stream.Collectors.counting;
+import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
+import static java.util.stream.Collectors.toSet;
 
 /**
  * A singleton owned by the Controller which contains the methods and state for controlling applications.
@@ -123,21 +142,24 @@ public class ApplicationController {
     private final ApplicationPackageValidator applicationPackageValidator;
     private final EndpointCertificates endpointCertificates;
     private final StringFlag dockerImageRepoFlag;
+    private final ListFlag<String> incompatibleVersions;
     private final BillingController billingController;
+    private final ListFlag<String> cloudAccountsFlag;
 
     ApplicationController(Controller controller, CuratorDb curator, AccessControl accessControl, Clock clock,
                           FlagSource flagSource, BillingController billingController) {
-
-        this.controller = controller;
-        this.curator = curator;
-        this.accessControl = accessControl;
+        this.controller = Objects.requireNonNull(controller);
+        this.curator = Objects.requireNonNull(curator);
+        this.accessControl = Objects.requireNonNull(accessControl);
         this.configServer = controller.serviceRegistry().configServer();
-        this.clock = clock;
-        this.artifactRepository = controller.serviceRegistry().artifactRepository();
-        this.applicationStore = controller.serviceRegistry().applicationStore();
-        this.dockerImageRepoFlag = PermanentFlags.DOCKER_IMAGE_REPO.bindTo(flagSource);
-        this.billingController = billingController;
+        this.clock = Objects.requireNonNull(clock);
+        this.billingController = Objects.requireNonNull(billingController);
 
+        artifactRepository = controller.serviceRegistry().artifactRepository();
+        applicationStore = controller.serviceRegistry().applicationStore();
+        dockerImageRepoFlag = PermanentFlags.DOCKER_IMAGE_REPO.bindTo(flagSource);
+        incompatibleVersions = PermanentFlags.INCOMPATIBLE_VERSIONS.bindTo(flagSource);
+        cloudAccountsFlag = PermanentFlags.CLOUD_ACCOUNTS.bindTo(flagSource);
         deploymentTrigger = new DeploymentTrigger(controller, clock);
         applicationPackageValidator = new ApplicationPackageValidator(controller);
         endpointCertificates = new EndpointCertificates(controller,
@@ -150,16 +172,30 @@ public class ApplicationController {
             int count = 0;
             for (TenantAndApplicationId id : curator.readApplicationIds()) {
                 lockApplicationIfPresent(id, application -> {
-                    for (InstanceName instance : application.get().deploymentSpec().instanceNames())
-                        if (!application.get().instances().containsKey(instance))
-                            application = withNewInstance(application, id.instance(instance));
+                    for (var declaredInstance : application.get().deploymentSpec().instances())
+                        if ( ! application.get().instances().containsKey(declaredInstance.name()))
+                            application = withNewInstance(application,
+                                                          id.instance(declaredInstance.name()),
+                                                          declaredInstance.tags());
                     store(application);
                 });
                 count++;
             }
             log.log(Level.INFO, Text.format("Wrote %d applications in %s", count,
-                                              Duration.between(start, clock.instant())));
+                                            Duration.between(start, clock.instant())));
         });
+    }
+
+    /** Validate the given application package */
+    public void validatePackage(ApplicationPackage applicationPackage, Application application) {
+        applicationPackageValidator.validate(application, applicationPackage, clock.instant());
+    }
+
+    public Set<CloudAccount> accountsOf(TenantName tenant) {
+        return cloudAccountsFlag.with(FetchVector.Dimension.TENANT_ID, tenant.value())
+                                .value().stream()
+                                .map(CloudAccount::from)
+                                .collect(Collectors.toSet());
     }
 
     /** Returns the application with the given id, or null if it is not present */
@@ -168,7 +204,6 @@ public class ApplicationController {
     }
 
     /** Returns the instance with the given id, or null if it is not present */
-    // TODO jonmv: remove or inline
     public Optional<Instance> getInstance(ApplicationId id) {
         return getApplication(TenantAndApplicationId.from(id)).flatMap(application -> application.get(id.instance()));
     }
@@ -180,8 +215,8 @@ public class ApplicationController {
      * if no documents types are given, reindexing is triggered for all given clusters; otherwise
      * reindexing is triggered for the cartesian product of the given clusters and document types.
      */
-    public void reindex(ApplicationId id, ZoneId zoneId, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly) {
-        configServer.reindex(new DeploymentId(id, zoneId), clusterNames, documentTypes, indexedOnly);
+    public void reindex(ApplicationId id, ZoneId zoneId, List<String> clusterNames, List<String> documentTypes, boolean indexedOnly, Double speed) {
+        configServer.reindex(new DeploymentId(id, zoneId), clusterNames, documentTypes, indexedOnly, speed);
     }
 
     /** Returns the reindexing status for the given application in the given zone. */
@@ -266,7 +301,7 @@ public class ApplicationController {
             if (oldest == null || version.isBefore(oldest))
                 oldest = version;
 
-            if (run.status() == RunStatus.success)
+            if (run.hasSucceeded())
                 return Optional.of(oldest);
         }
         // If no successful run was found, ask the node repository in the relevant zone.
@@ -275,7 +310,7 @@ public class ApplicationController {
 
     /** Reads the oldest installed platform for the given application and zone from the node repo of that zone. */
     private Optional<Version> oldestInstalledPlatform(JobId job) {
-        return configServer.nodeRepository().list(job.type().zone(controller.system()),
+        return configServer.nodeRepository().list(job.type().zone(),
                                                   NodeFilter.all()
                                                             .applications(job.application())
                                                             .states(active, reserved))
@@ -286,13 +321,118 @@ public class ApplicationController {
     }
 
     /** Returns the oldest Vespa version installed on any active or reserved production node for the given application. */
-    public Version oldestInstalledPlatform(TenantAndApplicationId id) {
-        return controller.jobController().deploymentStatus(requireApplication(id)).jobs()
-                         .production().asList().stream()
+    public Optional<Version> oldestInstalledPlatform(Application application) {
+        return controller.jobController().deploymentStatus(application).jobs()
+                         .production().asList()
+                         .stream()
                          .map(this::oldestInstalledPlatform)
                          .flatMap(Optional::stream)
-                         .min(naturalOrder())
-                         .orElse(controller.readSystemVersion());
+                         .min(naturalOrder());
+    }
+
+    /**
+     * Returns the preferred Vespa version to compile against, for the given application, optionally restricted to a major.
+     * <p>
+     * The returned version is not newer than the oldest deployed platform for the application, unless
+     * the target major differs from the oldest deployed platform, in which case it is not newer than
+     * the oldest available platform version on that major instead.
+     * <p>
+     * The returned version is compatible with a platform version available in the system.
+     * <p>
+     * A candidate is sought first among versions with non-broken confidence, then among those with forgotten confidence.
+     * <p>
+     * The returned version is the latest in the relevant candidate set.
+     * <p>
+     * If no such version exists, an {@link IllegalArgumentException} is thrown.
+     */
+    public Version compileVersion(TenantAndApplicationId id, OptionalInt wantedMajor) {
+
+        // Read version status, and pick out target platforms we could run the compiled package on.
+        Optional<Application> application = getApplication(id);
+        Optional<Version> oldestInstalledPlatform = application.flatMap(this::oldestInstalledPlatform);
+        VersionStatus versionStatus = controller.readVersionStatus();
+        UpgradePolicy policy = application.flatMap(app -> app.deploymentSpec().instances().stream()
+                                                             .map(DeploymentInstanceSpec::upgradePolicy)
+                                                             .max(naturalOrder()))
+                                          .orElse(UpgradePolicy.defaultPolicy);
+        Confidence targetConfidence = switch (policy) {
+            case canary -> broken;
+            case defaultPolicy -> normal;
+            case conservative -> high;
+        };
+
+        // Target platforms are all versions not older than the oldest installed platform, unless forcing a major version change.
+        // Only platforms not older than the system version, and with appropriate confidence, are considered targets.
+        Predicate<Version> isTargetPlatform = wantedMajor.isEmpty() && oldestInstalledPlatform.isEmpty()
+                                            ? __ -> true                                                    // No preferences for version: any platform version is ok.
+                                            : wantedMajor.isEmpty() || (oldestInstalledPlatform.isPresent() && wantedMajor.getAsInt() == oldestInstalledPlatform.get().getMajor())
+                                            ? version -> ! version.isBefore(oldestInstalledPlatform.get())  // Major empty, or on same as oldest: ensure not a platform downgrade.
+                                            : version -> wantedMajor.getAsInt() == version.getMajor();      // Major specified, and not on same as oldest (possibly empty): any on that major.
+        Set<Version> platformVersions = versionStatus.deployableVersions().stream()
+                                                     .filter(version -> version.confidence().equalOrHigherThan(targetConfidence))
+                                                     .map(VespaVersion::versionNumber)
+                                                     .filter(isTargetPlatform)
+                                                     .collect(toSet());
+        oldestInstalledPlatform.ifPresent(fallback -> {
+            if (wantedMajor.isEmpty() || wantedMajor.getAsInt() == fallback.getMajor())
+                platformVersions.add(fallback);
+        });
+
+        if (platformVersions.isEmpty())
+            throw new IllegalArgumentException("this system has no available versions" +
+                                               (wantedMajor.isPresent() ? " on specified major: " + wantedMajor.getAsInt() : ""));
+
+        // The returned compile version must be compatible with at least one target platform.
+        // If it is incompatible with any of the current platforms, the system will trigger a platform change.
+        // The returned compile version should also be at least as old as both the oldest target platform version,
+        // and the oldest current platform, unless the two are incompatible, in which case only the target matters,
+        // or there are no installed platforms, in which case we prefer the newest target platform.
+        VersionCompatibility compatibility = versionCompatibility(id.defaultInstance()); // Wrong id level >_<
+        Version oldestTargetPlatform = platformVersions.stream().min(naturalOrder()).get();
+        Version newestVersion = oldestInstalledPlatform.isEmpty()
+                              ? platformVersions.stream().max(naturalOrder()).get()
+                              :    compatibility.accept(oldestInstalledPlatform.get(), oldestTargetPlatform)
+                                && oldestInstalledPlatform.get().isBefore(oldestTargetPlatform)
+                              ? oldestInstalledPlatform.get()
+                              : oldestTargetPlatform;
+        Predicate<Version> systemCompatible = version ->    ! version.isAfter(newestVersion)
+                                                         &&   platformVersions.stream().anyMatch(platform -> compatibility.accept(platform, version));
+
+        // Find the newest, system-compatible version with non-broken confidence.
+        Optional<Version> nonBroken = versionStatus.versions().stream()
+                                                   .filter(VespaVersion::isReleased)
+                                                   .filter(version -> version.confidence().equalOrHigherThan(low))
+                                                   .map(VespaVersion::versionNumber)
+                                                   .filter(systemCompatible)
+                                                   .max(naturalOrder());
+
+        // Fall back to the newest, system-compatible version with unknown confidence. For public systems, this implies high confidence.
+        Set<Version> knownVersions = versionStatus.versions().stream().map(VespaVersion::versionNumber).collect(toSet());
+        Optional<Version> unknown = controller.mavenRepository().metadata().versions().stream()
+                                              .filter(version -> ! knownVersions.contains(version))
+                                              .filter(systemCompatible)
+                                              .max(naturalOrder());
+
+        if (nonBroken.isPresent()) {
+            if (controller.system().isPublic() && unknown.isPresent() && unknown.get().isAfter(nonBroken.get()))
+                return unknown.get();
+
+            return nonBroken.get();
+        }
+
+        if (unknown.isPresent())
+            return unknown.get();
+
+        throw new IllegalArgumentException("no suitable, released compile version exists" +
+                                           (wantedMajor.isPresent() ? " for specified major: " + wantedMajor.getAsInt() : ""));
+    }
+
+    private OptionalInt firstNonEmpty(OptionalInt... choices) {
+        for (OptionalInt choice : choices)
+            if (choice.isPresent())
+                return choice;
+
+        return OptionalInt.empty();
     }
 
     /**
@@ -301,7 +441,7 @@ public class ApplicationController {
      * @throws IllegalArgumentException if the application already exists
      */
     public Application createApplication(TenantAndApplicationId id, Credentials credentials) {
-        try (Lock lock = lock(id)) {
+        try (Mutex lock = lock(id)) {
             if (getApplication(id).isPresent())
                 throw new IllegalArgumentException("Could not create '" + id + "': Application already exists");
             if (getApplication(dashToUnderscore(id)).isPresent()) // VESPA-1945
@@ -325,14 +465,14 @@ public class ApplicationController {
      *
      * @throws IllegalArgumentException if the instance already exists, or has an invalid instance name.
      */
-    public void createInstance(ApplicationId id) {
+    public void createInstance(ApplicationId id, Tags tags) {
         lockApplicationOrThrow(TenantAndApplicationId.from(id), application -> {
-            store(withNewInstance(application, id));
+            store(withNewInstance(application, id, tags));
         });
     }
 
     /** Returns given application with a new instance */
-    public LockedApplication withNewInstance(LockedApplication application, ApplicationId instance) {
+    public LockedApplication withNewInstance(LockedApplication application, ApplicationId instance, Tags tags) {
         if (instance.instance().isTester())
             throw new IllegalArgumentException("'" + instance + "' is a tester application!");
         InstanceId.validate(instance.instance().value());
@@ -343,21 +483,19 @@ public class ApplicationController {
             throw new IllegalArgumentException("Could not create '" + instance + "': Instance " + dashToUnderscore(instance) + " already exists");
 
         log.info("Created " + instance);
-        return application.withNewInstance(instance.instance());
+        return application.withNewInstance(instance.instance(), tags);
     }
 
     /** Deploys an application package for an existing application instance. */
-    public ActivateResult deploy(JobId job, boolean deploySourceVersions) {
+    public DeploymentResult deploy(JobId job, boolean deploySourceVersions, Consumer<String> deployLogger) {
         if (job.application().instance().isTester())
             throw new IllegalArgumentException("'" + job.application() + "' is a tester application!");
 
         TenantAndApplicationId applicationId = TenantAndApplicationId.from(job.application());
-        ZoneId zone = job.type().zone(controller.system());
+        ZoneId zone = job.type().zone();
+        DeploymentId deployment = new DeploymentId(job.application(), zone);
 
-        try (Lock deploymentLock = lockForDeployment(job.application(), zone)) {
-            Set<ContainerEndpoint> containerEndpoints;
-            Optional<EndpointCertificateMetadata> endpointCertificateMetadata;
-
+        try (Mutex deploymentLock = lockForDeployment(job.application(), zone)) {
             Run run = controller.jobController().last(job)
                                 .orElseThrow(() -> new IllegalStateException("No known run of '" + job + "'"));
 
@@ -365,128 +503,141 @@ public class ApplicationController {
                 throw new IllegalStateException("No deployment expected for " + job + " now, as no job is running");
 
             Version platform = run.versions().sourcePlatform().filter(__ -> deploySourceVersions).orElse(run.versions().targetPlatform());
-            ApplicationVersion revision = run.versions().sourceApplication().filter(__ -> deploySourceVersions).orElse(run.versions().targetApplication());
-            ApplicationPackage applicationPackage = new ApplicationPackage(applicationStore.get(new DeploymentId(job.application(), zone), revision));
-
-            try (Lock lock = lock(applicationId)) {
+            RevisionId revision = run.versions().sourceRevision().filter(__ -> deploySourceVersions).orElse(run.versions().targetRevision());
+            ApplicationPackageStream applicationPackage = new ApplicationPackageStream(() -> applicationStore.stream(deployment, revision),
+                                                                                       ApplicationPackageStream.addingCertificate(run.testerCertificate()));
+            AtomicReference<RevisionId> lastRevision = new AtomicReference<>();
+            Instance instance;
+            Set<ContainerEndpoint> containerEndpoints;
+            try (Mutex lock = lock(applicationId)) {
                 LockedApplication application = new LockedApplication(requireApplication(applicationId), lock);
-                Instance instance = application.get().require(job.application().instance());
-                rejectOldChange(instance, platform, revision, job, zone);
+                application.get().revisions().last().map(ApplicationVersion::id).ifPresent(lastRevision::set);
+                instance = application.get().require(job.application().instance());
 
-                if (   ! applicationPackage.trustedCertificates().isEmpty()
-                    &&   run.testerCertificate().isPresent())
-                    applicationPackage = applicationPackage.withTrustedCertificate(run.testerCertificate().get());
-
-                endpointCertificateMetadata = endpointCertificates.getMetadata(instance, zone, applicationPackage.deploymentSpec().instance(instance.name()));
-
-                containerEndpoints = controller.routing().containerEndpointsOf(application.get(), job.application().instance(), zone);
+                containerEndpoints = controller.routing().of(deployment).prepare(application);
 
             } // Release application lock while doing the deployment, which is a lengthy task.
 
+            Supplier<Optional<EndpointCertificateMetadata>> endpointCertificateMetadata = () -> {
+                try (Mutex lock = lock(applicationId)) {
+                    Optional<EndpointCertificateMetadata> data = endpointCertificates.getMetadata(instance, zone, applicationPackage.truncatedPackage().deploymentSpec());
+                    data.ifPresent(e -> deployLogger.accept("Using CA signed certificate version %s".formatted(e.version())));
+                    return data;
+                }
+            };
+
             // Carry out deployment without holding the application lock.
-            ActivateResult result = deploy(job.application(), applicationPackage, zone, platform, containerEndpoints,
-                                           endpointCertificateMetadata, run.isDryRun());
+            DeploymentResult result = deploy(job.application(), instance.tags(), applicationPackage, zone, platform, containerEndpoints,
+                                             endpointCertificateMetadata, run.isDryRun());
+
 
             // Record the quota usage for this application
             var quotaUsage = deploymentQuotaUsage(zone, job.application());
 
             // For direct deployments use the full deployment ID, but otherwise use just the tenant and application as
-            // the source since it's the same application, so it should have the same warnings
-            NotificationSource source = zone.environment().isManuallyDeployed() ?
-                    NotificationSource.from(new DeploymentId(job.application(), zone)) : NotificationSource.from(applicationId);
-            List<String> warnings = Optional.ofNullable(result.prepareResponse().log)
-                    .map(logs -> logs.stream()
-                            .filter(log -> log.applicationPackage)
-                            .filter(log -> LogLevel.parse(log.level).intValue() >= Level.WARNING.intValue())
-                            .map(log -> log.message)
-                            .sorted()
-                            .distinct()
-                            .collect(Collectors.toList()))
-                    .orElseGet(List::of);
-            if (warnings.isEmpty()) controller.notificationsDb().removeNotification(source, Notification.Type.applicationPackage);
-            else controller.notificationsDb().setNotification(source, Notification.Type.applicationPackage, Notification.Level.warning, warnings);
+            // the source since it's the same application, so it should have the same warnings.
+            // These notifications are only updated when the last submitted revision is deployed here.
+            NotificationSource source = zone.environment().isManuallyDeployed()
+                                        ? NotificationSource.from(deployment)
+                                        : revision.equals(lastRevision.get()) ? NotificationSource.from(applicationId) : null;
+            if (source != null) {
+                List<String> warnings = Optional.ofNullable(result.log())
+                                                .map(logs -> logs.stream()
+                                                                 .filter(LogEntry::concernsPackage)
+                                                                 .filter(log -> log.level().intValue() >= Level.WARNING.intValue())
+                                                                 .map(LogEntry::message)
+                                                                 .sorted()
+                                                                 .distinct()
+                                                                 .collect(Collectors.toList()))
+                                                .orElseGet(List::of);
+                if (warnings.isEmpty())
+                    controller.notificationsDb().removeNotification(source, Notification.Type.applicationPackage);
+                else
+                    controller.notificationsDb().setNotification(source, Notification.Type.applicationPackage, Notification.Level.warning, warnings);
+            }
 
             lockApplicationOrThrow(applicationId, application ->
                     store(application.with(job.application().instance(),
-                                           instance -> instance.withNewDeployment(zone, revision, platform,
-                                                                                  clock.instant(), warningsFrom(result),
-                                                                                  quotaUsage))));
+                                           i -> i.withNewDeployment(zone, revision, platform,
+                                                                    clock.instant(), warningsFrom(result.log()),
+                                                                    quotaUsage))));
             return result;
         }
     }
 
     /** Stores the deployment spec and validation overrides from the application package, and runs cleanup. */
-    public LockedApplication storeWithUpdatedConfig(LockedApplication application, ApplicationPackage applicationPackage) {
-        applicationPackageValidator.validate(application.get(), applicationPackage, clock.instant());
+    public void storeWithUpdatedConfig(LockedApplication application, ApplicationPackage applicationPackage) {
+        validatePackage(applicationPackage, application.get());
 
         application = application.with(applicationPackage.deploymentSpec());
         application = application.with(applicationPackage.validationOverrides());
 
-        var existingInstances = application.get().instances().keySet();
-        var declaredInstances = applicationPackage.deploymentSpec().instanceNames();
-        for (var name : declaredInstances)
-            if ( ! existingInstances.contains(name))
-                application = withNewInstance(application, application.get().id().instance(name));
+        var existingInstances = application.get().instances();
+        var declaredInstances = applicationPackage.deploymentSpec().instances();
+        for (var declaredInstance : declaredInstances) {
+            if ( ! existingInstances.containsKey(declaredInstance.name()))
+                application = withNewInstance(application, application.get().id().instance(declaredInstance.name()), declaredInstance.tags());
+            else if ( ! existingInstances.get(declaredInstance.name()).tags().equals(declaredInstance.tags()))
+                application = application.with(declaredInstance.name(), instance -> instance.with(declaredInstance.tags()));
+        }
 
         // Delete zones not listed in DeploymentSpec, if allowed
         // We do this at deployment time for externally built applications, and at submission time
         // for internally built ones, to be able to return a validation failure message when necessary
-        for (InstanceName name : existingInstances) {
+        for (InstanceName name : existingInstances.keySet()) {
             application = withoutDeletedDeployments(application, name);
         }
-
-        for (InstanceName instance : declaredInstances)
-            if (applicationPackage.deploymentSpec().requireInstance(instance).concerns(Environment.prod))
-                application = controller.routing().assignRotations(application, instance);
 
         // Validate new deployment spec thoroughly before storing it.
         controller.jobController().deploymentStatus(application.get());
 
-        // Clear notifications for instances that are no longer declared
-        for (var name : existingInstances)
-            if ( ! declaredInstances.contains(name))
-                controller.notificationsDb().removeNotifications(NotificationSource.from(application.get().id().instance(name)));
+        for (Notification notification : controller.notificationsDb().listNotifications(NotificationSource.from(application.get().id()), true)) {
+            if (   notification.source().instance().isPresent()
+                && (   ! declaredInstances.contains(notification.source().instance().get())
+                    || ! notification.source().zoneId().map(application.get().require(notification.source().instance().get()).deployments()::containsKey).orElse(false)))
+                controller.notificationsDb().removeNotifications(notification.source());
+        }
 
         store(application);
-        return application;
     }
 
     /** Deploy a system application to given zone */
-    public void deploy(SystemApplication application, ZoneId zone, Version version) {
+    public void deploy(SystemApplication application, ZoneId zone, Version version, boolean allowDowngrade) {
         if (application.hasApplicationPackage()) {
             deploySystemApplicationPackage(application, zone, version);
         } else {
             // Deploy by calling node repository directly
-            configServer.nodeRepository().upgrade(zone, application.nodeType(), version);
+            configServer.nodeRepository().upgrade(zone, application.nodeType(), version, allowDowngrade);
         }
     }
 
     /** Deploy a system application to given zone */
-    public ActivateResult deploySystemApplicationPackage(SystemApplication application, ZoneId zone, Version version) {
+    public DeploymentResult deploySystemApplicationPackage(SystemApplication application, ZoneId zone, Version version) {
         if (application.hasApplicationPackage()) {
-            ApplicationPackage applicationPackage = new ApplicationPackage(
-                    artifactRepository.getSystemApplicationPackage(application.id(), zone, version)
+            ApplicationPackageStream applicationPackage = new ApplicationPackageStream(
+                    () -> new ByteArrayInputStream(artifactRepository.getSystemApplicationPackage(application.id(), zone, version))
             );
-            return deploy(application.id(), applicationPackage, zone, version, Set.of(), /* No application cert */ Optional.empty(), false);
+            return deploy(application.id(), Tags.empty(), applicationPackage, zone, version, Set.of(), Optional::empty, false);
         } else {
            throw new RuntimeException("This system application does not have an application package: " + application.id().toShortString());
         }
     }
 
     /** Deploys the given tester application to the given zone. */
-    public ActivateResult deployTester(TesterId tester, ApplicationPackage applicationPackage, ZoneId zone, Version platform) {
-        return deploy(tester.id(), applicationPackage, zone, platform, Set.of(), /* No application cert for tester*/ Optional.empty(), false);
+    public DeploymentResult deployTester(TesterId tester, ApplicationPackageStream applicationPackage, ZoneId zone, Version platform) {
+        return deploy(tester.id(), Tags.empty(), applicationPackage, zone, platform, Set.of(), Optional::empty, false);
     }
 
-    private ActivateResult deploy(ApplicationId application, ApplicationPackage applicationPackage,
-                                  ZoneId zone, Version platform, Set<ContainerEndpoint> endpoints,
-                                  Optional<EndpointCertificateMetadata> endpointCertificateMetadata,
-                                  boolean dryRun) {
+    private DeploymentResult deploy(ApplicationId application, Tags tags, ApplicationPackageStream applicationPackage,
+                                    ZoneId zone, Version platform, Set<ContainerEndpoint> endpoints,
+                                    Supplier<Optional<EndpointCertificateMetadata>> endpointCertificateMetadata,
+                                    boolean dryRun) {
+        DeploymentId deployment = new DeploymentId(application, zone);
         try {
             Optional<DockerImage> dockerImageRepo = Optional.ofNullable(
                     dockerImageRepoFlag
                             .with(FetchVector.Dimension.ZONE_ID, zone.value())
-                            .with(FetchVector.Dimension.APPLICATION_ID, application.serializedForm())
+                            .with(APPLICATION_ID, application.serializedForm())
                             .value())
                     .filter(s -> !s.isBlank())
                     .map(DockerImage::fromString);
@@ -495,36 +646,58 @@ public class ApplicationController {
                     .filter(tenant-> tenant instanceof AthenzTenant)
                     .map(tenant -> ((AthenzTenant)tenant).domain());
 
-            if (zone.environment().isManuallyDeployed())
-                controller.applications().applicationStore().putMeta(new DeploymentId(application, zone),
-                                                                     clock.instant(),
-                                                                     applicationPackage.metaDataZip());
-
-            Quota deploymentQuota = DeploymentQuotaCalculator.calculate(billingController.getQuota(application.tenant()),
-                    asList(application.tenant()), application, zone, applicationPackage.deploymentSpec());
+            Supplier<Quota> deploymentQuota = () -> DeploymentQuotaCalculator.calculate(billingController.getQuota(application.tenant()),
+                                                                                        asList(application.tenant()), application, zone, applicationPackage.truncatedPackage().deploymentSpec());
 
             List<TenantSecretStore> tenantSecretStores = controller.tenants()
                     .get(application.tenant())
                     .filter(tenant-> tenant instanceof CloudTenant)
                     .map(tenant -> ((CloudTenant) tenant).tenantSecretStores())
                     .orElse(List.of());
-            List<X509Certificate> operatorCertificates = controller.supportAccess().activeGrantsFor(new DeploymentId(application, zone)).stream()
-                    .map(SupportAccessGrant::certificate)
-                    .collect(toList());
-
+            List<X509Certificate> operatorCertificates = controller.supportAccess().activeGrantsFor(deployment).stream()
+                                                                   .map(SupportAccessGrant::certificate)
+                                                                   .collect(toList());
+            Supplier<Optional<CloudAccount>> cloudAccount = () -> decideCloudAccountOf(deployment, applicationPackage.truncatedPackage().deploymentSpec());
             ConfigServer.PreparedApplication preparedApplication =
-                    configServer.deploy(new DeploymentData(application, zone, applicationPackage.zippedContent(), platform,
+                    configServer.deploy(new DeploymentData(application, tags, zone, applicationPackage::zipStream, platform,
                                                            endpoints, endpointCertificateMetadata, dockerImageRepo, domain,
                                                            deploymentQuota, tenantSecretStores, operatorCertificates,
-                                                           dryRun));
+                                                           cloudAccount, dryRun));
 
-            return new ActivateResult(new RevisionId(applicationPackage.hash()), preparedApplication.prepareResponse(),
-                                      applicationPackage.zippedContent().length);
+            return preparedApplication.deploymentResult();
         } finally {
-            // Even if prepare fails, a load balancer may have been provisioned. Always refresh routing policies so that
-            // any DNS updates can be propagated as early as possible.
-            controller.routing().policies().refresh(application, applicationPackage.deploymentSpec(), zone);
+            // Even if prepare fails, routing configuration may need to be updated
+            if ( ! application.instance().isTester()) {
+                controller.routing().of(deployment).configure(applicationPackage.truncatedPackage().deploymentSpec());
+                if (zone.environment().isManuallyDeployed())
+                    controller.applications().applicationStore().putMeta(deployment,
+                                                                         clock.instant(),
+                                                                         applicationPackage.truncatedPackage().metaDataZip());
+
+            }
         }
+    }
+
+    public Optional<CloudAccount> decideCloudAccountOf(DeploymentId deployment, DeploymentSpec spec) {
+        ZoneId zoneId = deployment.zoneId();
+        Optional<CloudAccount> requestedAccount = spec.instance(deployment.applicationId().instance())
+                                                      .flatMap(instanceSpec -> instanceSpec.cloudAccount(zoneId.environment(),
+                                                                                                         Optional.of(zoneId.region())))
+                                                      .or(spec::cloudAccount);
+        if (requestedAccount.isEmpty() || requestedAccount.get().isUnspecified()) {
+            return Optional.empty();
+        }
+        TenantName tenant = deployment.applicationId().tenant();
+        Set<CloudAccount> tenantAccounts = accountsOf(tenant);
+        if (!tenantAccounts.contains(requestedAccount.get())) {
+            throw new IllegalArgumentException("Requested cloud account '" + requestedAccount.get().value() +
+                                               "' is not valid for tenant '" + tenant + "'");
+        }
+        if (!controller.zoneRegistry().hasZone(zoneId, requestedAccount.get())) {
+            throw new IllegalArgumentException("Zone " + zoneId + " is not configured in requested cloud account '" +
+                                               requestedAccount.get().value() + "'");
+        }
+        return requestedAccount;
     }
 
     private LockedApplication withoutDeletedDeployments(LockedApplication application, InstanceName instance) {
@@ -534,7 +707,7 @@ public class ApplicationController {
                                                       .filter(zone ->      deploymentSpec.instance(instance).isEmpty()
                                                                       || ! deploymentSpec.requireInstance(instance).deploysTo(zone.environment(),
                                                                                                                               zone.region()))
-                                                      .collect(toList());
+                                                      .toList();
 
         if (deploymentsToRemove.isEmpty())
             return application;
@@ -545,9 +718,10 @@ public class ApplicationController {
                                                deploymentsToRemove.stream()
                                                                   .map(zone -> zone.region().value())
                                                                   .collect(joining(", ")) +
-                                               ", but does not include " +
-                                               (deploymentsToRemove.size() > 1 ? "these zones" : "this zone") +
-                                               " in deployment.xml. " +
+                                               ", but " + (deploymentsToRemove.size() > 1 ? "these " : "this ") +
+                                               "instance and region combination" +
+                                               (deploymentsToRemove.size() > 1 ? "s are" : " is") +
+                                               " removed from deployment.xml. " +
                                                ValidationOverrides.toAllowMessage(ValidationId.deploymentRemoval));
         // Remove the instance as well, if it is no longer referenced, and contains only production deployments that are removed now.
         boolean removeInstance =    ! deploymentSpec.instanceNames().contains(instance)
@@ -565,6 +739,10 @@ public class ApplicationController {
      * @throws IllegalArgumentException if the application has deployments or the caller is not authorized
      */
     public void deleteApplication(TenantAndApplicationId id, Credentials credentials) {
+        deleteApplication(id, Optional.of(credentials));
+    }
+
+    public void deleteApplication(TenantAndApplicationId id, Optional<Credentials> credentials) {
         lockApplicationOrThrow(id, application -> {
             var deployments = application.get().instances().values().stream()
                                          .filter(instance -> ! instance.deployments().isEmpty())
@@ -581,10 +759,9 @@ public class ApplicationController {
             }
 
             applicationStore.removeAll(id.tenant(), id.application());
-            applicationStore.removeAllTesters(id.tenant(), id.application());
             applicationStore.putMetaTombstone(id.tenant(), id.application(), clock.instant());
 
-            accessControl.deleteApplication(id, credentials);
+            credentials.ifPresent(creds -> accessControl.deleteApplication(id, creds));
             curator.removeApplication(id);
 
             controller.jobController().collectGarbage();
@@ -637,7 +814,7 @@ public class ApplicationController {
      * @param action Function which acts on the locked application.
      */
     public void lockApplicationIfPresent(TenantAndApplicationId applicationId, Consumer<LockedApplication> action) {
-        try (Lock lock = lock(applicationId)) {
+        try (Mutex lock = lock(applicationId)) {
             getApplication(applicationId).map(application -> new LockedApplication(application, lock)).ifPresent(action);
         }
     }
@@ -650,7 +827,7 @@ public class ApplicationController {
      * @throws IllegalArgumentException when application does not exist.
      */
     public void lockApplicationOrThrow(TenantAndApplicationId applicationId, Consumer<LockedApplication> action) {
-        try (Lock lock = lock(applicationId)) {
+        try (Mutex lock = lock(applicationId)) {
             action.accept(new LockedApplication(requireApplication(applicationId), lock));
         }
     }
@@ -707,7 +884,7 @@ public class ApplicationController {
         try {
             configServer.deactivate(id);
         } finally {
-            controller.routing().policies().refresh(application.get().id().instance(instanceName), application.get().deploymentSpec(), zone);
+            controller.routing().of(id).configure(application.get().deploymentSpec());
             if (zone.environment().isManuallyDeployed())
                 applicationStore.putMetaTombstone(id, clock.instant());
             if (!zone.environment().isTest())
@@ -723,15 +900,19 @@ public class ApplicationController {
      * Any operation which stores an application need to first acquire this lock, then read, modify
      * and store the application, and finally release (close) the lock.
      */
-    Lock lock(TenantAndApplicationId application) {
+    Mutex lock(TenantAndApplicationId application) {
         return curator.lock(application);
     }
 
     /**
      * Returns a lock which provides exclusive rights to deploying this application to the given zone.
      */
-    private Lock lockForDeployment(ApplicationId application, ZoneId zone) {
+    private Mutex lockForDeployment(ApplicationId application, ZoneId zone) {
         return curator.lockForDeployment(application, zone);
+    }
+
+    public VersionCompatibility versionCompatibility(ApplicationId id) {
+        return VersionCompatibility.fromVersionList(incompatibleVersions.with(APPLICATION_ID, id.serializedForm()).value());
     }
 
     /**
@@ -748,14 +929,14 @@ public class ApplicationController {
     public void verifyApplicationIdentityConfiguration(TenantName tenantName, Optional<InstanceName> instanceName, Optional<ZoneId> zoneId, ApplicationPackage applicationPackage, Optional<Principal> deployer) {
         Optional<AthenzDomain> identityDomain = applicationPackage.deploymentSpec().athenzDomain()
                                                                   .map(domain -> new AthenzDomain(domain.value()));
-        if(identityDomain.isEmpty()) {
+        if (identityDomain.isEmpty()) {
             // If there is no domain configured in deployment.xml there is nothing to do.
             return;
         }
 
         // Verify that the system supports launching services.
         // Consider adding a capability to the system.
-        if(! (accessControl instanceof AthenzFacade)) {
+        if ( ! (accessControl instanceof AthenzFacade)) {
             throw new IllegalArgumentException("Athenz domain and service specified in deployment.xml, but not supported by system.");
         }
 
@@ -796,20 +977,6 @@ public class ApplicationController {
                 throw new IllegalArgumentException("Athenz domain in deployment.xml: [" + identityDomain.get().getName() + "] " +
                                                    "must match tenant domain: [" + tenantDomain.getName() + "]");
         }
-    }
-
-    private void rejectOldChange(Instance instance, Version platform, ApplicationVersion revision, JobId job, ZoneId zone) {
-        Deployment deployment = instance.deployments().get(zone);
-        if (deployment == null) return;
-        if (!zone.environment().isProduction()) return;
-
-        boolean platformIsOlder = platform.compareTo(deployment.version()) < 0 && !instance.change().isPinned();
-        boolean revisionIsOlder = revision.compareTo(deployment.applicationVersion()) < 0 &&
-                                  !(revision.isUnknown() && controller.system().isCd());
-        if (platformIsOlder || revisionIsOlder)
-            throw new IllegalArgumentException(Text.format("Rejecting deployment of application %s to %s, as the requested versions (platform: %s, application: %s)" +
-                                                             " are older than the currently deployed (platform: %s, application: %s).",
-                                                             job.application(), zone, platform, revision, deployment.version(), deployment.applicationVersion()));
     }
 
     private TenantAndApplicationId dashToUnderscore(TenantAndApplicationId id) {
@@ -861,28 +1028,14 @@ public class ApplicationController {
             throw new IllegalArgumentException("Not allowed to launch Athenz service " + athenzService.getFullName());
     }
 
-    /** Returns the latest known version within the given major, which is not newer than the system version. */
-    public Optional<Version> lastCompatibleVersion(int targetMajorVersion) {
-        VersionStatus versions = controller.readVersionStatus();
-        Version systemVersion = controller.systemVersion(versions);
-        return versions.versions().stream()
-                       .map(VespaVersion::versionNumber)
-                       .filter(version -> version.getMajor() == targetMajorVersion)
-                       .filter(version -> ! version.isAfter(systemVersion))
-                       .max(naturalOrder());
-    }
-
     /** Extract deployment warnings metric from deployment result */
-    private static Map<DeploymentMetrics.Warning, Integer> warningsFrom(ActivateResult result) {
-        if (result.prepareResponse().log == null) return Map.of();
-        Map<DeploymentMetrics.Warning, Integer> warnings = new HashMap<>();
-        for (Log log : result.prepareResponse().log) {
-            // TODO: Categorize warnings. Response from config server should be updated to include the appropriate
-            //  category and typed log level
-            if (!"warn".equalsIgnoreCase(log.level) && !"warning".equalsIgnoreCase(log.level)) continue;
-            warnings.merge(DeploymentMetrics.Warning.all, 1, Integer::sum);
-        }
-        return Map.copyOf(warnings);
+    private static Map<DeploymentMetrics.Warning, Integer> warningsFrom(List<DeploymentResult.LogEntry> log) {
+        return log.stream()
+                  .filter(entry -> entry.level().intValue() >= Level.WARNING.intValue())
+                  // TODO: Categorize warnings. Response from config server should be updated to include the appropriate
+                  //  category and typed log level
+                  .collect(groupingBy(__ -> Warning.all,
+                                      collectingAndThen(counting(), Long::intValue)));
     }
 
 }

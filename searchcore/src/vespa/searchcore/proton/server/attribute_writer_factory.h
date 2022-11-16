@@ -13,12 +13,12 @@ namespace proton {
 struct AttributeWriterFactory : public IAttributeWriterFactory
 {
     AttributeWriterFactory() {}
-    virtual IAttributeWriter::SP create(const IAttributeWriter::SP &old,
-                                        const AttributeCollectionSpec &attrSpec) const override
+    IAttributeWriter::SP create(const IAttributeWriter::SP &old,
+                                AttributeCollectionSpec && attrSpec) const override
     {
         const AttributeWriter &oldAdapter = dynamic_cast<const AttributeWriter &>(*old.get());
         const proton::IAttributeManager::SP &oldMgr = oldAdapter.getAttributeManager();
-        proton::IAttributeManager::SP newMgr = oldMgr->create(attrSpec);
+        proton::IAttributeManager::SP newMgr = oldMgr->create(std::move(attrSpec));
         return std::make_shared<AttributeWriter>(newMgr);
     }
 };

@@ -12,15 +12,19 @@
 
 #include <vespa/storage/config/config-stor-status.h>
 #include <vespa/storageframework/generic/thread/runnable.h>
-#include <vespa/config/config.h>
-#include <vespa/config/helper/configfetcher.h>
+#include <vespa/config/helper/ifetchercallback.h>
 #include <vespa/vespalib/portal/portal.h>
 #include <vespa/vespalib/util/threadstackexecutor.h>
 #include <list>
 
+namespace config {
+    class ConfigUri;
+    class ConfigFetcher;
+}
 namespace storage {
 
 namespace framework {
+    struct StatusReporter;
     struct StatusReporterMap;
     struct ThreadHandle;
     struct ComponentRegister;
@@ -28,13 +32,14 @@ namespace framework {
     class HttpUrlPath;
     class Component;
 }
+
 class StatusWebServer : private config::IFetcherCallback<vespa::config::content::core::StorStatusConfig>
 {
     class WebServer : public vespalib::Portal::GetHandler {
-        StatusWebServer& _status;
-        vespalib::Portal::SP _server;
+        StatusWebServer&              _status;
+        vespalib::Portal::SP          _server;
         vespalib::ThreadStackExecutor _executor;
-        vespalib::Portal::Token::UP _root;
+        vespalib::Portal::Token::UP   _root;
 
     public:
         WebServer(StatusWebServer&, uint16_t port);
@@ -64,7 +69,7 @@ class StatusWebServer : private config::IFetcherCallback<vespa::config::content:
     framework::StatusReporterMap&          _reporterMap;
     uint16_t                               _port;
     std::unique_ptr<WebServer>             _httpServer;
-    config::ConfigFetcher                  _configFetcher;
+    std::unique_ptr<config::ConfigFetcher> _configFetcher;
     std::unique_ptr<framework::Component>  _component;
 
 public:
@@ -77,6 +82,9 @@ public:
     int getListenPort() const;
     void handlePage(const framework::HttpUrlPath&, vespalib::Portal::GetRequest request);
 private:
+    void invoke_reporter(const framework::StatusReporter&,
+                         const framework::HttpUrlPath&,
+                         vespalib::Portal::GetRequest&);
     void configure(std::unique_ptr<vespa::config::content::core::StorStatusConfig> config) override;
 };
 

@@ -2,14 +2,14 @@
 
 #pragma once
 
-#include "attributeiterators.hpp"
+#include "multinumericenumattribute.h"
 #include "load_utils.h"
 #include "loadednumericvalue.h"
-#include "multinumericenumattribute.h"
-#include <vespa/fastlib/io/bufferedfile.h>
+#include "enumerated_multi_value_read_view.h"
+#include "multi_numeric_enum_search_context.h"
 #include <vespa/searchlib/query/query_term_simple.h>
-#include <vespa/searchlib/queryeval/emptysearch.h>
 #include <vespa/searchlib/util/fileutil.hpp>
+#include <vespa/vespalib/util/stash.h>
 
 namespace search {
 
@@ -116,87 +116,27 @@ MultiValueNumericEnumAttribute<B, M>::onLoad(vespalib::Executor *)
 }
 
 template <typename B, typename M>
-AttributeVector::SearchContext::UP
+const attribute::IArrayReadView<typename B::BaseClass::BaseType>*
+MultiValueNumericEnumAttribute<B, M>::make_read_view(attribute::IMultiValueAttribute::ArrayTag<typename B::BaseClass::BaseType>, vespalib::Stash& stash) const
+{
+    return &stash.create<attribute::EnumeratedMultiValueReadView<T, M>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()), this->_enumStore);
+}
+
+template <typename B, typename M>
+const attribute::IWeightedSetReadView<typename B::BaseClass::BaseType>*
+MultiValueNumericEnumAttribute<B, M>::make_read_view(attribute::IMultiValueAttribute::WeightedSetTag<typename B::BaseClass::BaseType>, vespalib::Stash& stash) const
+{
+    return &stash.create<attribute::EnumeratedMultiValueReadView<multivalue::WeightedValue<T>, M>>(this->_mvMapping.make_read_view(this->getCommittedDocIdLimit()), this->_enumStore);
+}
+
+template <typename B, typename M>
+std::unique_ptr<attribute::SearchContext>
 MultiValueNumericEnumAttribute<B, M>::getSearch(QueryTermSimple::UP qTerm,
                                                 const attribute::SearchContextParams & params) const
 {
     (void) params;
-    QueryTermSimple::RangeResult<T> res = qTerm->getRange<T>();
-    if (this->hasArrayType()) {
-        if (res.isEqual()) {
-            return std::make_unique<ArraySearchContext>(std::move(qTerm), *this);
-        } else {
-            return std::make_unique<ArraySearchContext>(std::move(qTerm), *this);
-        }
-    } else {
-        if (res.isEqual()) {
-            return std::make_unique<SetSearchContext>(std::move(qTerm), *this);
-        } else {
-            return std::make_unique<SetSearchContext>(std::move(qTerm), *this);
-        }
-    }
-}
-
-template <typename B, typename M>
-MultiValueNumericEnumAttribute<B, M>::SetSearchContext::SetSearchContext(QueryTermSimpleUP qTerm, const NumericAttribute & toBeSearched) :
-    NumericAttribute::Range<T>(*qTerm),
-    SearchContext(toBeSearched),
-    _toBeSearched(static_cast<const MultiValueNumericEnumAttribute<B, M> &>(toBeSearched))
-{ }
-
-template <typename B, typename M>
-Int64Range
-MultiValueNumericEnumAttribute<B, M>::SetSearchContext::getAsIntegerTerm() const
-{
-    return this->getRange();
-}
-
-template <typename B, typename M>
-std::unique_ptr<queryeval::SearchIterator>
-MultiValueNumericEnumAttribute<B, M>::SetSearchContext::createFilterIterator(fef::TermFieldMatchData * matchData, bool strict)
-{
-    if (!valid()) {
-        return std::make_unique<queryeval::EmptySearch>();
-    }
-    if (getIsFilter()) {
-        return strict
-               ? std::make_unique<FilterAttributeIteratorStrict<SetSearchContext>>(*this, matchData)
-               : std::make_unique<FilterAttributeIteratorT<SetSearchContext>>(*this, matchData);
-    }
-    return strict
-           ? std::make_unique<AttributeIteratorStrict<SetSearchContext>>(*this, matchData)
-           : std::make_unique<AttributeIteratorT<SetSearchContext>>(*this, matchData);
-}
-
-template <typename B, typename M>
-std::unique_ptr<queryeval::SearchIterator>
-MultiValueNumericEnumAttribute<B, M>::ArraySearchContext::createFilterIterator(fef::TermFieldMatchData * matchData, bool strict)
-{
-    if (!valid()) {
-        return std::make_unique<queryeval::EmptySearch>();
-    }
-    if (getIsFilter()) {
-        return strict
-               ? std::make_unique<FilterAttributeIteratorStrict<ArraySearchContext>>(*this, matchData)
-               : std::make_unique<FilterAttributeIteratorT<ArraySearchContext>>(*this, matchData);
-    }
-    return strict
-           ? std::make_unique<AttributeIteratorStrict<ArraySearchContext>>(*this, matchData)
-           : std::make_unique<AttributeIteratorT<ArraySearchContext>>(*this, matchData);
-}
-
-template <typename B, typename M>
-MultiValueNumericEnumAttribute<B, M>::ArraySearchContext::ArraySearchContext(QueryTermSimpleUP qTerm, const NumericAttribute & toBeSearched) :
-    NumericAttribute::Range<T>(*qTerm),
-    SearchContext(toBeSearched),
-    _toBeSearched(static_cast<const MultiValueNumericEnumAttribute<B, M> &>(toBeSearched))
-{ }
-
-template <typename B, typename M>
-Int64Range
-MultiValueNumericEnumAttribute<B, M>::ArraySearchContext::getAsIntegerTerm() const
-{
-    return this->getRange();
+    auto doc_id_limit = this->getCommittedDocIdLimit();
+    return std::make_unique<attribute::MultiNumericEnumSearchContext<T, M>>(std::move(qTerm), *this, this->_mvMapping.make_read_view(doc_id_limit), this->_enumStore);
 }
 
 } // namespace search

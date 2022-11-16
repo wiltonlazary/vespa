@@ -2,10 +2,9 @@
 
 #pragma once
 
-#include "stringattribute.h"
 #include "multistringpostattribute.h"
 #include "multistringattribute.hpp"
-#include <vespa/fastlib/io/bufferedfile.h>
+#include "multi_string_enum_search_context.h"
 #include <vespa/searchlib/query/query_term_simple.h>
 
 namespace search {
@@ -15,6 +14,12 @@ MultiValueStringPostingAttributeT<B, T>::MultiValueStringPostingAttributeT(const
     : MultiValueStringAttributeT<B, T>(name, c),
       PostingParent(*this, this->getEnumStore()),
       _document_weight_attribute_adapter(*this)
+{
+}
+
+template <typename B, typename T>
+MultiValueStringPostingAttributeT<B, T>::MultiValueStringPostingAttributeT(const vespalib::string & name)
+    : MultiValueStringPostingAttributeT<B, T>(name, AttributeVector::Config(AttributeVector::BasicType::STRING, attribute::CollectionType::ARRAY))
 {
 }
 
@@ -63,38 +68,39 @@ template <typename B, typename T>
 void
 MultiValueStringPostingAttributeT<B, T>::mergeMemoryStats(vespalib::MemoryUsage &total)
 {
-    total.merge(this->_postingList.update_stat());
+    auto& compaction_strategy = this->getConfig().getCompactionStrategy();
+    total.merge(this->_postingList.update_stat(compaction_strategy));
 }
 
 template <typename B, typename T>
 void
-MultiValueStringPostingAttributeT<B, T>::removeOldGenerations(generation_t firstUsed)
+MultiValueStringPostingAttributeT<B, T>::reclaim_memory(generation_t oldest_used_gen)
 {
-    MultiValueStringAttributeT<B, T>::removeOldGenerations(firstUsed);
-    _postingList.trimHoldLists(firstUsed);
+    MultiValueStringAttributeT<B, T>::reclaim_memory(oldest_used_gen);
+    _postingList.reclaim_memory(oldest_used_gen);
 }
 
 template <typename B, typename T>
 void
-MultiValueStringPostingAttributeT<B, T>::onGenerationChange(generation_t generation)
+MultiValueStringPostingAttributeT<B, T>::before_inc_generation(generation_t current_gen)
 {
     _postingList.freeze();
-    MultiValueStringAttributeT<B, T>::onGenerationChange(generation);
-    _postingList.transferHoldLists(generation - 1);
+    MultiValueStringAttributeT<B, T>::before_inc_generation(current_gen);
+    _postingList.assign_generation(current_gen);
 }
 
 
 template <typename B, typename T>
-AttributeVector::SearchContext::UP
+std::unique_ptr<attribute::SearchContext>
 MultiValueStringPostingAttributeT<B, T>::getSearch(QueryTermSimpleUP qTerm,
                                                    const attribute::SearchContextParams & params) const
 {
-    std::unique_ptr<search::AttributeVector::SearchContext> sc;
-    sc.reset(new typename std::conditional<T::_hasWeight,
-                                           StringSetPostingSearchContext,
-                                           StringArrayPostingSearchContext>::
-             type(std::move(qTerm), params.useBitVector(), *this));
-    return sc;
+    using BaseSC = attribute::MultiStringEnumSearchContext<T>;
+    using SC = attribute::StringPostingSearchContext<BaseSC, SelfType, int32_t>;
+    bool cased = this->get_match_is_cased();
+    auto doc_id_limit = this->getCommittedDocIdLimit();
+    BaseSC base_sc(std::move(qTerm), cased, *this, this->_mvMapping.make_read_view(doc_id_limit), this->_enumStore);
+    return std::make_unique<SC>(std::move(base_sc), params.useBitVector(), *this);
 }
 
 
@@ -150,6 +156,13 @@ MultiValueStringPostingAttributeT<B, M>::DocumentWeightAttributeAdapter::create(
 {
     assert(idx.valid());
     return self.getPostingList().beginFrozen(idx);
+}
+
+template <typename B, typename M>
+std::unique_ptr<queryeval::SearchIterator>
+MultiValueStringPostingAttributeT<B, M>::DocumentWeightAttributeAdapter::make_bitvector_iterator(vespalib::datastore::EntryRef idx, uint32_t doc_id_limit, fef::TermFieldMatchData &match_data, bool strict) const
+{
+    return self.getPostingList().make_bitvector_iterator(idx, doc_id_limit, match_data, strict);
 }
 
 template <typename B, typename T>

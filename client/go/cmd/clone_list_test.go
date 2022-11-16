@@ -2,23 +2,22 @@
 package cmd
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vespa-engine/vespa/client/go/util"
+	"github.com/vespa-engine/vespa/client/go/mock"
 )
 
 func TestListSampleApps(t *testing.T) {
-	c := &mockHttpClient{}
-	c.NextResponse(200, readTestData(t, "sample-apps-contents.json"))
-	c.NextResponse(200, readTestData(t, "sample-apps-news.json"))
-	c.NextResponse(200, readTestData(t, "sample-apps-operations.json"))
-	c.NextResponse(200, readTestData(t, "sample-apps-vespa-cloud.json"))
-	util.ActiveHttpClient = c
+	c := &mock.HTTPClient{}
+	c.NextResponseString(200, readTestData(t, "sample-apps-contents.json"))
+	c.NextResponseString(200, readTestData(t, "sample-apps-news.json"))
+	c.NextResponseString(200, readTestData(t, "sample-apps-operations.json"))
+	c.NextResponseString(200, readTestData(t, "sample-apps-vespa-cloud.json"))
 
-	apps, err := listSampleApps()
+	apps, err := listSampleApps(c)
 	assert.Nil(t, err)
 	expected := []string{
 		"album-recommendation-monitoring",
@@ -60,7 +59,7 @@ func TestListSampleApps(t *testing.T) {
 }
 
 func readTestData(t *testing.T, name string) string {
-	contents, err := ioutil.ReadFile(filepath.Join("testdata", name))
+	contents, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatal(err)
 	}

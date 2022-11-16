@@ -16,6 +16,7 @@ import com.yahoo.prelude.fastsearch.VespaBackEndSearcher;
 import com.yahoo.search.Query;
 import com.yahoo.search.Result;
 import com.yahoo.search.Searcher;
+import com.yahoo.search.config.SchemaInfoConfig;
 import com.yahoo.search.dispatch.rpc.RpcResourcePool;
 import com.yahoo.search.dispatch.searchcluster.Node;
 import com.yahoo.search.grouping.GroupingRequest;
@@ -24,19 +25,21 @@ import com.yahoo.search.grouping.request.EachOperation;
 import com.yahoo.search.grouping.request.GroupingOperation;
 import com.yahoo.search.rendering.RendererRegistry;
 import com.yahoo.search.result.ErrorMessage;
+import com.yahoo.search.schema.DocumentSummary;
+import com.yahoo.search.schema.RankProfile;
+import com.yahoo.search.schema.Schema;
+import com.yahoo.search.schema.SchemaInfo;
 import com.yahoo.search.searchchain.Execution;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 
 /**
@@ -46,23 +49,21 @@ import static org.junit.Assert.assertTrue;
  */
 public class FastSearcherTestCase {
 
-    private final static DocumentdbInfoConfig documentdbInfoConfig = new DocumentdbInfoConfig(new DocumentdbInfoConfig.Builder());
-
-
     @Test
-    public void testNullQuery() {
+    void testNullQuery() {
         Logger.getLogger(FastSearcher.class.getName()).setLevel(Level.ALL);
         FastSearcher fastSearcher = new FastSearcher("container.0",
-                                                     MockDispatcher.create(Collections.emptyList()),
-                                                     new SummaryParameters(null),
-                                                     new ClusterParams("testhittype"),
-                                                     documentdbInfoConfig);
+                MockDispatcher.create(Collections.emptyList()),
+                new SummaryParameters(null),
+                new ClusterParams("testhittype"),
+                documentdbInfoConfig("test"),
+                schemaInfo("test"));
 
         String query = "?junkparam=ignored";
-        Result result = doSearch(fastSearcher,new Query(query), 0, 10);
+        Result result = doSearch(fastSearcher, new Query(query), 0, 10);
         ErrorMessage message = result.hits().getError();
 
-        assertNotNull("Got error", message);
+        assertNotNull(message, "Got error");
         assertEquals("Null query", message.getMessage());
         assertEquals(query, message.getDetailedMessage());
         assertEquals(Error.NULL_QUERY.code, message.getCode());
@@ -85,12 +86,13 @@ public class FastSearcherTestCase {
     }
 
     @Test
-    public void testSinglePassGroupingIsForcedWithSingleNodeGroups() {
+    void testSinglePassGroupingIsForcedWithSingleNodeGroups() {
         FastSearcher fastSearcher = new FastSearcher("container.0",
-                                                     MockDispatcher.create(Collections.singletonList(new Node(0, "host0", 0))),
-                                                     new SummaryParameters(null),
-                                                     new ClusterParams("testhittype"),
-                                                     documentdbInfoConfig);
+                MockDispatcher.create(List.of(new Node(0, "host0", 0))),
+                new SummaryParameters(null),
+                new ClusterParams("testhittype"),
+                documentdbInfoConfig("test"),
+                schemaInfo("test"));
         Query q = new Query("?query=foo");
         GroupingRequest request1 = GroupingRequest.newInstance(q);
         request1.setRootOperation(new AllOperation());
@@ -107,14 +109,32 @@ public class FastSearcherTestCase {
     }
 
     @Test
-    public void testSummaryNeedsQuery() {
-        ConfigGetter<DocumentdbInfoConfig> getter = new ConfigGetter<>(DocumentdbInfoConfig.class);
-        DocumentdbInfoConfig config = getter.getConfig("file:src/test/java/com/yahoo/prelude/fastsearch/test/documentdb-info.cfg");
+    void testRankProfileValidation() {
+        FastSearcher fastSearcher = new FastSearcher("container.0",
+                MockDispatcher.create(List.of(new Node(0, "host0", 0))),
+                new SummaryParameters(null),
+                new ClusterParams("testhittype"),
+                documentdbInfoConfig("test"),
+                schemaInfo("test"));
+        assertFalse(searchError("?query=q", fastSearcher).contains("does not contain requested rank profile"));
+        assertFalse(searchError("?query=q&ranking.profile=default", fastSearcher).contains("does not contain requested rank profile"));
+        assertTrue(searchError("?query=q&ranking.profile=nosuch", fastSearcher).contains("does not contain requested rank profile"));
+    }
+
+    @Test
+    void testSummaryNeedsQuery() {
+        var documentDb = new DocumentdbInfoConfig(new DocumentdbInfoConfig.Builder().documentdb(new DocumentdbInfoConfig.Documentdb.Builder().name("test")));
+        var schema = new Schema.Builder("test")
+                .add(new DocumentSummary.Builder("default").build())
+                .add(new RankProfile.Builder("default").setHasRankFeatures(false)
+                        .setHasSummaryFeatures(false)
+                        .build());
         FastSearcher backend = new FastSearcher("container.0",
-                                                MockDispatcher.create(Collections.singletonList(new Node(0, "host0", 0))),
-                                                new SummaryParameters(null),
-                                                new ClusterParams("testhittype"),
-                                                config);
+                MockDispatcher.create(Collections.singletonList(new Node(0, "host0", 0))),
+                new SummaryParameters(null),
+                new ClusterParams("testhittype"),
+                documentDb,
+                new SchemaInfo(List.of(schema.build()), Map.of()));
         Query q = new Query("?query=foo");
         Result result = doSearch(backend, q, 0, 10);
         assertFalse(backend.summaryNeedsQuery(q));
@@ -126,14 +146,15 @@ public class FastSearcherTestCase {
     }
 
     @Test
-    public void testSinglePassGroupingIsNotForcedWithSingleNodeGroups() {
+    void testSinglePassGroupingIsNotForcedWithSingleNodeGroups() {
         MockDispatcher dispatcher = MockDispatcher.create(ImmutableList.of(new Node(0, "host0", 0), new Node(2, "host1", 0)));
 
         FastSearcher fastSearcher = new FastSearcher("container.0",
-                                                     dispatcher,
-                                                     new SummaryParameters(null),
-                                                     new ClusterParams("testhittype"),
-                                                     documentdbInfoConfig);
+                dispatcher,
+                new SummaryParameters(null),
+                new ClusterParams("testhittype"),
+                documentdbInfoConfig("test"),
+                schemaInfo("test"));
         Query q = new Query("?query=foo");
         GroupingRequest request1 = GroupingRequest.newInstance(q);
         request1.setRootOperation(new AllOperation());
@@ -155,14 +176,13 @@ public class FastSearcherTestCase {
     }
 
     private void assertForceSinglePassIs(boolean expected, GroupingOperation operation) {
-        assertEquals("Force single pass is " + expected + " in " + operation,
-                     expected, operation.getForceSinglePass());
+        assertEquals(expected, operation.getForceSinglePass(), "Force single pass is " + expected + " in " + operation);
         for (GroupingOperation child : operation.getChildren())
             assertForceSinglePassIs(expected, child);
     }
 
     @Test
-    public void testDispatchReconfig() {
+    void testDispatchReconfig() {
         String clusterName = "a";
         var b = new QrSearchersConfig.Builder();
         var searchClusterB = new QrSearchersConfig.Searchcluster.Builder();
@@ -177,6 +197,25 @@ public class FastSearcherTestCase {
         assertTrue(vipStatus.isInRotation());
         dispatch_1.deconstruct();
         assertTrue(vipStatus.isInRotation()); //Verify that deconstruct does not touch vipstatus
+    }
+
+    private String searchError(String query, Searcher searcher) {
+        return search(query, searcher).hits().getError().getDetailedMessage();
+    }
+
+    private Result search(String query, Searcher searcher) {
+        return searcher.search(new Query(query), new Execution(Execution.Context.createContextStub()));
+    }
+
+    private DocumentdbInfoConfig documentdbInfoConfig(String schemaName) {
+        var db = new DocumentdbInfoConfig.Documentdb.Builder().name(schemaName);
+        return new DocumentdbInfoConfig.Builder().documentdb(db).build();
+    }
+
+    private SchemaInfo schemaInfo(String schemaName) {
+        var schema = new Schema.Builder(schemaName);
+        schema.add(new RankProfile.Builder("default").build());
+        return new SchemaInfo(List.of(schema.build()),  Map.of());
     }
 
 }

@@ -1,4 +1,4 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.container.jdisc;
 
 import com.yahoo.container.di.componentgraph.Provider;
@@ -72,6 +72,11 @@ public class AthenzIdentityProviderProvider implements Provider<AthenzIdentityPr
 
         @Override
         public List<X509Certificate> getIdentityCertificate() {
+            throw new UnsupportedOperationException(message);
+        }
+
+        @Override
+        public X509Certificate getRoleCertificate(String domain, String role) {
             throw new UnsupportedOperationException(message);
         }
 

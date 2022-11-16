@@ -10,6 +10,8 @@ import com.yahoo.vespa.config.PayloadChecksums;
 import com.yahoo.vespa.config.protocol.JRTServerConfigRequestV3;
 import com.yahoo.vespa.config.protocol.Payload;
 
+import java.time.Duration;
+
 /**
  * For unit testing
  *
@@ -37,17 +39,14 @@ public class MockConnection implements ConnectionPool, Connection {
     }
 
     @Override
-    public void invokeAsync(Request request, double jrtTimeout, RequestWaiter requestWaiter) {
+    public void invokeAsync(Request request, Duration jrtTimeout, RequestWaiter requestWaiter) {
         numberOfRequests++;
         lastRequest = request;
-        responseHandler.requestWaiter(requestWaiter).request(request);
-        Thread t = new Thread(responseHandler);
-        t.setDaemon(true);
-        t.run();
+        responseHandler.handle(request, requestWaiter);
     }
 
     @Override
-    public void invokeSync(Request request, double jrtTimeout) {
+    public void invokeSync(Request request, Duration jrtTimeout) {
         numberOfRequests++;
         lastRequest = request;
     }
@@ -83,60 +82,33 @@ public class MockConnection implements ConnectionPool, Connection {
 
     static class OKResponseHandler extends AbstractResponseHandler {
 
-        protected void createResponse() {
+        long generation = 1;
+
+        protected void createResponse(Request request) {
             JRTServerConfigRequestV3 jrtReq = JRTServerConfigRequestV3.createFromRequest(request);
             Payload payload = Payload.from(ConfigPayload.empty());
-            long generation = 1;
             jrtReq.addOkResponse(payload, generation, false, PayloadChecksums.fromPayload(payload));
+            generation++;
         }
 
     }
 
-    public interface ResponseHandler extends Runnable {
+    public interface ResponseHandler {
 
-        RequestWaiter requestWaiter();
+        void handle(Request request, RequestWaiter requestWaiter);
 
-        Request request();
-
-        ResponseHandler requestWaiter(RequestWaiter requestWaiter);
-
-        ResponseHandler request(Request request);
     }
 
     public abstract static class AbstractResponseHandler implements ResponseHandler {
 
-        private RequestWaiter requestWaiter;
-        protected Request request;
-
         @Override
-        public RequestWaiter requestWaiter() {
-            return requestWaiter;
-        }
-
-        @Override
-        public Request request() {
-            return request;
-        }
-
-        @Override
-        public ResponseHandler requestWaiter(RequestWaiter requestWaiter) {
-            this.requestWaiter = requestWaiter;
-            return this;
-        }
-
-        @Override
-        public ResponseHandler request(Request request) {
-            this.request = request;
-            return this;
-        }
-
-        @Override
-        public void run() {
-            createResponse();
+        public void handle(Request request, RequestWaiter requestWaiter) {
+            createResponse(request);
             requestWaiter.handleRequestDone(request);
         }
 
-        protected abstract void createResponse();
+        protected abstract void createResponse(Request request);
+
     }
 
 }

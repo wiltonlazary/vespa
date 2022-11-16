@@ -7,10 +7,11 @@
 #include "lid_info.h"
 #include "randread.h"
 #include <vespa/searchlib/common/tunefileinfo.h>
-#include <vespa/vespalib/util/memoryusage.h>
-#include <vespa/vespalib/util/ptrholder.h>
 #include <vespa/vespalib/stllike/hash_map.h>
+#include <vespa/vespalib/util/array.h>
+#include <vespa/vespalib/util/cpu_usage.h>
 #include <vespa/vespalib/util/generationhandler.h>
+#include <vespa/vespalib/util/memoryusage.h>
 #include <vespa/vespalib/util/time.h>
 
 class FastOS_FileInterface;
@@ -18,7 +19,7 @@ class FastOS_FileInterface;
 namespace vespalib {
     class DataBuffer;
     class GenericHeader;
-    class ThreadExecutor;
+    class Executor;
 }
 
 namespace search {
@@ -113,7 +114,7 @@ public:
     virtual ssize_t read(uint32_t lid, SubChunkId chunk, vespalib::DataBuffer & buffer) const;
     virtual void read(LidInfoWithLidV::const_iterator begin, size_t count, IBufferVisitor & visitor) const;
     void remove(uint32_t lid, uint32_t size);
-    virtual size_t getDiskFootprint() const { return _diskFootprint; }
+    virtual size_t getDiskFootprint() const { return _diskFootprint.load(std::memory_order_relaxed); }
     virtual size_t getMemoryFootprint() const;
     virtual size_t getMemoryMetaFootprint() const;
     virtual vespalib::MemoryUsage getMemoryUsage() const;
@@ -163,8 +164,9 @@ public:
     virtual bool frozen() const { return true; }
     const vespalib::string & getName() const { return _name; }
     void compact(const IGetLid & iGetLid);
-    void appendTo(vespalib::ThreadExecutor & executor, const IGetLid & db, IWriteData & dest,
-                  uint32_t numChunks, IFileChunkVisitorProgress *visitorProgress);
+    void appendTo(vespalib::Executor & executor, const IGetLid & db, IWriteData & dest,
+                  uint32_t numChunks, IFileChunkVisitorProgress *visitorProgress,
+                  vespalib::CpuUsage::Category cpu_category);
     /**
      * Must be called after chunk has been created to allow correct
      * underlying file object to be created.  Must be called before
@@ -207,13 +209,13 @@ private:
     const bool             _skipCrcOnRead;
     size_t                 _erasedCount;
     size_t                 _erasedBytes;
-    size_t                 _diskFootprint;
+    std::atomic<size_t>    _diskFootprint;
     size_t                 _sumNumBuckets;
     size_t                 _numChunksWithBuckets;
     size_t                 _numUniqueBuckets;
     File                   _file;
 protected:
-    void setDiskFootprint(size_t sz) { _diskFootprint = sz; }
+    void setDiskFootprint(size_t sz) { _diskFootprint.store(sz, std::memory_order_relaxed); }
     static size_t adjustSize(size_t sz);
 
     class ChunkInfo
@@ -245,7 +247,7 @@ protected:
     vespalib::string      _dataFileName;
     vespalib::string      _idxFileName;
     ChunkInfoVector       _chunkInfo;
-    uint64_t              _lastPersistedSerialNum;
+    std::atomic<uint64_t> _lastPersistedSerialNum;
     uint32_t              _dataHeaderLen;
     uint32_t              _idxHeaderLen;
     uint32_t              _numLids;

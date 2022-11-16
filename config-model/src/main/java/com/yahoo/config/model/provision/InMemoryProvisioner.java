@@ -9,6 +9,7 @@ import com.yahoo.config.provision.Capacity;
 import com.yahoo.config.provision.ClusterMembership;
 import com.yahoo.config.provision.ClusterResources;
 import com.yahoo.config.provision.ClusterSpec;
+import com.yahoo.config.provision.Environment;
 import com.yahoo.config.provision.HostSpec;
 import com.yahoo.config.provision.NodeResources;
 import com.yahoo.config.provision.ProvisionLogger;
@@ -36,7 +37,7 @@ import java.util.stream.IntStream;
  */
 public class InMemoryProvisioner implements HostProvisioner {
 
-    public static final NodeResources defaultResources = new NodeResources(1, 3, 10, 1);
+    public static final NodeResources defaultResources = new NodeResources(1, 3, 50, 1);
 
     /**
      * If this is true an exception is thrown when all nodes are used.
@@ -66,6 +67,8 @@ public class InMemoryProvisioner implements HostProvisioner {
     private final boolean alwaysReturnOneNode;
 
     private Provisioned provisioned = new Provisioned();
+
+    private Environment environment = Environment.prod;
 
     /** Creates this with a number of nodes with resources 1, 3, 9, 1 */
     public InMemoryProvisioner(int nodeCount, boolean sharedHosts) {
@@ -115,6 +118,12 @@ public class InMemoryProvisioner implements HostProvisioner {
         this.retiredHostNames = Set.of(retiredHostNames);
     }
 
+    /** May affect e.g. the number of nodes/cluster. */
+    public InMemoryProvisioner setEnvironment(Environment environment) {
+        this.environment = environment;
+        return this;
+    }
+
     private static Collection<Host> toHostInstances(String[] hostnames) {
         return Arrays.stream(hostnames).map(Host::new).collect(Collectors.toList());
     }
@@ -137,6 +146,10 @@ public class InMemoryProvisioner implements HostProvisioner {
     @Override
     public List<HostSpec> prepare(ClusterSpec cluster, Capacity requested, ProvisionLogger logger) {
         provisioned.add(cluster.id(), requested);
+        if (environment == Environment.dev) {
+            requested = requested.withLimits(requested.minResources().withNodes(1),
+                                             requested.maxResources().withNodes(1));
+        }
         if (useMaxResources)
             return prepare(cluster, requested.maxResources(), requested.isRequired(), requested.canFail());
         else
@@ -153,7 +166,7 @@ public class InMemoryProvisioner implements HostProvisioner {
         if (alwaysReturnOneNode)
             nodes = 1;
 
-        int groups = requested.groups() > nodes ? nodes : requested.groups();
+        int groups = Math.min(requested.groups(), nodes);
 
         List<HostSpec> allocation = new ArrayList<>();
         if (groups == 1) {
@@ -224,7 +237,7 @@ public class InMemoryProvisioner implements HostProvisioner {
                     .findFirst();
             if (hostResources.isEmpty()) {
                 if (canFail)
-                    throw new IllegalArgumentException("Insufficient capacity for " + requestedResources);
+                    throw new IllegalArgumentException("Insufficient capacity for " + requestedResources + " in cluster " + clusterGroup);
                 else
                     break; // ¯\_(ツ)_/¯
             }

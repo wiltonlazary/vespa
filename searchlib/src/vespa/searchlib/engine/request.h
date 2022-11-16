@@ -21,7 +21,6 @@ public:
     vespalib::duration getTimeout() const { return _timeOfDoom - getStartTime(); }
     vespalib::duration getTimeUsed() const;
     vespalib::duration getTimeLeft() const;
-    const RelativeTime & getRelativeTime() const { return _relativeTime; }
     bool expired() const { return getTimeLeft() <= vespalib::duration::zero(); }
 
     const vespalib::stringref getStackRef() const {
@@ -32,8 +31,6 @@ public:
         _trace.setLevel(level);
         _trace.start(minLevel);
     }
-    Request & setTraceLevel(uint32_t level) { _trace.setLevel(level); return *this; }
-    uint32_t getTraceLevel() const { return _trace.getLevel(); }
 
     Trace & trace() const { return _trace; }
 private:

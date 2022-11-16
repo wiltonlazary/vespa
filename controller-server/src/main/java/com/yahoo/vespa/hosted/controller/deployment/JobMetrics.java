@@ -1,4 +1,4 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.vespa.hosted.controller.deployment;
 
 import com.yahoo.config.provision.SystemName;
@@ -16,21 +16,21 @@ import java.util.function.Supplier;
 public class JobMetrics {
 
     public static final String start = "deployment.start";
-    public static final String outOfCapacity = "deployment.outOfCapacity";
+    public static final String nodeAllocationFailure = "deployment.nodeAllocationFailure";
     public static final String endpointCertificateTimeout = "deployment.endpointCertificateTimeout";
     public static final String deploymentFailure = "deployment.deploymentFailure";
+    public static final String invalidApplication = "deployment.invalidApplication";
     public static final String convergenceFailure = "deployment.convergenceFailure";
     public static final String testFailure = "deployment.testFailure";
+    public static final String noTests = "deployment.noTests";
     public static final String error = "deployment.error";
     public static final String abort = "deployment.abort";
     public static final String success = "deployment.success";
 
     private final Metric metric;
-    private final Supplier<SystemName> system;
 
-    public JobMetrics(Metric metric, Supplier<SystemName> system) {
+    public JobMetrics(Metric metric) {
         this.metric = metric;
-        this.system = system;
     }
 
     public void jobStarted(JobId id) {
@@ -46,21 +46,23 @@ public class JobMetrics {
                       "tenantName", id.application().tenant().value(),
                       "app", id.application().application().value() + "." + id.application().instance().value(),
                       "test", Boolean.toString(id.type().isTest()),
-                      "zone", id.type().zone(system.get()).value());
+                      "zone", id.type().zone().value());
     }
 
     static String valueOf(RunStatus status) {
-        switch (status) {
-            case outOfCapacity: return outOfCapacity;
-            case endpointCertificateTimeout: return endpointCertificateTimeout;
-            case deploymentFailed: return deploymentFailure;
-            case installationFailed: return convergenceFailure;
-            case testFailure: return testFailure;
-            case error: return error;
-            case aborted: return abort;
-            case success: return success;
-            default: throw new IllegalArgumentException("Unexpected run status '" + status + "'");
-        }
+        return switch (status) {
+            case nodeAllocationFailure -> nodeAllocationFailure;
+            case endpointCertificateTimeout -> endpointCertificateTimeout;
+            case invalidApplication -> invalidApplication;
+            case deploymentFailed -> deploymentFailure;
+            case installationFailed -> convergenceFailure;
+            case testFailure -> testFailure;
+            case noTests -> noTests;
+            case error -> error;
+            case aborted -> abort;
+            case success -> success;
+            default -> throw new IllegalArgumentException("Unexpected run status '" + status + "'");
+        };
     }
 
 }

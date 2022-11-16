@@ -9,12 +9,13 @@ import com.yahoo.vespa.hosted.node.admin.maintenance.disk.DiskCleanup;
 import com.yahoo.vespa.hosted.node.admin.maintenance.sync.SyncClient;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContext;
 import com.yahoo.vespa.hosted.node.admin.nodeagent.NodeAgentContextImpl;
-import com.yahoo.vespa.hosted.node.admin.task.util.file.FileFinder;
 import com.yahoo.vespa.hosted.node.admin.task.util.file.DiskSize;
+import com.yahoo.vespa.hosted.node.admin.task.util.file.FileFinder;
+import com.yahoo.vespa.hosted.node.admin.task.util.fs.ContainerPath;
 import com.yahoo.vespa.hosted.node.admin.task.util.process.TestTerminal;
 import com.yahoo.vespa.test.file.TestFileSystem;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.FileSystem;
@@ -28,7 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -50,9 +51,8 @@ public class StorageMaintainerTest {
             fileSystem.getPath("/data/vespa/storage/container-archive"));
 
     @Test
-    public void testDiskUsed() throws IOException {
+    void testDiskUsed() {
         NodeAgentContext context = NodeAgentContextImpl.builder("host-1.domain.tld").fileSystem(fileSystem).build();
-        Files.createDirectories(context.pathOnHostFromPathInNode("/"));
 
         terminal.expectCommand("du -xsk /data/vespa/storage/host-1 2>&1", 0, "321\t/data/vespa/storage/host-1/");
         assertEquals(Optional.of(DiskSize.of(328_704)), storageMaintainer.diskUsageFor(context));
@@ -62,13 +62,13 @@ public class StorageMaintainerTest {
     }
 
     @Test
-    public void testNonExistingDiskUsed() {
+    void testNonExistingDiskUsed() {
         DiskSize size = storageMaintainer.getDiskUsed(null, Paths.get("/fake/path"));
         assertEquals(DiskSize.ZERO, size);
     }
 
     @Test
-    public void archive_container_data_test() throws IOException {
+    void archive_container_data_test() throws IOException {
         // Create some files in containers
         NodeAgentContext context1 = createNodeAgentContextAndContainerStorage(fileSystem, "container-1");
         createNodeAgentContextAndContainerStorage(fileSystem, "container-2");
@@ -76,7 +76,7 @@ public class StorageMaintainerTest {
         Path pathToArchiveDir = fileSystem.getPath("/data/vespa/storage/container-archive");
         Files.createDirectories(pathToArchiveDir);
 
-        Path containerStorageRoot = context1.pathOnHostFromPathInNode("/").getParent();
+        Path containerStorageRoot = context1.paths().of("/").pathOnHost().getParent();
         Set<String> containerStorageRootContentsBeforeArchive = FileFinder.from(containerStorageRoot)
                 .maxDepth(1)
                 .stream()
@@ -115,21 +115,21 @@ public class StorageMaintainerTest {
         NodeAgentContext context = NodeAgentContextImpl.builder(containerName + ".domain.tld")
                 .fileSystem(fileSystem).build();
 
-        Path containerVespaHomeOnHost = context.pathOnHostFromPathInNode(context.pathInNodeUnderVespaHome(""));
-        Files.createDirectories(context.pathOnHostFromPathInNode("/etc/something"));
-        Files.createFile(context.pathOnHostFromPathInNode("/etc/something/conf"));
+        ContainerPath containerVespaHome = context.paths().underVespaHome("");
+        Files.createDirectories(context.paths().of("/etc/something"));
+        Files.createFile(context.paths().of("/etc/something/conf"));
 
-        Files.createDirectories(containerVespaHomeOnHost.resolve("logs/vespa"));
-        Files.createFile(containerVespaHomeOnHost.resolve("logs/vespa/vespa.log"));
-        Files.createFile(containerVespaHomeOnHost.resolve("logs/vespa/zookeeper.log"));
+        Files.createDirectories(containerVespaHome.resolve("logs/vespa"));
+        Files.createFile(containerVespaHome.resolve("logs/vespa/vespa.log"));
+        Files.createFile(containerVespaHome.resolve("logs/vespa/zookeeper.log"));
 
-        Files.createDirectories(containerVespaHomeOnHost.resolve("var/db"));
-        Files.createFile(containerVespaHomeOnHost.resolve("var/db/some-file"));
+        Files.createDirectories(containerVespaHome.resolve("var/db"));
+        Files.createFile(containerVespaHome.resolve("var/db/some-file"));
 
-        Path containerRootOnHost = context.pathOnHostFromPathInNode("/");
-        Set<String> actualContents = FileFinder.files(containerRootOnHost)
+        ContainerPath containerRoot = context.paths().of("/");
+        Set<String> actualContents = FileFinder.files(containerRoot)
                 .stream()
-                .map(fileAttributes -> containerRootOnHost.relativize(fileAttributes.path()).toString())
+                .map(fileAttributes -> containerRoot.relativize(fileAttributes.path()).toString())
                 .collect(Collectors.toSet());
         Set<String> expectedContents = Set.of(
                 "etc/something/conf",
@@ -141,11 +141,10 @@ public class StorageMaintainerTest {
     }
 
     @Test
-    public void not_run_if_not_enough_used() throws IOException {
+    void not_run_if_not_enough_used() {
         NodeAgentContext context = NodeAgentContextImpl.builder(
                 NodeSpec.Builder.testSpec("h123a.domain.tld").realResources(new NodeResources(1, 1, 1, 1)).build())
                 .fileSystem(fileSystem).build();
-        Files.createDirectories(context.pathOnHostFromPathInNode("/"));
         mockDiskUsage(500L);
 
         storageMaintainer.cleanDiskIfFull(context);
@@ -153,12 +152,11 @@ public class StorageMaintainerTest {
     }
 
     @Test
-    public void deletes_correct_amount() throws IOException {
+    void deletes_correct_amount() {
         NodeAgentContext context = NodeAgentContextImpl.builder(
                 NodeSpec.Builder.testSpec("h123a.domain.tld").realResources(new NodeResources(1, 1, 1, 1)).build())
                 .fileSystem(fileSystem).build();
 
-        Files.createDirectories(context.pathOnHostFromPathInNode("/"));
         mockDiskUsage(950_000L);
 
         storageMaintainer.cleanDiskIfFull(context);
@@ -166,7 +164,7 @@ public class StorageMaintainerTest {
         verify(diskCleanup).cleanup(eq(context), any(), eq(272_800_000L));
     }
 
-    @After
+    @AfterEach
     public void after() {
         terminal.verifyAllCommandsExecuted();
     }

@@ -1,6 +1,7 @@
-// Copyright 2019 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package com.yahoo.application.container;
 
+import ai.vespa.modelintegration.evaluator.OnnxEvaluator;
 import com.yahoo.application.Application;
 import com.yahoo.application.Networking;
 import com.yahoo.application.container.handler.Request;
@@ -8,15 +9,16 @@ import com.yahoo.application.container.handler.Response;
 import com.yahoo.tensor.Tensor;
 import com.yahoo.tensor.TensorType;
 import com.yahoo.test.json.JsonTestHelper;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.net.URLEncoder;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Verify that we can create a JDisc (and hence Application) instance capable of doing model evaluation
@@ -25,21 +27,23 @@ import static org.junit.Assert.assertEquals;
  */
 public class ContainerModelEvaluationTest {
 
+    // This should ideally work but may not be worth the effort
     @Test
-    @Ignore // This should ideally work but may not be worth the effort
-    public void testCreateJDiscInstanceWithModelEvaluation() {
+    @Disabled
+    void testCreateJDiscInstanceWithModelEvaluation() {
         try (JDisc jdisc =
-                     JDisc.fromPath(new File("src/test/app-packages/model-evaluation").toPath(),
-                                    Networking.disable)) {
+                JDisc.fromPath(new File("src/test/app-packages/model-evaluation").toPath(),
+                        Networking.disable)) {
             assertLoadedModels(jdisc);
         }
     }
 
     @Test
-    public void testCreateApplicationInstanceWithModelEvaluation() {
+    void testCreateApplicationInstanceWithModelEvaluation() {
+        assumeTrue(OnnxEvaluator.isRuntimeAvailable());
         try (Application application =
-                     Application.fromApplicationPackage(new File("src/test/app-packages/model-evaluation"),
-                                                        Networking.disable)) {
+                Application.fromApplicationPackage(new File("src/test/app-packages/model-evaluation"),
+                        Networking.disable)) {
             assertLoadedModels(application.getJDisc("default"));
         }
     }

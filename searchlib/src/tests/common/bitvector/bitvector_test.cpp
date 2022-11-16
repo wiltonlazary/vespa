@@ -8,10 +8,15 @@
 #include <vespa/searchlib/common/bitvectoriterator.h>
 #include <vespa/searchlib/fef/termfieldmatchdata.h>
 #include <vespa/searchlib/fef/termfieldmatchdataarray.h>
+#include <vespa/vespalib/test/memory_allocator_observer.h>
 #include <vespa/vespalib/util/rand48.h>
 #include <algorithm>
 
 using namespace search;
+
+using vespalib::alloc::Alloc;
+using vespalib::alloc::test::MemoryAllocatorObserver;
+using AllocStats = MemoryAllocatorObserver::Stats;
 
 namespace {
 
@@ -599,59 +604,80 @@ TEST("requireThatGrowWorks")
 {
     vespalib::GenerationHolder g;
     GrowableBitVector v(200, 200, g);
-    EXPECT_EQUAL(0u, v.countTrueBits());
+    EXPECT_EQUAL(0u, v.writer().countTrueBits());
     
-    v.setBitAndMaintainCount(7);
-    v.setBitAndMaintainCount(39);
-    v.setBitAndMaintainCount(71);
-    v.setBitAndMaintainCount(103);
-    EXPECT_EQUAL(4u, v.countTrueBits());
+    v.writer().setBitAndMaintainCount(7);
+    v.writer().setBitAndMaintainCount(39);
+    v.writer().setBitAndMaintainCount(71);
+    v.writer().setBitAndMaintainCount(103);
+    EXPECT_EQUAL(4u, v.writer().countTrueBits());
 
-    EXPECT_EQUAL(200u, v.size());
-    EXPECT_EQUAL(1023u, v.capacity()); 
-    EXPECT_TRUE(assertBV("[7,39,71,103]", v));
-    EXPECT_EQUAL(4u, v.countTrueBits());
+    EXPECT_EQUAL(200u, v.reader().size());
+    EXPECT_EQUAL(1023u, v.writer().capacity()); 
+    EXPECT_TRUE(assertBV("[7,39,71,103]", v.reader()));
+    EXPECT_EQUAL(4u, v.writer().countTrueBits());
     EXPECT_TRUE(v.reserve(1024));
-    EXPECT_EQUAL(200u, v.size()); 
-    EXPECT_EQUAL(2047u, v.capacity()); 
-    EXPECT_TRUE(assertBV("[7,39,71,103]", v));
-    EXPECT_EQUAL(4u, v.countTrueBits());
+    EXPECT_EQUAL(200u, v.reader().size()); 
+    EXPECT_EQUAL(2047u, v.writer().capacity()); 
+    EXPECT_TRUE(assertBV("[7,39,71,103]", v.reader()));
+    EXPECT_EQUAL(4u, v.writer().countTrueBits());
     EXPECT_FALSE(v.extend(202));
-    EXPECT_EQUAL(202u, v.size()); 
-    EXPECT_EQUAL(2047u, v.capacity()); 
-    EXPECT_TRUE(assertBV("[7,39,71,103]", v));
-    EXPECT_EQUAL(4u, v.countTrueBits());
+    EXPECT_EQUAL(202u, v.reader().size()); 
+    EXPECT_EQUAL(2047u, v.writer().capacity()); 
+    EXPECT_TRUE(assertBV("[7,39,71,103]", v.reader()));
+    EXPECT_EQUAL(4u, v.writer().countTrueBits());
     EXPECT_FALSE(v.shrink(200));
-    EXPECT_EQUAL(200u, v.size()); 
-    EXPECT_EQUAL(2047u, v.capacity()); 
-    EXPECT_TRUE(assertBV("[7,39,71,103]", v));
-    EXPECT_EQUAL(4u, v.countTrueBits());
+    EXPECT_EQUAL(200u, v.reader().size()); 
+    EXPECT_EQUAL(2047u, v.writer().capacity()); 
+    EXPECT_TRUE(assertBV("[7,39,71,103]", v.reader()));
+    EXPECT_EQUAL(4u, v.writer().countTrueBits());
     EXPECT_FALSE(v.reserve(2047));
-    EXPECT_EQUAL(200u, v.size()); 
-    EXPECT_EQUAL(2047u, v.capacity()); 
-    EXPECT_TRUE(assertBV("[7,39,71,103]", v));
-    EXPECT_EQUAL(4u, v.countTrueBits());
+    EXPECT_EQUAL(200u, v.reader().size()); 
+    EXPECT_EQUAL(2047u, v.writer().capacity()); 
+    EXPECT_TRUE(assertBV("[7,39,71,103]", v.reader()));
+    EXPECT_EQUAL(4u, v.writer().countTrueBits());
     EXPECT_FALSE(v.shrink(202));
-    EXPECT_EQUAL(202u, v.size()); 
-    EXPECT_EQUAL(2047u, v.capacity()); 
-    EXPECT_TRUE(assertBV("[7,39,71,103]", v));
-    EXPECT_EQUAL(4u, v.countTrueBits());
+    EXPECT_EQUAL(202u, v.reader().size()); 
+    EXPECT_EQUAL(2047u, v.writer().capacity()); 
+    EXPECT_TRUE(assertBV("[7,39,71,103]", v.reader()));
+    EXPECT_EQUAL(4u, v.writer().countTrueBits());
 
     EXPECT_FALSE(v.shrink(100));
-    EXPECT_EQUAL(100u, v.size()); 
-    EXPECT_EQUAL(2047u, v.capacity()); 
-    EXPECT_TRUE(assertBV("[7,39,71]", v));
-    EXPECT_EQUAL(3u, v.countTrueBits());
+    EXPECT_EQUAL(100u, v.reader().size()); 
+    EXPECT_EQUAL(2047u, v.writer().capacity()); 
+    EXPECT_TRUE(assertBV("[7,39,71]", v.reader()));
+    EXPECT_EQUAL(3u, v.writer().countTrueBits());
 
-    v.invalidateCachedCount();
+    v.writer().invalidateCachedCount();
     EXPECT_TRUE(v.reserve(3100));
-    EXPECT_EQUAL(100u, v.size());
-    EXPECT_EQUAL(4095u, v.capacity());
-    EXPECT_EQUAL(3u, v.countTrueBits());
+    EXPECT_EQUAL(100u, v.reader().size());
+    EXPECT_EQUAL(4095u, v.writer().capacity());
+    EXPECT_EQUAL(3u, v.writer().countTrueBits());
 
-    g.transferHoldLists(1);
-    g.trimHoldLists(2);
+    g.assign_generation(1);
+    g.reclaim(2);
 }
 
+TEST("require that growable bit vectors keeps memory allocator")
+{
+    AllocStats stats;
+    auto memory_allocator = std::make_unique<MemoryAllocatorObserver>(stats);
+    Alloc init_alloc = Alloc::alloc_with_allocator(memory_allocator.get());
+    vespalib::GenerationHolder g;
+    GrowableBitVector v(200, 200, g, &init_alloc);
+    EXPECT_EQUAL(AllocStats(1, 0), stats);
+    v.writer().resize(1); // DO NOT TRY THIS AT HOME
+    EXPECT_EQUAL(AllocStats(2, 1), stats);
+    v.reserve(2000);
+    EXPECT_EQUAL(AllocStats(3, 1), stats);
+    v.extend(4000);
+    EXPECT_EQUAL(AllocStats(4, 1), stats);
+    v.shrink(200);
+    EXPECT_EQUAL(AllocStats(4, 1), stats);
+    v.writer().resize(1); // DO NOT TRY THIS AT HOME
+    EXPECT_EQUAL(AllocStats(5, 2), stats);
+    g.assign_generation(1);
+    g.reclaim(2);
+}
 
 TEST_MAIN() { TEST_RUN_ALL(); }

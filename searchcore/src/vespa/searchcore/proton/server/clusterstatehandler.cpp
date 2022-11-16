@@ -27,6 +27,7 @@ private:
     bool _nodeUp;
     bool _nodeInitializing;
     bool _nodeRetired;
+    bool _nodeMaintenance;
 
 public:
     ClusterStateAdapter(const ClusterState &calc)
@@ -34,7 +35,8 @@ public:
           _clusterUp(_calc.clusterUp()),
           _nodeUp(_calc.nodeUp()),
           _nodeInitializing(_calc.nodeInitializing()),
-          _nodeRetired(_calc.nodeRetired())
+          _nodeRetired(_calc.nodeRetired()),
+          _nodeMaintenance(_calc.nodeMaintenance())
     {
     }
     vespalib::Trinary shouldBeReady(const document::Bucket &bucket) const override {
@@ -44,6 +46,7 @@ public:
     bool nodeUp() const override { return _nodeUp; }
     bool nodeInitializing() const override { return _nodeInitializing; }
     bool nodeRetired() const override { return _nodeRetired; }
+    bool nodeMaintenance() const noexcept override { return _nodeMaintenance; }
 };
 
 }
@@ -53,11 +56,12 @@ ClusterStateHandler::performSetClusterState(const ClusterState *calc, IGenericRe
 {
     LOG(debug,
         "performSetClusterState(): "
-        "clusterUp(%s), nodeUp(%s), nodeInitializing(%s)"
+        "clusterUp(%s), nodeUp(%s), nodeInitializing(%s), nodeMaintenance(%s)"
         "changedHandlers.size() = %zu",
         (calc->clusterUp() ? "true" : "false"),
         (calc->nodeUp() ? "true" : "false"),
         (calc->nodeInitializing() ? "true" : "false"),
+        (calc->nodeMaintenance() ? "true" : "false"),
         _changedHandlers.size());
     if (!_changedHandlers.empty()) {
         auto newCalc = std::make_shared<ClusterStateAdapter>(*calc);
@@ -71,10 +75,7 @@ ClusterStateHandler::performSetClusterState(const ClusterState *calc, IGenericRe
 void
 ClusterStateHandler::performGetModifiedBuckets(IBucketIdListResultHandler *resultHandler)
 {
-    storage::spi::BucketIdListResult::List modifiedBuckets;
-    modifiedBuckets.resize(_modifiedBuckets.size());
-    std::copy(_modifiedBuckets.begin(), _modifiedBuckets.end(),
-              modifiedBuckets.begin());
+    storage::spi::BucketIdListResult::List modifiedBuckets(_modifiedBuckets.begin(), _modifiedBuckets.end());
 
     if (LOG_WOULD_LOG(debug) && !modifiedBuckets.empty()) {
         std::ostringstream oss;
@@ -87,7 +88,7 @@ ClusterStateHandler::performGetModifiedBuckets(IBucketIdListResultHandler *resul
         LOG(debug, "performGetModifiedBuckets(): modifiedBuckets(%zu): %s",
             modifiedBuckets.size(), oss.str().c_str());
     }
-    resultHandler->handle(BucketIdListResult(modifiedBuckets));
+    resultHandler->handle(BucketIdListResult(std::move(modifiedBuckets)));
     _modifiedBuckets.clear();
 }
 

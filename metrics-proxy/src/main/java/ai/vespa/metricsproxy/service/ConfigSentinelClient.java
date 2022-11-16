@@ -1,8 +1,10 @@
-// Copyright 2020 Oath Inc. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
+// Copyright Yahoo. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 package ai.vespa.metricsproxy.service;
 
-import com.google.inject.Inject;
+import com.yahoo.component.annotation.Inject;
 import com.yahoo.component.AbstractComponent;
+
+import java.time.Duration;
 import java.util.logging.Level;
 
 import com.yahoo.jrt.ErrorCode;
@@ -170,7 +172,7 @@ public class ConfigSentinelClient extends AbstractComponent {
         }
         if (connection.isValid()) {
             Request req = new Request("sentinel.ls");
-            connection.invokeSync(req, 5.0);
+            connection.invokeSync(req, Duration.ofSeconds(5));
             if (req.errorCode() == ErrorCode.NONE &&
                 req.checkReturnTypes("s"))
             {

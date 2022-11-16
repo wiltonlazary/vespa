@@ -10,11 +10,16 @@ vespa_add_library(searchlib_diskindex OBJECT
     disktermblueprint.cpp
     docidmapper.cpp
     extposocc.cpp
+    field_merger.cpp
+    field_mergers_state.cpp
+    field_merger_task.cpp
     fieldreader.cpp
     fieldwriter.cpp
     field_length_scanner.cpp
     fileheader.cpp
     fusion.cpp
+    fusion_input_index.cpp
+    fusion_output_index.cpp
     indexbuilder.cpp
     pagedict4file.cpp
     pagedict4randread.cpp
